@@ -151,7 +151,8 @@ func TestEmbeddedMVCC_GetAtRevision_Success(t *testing.T) {
 
 func TestEmbeddedMVCC_Range_Success(t *testing.T) {
 	tr := newExtTransport(t, WithMVCCService(newMockMVCCService()))
-	resp, err := tr.Range(context.Background(), []byte("a"), []byte("z"), transport.RangeOptions{Limit: 10})
+	// The span stays clear of the hard-confined system/ keys.
+	resp, err := tr.Range(context.Background(), []byte("a"), []byte("m"), transport.RangeOptions{Limit: 10})
 	if err != nil {
 		t.Fatalf("Range: %v", err)
 	}
@@ -167,7 +168,8 @@ func TestEmbeddedMVCC_Range_Success(t *testing.T) {
 
 func TestEmbeddedMVCC_Range_WithConsistency(t *testing.T) {
 	tr := newExtTransport(t, WithMVCCService(newMockMVCCService()))
-	resp, err := tr.Range(context.Background(), []byte("a"), []byte("z"), transport.RangeOptions{Limit: 10}, transport.WithConsistency(transport.ConsistencyLinearizable))
+	// The span stays clear of the hard-confined system/ keys.
+	resp, err := tr.Range(context.Background(), []byte("a"), []byte("m"), transport.RangeOptions{Limit: 10}, transport.WithConsistency(transport.ConsistencyLinearizable))
 	if err != nil {
 		t.Fatalf("Range: %v", err)
 	}
@@ -473,7 +475,8 @@ func TestEmbeddedBatch_ExecuteAllOpTypes(t *testing.T) {
 		{Type: transport.OpPut, Key: []byte("k1"), Value: []byte("v1"), LeaseID: 1},
 		{Type: transport.OpGet, Key: []byte("k2")},
 		{Type: transport.OpDelete, Key: []byte("k3")},
-		{Type: transport.OpRange, Key: []byte("a"), RangeEnd: []byte("z")},
+		// The span stays clear of the hard-confined system/ keys.
+		{Type: transport.OpRange, Key: []byte("a"), RangeEnd: []byte("m")},
 	}
 	resp, err := tr.ExecuteBatch(context.Background(), ops)
 	if err != nil {

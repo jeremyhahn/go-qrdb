@@ -20,6 +20,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
@@ -59,13 +62,10 @@ func notifyEntityPut(hub *watch.Hub, key string, rev int64) {
 // eviction the test provoked becomes observable from outside.
 func awaitEviction(t *testing.T, hub *watch.Hub) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for hub.WatchCount() > 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("hub still holds %d watchers; eviction never happened", hub.WatchCount())
-		}
-		time.Sleep(time.Millisecond)
-	}
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		n := hub.WatchCount()
+		assert.Zerof(c, n, "hub still holds %d watchers; eviction never happened", n)
+	}, 30*time.Second, time.Millisecond)
 }
 
 // drainEntityEvents reads ch to close and returns every event it delivered.

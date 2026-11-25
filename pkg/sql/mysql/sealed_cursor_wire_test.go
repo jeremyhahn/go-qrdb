@@ -32,6 +32,7 @@ import (
 
 	vtmysql "github.com/dolthub/vitess/go/mysql"
 	gomysql "github.com/go-sql-driver/mysql"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
@@ -245,18 +246,13 @@ func TestOpenCursor_SealClosesTheConnection(t *testing.T) {
 				}
 			}
 			seal(probe, streams)
-			deadline := time.Now().Add(10 * time.Second)
-			for {
+			var fetchErr error
+			require.EventuallyWithT(t, func(ct *assert.CollectT) {
 				rows, err := c.fetch(stmt)
-				if err != nil {
-					requireSealedEnd(t, err)
-					return
-				}
-				if time.Now().After(deadline) {
-					t.Fatalf("the cursor kept serving after the seal (last fetch: %d rows)", rows)
-				}
-				time.Sleep(50 * time.Millisecond)
-			}
+				fetchErr = err
+				assert.Errorf(ct, err, "the cursor kept serving after the seal (last fetch: %d rows)", rows)
+			}, 10*time.Second, 50*time.Millisecond)
+			requireSealedEnd(t, fetchErr)
 		})
 	}
 }

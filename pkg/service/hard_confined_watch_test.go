@@ -19,6 +19,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
@@ -306,37 +307,43 @@ func TestHardConfinedWatch_WatchEntityTypeFiltersASubPathOverlap(t *testing.T) {
 // completion) must still let the goroutine exit once its ctx ends, instead
 // of leaking it, and pinning the underlying watch open, for the rest of
 // the process's life.
+//
+// The test runs in a synctest bubble so the ordering is pinned, not raced:
+// the first synctest.Wait returns only once the forwarder is durably
+// blocked on `out <- ev` (it has taken the event, ctx is live and nothing
+// reads ch), so cancel() lands while it sits in that inner select with
+// ctx.Done the only case that can become ready; the second synctest.Wait
+// returns once it has taken ctx.Done and closed out. Only then does the
+// test read ch, so the read can never race the send.
 func TestHardConfinedWatch_WatchEntityTypeFilterGoroutineExitsOnContextDone(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	fake := &fakeWatch{entityTypeChan: make(chan WatchEntityEvent, 1)}
-	w := NewHardConfinedWatch(fake)
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		fake := &fakeWatch{entityTypeChan: make(chan WatchEntityEvent, 1)}
+		w := NewHardConfinedWatch(fake)
 
-	subPathType := EntityType(string(confinedEntityType) + "/sub")
-	ch, err := w.WatchEntityType(ctx, &WatchEntityTypeRequest{EntityType: subPathType})
-	if err != nil {
-		t.Fatalf("WatchEntityType(sub-path overlap) = %v, want no refusal", err)
-	}
-
-	// Pushed into a buffered channel, so this send itself never blocks;
-	// the forwarding goroutine's own attempt to relay it onto the
-	// unbuffered `ch` -- with nothing here ever reading from `ch` -- is
-	// exactly the blocking send this test targets.
-	fake.entityTypeChan <- WatchEntityEvent{EntityType: subPathType, ID: "ordinary-id"}
-
-	// Give the goroutine a moment to reach its blocking send before
-	// canceling, so this test actually exercises that send rather than
-	// racing ahead of it.
-	time.Sleep(20 * time.Millisecond)
-	cancel()
-
-	select {
-	case _, ok := <-ch:
-		if ok {
-			t.Fatal("expected ch to close once ctx ended, not to deliver a value nobody raced to read")
+		subPathType := EntityType(string(confinedEntityType) + "/sub")
+		ch, err := w.WatchEntityType(ctx, &WatchEntityTypeRequest{EntityType: subPathType})
+		if err != nil {
+			t.Fatalf("WatchEntityType(sub-path overlap) = %v, want no refusal", err)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("ch never closed after ctx was canceled: the forwarding goroutine leaked, blocked on an unread send")
-	}
+
+		// Pushed into a buffered channel, so this send itself never blocks;
+		// the forwarding goroutine's own attempt to relay it onto the
+		// unbuffered `ch` -- with nothing here reading from `ch` -- is
+		// exactly the blocking send this test targets.
+		fake.entityTypeChan <- WatchEntityEvent{EntityType: subPathType, ID: "ordinary-id"}
+
+		// The forwarder is now durably blocked on `out <- ev`.
+		synctest.Wait()
+		cancel()
+		// It has now taken ctx.Done and closed out.
+		synctest.Wait()
+
+		if _, ok := <-ch; ok {
+			t.Fatal("expected ch to close once ctx ended, not to deliver a value nobody was reading")
+		}
+	})
 }
 
 // TestHardConfinedWatch_EntityMethodsPassThroughForOrdinaryTypes proves an

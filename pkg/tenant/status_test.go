@@ -141,6 +141,68 @@ func TestUpdateTenant_StatusUnknownRefused(t *testing.T) {
 	}
 }
 
+func statusFilterFixture() []TenantInfo {
+	return []TenantInfo{
+		{ID: "t-active", Status: StatusActive},
+		{ID: "t-suspended", Status: StatusSuspended},
+		{ID: "t-disabled", Status: StatusDisabled},
+		{ID: "t-legacy"},
+		{ID: "t-suspended-2", Status: StatusSuspended},
+	}
+}
+
+func TestFilterByStatus_EmptyIsNoFilter(t *testing.T) {
+	in := statusFilterFixture()
+	out, err := FilterByStatus(in, "")
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(out) != len(in) {
+		t.Fatalf("len = %d, want %d", len(out), len(in))
+	}
+}
+
+func TestFilterByStatus_KeepsOnlyMatching(t *testing.T) {
+	cases := map[Status][]string{
+		StatusActive:    {"t-active"},
+		StatusSuspended: {"t-suspended", "t-suspended-2"},
+		StatusDisabled:  {"t-disabled"},
+	}
+	for status, want := range cases {
+		t.Run(string(status), func(t *testing.T) {
+			out, err := FilterByStatus(statusFilterFixture(), status)
+			if err != nil {
+				t.Fatalf("err = %v", err)
+			}
+			got := make([]string, 0, len(out))
+			for _, info := range out {
+				got = append(got, info.ID)
+			}
+			if strings.Join(got, ",") != strings.Join(want, ",") {
+				t.Fatalf("got %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+func TestFilterByStatus_UnknownIsInvalidStatusError(t *testing.T) {
+	for _, v := range []Status{"deleted", "paused", "ACTIVE"} {
+		t.Run(string(v), func(t *testing.T) {
+			out, err := FilterByStatus(statusFilterFixture(), v)
+			var ie *InvalidStatusError
+			if !errors.As(err, &ie) || ie.Value != v {
+				t.Fatalf("err = %T(%v), want *InvalidStatusError", err, err)
+			}
+			if out != nil {
+				t.Fatalf("out = %v, want nil", out)
+			}
+			if !strings.Contains(ie.Error(), "allowed: active, suspended, disabled") {
+				t.Fatalf("message = %q", ie.Error())
+			}
+		})
+	}
+}
+
 func TestUpdateTenant_StatusAbsentUnchanged(t *testing.T) {
 	for _, fx := range descriptiveFixtures {
 		t.Run(fx.name, func(t *testing.T) {

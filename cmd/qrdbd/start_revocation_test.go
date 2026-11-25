@@ -42,7 +42,7 @@ func TestBootstrapAuthEnforcement_InvalidRevocationTTLFailsBoot(t *testing.T) {
 	mgmt, err := bootstrapUserRoleStores(
 		context.Background(), mock, mock, tx, node, testLeaderWait,
 		1, 1, &mockTenantServicer{}, false, nil, "", nil,
-		auth.MTLSBindingEnrolled, nil, nil, nil,
+		auth.MTLSBindingEnrolled, nil, nil, nil, soTrustSeams{},
 	)
 	require.NoError(t, err)
 
@@ -50,7 +50,7 @@ func TestBootstrapAuthEnforcement_InvalidRevocationTTLFailsBoot(t *testing.T) {
 		context.Background(), mgmt, t.TempDir(), node,
 		audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{},
 		nil, nil, nil, nil, nil, "not-a-duration", "", "",
-		firstboot.NewAwaitingAdminCredentialProbe(), nil,
+		firstboot.NewAwaitingAdminCredentialProbe(), nil, nil,
 	)
 	require.Error(t, err)
 	var abe *AuthBootstrapError

@@ -12,7 +12,10 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"log/slog"
+
+	quicraftseal "github.com/jeremyhahn/go-quicraft/pkg/seal"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
@@ -288,13 +291,19 @@ func credentialPresent(creds Credentials) bool {
 
 // openedToLiveKey unseals sealed with strategy and creds and reports whether
 // it opened to live, the key the barrier holds, compared in constant time. A
-// credential the strategy refuses and one that opens to a different key are
-// the same answer, ErrCredentialMismatch: which of the two happened says
-// nothing the caller may act on.
+// credential the strategy refuses (isRefusedCredential) and one that opens to
+// a different key are the same answer, ErrCredentialMismatch: which of the
+// two happened says nothing the caller may act on. Any other UnsealRootKey
+// failure (an enclave or hardware open failure, an unavailable strategy) is
+// not a verdict on the credential: it is returned as an *UnsealError
+// (errors.Is ErrUnsealFailed) wrapping the strategy's error.
 func openedToLiveKey(ctx context.Context, strategy SealingStrategy, sealed *SealedRootKey, creds Credentials, live []byte) error {
 	candidate, err := strategy.UnsealRootKey(ctx, sealed, creds)
 	if err != nil {
-		return ErrCredentialMismatch
+		if isRefusedCredential(err) {
+			return ErrCredentialMismatch
+		}
+		return &UnsealError{Strategy: string(strategy.ID()), Err: err}
 	}
 	defer secure.Wipe(candidate)
 	if len(candidate) == 0 || len(candidate) != len(live) ||
@@ -302,4 +311,20 @@ func openedToLiveKey(ctx context.Context, strategy SealingStrategy, sealed *Seal
 		return ErrCredentialMismatch
 	}
 	return nil
+}
+
+// isRefusedCredential reports whether an UnsealRootKey error is the
+// strategy's verdict that the credential is wrong, as opposed to a failure
+// to run the unseal at all. The passphrase and software strategies fail a
+// wrong passphrase in the AEAD open (ErrDecryptionFailed) and refuse an
+// empty one with go-quicraft's ErrInvalidPassphrase, or, when no secret is
+// given at all, with go-quicraft's ErrEmptyCredentials; ErrInvalidCredentials
+// and this package's ErrInvalidPassphrase are the refusals the remaining
+// and injected strategies return.
+func isRefusedCredential(err error) bool {
+	return errors.Is(err, ErrDecryptionFailed) ||
+		errors.Is(err, ErrInvalidCredentials) ||
+		errors.Is(err, ErrInvalidPassphrase) ||
+		errors.Is(err, quicraftseal.ErrInvalidPassphrase) ||
+		errors.Is(err, quicraftseal.ErrEmptyCredentials)
 }

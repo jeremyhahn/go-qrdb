@@ -65,12 +65,15 @@ func newTenantCmd() *cobra.Command {
 
 // newTenantListCmd creates the "tenant list" subcommand.
 func newTenantListCmd() *cobra.Command {
-	return &cobra.Command{
+	var status string
+	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List tenants",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			resp, err := client.Tenants().ListTenants(cmd.Context())
+			// The server validates the status: an unknown value is refused.
+			resp, err := client.Tenants().ListTenants(cmd.Context(),
+				&transport.ListTenantsRequest{Status: transport.TenantStatus(status)})
 			if err != nil {
 				return err
 			}
@@ -91,6 +94,8 @@ func newTenantListCmd() *cobra.Command {
 			}
 		},
 	}
+	cmd.Flags().StringVar(&status, "status", "", "Only tenants in this status (active|suspended|disabled); deleted tenants: tenant list-deleted")
+	return cmd
 }
 
 // newTenantCreateCmd creates the "tenant create" subcommand.

@@ -76,3 +76,28 @@ func TestSettleRegistration_EndsWithContext(t *testing.T) {
 		t.Fatalf("settleRegistration = %v after %d calls, want the election's error after 1", err, calls)
 	}
 }
+
+func TestRevokeOutcome(t *testing.T) {
+	refusal := errors.New("permission denied")
+	for name, tc := range map[string]struct {
+		err      error
+		wantKeep bool
+		want     error
+	}{
+		"revoked":         {err: nil, wantKeep: false, want: nil},
+		"already revoked": {err: &service.LeaseNotFoundError{LeaseID: 7}, wantKeep: false, want: nil},
+		"electing":        {err: quicraft.ErrNotLeader, wantKeep: true, want: quicraft.ErrNotLeader},
+		"timed out":       {err: quicraft.ErrTimeout, wantKeep: true, want: quicraft.ErrTimeout},
+		"refused":         {err: refusal, wantKeep: false, want: refusal},
+	} {
+		t.Run(name, func(t *testing.T) {
+			keep, err := revokeOutcome(tc.err)
+			if keep != tc.wantKeep {
+				t.Fatalf("keep = %v, want %v", keep, tc.wantKeep)
+			}
+			if !errors.Is(err, tc.want) || (tc.want == nil && err != nil) {
+				t.Fatalf("result = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}

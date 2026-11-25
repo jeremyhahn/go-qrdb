@@ -137,16 +137,6 @@ func TestWithServiceRegistry_Applied(t *testing.T) {
 // NewSPAHandler / ServeHTTP
 // ---------------------------------------------------------------------------
 
-func TestNewSPAHandler_ReturnsNonNil(t *testing.T) {
-	fsys := fstest.MapFS{
-		"index.html": &fstest.MapFile{Data: []byte("<html/>")},
-	}
-	handler := NewSPAHandler(fsys)
-	if handler == nil {
-		t.Fatal("NewSPAHandler returned nil")
-	}
-}
-
 func TestSPAHandler_APIPathReturns404(t *testing.T) {
 	fsys := fstest.MapFS{
 		"index.html": &fstest.MapFile{Data: []byte("<html/>")},

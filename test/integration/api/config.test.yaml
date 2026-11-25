@@ -49,6 +49,10 @@ seal:
   strategy: "passphrase"
   root_key_path: "__sys:seal/root_key"
   credential_strategy: "barrier"
+  # Test-only: a short check period, so the CLI scheduled-rotation e2e
+  # (TestCLIMultiProtocolCredentialScheduledRotationNoValueSource) sees a
+  # pass within seconds of a policy falling due. Shipped default: 1m.
+  credential_rotation_check_period: "1s"
 
 # A volume pool is required for ANY dedicated per-tenant barrier (not only
 # volume/raft isolation -- a plain "tenant barrier-init" on a prefix tenant

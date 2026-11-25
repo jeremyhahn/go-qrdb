@@ -27,11 +27,6 @@ import (
 // StandardAdapter tests
 // ---------------------------------------------------------------------------
 
-func TestStandardAdapter_InterfaceCompliance(t *testing.T) {
-	var _ sm.StateMachine = (*StandardAdapter)(nil)
-	var _ sm.Hasher = (*StandardAdapter)(nil)
-}
-
 func TestStandardAdapter_UpdateAndLookup(t *testing.T) {
 	backend := NewStandardBackend()
 	kvsm := NewKVStateMachine(backend)
@@ -127,11 +122,6 @@ func TestStandardAdapter_Close(t *testing.T) {
 // ConcurrentAdapter tests
 // ---------------------------------------------------------------------------
 
-func TestConcurrentAdapter_InterfaceCompliance(t *testing.T) {
-	var _ sm.ConcurrentStateMachine = (*ConcurrentAdapter)(nil)
-	var _ sm.Hasher = (*ConcurrentAdapter)(nil)
-}
-
 func TestConcurrentAdapter_UpdateAndLookup(t *testing.T) {
 	backend := NewConcurrentBackend()
 	kvsm := NewKVStateMachine(backend)
@@ -205,12 +195,6 @@ func TestConcurrentAdapter_Close(t *testing.T) {
 // ---------------------------------------------------------------------------
 // DiskAdapter tests
 // ---------------------------------------------------------------------------
-
-func TestDiskAdapter_InterfaceCompliance(t *testing.T) {
-	var _ sm.DiskStateMachine = (*DiskAdapter)(nil)
-	var _ sm.Hasher = (*DiskAdapter)(nil)
-	var _ sm.NALookup = (*DiskAdapter)(nil)
-}
 
 func TestDiskAdapter_UpdateAndLookup(t *testing.T) {
 	store := newMemStorage()

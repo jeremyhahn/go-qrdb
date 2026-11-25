@@ -42,6 +42,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/clientlimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
+	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
@@ -78,6 +79,7 @@ type Server struct {
 	logSvc            service.LogService
 	userSvc           user.UserServicer
 	roleSvc           role.RoleServicer
+	groupSvc          group.GroupServicer
 	certProv          cert.CertProvider
 	certEnroll        service.CertEnrollmentServicer
 	invitations       service.InvitationServicer
@@ -417,6 +419,11 @@ func WithUserService(svc user.UserServicer) ServerOption {
 // WithRoleService configures the QUIC server with a role management service.
 func WithRoleService(svc role.RoleServicer) ServerOption {
 	return func(s *Server) { s.roleSvc = svc }
+}
+
+// WithGroupService sets the IAM group store.
+func WithGroupService(svc group.GroupServicer) ServerOption {
+	return func(s *Server) { s.groupSvc = svc }
 }
 
 // WithSOGate installs the SO dual-factor gate (authmw.SOGate) on every method

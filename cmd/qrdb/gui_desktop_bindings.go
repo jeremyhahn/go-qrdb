@@ -47,6 +47,7 @@ type guiBindings struct {
 	user        *UserBinding
 	invitation  *InvitationBinding
 	role        *RoleBinding
+	group       *GroupBinding
 	cert        *CertBinding
 	db          *DatabaseBinding
 	collection  *CollectionBinding
@@ -96,6 +97,7 @@ func createGUIBindings(log *sdk.ConcreteLogger, logFile string) *guiBindings {
 		user:        NewUserBinding(log, conn),
 		invitation:  NewInvitationBinding(log, conn),
 		role:        NewRoleBinding(log, conn),
+		group:       NewGroupBinding(log, conn),
 		cert:        NewCertBinding(log, conn),
 		db:          NewDatabaseBinding(log, conn),
 		collection:  NewCollectionBinding(log, conn),
@@ -136,6 +138,7 @@ func (b *guiBindings) bindList() []interface{} {
 		b.user,
 		b.invitation,
 		b.role,
+		b.group,
 		b.cert,
 		b.db,
 		b.collection,

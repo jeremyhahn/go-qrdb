@@ -16,9 +16,12 @@ package vlog
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -111,6 +114,13 @@ type Descriptor struct {
 	// existed has no Audit, keeps its own entries, and is never
 	// reinterpreted (docs/databases/architecture.md §7).
 	Audit bool `json:"audit,omitempty"`
+
+	// Incarnation is the incarnation of the database the log was created in
+	// (database.Database.Incarnation), set by the log service, never by the
+	// caller. DropDatabase deletes only logs of the incarnation it names, so
+	// a stale drop leaves the logs of a database created again under the
+	// name alone. Empty where the database recorded none.
+	Incarnation string `json:"incarnation,omitempty"`
 }
 
 // Key returns the log's key at version.
@@ -316,6 +326,124 @@ func (c *Chain) stagedGet(r storage.Reader) getFunc {
 	}
 }
 
+// stagingWriter is the Writer the named-log commands stage through: every
+// Set and Delete reaching w is mirrored into c.staged (a deletion as a nil
+// value), so a later command of the same Update reads and enumerates the
+// batch as it will commit, whatever r sees. The caller holds c.mu.
+type stagingWriter struct {
+	c *Chain
+	w Writer
+}
+
+func (s stagingWriter) Set(key, value []byte) error {
+	if err := s.w.Set(key, value); err != nil {
+		return err
+	}
+	if value == nil {
+		value = []byte{}
+	}
+	s.c.staged[string(key)] = value
+	return nil
+}
+
+func (s stagingWriter) Delete(key []byte) error {
+	if err := s.w.Delete(key); err != nil {
+		return err
+	}
+	s.c.staged[string(key)] = nil
+	return nil
+}
+
+// staging wraps w so its writes are recorded in c.staged; a Writer already
+// wrapped is returned as is. The caller holds c.mu.
+func (c *Chain) staging(w Writer) Writer {
+	if s, ok := w.(stagingWriter); ok && s.c == c {
+		return w
+	}
+	return stagingWriter{c: c, w: w}
+}
+
+// batchCursor walks the keys under one prefix as the current Update will
+// leave them: the committed iterator's keys merged, in order, with the keys
+// staged under the prefix, less every key the Update deleted.
+type batchCursor struct {
+	it     storage.Iterator
+	itOK   bool
+	staged map[string][]byte
+	keys   []string // staged keys under the prefix, sorted
+	si     int
+	key    []byte
+	fromIt bool
+	fromS  bool
+}
+
+func newBatchCursor(it storage.Iterator, staged map[string][]byte, prefix []byte) *batchCursor {
+	b := &batchCursor{it: it, staged: staged}
+	for k := range staged {
+		if strings.HasPrefix(k, string(prefix)) {
+			b.keys = append(b.keys, k)
+		}
+	}
+	slices.Sort(b.keys)
+	return b
+}
+
+func (b *batchCursor) first() bool {
+	b.itOK, b.si = b.it.SeekToFirst(), 0
+	return b.settle()
+}
+
+func (b *batchCursor) next() bool {
+	b.advance()
+	return b.settle()
+}
+
+func (b *batchCursor) seek(target []byte) bool {
+	b.itOK = b.it.Seek(target)
+	for b.si < len(b.keys) && b.keys[b.si] < string(target) {
+		b.si++
+	}
+	return b.settle()
+}
+
+func (b *batchCursor) advance() {
+	if b.fromIt {
+		b.itOK = b.it.Next()
+	}
+	if b.fromS {
+		b.si++
+	}
+}
+
+func (b *batchCursor) settle() bool {
+	for {
+		b.itOK = b.itOK && b.it.Valid()
+		hasS := b.si < len(b.keys)
+		if !b.itOK && !hasS {
+			return false
+		}
+		b.fromIt, b.fromS = b.itOK, hasS
+		if b.itOK && hasS {
+			switch cmp := bytes.Compare(b.it.Key(), []byte(b.keys[b.si])); {
+			case cmp < 0:
+				b.fromS = false
+			case cmp > 0:
+				b.fromIt = false
+			}
+		}
+		if b.fromIt {
+			b.key = bytes.Clone(b.it.Key())
+		} else {
+			b.key = []byte(b.keys[b.si])
+		}
+		if v, ok := b.staged[string(b.key)]; ok && v == nil {
+			b.advance()
+			continue
+		}
+		return true
+	}
+}
+
 // Create stages a new log's descriptor and empty head into w. It refuses an
 // invalid name or descriptor, a descriptor recording more than the first key,
 // and a log that already exists. A key the descriptor records is held by its
@@ -336,6 +464,34 @@ func (c *Chain) CreateWithKey(w Writer, id LogID, desc Descriptor, key SigningKe
 		return err
 	}
 	return c.create(w, id, desc, &key)
+}
+
+// CreateWithSealedKey stages a new log as CreateWithKey does, with a key
+// record whose PKCS8 the proposer sealed under a database barrier after it
+// matched the key against the descriptor (a barrier database's logs, owner
+// ruling 1234). The sealed record cannot be decoded here, so only its
+// version is checked against the descriptor's one key.
+func (c *Chain) CreateWithSealedKey(w Writer, id LogID, desc Descriptor, key SigningKey) error {
+	if len(desc.Keys) != 1 {
+		return &InvalidDescriptorError{Reason: "a log created with its key records exactly that key, not " + strconv.Itoa(len(desc.Keys))}
+	}
+	if err := desc.Keys[0].sealedMatches(key); err != nil {
+		return err
+	}
+	return c.create(w, id, desc, &key)
+}
+
+// sealedMatches refuses a sealed k/<version> record that cannot be this
+// key's: an empty record or one at another version. The record's key is
+// sealed, so it is not compared.
+func (k HeadKey) sealedMatches(record SigningKey) error {
+	if len(record.PKCS8) == 0 {
+		return &InvalidSigningKeyError{Reason: "empty sealed key record"}
+	}
+	if record.Version != k.Version {
+		return &InvalidSigningKeyError{Reason: "key record version " + KeyRef(record.Version) + " for key version " + KeyRef(k.Version)}
+	}
+	return nil
 }
 
 // create stages the descriptor, the empty head and, when key is not nil, the
@@ -359,6 +515,7 @@ func (c *Chain) create(w Writer, id LogID, desc Descriptor, key *SigningKey) err
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	w = c.staging(w)
 
 	if c.auditInstanceLocked(id) {
 		return &ReservedLogError{ID: id}
@@ -402,9 +559,31 @@ func (c *Chain) RotateKey(r storage.Reader, w Writer, id LogID, next HeadKey, re
 			return err
 		}
 	}
+	return c.rotateKey(r, w, id, next, record)
+}
 
+// RotateSealedKey records next as RotateKey does, with its key record whose
+// PKCS8 the proposer sealed under a database barrier after it matched the
+// key (a barrier database's logs, owner ruling 1234). The sealed record
+// cannot be decoded here, so only its version is checked against next.
+func (c *Chain) RotateSealedKey(r storage.Reader, w Writer, id LogID, next HeadKey, record SigningKey) error {
+	if err := id.Validate(); err != nil {
+		return err
+	}
+	if err := next.validate(); err != nil {
+		return err
+	}
+	if err := next.sealedMatches(record); err != nil {
+		return err
+	}
+	return c.rotateKey(r, w, id, next, &record)
+}
+
+// rotateKey stages next, and its record when not nil, once both are checked.
+func (c *Chain) rotateKey(r storage.Reader, w Writer, id LogID, next HeadKey, record *SigningKey) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	w = c.staging(w)
 
 	if _, ok := c.logs[id]; !ok {
 		return &LogNotFoundError{ID: id}
@@ -438,15 +617,68 @@ func (c *Chain) RotateKey(r storage.Reader, w Writer, id LogID, next HeadKey, re
 // library's compact range, which reports each node as the append completes
 // it; nothing is read from storage.
 func (c *Chain) AppendEntries(w Writer, id LogID, entries [][]byte) (first uint64, err error) {
+	hashes := make([][]byte, len(entries))
+	for i, e := range entries {
+		hashes[i] = hasher.HashLeaf(e)
+	}
+	return c.appendBodies(w, id, hashes, entries)
+}
+
+// SealedLeaf is one entry of a sealed append: Hash is the entry's RFC 6962
+// leaf hash, computed by the proposer over the plaintext, and Body is the
+// entry sealed under the database's barrier key. Apply folds Hash into the
+// tree and stores Body as given; it never sees the plaintext.
+type SealedLeaf struct {
+	Hash []byte
+	Body []byte
+}
+
+// LeafHashError is returned when a sealed leaf's hash is not a SHA-256
+// digest.
+type LeafHashError struct {
+	Index int
+	Len   int
+}
+
+func (e *LeafHashError) Error() string {
+	return fmt.Sprintf("vlog: sealed leaf %d hash is %d bytes, want %d", e.Index, e.Len, sha256.Size)
+}
+
+// LeafHash returns the RFC 6962 leaf hash of entry, the hash a proposer
+// sends with a sealed entry so the tree is built over the plaintext.
+func LeafHash(entry []byte) []byte {
+	return hasher.HashLeaf(entry)
+}
+
+// AppendSealed appends leaves to the log id as AppendEntries does, folding
+// each leaf's given hash into the tree and storing its body as opaque bytes.
+// The resulting tree is the one AppendEntries builds over the plaintexts the
+// hashes were computed from.
+func (c *Chain) AppendSealed(w Writer, id LogID, leaves []SealedLeaf) (first uint64, err error) {
+	hashes := make([][]byte, len(leaves))
+	bodies := make([][]byte, len(leaves))
+	for i, l := range leaves {
+		if len(l.Hash) != sha256.Size {
+			return 0, &LeafHashError{Index: i, Len: len(l.Hash)}
+		}
+		hashes[i], bodies[i] = l.Hash, l.Body
+	}
+	return c.appendBodies(w, id, hashes, bodies)
+}
+
+// appendBodies stores bodies at the next indices of the log id and folds
+// hashes, one per body, into its tree.
+func (c *Chain) appendBodies(w Writer, id LogID, hashes, bodies [][]byte) (first uint64, err error) {
 	if err := id.Validate(); err != nil {
 		return 0, err
 	}
-	if len(entries) == 0 || len(entries) > MaxAppendPerCommand {
-		return 0, &AppendBatchError{Count: len(entries)}
+	if len(bodies) == 0 || len(bodies) > MaxAppendPerCommand {
+		return 0, &AppendBatchError{Count: len(bodies)}
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	w = c.staging(w)
 
 	if c.auditInstanceLocked(id) {
 		return 0, &ReservedLogError{ID: id}
@@ -455,12 +687,12 @@ func (c *Chain) AppendEntries(w Writer, id LogID, entries [][]byte) (first uint6
 	if !ok {
 		return 0, &LogNotFoundError{ID: id}
 	}
-	for i, e := range entries {
+	for i, e := range bodies {
 		if err := w.Set(entryKey(id, st.size+uint64(i)), e); err != nil {
 			return 0, &TableWriteError{Err: err}
 		}
 	}
-	next, staged, err := appendLeaves(w, id, st, entries)
+	next, staged, err := appendLeafHashes(w, id, st, hashes)
 	if err != nil {
 		return 0, err
 	}
@@ -474,6 +706,15 @@ func (c *Chain) AppendEntries(w Writer, id LogID, entries [][]byte) (first uint6
 // and the staged nodes by key, leaving st and c untouched, so a failed append
 // changes nothing in memory. The leaves' bodies are the caller's to store.
 func appendLeaves(w Writer, id LogID, st logState, leaves [][]byte) (logState, map[string][]byte, error) {
+	hashes := make([][]byte, len(leaves))
+	for i, e := range leaves {
+		hashes[i] = hasher.HashLeaf(e)
+	}
+	return appendLeafHashes(w, id, st, hashes)
+}
+
+// appendLeafHashes folds the given leaf hashes into the tree of the log id.
+func appendLeafHashes(w Writer, id LogID, st logState, hashes [][]byte) (logState, map[string][]byte, error) {
 	// The range is built over a copy, so a failed append leaves st as it was.
 	rng, err := factory.NewRange(0, st.size, append([][]byte(nil), st.hashes...))
 	if err != nil {
@@ -493,8 +734,8 @@ func appendLeaves(w Writer, id LogID, st logState, leaves [][]byte) (logState, m
 		}
 		staged[string(k)] = hash
 	}
-	for _, e := range leaves {
-		if err := rng.Append(hasher.HashLeaf(e), visit); err != nil {
+	for _, h := range hashes {
+		if err := rng.Append(h, visit); err != nil {
 			return logState{}, nil, &CorruptTableError{Key: string(logHeadKey(id)), Reason: err.Error()}
 		}
 		if stageErr != nil {
@@ -502,12 +743,12 @@ func appendLeaves(w Writer, id LogID, st logState, leaves [][]byte) (logState, m
 		}
 	}
 
-	size := st.size + uint64(len(leaves))
-	hashes := rng.Hashes()
-	if err := w.Set(logHeadKey(id), encodeLogHead(size, st.lo, hashes)); err != nil {
+	size := st.size + uint64(len(hashes))
+	rhashes := rng.Hashes()
+	if err := w.Set(logHeadKey(id), encodeLogHead(size, st.lo, rhashes)); err != nil {
 		return logState{}, nil, &TableWriteError{Err: err}
 	}
-	st.size, st.hashes = size, hashes
+	st.size, st.hashes = size, rhashes
 	return st, staged, nil
 }
 
@@ -530,6 +771,7 @@ func (c *Chain) Checkpoint(r storage.Reader, w Writer, id LogID, size uint64, ro
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	w = c.staging(w)
 
 	st, ok := c.logs[id]
 	if !ok {
@@ -582,6 +824,7 @@ func (c *Chain) ExpireBodies(w Writer, id LogID, cutoff uint64) (expired int, er
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	w = c.staging(w)
 
 	if c.auditInstanceLocked(id) {
 		// The audit instance's retention is audit Prune (OpAuditPrune),
@@ -611,6 +854,145 @@ func (c *Chain) ExpireBodies(w Writer, id LogID, cutoff uint64) (expired int, er
 	st.lo = upper
 	c.logs[id] = st
 	return expired, nil
+}
+
+// DropDatabase reclaims the logs of tenantID's database: every record under
+// each of its logs' prefixes (descriptor, head, entries, tree nodes,
+// checkpoints and signing-key records) is deleted and the log forgotten, so a
+// database created again under the name starts with no logs. The audit
+// instance is never touched: its retention is audit Prune.
+//
+// One call deletes at most MaxPrunePerCommand of the logs' records, the
+// descriptor and head of each log it finished counted among them, so a
+// command stays bounded however many (empty) logs the database has; the
+// caller repeats it until it reports 0. A log's descriptor and head go last
+// and together: in the call that finishes its other records when the budget
+// still covers both, else both stay for the next call, so a node restored
+// between two calls finds every remaining log whole (restoreLogs refuses a
+// descriptor without a head).
+//
+// The records it walks are r's merged with the current Update's staged
+// writes and deletions: a log created, or entries, nodes, checkpoints or keys
+// staged earlier in the same apply batch are reclaimed too, and a record the
+// batch already deleted is neither deleted again nor counted, so the result
+// does not depend on how commands are packed into batches.
+func (c *Chain) DropDatabase(r storage.Reader, w Writer, tenantID, database, incarnation string) (deleted int, err error) {
+	if tenantID == "" || database == "" || strings.ContainsRune(tenantID, '/') || strings.ContainsRune(database, '/') {
+		return 0, &InvalidLogNameError{Name: tenantID + "/" + database}
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	prefix := make([]byte, 0, len(LogTablePrefix)+len(tenantID)+len(database)+2)
+	prefix = append(prefix, LogTablePrefix...)
+	prefix = append(prefix, tenantID...)
+	prefix = append(prefix, '/')
+	prefix = append(prefix, database...)
+	prefix = append(prefix, '/')
+	audit := AuditLogID(tenantID)
+
+	w = c.staging(w)
+	it := r.NewIterator(&storage.IteratorOptions{LowerBound: prefix, UpperBound: prefixEnd(prefix)})
+	cur := newBatchCursor(it, c.staged, prefix)
+	var (
+		complete []LogID
+		current  LogID
+		seen     bool
+		budget   = MaxPrunePerCommand
+	)
+	exhausted := false
+	for ok := cur.first(); ok; {
+		key := cur.key
+		id, idPrefix, parsed := parseLogPrefix(key)
+		if !parsed {
+			_ = it.Close()
+			return deleted, &CorruptTableError{Key: string(key), Reason: "key outside any log's prefix"}
+		}
+		if id == audit {
+			ok = cur.seek(prefixEnd(idPrefix))
+			continue
+		}
+		if !seen || id != current {
+			other, err := c.otherIncarnation(r, id, incarnation)
+			if err != nil {
+				_ = it.Close()
+				return deleted, err
+			}
+			if other {
+				ok = cur.seek(prefixEnd(idPrefix))
+				continue
+			}
+		}
+		if seen && id != current {
+			// The previous log's body is gone: its descriptor and head
+			// are deleted together, charged against the same budget, or
+			// both stay for the next step.
+			if budget < 2 {
+				exhausted = true
+				break
+			}
+			complete = append(complete, current)
+			budget -= 2
+		}
+		current, seen = id, true
+		if bytes.Equal(key, descriptorKey(id)) || bytes.Equal(key, logHeadKey(id)) {
+			ok = cur.next()
+			continue
+		}
+		if budget == 0 {
+			exhausted = true
+			break
+		}
+		if err := w.Delete(key); err != nil {
+			_ = it.Close()
+			return deleted, &TableWriteError{Err: err}
+		}
+		deleted++
+		budget--
+		ok = cur.next()
+	}
+	if err := it.Error(); err != nil {
+		_ = it.Close()
+		return deleted, &TableReadError{Err: err}
+	}
+	if err := it.Close(); err != nil {
+		return deleted, &TableReadError{Err: err}
+	}
+	if seen && !exhausted && budget >= 2 {
+		complete = append(complete, current)
+	}
+	for _, id := range complete {
+		for _, k := range [][]byte{logHeadKey(id), descriptorKey(id)} {
+			if err := w.Delete(k); err != nil {
+				return deleted, &TableWriteError{Err: err}
+			}
+			deleted++
+		}
+		delete(c.logs, id)
+	}
+	return deleted, nil
+}
+
+// otherIncarnation reports whether log id was created in another incarnation
+// of its database than incarnation: a log that recorded one, and a different
+// one, belongs to a database created again under the name since, and a drop
+// of the earlier incarnation leaves it alone. A log that recorded none was
+// created before incarnations were recorded and goes with any drop.
+func (c *Chain) otherIncarnation(r storage.Reader, id LogID, incarnation string) (bool, error) {
+	dk := descriptorKey(id)
+	raw, err := c.stagedGet(r)(dk)
+	if err != nil {
+		return false, &TableReadError{Err: err}
+	}
+	if raw == nil {
+		return false, nil
+	}
+	var desc Descriptor
+	if err := json.Unmarshal(raw, &desc); err != nil {
+		return false, &CorruptTableError{Key: string(dk), Reason: "malformed descriptor"}
+	}
+	return desc.Incarnation != "" && desc.Incarnation != incarnation, nil
 }
 
 // AuditDatabase and AuditLog name a tenant's audit instance: the log AuditLog
@@ -653,6 +1035,88 @@ func AuditDescriptor(tenantID string, treeStart uint64) Descriptor {
 		AllowExpireBodies: true,
 		TreeStart:         treeStart,
 		Audit:             true,
+	}
+}
+
+// IncarnationRequest answers Request only from logs created under
+// Incarnation, the incarnation of the database the log's name resolves to
+// now. A request naming one log is answered *LogNotFoundError when that
+// log's descriptor records another incarnation -- a log of an earlier
+// database of the name that survived its drop -- and a ListRequest leaves
+// such logs out. The descriptor is read in the same snapshot as the request,
+// so the check and the answer see one commit.
+type IncarnationRequest struct {
+	Request     Request
+	Incarnation string
+	// Strict refuses legacy logs (no incarnation recorded) as another incarnation's.
+	Strict bool
+}
+
+// owns reports whether desc belongs to the database incarnation q reads
+// under: one that recorded that incarnation, or a legacy log that recorded
+// none (created before incarnations were recorded, or while a replica of
+// its group could not carry one), which belongs to whichever database holds
+// its name, as otherIncarnation treats it for a drop.
+func (q IncarnationRequest) owns(desc *Descriptor) bool {
+	if q.Strict {
+		return desc.Incarnation == q.Incarnation
+	}
+	return desc.Incarnation == "" || desc.Incarnation == q.Incarnation
+}
+
+func (q IncarnationRequest) read(r storage.Reader) (any, error) {
+	if list, ok := q.Request.(ListRequest); ok {
+		return q.readList(r, list)
+	}
+	if id, ok := requestLogID(q.Request); ok {
+		desc, err := ReadDescriptor(r, id)
+		if err != nil {
+			return nil, err
+		}
+		if !q.owns(desc) {
+			return nil, &LogNotFoundError{ID: id}
+		}
+	}
+	return q.Request.read(r)
+}
+
+// readList answers list without the logs of another incarnation; legacy logs
+// (no incarnation recorded) are listed.
+func (q IncarnationRequest) readList(r storage.Reader, list ListRequest) (any, error) {
+	ids, err := List(r, list.TenantID, list.Database)
+	if err != nil {
+		return nil, err
+	}
+	live := ids[:0:0]
+	for _, id := range ids {
+		desc, err := ReadDescriptor(r, id)
+		if err != nil {
+			return nil, err
+		}
+		if q.owns(desc) {
+			live = append(live, id)
+		}
+	}
+	return live, nil
+}
+
+// requestLogID returns the log req names, false for a request naming none.
+func requestLogID(req Request) (LogID, bool) {
+	switch q := req.(type) {
+	case HeadRequest:
+		return q.ID, true
+	case GetRequest:
+		return q.ID, true
+	case InclusionRequest:
+		return q.ID, true
+	case ConsistencyRequest:
+		return q.ID, true
+	case DescriptorRequest:
+		return q.ID, true
+	case KeyRequest:
+		return q.ID, true
+	default:
+		return LogID{}, false
 	}
 }
 

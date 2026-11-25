@@ -37,11 +37,17 @@ const presentedTrustDomain = "example.com"
 // names sanTenant in trustDomain. An empty sanTenant yields no URI SAN.
 func presentedIdentity(t *testing.T, ouTenant, sanTenant, trustDomain string) (pkix.Name, []*url.URL) {
 	t.Helper()
-	subject := pkix.Name{CommonName: adminUsername, OrganizationalUnit: []string{ouTenant}}
+	return presentedIdentityOf(t, adminUsername, ouTenant, sanTenant, trustDomain)
+}
+
+// presentedIdentityOf is presentedIdentity for the user name.
+func presentedIdentityOf(t *testing.T, name, ouTenant, sanTenant, trustDomain string) (pkix.Name, []*url.URL) {
+	t.Helper()
+	subject := pkix.Name{CommonName: name, OrganizationalUnit: []string{ouTenant}}
 	if sanTenant == "" {
 		return subject, nil
 	}
-	uris, err := auth.TenantPrincipalURIs(trustDomain, sanTenant, spiffe.KindUser, adminUsername)
+	uris, err := auth.TenantPrincipalURIs(trustDomain, sanTenant, spiffe.KindUser, name)
 	if err != nil {
 		t.Fatalf("TenantPrincipalURIs: %v", err)
 	}

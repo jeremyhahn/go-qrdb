@@ -20,6 +20,7 @@ package config
 
 import (
 	"crypto/tls"
+	"fmt"
 	"math"
 	"os"
 	"slices"
@@ -1065,6 +1066,82 @@ type UnixConfig struct {
 	// SocketPath is the path to the Unix domain socket.
 	// Default: /var/run/qrdbd/qrdbd.sock
 	SocketPath string `yaml:"socket_path"`
+
+	// PeerCredentials maps local Unix accounts to go-qrdb accounts: a
+	// caller on the socket that presents no client certificate is
+	// authenticated as the mapped account when the connecting process's
+	// uid (or, failing a uid match, primary gid) matches an entry, as the
+	// kernel reports it (SO_PEERCRED, Linux only). An entry names an
+	// account, never a role: the account's own roles decide. A peer no
+	// entry maps is refused. Inert when the unix protocol is disabled.
+	PeerCredentials []UnixPeerCredential `yaml:"peer_credentials,omitempty"`
+}
+
+// UnixPeerCredential is one unix.peer_credentials entry. Exactly one of UID
+// and GID is set.
+type UnixPeerCredential struct {
+	// UID matches the connecting process's uid.
+	UID *uint32 `yaml:"uid,omitempty"`
+	// GID matches the connecting process's primary gid.
+	GID *uint32 `yaml:"gid,omitempty"`
+	// Tenant is the tenant of the bound account; empty is the system tenant.
+	Tenant string `yaml:"tenant,omitempty"`
+	// User is the go-qrdb username of the bound account.
+	User string `yaml:"user"`
+}
+
+// PeerCredentialMappings returns the configured peer-credential mappings in
+// the auth chain's form, or nil when none is configured.
+func (u UnixConfig) PeerCredentialMappings() []auth.PeerCredentialMapping {
+	if len(u.PeerCredentials) == 0 {
+		return nil
+	}
+	out := make([]auth.PeerCredentialMapping, 0, len(u.PeerCredentials))
+	for _, p := range u.PeerCredentials {
+		m := auth.PeerCredentialMapping{TenantID: p.Tenant, Username: p.User}
+		if p.UID != nil {
+			v := *p.UID
+			m.UID = &v
+		}
+		if p.GID != nil {
+			v := *p.GID
+			m.GID = &v
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// validatePeerCredentials checks each unix.peer_credentials entry: exactly
+// one of uid and gid, a non-empty user, and no uid or gid mapped twice.
+func (u UnixConfig) validatePeerCredentials() error {
+	uids := make(map[uint32]struct{}, len(u.PeerCredentials))
+	gids := make(map[uint32]struct{}, len(u.PeerCredentials))
+	for i, p := range u.PeerCredentials {
+		field := fmt.Sprintf("unix.peer_credentials[%d]", i)
+		switch {
+		case p.UID != nil && p.GID != nil:
+			return &ValidationError{Field: field + ".uid", Reason: "must not be set together with gid"}
+		case p.UID == nil && p.GID == nil:
+			return &ValidationError{Field: field + ".uid", Reason: "one of uid or gid must be set"}
+		}
+		if strings.TrimSpace(p.User) == "" {
+			return &ValidationError{Field: field + ".user", Reason: "must not be empty"}
+		}
+		if p.UID != nil {
+			if _, dup := uids[*p.UID]; dup {
+				return &ValidationError{Field: field + ".uid", Reason: fmt.Sprintf("uid %d is already mapped", *p.UID)}
+			}
+			uids[*p.UID] = struct{}{}
+		}
+		if p.GID != nil {
+			if _, dup := gids[*p.GID]; dup {
+				return &ValidationError{Field: field + ".gid", Reason: fmt.Sprintf("gid %d is already mapped", *p.GID)}
+			}
+			gids[*p.GID] = struct{}{}
+		}
+	}
+	return nil
 }
 
 // MCPConfig configures the Model Context Protocol server.
@@ -1866,6 +1943,10 @@ type SealConfig struct {
 	// "manual" or "barrier". Default: "barrier".
 	CredentialStrategy string `yaml:"credential_strategy"`
 
+	// CredentialRotationCheckPeriod is how often each node runs the named
+	// credentials' due rotation policies. Go duration; default "1m".
+	CredentialRotationCheckPeriod string `yaml:"credential_rotation_check_period"`
+
 	// ClusterLease is how long a successful read of the cluster seal records
 	// lets this node serve; a node that cannot read them for longer stops
 	// serving, keeping its keys. Go duration; default "15s".
@@ -1904,6 +1985,17 @@ func (c SealConfig) ShareTTLDuration() (time.Duration, error) {
 		s = DefaultShareTTLString
 	}
 	return parseDuration(s)
+}
+
+// DefaultCredentialRotationCheckPeriodString is the default of
+// seal.credential_rotation_check_period.
+const DefaultCredentialRotationCheckPeriodString = "1m"
+
+// CredentialRotationCheckPeriodDuration parses
+// seal.credential_rotation_check_period, applying the default when unset.
+// A malformed or non-positive period is a *ValidationError.
+func (c SealConfig) CredentialRotationCheckPeriodDuration() (time.Duration, error) {
+	return positiveDuration("seal.credential_rotation_check_period", c.CredentialRotationCheckPeriod, DefaultCredentialRotationCheckPeriodString)
 }
 
 // DefaultDrainTimeoutString is the default seal.drain_timeout when unset; it
@@ -2068,6 +2160,8 @@ func DefaultConfig() *Config {
 			ShareTTL:           DefaultShareTTLString,
 			DrainTimeout:       DefaultDrainTimeoutString,
 			CredentialStrategy: "barrier",
+
+			CredentialRotationCheckPeriod: DefaultCredentialRotationCheckPeriodString,
 		},
 		Bootstrap: BootstrapConfig{
 			NoisePort: 63006,
@@ -2502,6 +2596,12 @@ func (c *Config) Validate() error {
 			return &ValidationError{Field: "unix.socket_path", Reason: "must not be empty when unix protocol is enabled"}
 		}
 	}
+	// Peer-credential mappings are validated whether or not the unix
+	// protocol is enabled: a malformed entry is refused, not left to fail
+	// the day the socket is turned on.
+	if err := c.Unix.validatePeerCredentials(); err != nil {
+		return err
+	}
 
 	// MCP validation.
 	if c.MCP.Port < 0 || c.MCP.Port > 65535 {
@@ -2729,6 +2829,9 @@ func (c *Config) Validate() error {
 			if _, ok := validCredentialStrategies[c.Seal.CredentialStrategy]; !ok {
 				return &ValidationError{Field: "seal.credential_strategy", Reason: "must be one of: manual, barrier"}
 			}
+		}
+		if _, err := c.Seal.CredentialRotationCheckPeriodDuration(); err != nil {
+			return err
 		}
 		if strings.TrimSpace(c.Seal.ShareTTL) != "" {
 			d, err := parseDuration(c.Seal.ShareTTL)

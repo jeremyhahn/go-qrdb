@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	"github.com/jeremyhahn/go-qrdb/pkg/clock"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
@@ -144,14 +146,7 @@ func acquireAsync(o *Owner, tbl *Table, keys []string, mode Mode, wait time.Dura
 // asynchronous request has enqueued before it acts.
 func waitQueued(t *testing.T, tbl *Table, key string, n int) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if len(queueOwners(t, tbl, key)) == n {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("queue on %q never reached %d records: %v", key, n, queueOwners(t, tbl, key))
+	require.Eventuallyf(t, func() bool { return len(queueOwners(t, tbl, key)) == n }, 5*time.Second, time.Millisecond, "queue on %q never reached %d records", key, n)
 }
 
 // mustNotReturn fails if ch delivers within d.

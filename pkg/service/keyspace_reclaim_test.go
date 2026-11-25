@@ -172,6 +172,18 @@ type fixedStoreResolver struct {
 	dedicated bool
 	err       error
 	calls     int
+	// logKV, when set, is a barrier tenant's home group: LogFenceTarget
+	// answers it.
+	logKV ReclaimKV
+	// logErr is LogFenceTarget's error.
+	logErr error
+}
+
+func (r *fixedStoreResolver) LogFenceTarget(context.Context, string, string, string) (FenceStore, bool, error) {
+	if r.logErr != nil {
+		return FenceStore{}, true, r.logErr
+	}
+	return FenceStore{KV: r.logKV}, r.logKV != nil, nil
 }
 
 func (r *fixedStoreResolver) ReclaimTarget(context.Context, string) (ReclaimTarget, bool, error) {
@@ -1216,6 +1228,10 @@ func (r *dedicatedRaftResolver) ReclaimTarget(context.Context, string) (ReclaimT
 	return ReclaimTarget{}, false, nil
 }
 
+func (r *dedicatedRaftResolver) LogFenceTarget(context.Context, string, string, string) (FenceStore, bool, error) {
+	return FenceStore{}, false, nil
+}
+
 func (r *dedicatedRaftResolver) FenceTarget(context.Context, string, string, string) (FenceStore, bool, error) {
 	return FenceStore{KV: r.shard, PerDatabase: true}, true, nil
 }
@@ -1308,6 +1324,101 @@ func TestKeyspaceReclaim_DedicatedDropReclaimsTheSystemStore(t *testing.T) {
 	marker, err := system.Get(ctx, DropFenceKey("acme", "reports"))
 	require.NoError(t, err)
 	assert.Equal(t, "inc-b", string(marker), "the re-created database must claim the system store's marker")
+}
+
+// TestKeyspaceReclaim_BarrierTenantFencesDataAndLogMarkers: a barrier
+// tenant's data is guarded by the system store's marker and its logs by a
+// second marker in its home group (StoreResolver.LogFenceTarget). A create
+// marks both live, a drop tombstones both, the reclamation clears the log
+// marker it owns, and a stale drop of a superseded incarnation touches
+// neither of the successor's markers.
+func TestKeyspaceReclaim_BarrierTenantFencesDataAndLogMarkers(t *testing.T) {
+	ctx := context.Background()
+	key := DropFenceKey("acme", "ledger")
+	system := newMemoryKVSvc()
+	home := newMemoryKVSvc()
+	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: system})
+	svc.SetStoreResolver(&fixedStoreResolver{logKV: home})
+	marker := func(kv *memoryKVSvc) string {
+		t.Helper()
+		v, err := kv.Get(ctx, key)
+		if err != nil {
+			return "<absent>"
+		}
+		return string(v)
+	}
+
+	require.NoError(t, svc.UnfenceDatabaseKeyspace(ctx, "acme", "ledger", "inc-a", ""))
+	assert.Equal(t, "inc-a", marker(system), "the data marker")
+	assert.Equal(t, "inc-a", marker(home), "the log marker")
+
+	require.NoError(t, svc.FenceDatabaseKeyspace(ctx, "acme", "ledger", "inc-a", ""))
+	assert.Equal(t, string(dropFenceTombstone), marker(system), "the data marker after the fence")
+	assert.Equal(t, string(dropFenceTombstone), marker(home), "the log marker after the fence")
+
+	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "ledger", "inc-a", ""))
+	assert.Equal(t, string(dropFenceTombstone), marker(system), "the data marker stays for the successor to claim")
+	assert.Equal(t, string(dropFenceTombstone), marker(home), "the log tombstone stays too, refusing a paused empty-incarnation write")
+
+	require.NoError(t, svc.UnfenceDatabaseKeyspace(ctx, "acme", "ledger", "inc-b", ""))
+	assert.Equal(t, "inc-b", marker(system))
+	assert.Equal(t, "inc-b", marker(home))
+
+	// A stale drop of inc-a is refused on both markers.
+	assert.Error(t, svc.FenceDatabaseKeyspace(ctx, "acme", "ledger", "inc-a", ""))
+	var superseded *database.DropSupersededError
+	assert.ErrorAs(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "ledger", "inc-a", ""), &superseded)
+	assert.Equal(t, "inc-b", marker(system), "the successor's data marker")
+	assert.Equal(t, "inc-b", marker(home), "the successor's log marker")
+
+	// A home group that cannot be resolved fails the fence closed.
+	broken := NewKeyspaceReclaimService(ReclaimTarget{KV: newMemoryKVSvc()})
+	broken.SetStoreResolver(&fixedStoreResolver{logErr: errors.New("home group sealed")})
+	var unavailable *ReclaimStoreUnavailableError
+	assert.ErrorAs(t, broken.FenceDatabaseKeyspace(ctx, "acme", "ledger", "inc-a", ""), &unavailable)
+}
+
+// TestKeyspaceReclaim_PreUpgradeBarrierTenantLogMarker: a barrier
+// tenant's database created before its logs had a marker of their own in
+// the home group has only the system store's data marker (Codex round 1
+// P1 at 9428bf8de4). Its first log write initializes the log marker to
+// the live incarnation, never over a present one; a drop before any log
+// write still tombstones the absent log marker, the tombstone outlives
+// the reclamation, and the next database created under the name claims
+// it.
+func TestKeyspaceReclaim_PreUpgradeBarrierTenantLogMarker(t *testing.T) {
+	ctx := context.Background()
+	key := DropFenceKey("acme", "ledger")
+	marker := func(kv *memoryKVSvc) string {
+		t.Helper()
+		v, err := kv.Get(ctx, key)
+		if err != nil {
+			return "<absent>"
+		}
+		return string(v)
+	}
+	preUpgrade := func() (*KeyspaceReclaimService, *memoryKVSvc) {
+		t.Helper()
+		system, home := newMemoryKVSvc(), newMemoryKVSvc()
+		require.NoError(t, system.Put(ctx, key, []byte("inc-a")))
+		svc := NewKeyspaceReclaimService(ReclaimTarget{KV: system})
+		svc.SetStoreResolver(&fixedStoreResolver{logKV: home})
+		return svc, home
+	}
+
+	svc, home := preUpgrade()
+	require.NoError(t, svc.InitDatabaseLogFence(ctx, "acme", "ledger", "inc-a"))
+	assert.Equal(t, "inc-a", marker(home), "the first log write initializes the log marker")
+	require.NoError(t, svc.InitDatabaseLogFence(ctx, "acme", "ledger", "inc-stale"))
+	assert.Equal(t, "inc-a", marker(home), "a present log marker is never overwritten")
+
+	svc, home = preUpgrade()
+	require.NoError(t, svc.FenceDatabaseKeyspace(ctx, "acme", "ledger", "inc-a", ""))
+	assert.Equal(t, string(dropFenceTombstone), marker(home), "the drop tombstones an absent log marker")
+	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "ledger", "inc-a", ""))
+	assert.Equal(t, string(dropFenceTombstone), marker(home), "the log tombstone outlives the reclamation")
+	require.NoError(t, svc.UnfenceDatabaseKeyspace(ctx, "acme", "ledger", "inc-b", ""))
+	assert.Equal(t, "inc-b", marker(home), "the successor claims the log marker")
 }
 
 // pausingKV parks the first ListAll -- the first read a reclamation makes

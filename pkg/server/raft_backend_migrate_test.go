@@ -21,8 +21,11 @@ import (
 	"io/fs"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -40,14 +43,42 @@ import (
 // Bounded at 15s so a genuinely wedged shard still fails the test.
 func getWhenReadable(ctx context.Context, t *testing.T, get func(context.Context, string) ([]byte, error), key string) ([]byte, error) {
 	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		got, err := get(ctx, key)
-		if err == nil || !strings.Contains(err.Error(), "read index not ready") || time.Now().After(deadline) {
-			return got, err
+	var got []byte
+	err := retryWhileReadIndexNotReady(func() error {
+		var err error
+		got, err = get(ctx, key)
+		return err
+	})
+	return got, err
+}
+
+// retryWhileReadIndexNotReady calls attempt until it returns anything other
+// than the post-election "read index not ready" transient, or 15s pass, and
+// returns the last attempt's error. The attempts run one at a time; the last
+// one's results are visible to the caller once this returns.
+func retryWhileReadIndexNotReady(attempt func() error) error {
+	var (
+		mu      sync.Mutex
+		lastErr error
+	)
+	done := make(chan struct{})
+	// A wedged shard keeps returning the transient: the quiet reporter lets
+	// the last error stand as the caller's verdict.
+	assert.Eventually(quietReporter{}, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		select {
+		case <-done:
+			return true
+		default:
 		}
-		time.Sleep(200 * time.Millisecond)
-	}
+		lastErr = attempt()
+		return lastErr == nil || !strings.Contains(lastErr.Error(), "read index not ready")
+	}, 15*time.Second, 200*time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	close(done)
+	return lastErr
 }
 
 // raftMigrateStack is a single-node IsolationRaft stack whose tenant barriers are

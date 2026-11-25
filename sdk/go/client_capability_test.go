@@ -64,6 +64,7 @@ func TestClient_CapabilityAccessors_PanicNamingTheMissingInterface(t *testing.T)
 		{"Vlog", "transport.VlogClient", func() { c.Vlog() }},
 		{"Users", "transport.UserClient", func() { c.Users() }},
 		{"Roles", "transport.RoleClient", func() { c.Roles() }},
+		{"Groups", "transport.GroupClient", func() { c.Groups() }},
 		{"Certs", "transport.CertClient", func() { c.Certs() }},
 		{"Invitations", "transport.InvitationClient", func() { c.Invitations() }},
 		{"Database", "transport.DatabaseClient", func() { c.Database() }},

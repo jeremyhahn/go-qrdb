@@ -24,6 +24,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // fakeStore is an in-memory MembershipStore for tests. Tests drive membership
@@ -707,13 +710,9 @@ func TestMembershipManager_StartOutlivesStartupCtx(t *testing.T) {
 	}
 	cancel()
 
-	deadline := time.Now().Add(2 * time.Second)
-	for store.putCallCount() < 3 {
-		if time.Now().After(deadline) {
-			t.Fatalf("refresh stopped with the startup ctx: %d puts", store.putCallCount())
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		assert.GreaterOrEqual(c, store.putCallCount(), 3, "puts so far")
+	}, 2*time.Second, 5*time.Millisecond, "refresh stopped with the startup ctx")
 	if err := m.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}

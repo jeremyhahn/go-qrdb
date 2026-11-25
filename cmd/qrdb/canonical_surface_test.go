@@ -43,6 +43,10 @@ var canonicalInitFlags = []string{
 	"--threshold",
 	"--hostname",
 	"--sans",
+	"--so-username",
+	"--so-csr",
+	"--so-cert",
+	"--so-chain",
 }
 
 // TestCanonicalSurface_RootHasInit verifies the root "init" command

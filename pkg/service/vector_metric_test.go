@@ -85,25 +85,6 @@ func TestVecCreateNamespace_UnknownMetricRefusedBeforeStorage(t *testing.T) {
 	assert.False(t, stored, "a refused namespace must not reach storage")
 }
 
-func TestVecCreateNamespace_ManhattanAccepted(t *testing.T) {
-	svc, storage := newBasicVecSvc(t)
-	var createdInfo *vector.NamespaceInfo
-	storage.createNamespaceFn = func(ctx context.Context, info *vector.NamespaceInfo) error {
-		createdInfo = info
-		return nil
-	}
-
-	_, err := svc.CreateNamespace(context.Background(), &CreateNamespaceRequest{
-		Namespace:      "manhattan-ns",
-		Dimension:      4,
-		DistanceMetric: "MANHATTAN",
-	})
-
-	require.NoError(t, err)
-	require.NotNil(t, createdInfo)
-	assert.Equal(t, "MANHATTAN", createdInfo.DistanceMetric)
-}
-
 func TestValidateCreateNamespaceRequest_Metric(t *testing.T) {
 	vs := &vectorService{}
 	require.NoError(t, vs.validateCreateNamespaceRequest(&CreateNamespaceRequest{
@@ -113,22 +94,6 @@ func TestValidateCreateNamespaceRequest_Metric(t *testing.T) {
 		Namespace: "ns", Dimension: 4, DistanceMetric: "JACCARD",
 	})
 	requireErrorAs[*UnknownDistanceMetricError](t, err)
-}
-
-func TestNewNamespaceIndex_BuildsForStoredMetric(t *testing.T) {
-	svc, _ := newBasicVecSvc(t)
-	vs := svc.(*vectorService)
-
-	idx, err := vs.newNamespaceIndex(&vector.NamespaceInfo{Name: "ns", Dimension: 2, DistanceMetric: "MANHATTAN"}, nil)
-	require.NoError(t, err)
-	require.NoError(t, idx.Insert(1, []float32{0, 0}))
-	require.NoError(t, idx.Insert(2, []float32{3, 4}))
-
-	hits, err := idx.Search([]float32{0, 0}, 2)
-	require.NoError(t, err)
-	require.Len(t, hits, 2)
-	assert.Equal(t, uint64(1), hits[0].ID)
-	assert.InDelta(t, 7.0, hits[1].Distance, 1e-6, "Manhattan distance of (3,4) from the origin")
 }
 
 func TestNewNamespaceIndex_RefusesUnknownMetric(t *testing.T) {

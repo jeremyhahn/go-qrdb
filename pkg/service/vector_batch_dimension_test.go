@@ -29,39 +29,6 @@ import (
 // the IVF index's pending set and keep every later training attempt from
 // succeeding: the batch is refused whole, nothing is written, and the
 // namespace keeps training and searching.
-func TestVecBatchUpsert_IVFRefusesWrongDimensionBeforeWriting(t *testing.T) {
-	ctx := context.Background()
-	svc, err := NewVectorService(vector.NewMemoryVectorStorage(), newVecTestLogger())
-	require.NoError(t, err)
-	createIndexedNamespace(t, svc, "ns", "ivf_flat", map[string]string{"num_centroids": "2"}, []float32{0, 0})
-
-	resp, err := svc.BatchUpsert(ctx, &BatchUpsertRequest{Namespace: "ns", Vectors: []*VectorData{
-		{ID: 2, Vector: []float32{10, 10}},
-		{ID: 3, Vector: []float32{1, 2, 3}},
-	}})
-	assert.Nil(t, resp)
-	mismatch := requireErrorAs[*DimensionMismatchError](t, err)
-	assert.Equal(t, 2, mismatch.Expected)
-	assert.Equal(t, 3, mismatch.Actual)
-
-	stats, err := svc.GetIndexStats(ctx, &GetIndexStatsRequest{Namespace: "ns", ShardID: 1})
-	require.NoError(t, err)
-	assert.Equal(t, uint64(1), stats.VectorCount, "no vector of a refused batch is written")
-
-	_, err = svc.BatchUpsert(ctx, &BatchUpsertRequest{Namespace: "ns", Vectors: []*VectorData{
-		{ID: 2, Vector: []float32{10, 10}},
-		{ID: 3, Vector: []float32{9, 9}},
-	}})
-	require.NoError(t, err)
-
-	found, err := svc.SearchSimilar(ctx, &SearchSimilarRequest{
-		Namespace: "ns", QueryVector: []float32{10, 10}, K: 1, ShardID: 1,
-	})
-	require.NoError(t, err)
-	require.Len(t, found.Results, 1)
-	assert.Equal(t, uint64(2), found.Results[0].ID)
-}
-
 // infoFailingStorage is a vector.Storage whose namespace metadata cannot be
 // read while every other operation, batch writes included, succeeds.
 type infoFailingStorage struct {

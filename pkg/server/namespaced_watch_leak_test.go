@@ -17,8 +17,11 @@ package server
 import (
 	"context"
 	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
@@ -58,38 +61,42 @@ const namespacedWatchChurn = 200
 // is still winding down. It gives up after a short deadline and returns the
 // last observation.
 func settledNamespacedGoroutines() int {
-	deadline := time.Now().Add(5 * time.Second)
+	var got atomic.Int64
 	prev, stable := -1, 0
-	for {
+	// A baseline that never settles is still a baseline: the quiet reporter
+	// keeps the deadline from failing the test, and the last sample stands.
+	assert.Eventually(quietReporter{}, func() bool {
 		runtime.GC()
-		got := runtime.NumGoroutine()
-		if got == prev {
-			if stable++; stable == 2 {
-				return got
-			}
-		} else {
-			prev, stable = got, 0
+		n := runtime.NumGoroutine()
+		got.Store(int64(n))
+		if n == prev {
+			stable++
+			return stable == 2
 		}
-		if time.Now().After(deadline) {
-			return got
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		prev, stable = n, 0
+		return false
+	}, 5*time.Second, 10*time.Millisecond)
+	return int(got.Load())
 }
+
+// quietReporter discards a timed-out poll's report so a helper that returns
+// its last observation decides the verdict itself.
+type quietReporter struct{}
+
+func (quietReporter) Errorf(string, ...interface{}) {}
 
 // namespacedGoroutinesAtMost waits up to timeout for the live goroutine count
 // to fall to want or below and returns the final observation. A healthy run
 // costs one sample.
 func namespacedGoroutinesAtMost(want int, timeout time.Duration) int {
-	deadline := time.Now().Add(timeout)
-	for {
+	var got atomic.Int64
+	assert.Eventually(quietReporter{}, func() bool {
 		runtime.GC()
-		got := runtime.NumGoroutine()
-		if got <= want || time.Now().After(deadline) {
-			return got
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		n := runtime.NumGoroutine()
+		got.Store(int64(n))
+		return n <= want
+	}, timeout, 10*time.Millisecond)
+	return int(got.Load())
 }
 
 // assertNoNamespacedWatchLeak churns abandon cycles and fails if the goroutine

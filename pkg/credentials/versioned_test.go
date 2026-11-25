@@ -64,16 +64,14 @@ func expireGrace(svc *CredentialService, name string) {
 func expireBarrierGrace(t *testing.T, svc *CredentialService, name string) {
 	t.Helper()
 	ctx := context.Background()
-	meta, err := svc.loadBarrierMeta(ctx, name)
-	if err != nil {
-		t.Fatalf("loadBarrierMeta: %v", err)
-	}
 	past := time.Now().Add(-time.Hour)
-	for i := range meta.History {
-		meta.History[i].GraceUntil = past
-	}
-	if err := svc.writeBarrierMeta(ctx, name, meta); err != nil {
-		t.Fatalf("writeBarrierMeta: %v", err)
+	if err := svc.updateBarrierMeta(ctx, name, "write meta", func(meta *credentialMeta) bool {
+		for i := range meta.History {
+			meta.History[i].GraceUntil = past
+		}
+		return true
+	}); err != nil {
+		t.Fatalf("updateBarrierMeta: %v", err)
 	}
 }
 
@@ -808,7 +806,7 @@ func TestRetrieveCredentialVersion_Barrier_GraceVersionNotFoundInStore(t *testin
 		t.Fatalf("Rotate: %v", err)
 	}
 	// Manually delete the version key while leaving meta intact.
-	if err := svc.barrier.Delete(ctx, versionKey("k", 1)); err != nil {
+	if err := svc.store.Delete(ctx, versionKey("k", 1)); err != nil {
 		t.Fatalf("barrier.Delete: %v", err)
 	}
 	_, err := svc.retrieveVersionBytes(ctx, "k", 1)
@@ -965,7 +963,8 @@ func TestGCExpiredVersions_Barrier_NoopFresh(t *testing.T) {
 
 func TestVersionKey_Format(t *testing.T) {
 	got := versionKey("my-cred", 42)
-	want := credentialPrefix + "my-cred#v42"
+	// bXktY3JlZA is "my-cred" in unpadded URL-safe base64.
+	want := "__sys:credential-versions/bXktY3JlZA/42"
 	if got != want {
 		t.Fatalf("versionKey = %q, want %q", got, want)
 	}
@@ -973,7 +972,7 @@ func TestVersionKey_Format(t *testing.T) {
 
 func TestMetaKey_Format(t *testing.T) {
 	got := metaKey("my-cred")
-	want := credentialPrefix + "my-cred" + metaSuffix
+	want := "__sys:credential-meta/my-cred"
 	if got != want {
 		t.Fatalf("metaKey = %q, want %q", got, want)
 	}
@@ -993,7 +992,7 @@ func TestLoadBarrierMeta_MissingReturnsZero(t *testing.T) {
 func TestLoadBarrierMeta_CorruptedJSONRejected(t *testing.T) {
 	svc := newBarrierService(t)
 	ctx := context.Background()
-	if err := svc.barrier.Put(ctx, metaKey("k"), []byte("not-json")); err != nil {
+	if err := svc.store.Put(ctx, metaKey("k"), []byte("not-json")); err != nil {
 		t.Fatalf("barrier.Put: %v", err)
 	}
 	_, err := svc.loadBarrierMeta(ctx, "k")

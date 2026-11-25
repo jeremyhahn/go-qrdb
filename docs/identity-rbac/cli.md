@@ -3,7 +3,8 @@
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 
-Three command groups: `qrdb users`, `qrdb roles` and `qrdb abac policy`.
+Four command groups: `qrdb users`, `qrdb roles`, `qrdb groups` and
+`qrdb abac policy`.
 Authentication factors are
 [../auth-factors/cli.md](../auth-factors/cli.md); certificate issuance is
 [../certificate-authority/cli.md](../certificate-authority/cli.md).
@@ -277,6 +278,12 @@ account in its tenant the built-in `admin` and `operator` roles, and that
 account runs `roles create`. See
 [architecture.md](architecture.md#the-grant-rule).
 
+Requires `roles:create`. Under strict separation of duties
+(`auth.separation_of_duties`, always on in FIPS 140-3 mode) it additionally
+runs only as a separate Security Officer of the tenant: the tenant Admin is
+refused with 403 `SO role required`, and an account holding both `so` and
+`admin` with 403 `separation of duties: ...`. Over every transport.
+
 ### `qrdb roles get <id>` / `get-by-name <name>` / `delete <id>`
 
 ```bash
@@ -328,6 +335,11 @@ its crypto-use duty, to the accounts that do the signing. No caller may assign
 itself a role, built-in or custom, that carries a permission it does not hold:
 `roles assign --user <your own id> --role <user>` from a tenant Admin is
 refused.
+
+Under strict separation of duties only the tenant's own Security Officer
+grants or revokes the `so` role, and no account may hold `so` together with
+its tenant's `admin` role: an `assign` that would leave a user holding both is
+refused with 403 `separation of duties: ...`.
 
 ### Granting device onboarding alone
 
@@ -418,8 +430,12 @@ that build keeps the old set and its administrators get a 403 on the new verb
 with nothing explaining it.
 
 Requires `roles:create` — the same grant as seeding, because reconciliation is
-seeding applied to an existing tenant. A tenant's built-in Admin holds it, so
-the tenant's own Admin reconciles the tenant without taking another role.
+seeding applied to an existing tenant. In the standard posture a tenant's
+built-in Admin holds it, so the tenant's own Admin reconciles the tenant
+without taking another role. Under strict separation of duties the reconcile,
+like `roles create`, runs only as a separate Security Officer of the tenant:
+the tenant Admin is refused with 403 `SO role required`, and the tenant's SO,
+which holds `roles:create` and not `admin`, reconciles it.
 
 `qrdb roles get` prints a `Retired:` line when a role carries permissions this
 build no longer defines. That is the drift this command repairs; seeing it is
@@ -451,14 +467,83 @@ then exits non-zero naming every failed tenant. `--output json` and
 `--output yaml` print the same report as `tenants`, `skipped` and `failed`
 lists.
 
-Requires `roles:reconcile_all`, a cross-tenant permission held only by the
-system tenant's built-in Admin. A tenant's own Admin, or any other tenant
-principal, is refused even if it holds `roles:create`.
+Requires `roles:reconcile_all`, a cross-tenant permission held by the system
+tenant's built-in Admin role in the standard posture and by the system SO
+only under strict separation of duties. A tenant's own Admin or SO, or any
+other tenant principal, is refused even if it holds `roles:create`. Under strict
+separation of duties (`auth.separation_of_duties`) both the single-tenant
+reconcile and `--all-tenants` are the system SO's alone and the system Admin is refused
+them. First
+boot can enrol the system SO (`qrdb init --so-username` with `--so-csr` or
+`--so-cert`).
 
 A node upgraded from a build that predates `roles:reconcile_all` has a stored
 system Admin role without it. Run `qrdb roles reconcile` as the system Admin
-first; that converges the system tenant and grants the permission. Then run
+(the system SO under strict separation) first; that converges the system tenant and grants the permission. Then run
 `--all-tenants`.
+
+## Groups
+
+An IAM group is a named set of roles of one tenant; every member of the group
+holds the group's roles in addition to its own, from its next request on.
+Group names are unique within a tenant. A group carries only roles of its own
+tenant, and only users of that tenant can be members.
+
+The desktop app manages the same groups under Admin > Groups: list, create,
+edit the description and roles, add and remove members, and delete.
+
+### `qrdb groups create`
+
+| Flag | Type | Meaning |
+|---|---|---|
+| `--name` | string | group name, unique within the tenant (required) |
+| `--tenant-id` | string | tenant; defaults to the caller's own |
+| `--description` | string | free text |
+| `--roles` | string | comma-separated **role IDs** the group grants |
+
+### `qrdb groups get <id>` / `get-by-name <name>` / `delete <id>`
+
+`get-by-name` takes `--tenant-id`. `delete` first removes the group from every
+member, then deletes it.
+
+### `qrdb groups list`
+
+Flags: `--tenant-id`, `--page`, `--page-size`.
+
+### `qrdb groups update <id>`
+
+| Flag | Type | Meaning |
+|---|---|---|
+| `--name` | string | new name |
+| `--description` | string | new description; set only when the flag is given |
+| `--roles` | string | comma-separated role IDs **replacing** the group's roles; `--roles ""` clears them; unchanged when the flag is absent |
+
+### `qrdb groups add-member` / `remove-member`
+
+| Flag | Type |
+|---|---|
+| `--user` | string — user **ID** |
+| `--group` | string — group **ID** |
+
+### `qrdb groups members <group-id>`
+
+Lists the members: user ID, username and tenant.
+
+```bash
+ROLE=$(qrdb roles get-by-name operator --output json | jq -r .id)
+GROUP=$(qrdb groups create --name ops --roles "$ROLE" --output json | jq -r .id)
+qrdb groups add-member --user 1f2e... --group "$GROUP"
+qrdb groups members "$GROUP"
+qrdb groups remove-member --user 1f2e... --group "$GROUP"
+```
+
+The guards are the role guards. Giving a group roles (`create`, `update
+--roles`) is refused unless the caller may assign every one of those roles, as
+`roles assign` requires. Adding a member is refused unless the caller may
+assign every role the group carries. Under strict separation only the
+Security Officer may put the `so` role on a group or take it away through a
+group. A tenant's Admin holds every `groups:*` verb except `groups:delete`,
+which stays with the Security Officer, as `roles:delete` does.
 
 ## ABAC policies
 
@@ -478,6 +563,15 @@ One flag is shared by every verb:
 Each verb prints a table (`NAME`, `TENANT`, `ENABLED`, `PRIORITY`, `RULES`,
 `UPDATED`) by default, and the stored document with `--output json` or
 `--output yaml`. A refusal exits non-zero with the server's error.
+
+A rule's `when:` and `unless:` conditions may use the subject fields
+`subject.id`, `subject.authenticated`, `subject.mfa_verified` and the
+object-owner condition `subject.owns_resource`, true only when the
+embedder's store has recorded the object's owner and it is the caller's
+bound account (false when the owner is unknown, and always false for a
+holder-certificate or service identity, which has no bound account even when
+its subject equals an account id); `resource.owner` reads that owner. The
+store keeps the expressions exactly as written.
 
 ### `qrdb abac policy create`
 
@@ -586,6 +680,8 @@ The `qrdb users`, `qrdb enroll`, `qrdb roles` and `qrdb abac policy`
 commands are driven through the CLI binary on every transport of one node by the
 `_PerProtocol` suites `make integration-test-identity-rbac` runs
 (`roles_cli_test.go`, `users_cli_test.go`, `invitation_cli_test.go`,
-`abac_policy_cli_test.go`). Per-transport accounting, including every gap: the
+`abac_policy_cli_test.go`). `qrdb groups` is driven on every protocol by
+`test/integration/api/cli_groups_test.go` (lifecycle, and membership granting
+the group's roles as the member's own `roles own-permissions` shows). Per-transport accounting, including every gap: the
 `identity-rbac` row of
 [`test/integration/COVERAGE.md`](../../test/integration/COVERAGE.md).
