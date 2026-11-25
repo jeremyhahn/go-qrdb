@@ -390,6 +390,50 @@ func TestVFS_JournalModeWALNotEntered(t *testing.T) {
 	mustExec(t, db, "insert into t values(1)")
 }
 
+func TestVFS_SynchronousOffRefused(t *testing.T) {
+	b := newBackend(t)
+	setup(t, "syncoff.db", plainOpener(b, "syncoff.db"))
+	db := openDB(t, "syncoff.db", "")
+	mustExec(t, db, "create table t(a)")
+	for _, v := range []string{"OFF", "off", "0", "false"} {
+		if _, err := db.Exec("pragma synchronous=" + v); err == nil {
+			t.Fatalf("pragma synchronous=%s succeeded, want it refused", v)
+		}
+	}
+	mustExec(t, db, "pragma synchronous=FULL")
+	var level int
+	if err := db.QueryRow("pragma synchronous").Scan(&level); err != nil {
+		t.Fatalf("pragma synchronous: %v", err)
+	}
+	if level == 0 {
+		t.Fatal("synchronous reads OFF after the refusal")
+	}
+	mustExec(t, db, "insert into t values(1)")
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if n := count(t, openDB(t, "syncoff.db", ""), "t"); n != 1 {
+		t.Fatalf("rows after reopen = %d, want 1", n)
+	}
+}
+
+func TestVFS_ExclusiveLockingDurableAfterReopen(t *testing.T) {
+	b := newBackend(t)
+	setup(t, "exclusive.db", plainOpener(b, "exclusive.db"))
+	db := openDB(t, "exclusive.db", "")
+	mustExec(t, db, "pragma locking_mode=EXCLUSIVE")
+	mustExec(t, db, "create table t(a integer primary key, b text)")
+	mustExec(t, db, "insert into t(b) values('one'), ('two')")
+	mustExec(t, db, "insert into t(b) values('three')")
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	again := openDB(t, "exclusive.db", "")
+	if n := count(t, again, "t"); n != 3 {
+		t.Fatalf("rows after reopen = %d, want 3", n)
+	}
+}
+
 func TestVFS_BusyOnWriterContention(t *testing.T) {
 	b := newBackend(t)
 	const name = "busy.db"

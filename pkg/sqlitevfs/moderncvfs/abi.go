@@ -291,7 +291,21 @@ func xFileControl(tls *libc.TLS, pFile uintptr, op int32, pArg uintptr) int32 {
 	if f == nil {
 		return sqlite3.SQLITE_NOTFOUND
 	}
-	return f.control(op)
+	return f.control(op, pArg)
+}
+
+// pragmaArg reads the pragma name and value from the SQLITE_FCNTL_PRAGMA
+// argument, a char*[3] whose value entry is NULL when the pragma has none.
+func pragmaArg(arg uintptr) (name, value string, hasValue bool) {
+	if arg == 0 {
+		return "", "", false
+	}
+	a := (*[3]uintptr)(cptr(arg)) // #nosec G103 -- the SQLITE_FCNTL_PRAGMA contract: arg points at three char* SQLite owns for the call.
+	name = libc.GoString(a[1])
+	if a[2] == 0 {
+		return name, "", false
+	}
+	return name, libc.GoString(a[2]), true
 }
 
 func xSectorSize(tls *libc.TLS, pFile uintptr) int32 {

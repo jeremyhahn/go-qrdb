@@ -20,6 +20,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"strings"
 
 	sqlite3 "modernc.org/sqlite/lib"
 
@@ -36,7 +37,7 @@ type vfile interface {
 	size() (int64, int32)
 	lock(level int32) int32
 	unlock(level int32) int32
-	control(op int32) int32
+	control(op int32, arg uintptr) int32
 	close() int32
 }
 
@@ -55,8 +56,10 @@ const headerEnd = 100
 //
 // Lock levels map onto the page store: SHARED begins a Txn, RESERVED
 // (and anything above it) reserves it. The Txn commits when SQLite
-// syncs the file holding RESERVED or above, or, with synchronous=OFF,
-// when it drops back to SHARED; dropping to NONE rolls back. After a
+// syncs the file holding RESERVED or above, or, when a dirty Txn is
+// left unsynced, when it drops back to SHARED; dropping to NONE rolls
+// back. The file refuses PRAGMA synchronous=OFF, so every write
+// transaction reaches a sync before it reports success. After a
 // failed commit the file ignores writes until the unlock, so SQLite's
 // journal playback is a no-op.
 type dbFile struct {
@@ -252,9 +255,16 @@ func (f *dbFile) unlock(level int32) int32 {
 // control answers the batch-atomic file controls and SQLITE_NOTFOUND
 // for every other op. This modernc.org/sqlite build is compiled without
 // SQLITE_ENABLE_BATCH_ATOMIC_WRITE, so SQLite never sends them; they
-// are answered as the design states.
-func (f *dbFile) control(op int32) int32 {
+// are answered as the design states. SQLITE_FCNTL_PRAGMA refuses
+// synchronous=OFF and leaves every other pragma to SQLite.
+func (f *dbFile) control(op int32, arg uintptr) int32 {
 	switch op {
+	case sqlite3.SQLITE_FCNTL_PRAGMA:
+		name, value, ok := pragmaArg(arg)
+		if ok && strings.EqualFold(name, "synchronous") && synchronousOff(value) {
+			return sqlite3.SQLITE_ERROR
+		}
+		return sqlite3.SQLITE_NOTFOUND
 	case sqlite3.SQLITE_FCNTL_BEGIN_ATOMIC_WRITE:
 		return sqlite3.SQLITE_OK
 	case sqlite3.SQLITE_FCNTL_COMMIT_ATOMIC_WRITE:
@@ -268,6 +278,15 @@ func (f *dbFile) control(op int32) int32 {
 	default:
 		return sqlite3.SQLITE_NOTFOUND
 	}
+}
+
+// synchronousOff reports whether a PRAGMA synchronous value selects OFF.
+func synchronousOff(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "off", "0", "false", "no":
+		return true
+	}
+	return false
 }
 
 func (f *dbFile) close() int32 {
@@ -353,7 +372,7 @@ func (m *memFile) lock(int32) int32 { return sqlite3.SQLITE_OK }
 
 func (m *memFile) unlock(int32) int32 { return sqlite3.SQLITE_OK }
 
-func (m *memFile) control(int32) int32 { return sqlite3.SQLITE_NOTFOUND }
+func (m *memFile) control(int32, uintptr) int32 { return sqlite3.SQLITE_NOTFOUND }
 
 func (m *memFile) close() int32 {
 	m.data = nil
