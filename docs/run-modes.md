@@ -115,6 +115,13 @@ mode: raft   # "standalone" | "raft"; absent = raft
   both modes. Standalone skips the raft identity requirements (only
   `raft.data_dir` stays mandatory). Etcd is enabled per-database at runtime,
   so its mode gate lives at service composition.
+- A data directory keeps the mode of its first start, recorded in
+  `<data_dir>/.qrdb-run-mode`; a start in the other mode is refused before any
+  store opens, naming both modes, because the modes keep separate stores and
+  no migration exists: start with the recorded mode or use a fresh data
+  directory. A pre-marker directory is judged by its store directories
+  (`pebble/`, `file/`, `objstore/` vs `wal/`, `nodehost/`) and refused when it
+  holds both ([`run_mode.go`](../pkg/server/lifecycle/run_mode.go)).
 - Enabling a wire protocol whose build tag is absent → boot-time error
   naming the tag (`Config.ValidateCapabilities`, called by composition
   roots — a separate gate so pure-config validation stays

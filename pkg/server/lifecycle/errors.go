@@ -16,6 +16,7 @@ package lifecycle
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 )
@@ -480,3 +481,57 @@ type ObjstoreBarrierSealedError struct{}
 func (e *ObjstoreBarrierSealedError) Error() string {
 	return "lifecycle: the storage barrier is sealed; an objstore LSM store cannot open until it is unsealed (object-storage-lsm, fails closed)"
 }
+
+// RunModeMismatchError is returned when a data directory belongs to the
+// other run mode: its marker records that mode, or (Inferred) it has no
+// marker and holds that mode's store directories (Found).
+type RunModeMismatchError struct {
+	DataDir    string
+	Recorded   string
+	Configured string
+	Inferred   bool
+	Found      []string
+}
+
+func (e *RunModeMismatchError) Error() string {
+	what := "was initialized in mode: " + e.Recorded
+	if e.Inferred {
+		what = "holds " + e.Recorded + " stores (" + strings.Join(e.Found, ", ") + ")"
+	}
+	return "lifecycle: data directory " + e.DataDir + " " + what +
+		" but this node is configured for mode: " + e.Configured +
+		"; the two modes keep separate stores and no migration exists: start with mode: " +
+		e.Recorded + ", or use a fresh data directory"
+}
+
+// RunModeAmbiguousError is returned when a data directory without a run-mode
+// marker holds the store directories of both modes.
+type RunModeAmbiguousError struct {
+	DataDir    string
+	Standalone []string
+	Raft       []string
+}
+
+func (e *RunModeAmbiguousError) Error() string {
+	return "lifecycle: data directory " + e.DataDir + " holds both mode: standalone stores (" +
+		strings.Join(e.Standalone, ", ") + ") and mode: raft stores (" + strings.Join(e.Raft, ", ") +
+		"); move the unused mode's directories out of the data directory, or use a fresh data directory"
+}
+
+// RunModeMarkerError is returned when the run-mode marker cannot be read or
+// written, or records no known mode (Content).
+type RunModeMarkerError struct {
+	Path    string
+	Content string
+	Err     error
+}
+
+func (e *RunModeMarkerError) Error() string {
+	if e.Err == nil {
+		return "lifecycle: run-mode marker " + e.Path + " records unknown mode " + strconv.Quote(e.Content) +
+			"; want standalone or raft"
+	}
+	return "lifecycle: run-mode marker " + e.Path + ": " + e.Err.Error()
+}
+
+func (e *RunModeMarkerError) Unwrap() error { return e.Err }
