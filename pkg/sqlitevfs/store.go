@@ -90,11 +90,13 @@ type Store struct {
 	// ErrSnapshotChanged (the binding's SQLITE_BUSY_SNAPSHOT).
 	optimistic bool
 
-	// mu guards seenGen and seen: the meta generation of this Store's last
-	// snapshot pin, and whether it has pinned one.
-	mu      sync.Mutex
-	seenGen uint64
-	seen    bool
+	// mu guards seenGen, seenFound and seen: the meta generation of this
+	// Store's last snapshot pin, whether that pin found a meta record, and
+	// whether it has pinned one.
+	mu        sync.Mutex
+	seenGen   uint64
+	seenFound bool
+	seen      bool
 }
 
 const (
@@ -250,8 +252,10 @@ func (s *Store) BeginAt(ctx context.Context, rev int64) (*Txn, error) {
 		return nil, err
 	}
 	s.mu.Lock()
-	changed := s.seen && s.seenGen != meta.Generation
+	// A database created since a pin that saw none is no restore.
+	changed := s.seen && s.seenGen != meta.Generation && (s.seenFound || !found)
 	s.seenGen = meta.Generation
+	s.seenFound = found
 	s.seen = true
 	s.mu.Unlock()
 	if changed {
@@ -940,6 +944,11 @@ func (t *Txn) commitWrites(ctx context.Context) (int64, error) {
 	t.meta.Generation = t.base.Generation
 	if t.restoreGen != 0 {
 		t.meta.Generation = t.restoreGen
+	}
+	if !metaFound {
+		// Every generation is below the revision that committed it, so a
+		// record created at now is past every earlier record of this name.
+		t.meta.Generation = max(t.meta.Generation, uint64(now)) //nolint:gosec // G115: a revision is never negative
 	}
 	t.meta.ChangeCounter = counter + 1
 	metaValue, err := t.meta.MarshalBinary()

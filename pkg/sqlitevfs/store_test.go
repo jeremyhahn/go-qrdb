@@ -1242,8 +1242,9 @@ func TestStoreRestoreToRevision_StagedAboveThreshold(t *testing.T) {
 	if got, want := imageAt(t, sb, "app.db", rev), imageAt(t, sb, "app.db", r); !bytes.Equal(got, want) {
 		t.Fatalf("image at %d is not the image at %d", rev, r)
 	}
-	if _, m := metaRecordAt(t, sb, "app.db", rev); m.Generation != 1 {
-		t.Fatalf("generation %d, want 1", m.Generation)
+	_, target := metaRecordAt(t, sb, "app.db", r)
+	if _, m := metaRecordAt(t, sb, "app.db", rev); m.Generation != target.Generation+1 {
+		t.Fatalf("generation %d, want %d", m.Generation, target.Generation+1)
 	}
 }
 
@@ -1307,8 +1308,9 @@ func TestStoreRestoreToRevision_RecreatesDatabase(t *testing.T) {
 	if got, want := imageAt(t, b, "app.db", rev), imageAt(t, b, "app.db", r); !bytes.Equal(got, want) || len(got) != 2*testPageSize {
 		t.Fatalf("recreated image is %d bytes, want the %d bytes at %d", len(got), len(want), r)
 	}
-	if _, m := metaRecordAt(t, b, "app.db", rev); m.Generation != 1 {
-		t.Fatalf("generation %d, want 1", m.Generation)
+	_, target := metaRecordAt(t, b, "app.db", r)
+	if _, m := metaRecordAt(t, b, "app.db", rev); m.Generation <= target.Generation || m.Generation < uint64(before) {
+		t.Fatalf("generation %d, want past %d and at least %d", m.Generation, target.Generation, before)
 	}
 }
 
@@ -1381,18 +1383,58 @@ func TestGenerationChange(t *testing.T) {
 	if got := readAll(t, txn); !bytes.Equal(got, pagesOf(0x41, 0x42, 0x43)) {
 		t.Fatal("Begin after the restore does not read the restored bytes")
 	}
-	if txn.base.Generation != 1 {
-		t.Fatalf("generation after one bump = %d", txn.base.Generation)
+	if txn.base.Generation != open.base.Generation+1 {
+		t.Fatalf("generation after one bump = %d, want %d", txn.base.Generation, open.base.Generation+1)
 	}
 	writePages(t, txn, 0x51)
 	commit(t, txn)
-	if got := begin(t, s).base.Generation; got != 1 {
+	if got := begin(t, s).base.Generation; got != open.base.Generation+1 {
 		t.Fatalf("a commit did not carry the generation forward: %d", got)
 	}
 
 	fresh := begin(t, newTestStore(t, b, "app.db"))
 	if got := readAll(t, fresh); !bytes.Equal(got, pagesOf(0x51, 0x42, 0x43)) {
 		t.Fatal("a Store that first pins after the bump reads wrong bytes")
+	}
+}
+
+func TestStoreRecreatedDatabaseRefusesStaleTxn(t *testing.T) {
+	for name, opts := range map[string][]Option{"default": nil, "optimistic": {WithOptimistic()}} {
+		t.Run(name, func(t *testing.T) {
+			b := newTestBackend(t)
+			s, err := NewStore(b, "app.db", opts...)
+			if err != nil {
+				t.Fatalf("NewStore: %v", err)
+			}
+			before := revOf(t, b)
+			seed(t, s, 0x01, 0x02)
+			stale := begin(t, s)
+			writePages(t, stale, 0x31, 0x32)
+
+			// A restore removes the database and a writer creates it
+			// again with the same page count and change counter.
+			if _, err := newTestStore(t, b, "app.db").RestoreToRevision(t.Context(), before); err != nil {
+				t.Fatalf("RestoreToRevision: %v", err)
+			}
+			if _, found, err := s.readMeta(t.Context(), revOf(t, b)); err != nil || found {
+				t.Fatalf("meta record after the restore: found %v, %v; want none", found, err)
+			}
+			seed(t, newTestStore(t, b, "app.db"), 0x41, 0x42)
+			recreated := revOf(t, b)
+
+			if _, err := stale.Commit(t.Context()); !errors.Is(err, ErrSnapshotChanged) {
+				t.Fatalf("Commit of a transaction on the removed database err = %v, want ErrSnapshotChanged", err)
+			}
+			if revOf(t, b) != recreated {
+				t.Fatalf("refused Commit wrote: revision %d, want %d", revOf(t, b), recreated)
+			}
+			if _, err := s.Begin(t.Context()); !errors.Is(err, ErrSnapshotChanged) {
+				t.Fatalf("first Begin on the recreated database err = %v, want ErrSnapshotChanged", err)
+			}
+			if got := readAll(t, begin(t, s)); !bytes.Equal(got, pagesOf(0x41, 0x42)) {
+				t.Fatal("the recreated database does not read its own pages")
+			}
+		})
 	}
 }
 
