@@ -17,7 +17,9 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
@@ -57,7 +59,7 @@ func (f *fakeSnapshotHost) SyncPropose(_ context.Context, _ uint64, cmd []byte) 
 
 type fakeSnapshotShards []SnapshotShard
 
-func (f fakeSnapshotShards) SnapshotShards(string) []SnapshotShard { return f }
+func (f fakeSnapshotShards) SnapshotShards(string) ([]SnapshotShard, error) { return f, nil }
 
 func TestMoveStoreCloser_RelocateSnapshots(t *testing.T) {
 	root := filepath.FromSlash("/pools/b/t1")
@@ -105,9 +107,9 @@ func (raftSnapshotShards) Attach(context.Context, string, string) error { return
 func (raftSnapshotShards) Close(string, string) error                   { return nil }
 func (raftSnapshotShards) ListStarted() []StartedShard                  { return nil }
 
-func (r *raftSnapshotShards) SnapshotShards(tenantID string) []SnapshotShard {
+func (r *raftSnapshotShards) SnapshotShards(tenantID string) ([]SnapshotShard, error) {
 	r.tenants = append(r.tenants, tenantID)
-	return r.fakeSnapshotShards
+	return r.fakeSnapshotShards, nil
 }
 
 // TestMoveStoreCloser_RelocateSnapshots_RaftShards: in raft mode no volume
@@ -129,5 +131,50 @@ func TestMoveStoreCloser_RelocateSnapshots_RaftShards(t *testing.T) {
 	}
 	if len(shards.tenants) != 1 || shards.tenants[0] != "t1" {
 		t.Fatalf("raft shards listed for %v, want [t1]", shards.tenants)
+	}
+}
+
+// TestMoveStoreCloser_RelocateSnapshots_RaftShardsNoRecords: a raft factory
+// that runs a started dedicated shard of the tenant but has no multiplex
+// LogDB cannot read its snapshot record, so the settle fails naming the
+// shard and the tenant instead of skipping it.
+func TestMoveStoreCloser_RelocateSnapshots_RaftShardsNoRecords(t *testing.T) {
+	f := &RaftBackendFactory{
+		host: &quicraft.Host{},
+		shards: map[raftShardKey]*raftShard{
+			{tenantID: "t1", database: "db1"}: {tenantID: "t1", database: "db1", shardID: 7, replicaID: 2},
+			{tenantID: "t2", database: "db1"}: {tenantID: "t2", database: "db1", shardID: 8, replicaID: 2},
+		},
+	}
+	closer := &MoveStoreCloser{snapshots: f}
+	err := closer.RelocateSnapshots(context.Background(), "t1", filepath.FromSlash("/pools/b/t1"))
+	if err == nil {
+		t.Fatal("RelocateSnapshots error = nil, want an error for the unreadable shard")
+	}
+	if msg := err.Error(); !strings.Contains(msg, "shard 7") || !strings.Contains(msg, "tenant t1") {
+		t.Fatalf("RelocateSnapshots error = %q, want it to name shard 7 and tenant t1", msg)
+	}
+	if err := closer.RelocateSnapshots(context.Background(), "t3", filepath.FromSlash("/pools/b/t3")); err != nil {
+		t.Fatalf("RelocateSnapshots of a tenant with no shard: %v", err)
+	}
+}
+
+// TestMoveStoreCloser_RelocateSnapshots_TenantHostNoRecords: a started
+// volume tenant Host with no LogDB cannot report its snapshot record, so the
+// settle fails naming the shard and the tenant.
+func TestMoveStoreCloser_RelocateSnapshots_TenantHostNoRecords(t *testing.T) {
+	r := &TenantHostRegistry{hosts: map[string]*tenantHost{
+		"t1": {tenantID: "t1", host: &quicraft.Host{}},
+	}}
+	closer := &MoveStoreCloser{snapshots: r}
+	err := closer.RelocateSnapshots(context.Background(), "t1", filepath.FromSlash("/pools/b/t1"))
+	if err == nil {
+		t.Fatal("RelocateSnapshots error = nil, want an error for the unreadable tenant Host shard")
+	}
+	if msg := err.Error(); !strings.Contains(msg, fmt.Sprintf("shard %d", tenantHostShardID)) || !strings.Contains(msg, "tenant t1") {
+		t.Fatalf("RelocateSnapshots error = %q, want it to name shard %d and tenant t1", msg, tenantHostShardID)
+	}
+	if err := closer.RelocateSnapshots(context.Background(), "t2", filepath.FromSlash("/pools/b/t2")); err != nil {
+		t.Fatalf("RelocateSnapshots of a tenant with no Host: %v", err)
 	}
 }

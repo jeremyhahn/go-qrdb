@@ -48,7 +48,9 @@ type SnapshotShard struct {
 
 // MoveSnapshotShards lists the started shards of a tenant.
 type MoveSnapshotShards interface {
-	SnapshotShards(tenantID string) []SnapshotShard
+	// SnapshotShards returns an error for a started shard whose snapshot
+	// record cannot be read.
+	SnapshotShards(tenantID string) ([]SnapshotShard, error)
 }
 
 // WithMoveSnapshotShards sets the source of the shards RelocateSnapshots
@@ -76,7 +78,11 @@ func (c *MoveStoreCloser) RelocateSnapshots(ctx context.Context, tenantID, root 
 	}
 	var errs []error
 	for _, src := range sources {
-		for _, s := range src.SnapshotShards(tenantID) {
+		shards, err := src.SnapshotShards(tenantID)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		for _, s := range shards {
 			if err := relocateShardSnapshot(ctx, s, root); err != nil {
 				errs = append(errs, fmt.Errorf("move: relocate the snapshot of shard %d of tenant %s: %w", s.ShardID, tenantID, err))
 			}
@@ -122,34 +128,44 @@ func pathUnder(path, root string) (string, bool) {
 
 // SnapshotShards lists the dedicated shards of tenantID started on this
 // node's shared Host, with the snapshot records the Host's multiplex LogDB
-// keeps for them. A factory with no multiplex LogDB lists none: it has no
-// record to read.
-func (f *RaftBackendFactory) SnapshotShards(tenantID string) []SnapshotShard {
-	if f == nil || f.host == nil || f.walMux == nil {
-		return nil
+// keeps for them. A started shard whose records the factory cannot read (no
+// multiplex LogDB) is an error: skipping it could leave a record naming the
+// file a move removes.
+func (f *RaftBackendFactory) SnapshotShards(tenantID string) ([]SnapshotShard, error) {
+	if f == nil || f.host == nil {
+		return nil, nil
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []SnapshotShard
+	var errs []error
 	for k, rs := range f.shards {
 		if k.tenantID != tenantID {
 			continue
 		}
+		if f.walMux == nil {
+			errs = append(errs, fmt.Errorf("move: shard %d of tenant %s has no multiplex LogDB to read its snapshot record from", rs.shardID, tenantID))
+			continue
+		}
 		out = append(out, SnapshotShard{ShardID: rs.shardID, ReplicaID: rs.replicaID, Records: f.walMux, Host: f.host})
 	}
-	return out
+	return out, errors.Join(errs...)
 }
 
-// SnapshotShards lists the shard of tenantID's started volume Host.
-func (r *TenantHostRegistry) SnapshotShards(tenantID string) []SnapshotShard {
+// SnapshotShards lists the shard of tenantID's started volume Host. A
+// started Host with no LogDB to read its snapshot record from is an error.
+func (r *TenantHostRegistry) SnapshotShards(tenantID string) ([]SnapshotShard, error) {
 	if r == nil {
-		return nil
+		return nil, nil
 	}
 	r.mu.Lock()
 	th, ok := r.hosts[tenantID]
 	r.mu.Unlock()
-	if !ok || th.logDB == nil {
-		return nil
+	if !ok || th == nil || th.host == nil {
+		return nil, nil
 	}
-	return []SnapshotShard{{ShardID: tenantHostShardID, ReplicaID: 1, Records: th.logDB, Host: th.host}}
+	if th.logDB == nil {
+		return nil, fmt.Errorf("move: shard %d of tenant %s has no LogDB to read its snapshot record from", tenantHostShardID, tenantID)
+	}
+	return []SnapshotShard{{ShardID: tenantHostShardID, ReplicaID: 1, Records: th.logDB, Host: th.host}}, nil
 }
