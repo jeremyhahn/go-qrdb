@@ -111,6 +111,7 @@ func TestPebble_OnDiskDataIsEncrypted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
+	// #nosec G101 -- test fixture plaintext marker, not a credential.
 	const secret = "RIBOSOME-PLAINTEXT-MUST-NEVER-LEAK"
 	if err := db.Set([]byte("k"), []byte(secret), pebble.Sync); err != nil {
 		t.Fatalf("Set: %v", err)

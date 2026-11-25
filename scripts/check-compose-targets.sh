@@ -14,39 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# check-compose-targets.sh — every `target:` a compose service names exists as
-# a stage in the Dockerfile that service builds (go-qrdb#327).
-#
-# WHY THIS EXISTS. Compose merges overlays BY SERVICE NAME and merges keys
-# individually: an overlay that overrides `dockerfile:` does NOT drop the
-# `target:` sitting beside it in the base file. So
-# `docker-compose.gpu.yml` redirected qrdbd and integration-tests at
-# Dockerfile.gpu while the base file's `target: integration` survived the
-# merge, and Dockerfile.gpu's final stage was unnamed. buildx was asked for a
-# stage that did not exist and `make integration-test-gpu` could not build at
-# all:
-#
-#     target stage "integration" could not be found
-#
-# WHY A SCRIPT AND NOT A TEST RUN. The GPU path is on no CI workflow, and a
-# workstation without nvidia-smi never selects it (HAS_GPU=0, so
-# integration-test-auto picks the CPU lane). Nothing exercised the broken join
-# for as long as it was broken, and nothing would exercise the fix either. The
-# stage graph is decidable BY READING, which is the whole reason this can be a
-# scanner: it needs no GPU, no CUDA base image, and no build.
-#
-# THE DISCOVERY FLOOR. A pairing that finds no compose file, no service with a
-# target, or a Dockerfile it cannot read is a FAILURE, not a pass. A scanner
-# that silently checks nothing reports the same green as one that checked
-# everything, and this one exists precisely because "nobody noticed" is how
-# #327 survived.
-#
-# WHAT THIS DOES NOT CHECK, and why:
-#   - That the image BUILDS. That needs the base images and the toolchain; this
-#     asserts the stage graph only.
-#   - Stages referenced by `COPY --from=` or `FROM <stage>`. Those fail the
-#     build immediately and loudly on any path that builds the file at all;
-#     the compose `target:` is the one that fails only on an unexercised lane.
+# check-compose-targets.sh: every compose `target:` names a stage in the Dockerfile that service builds.
 
 set -eu
 
@@ -64,25 +32,20 @@ export QRDB_INT_IMAGE QRDB_INT_GPU_IMAGE
 # Every compose file, and the overlays each one is legitimately combined with.
 # Overlays are checked in combination because the defect is IN the merge: each
 # file alone is consistent, and only the join produces the impossible pairing.
-# .devcontainer/docker-compose.yml grew a `target:` on four services in
-# go-qrdb#294 -- see that file for why -- so it is checked alone here, the
-# same as any set with no legitimate overlay.
+# build/docker/devcontainer/compose.yaml is checked alone, the same as any set
+# with no legitimate overlay. Its developer services name stages of the
+# Dockerfile beside it: devcontainer, client-build, e2e and benchmark
+# `target: dev-deps` (go-qrdb#294 -- see that file for why), devcontainer-gpu
+# `target: gpu`. Its CI services (integration, toolchain) build no image of
+# their own and name no target.
 #
-# devcontainer-gpu is in that file and names NO target, so it is not a pairing
-# this scanner can check: with nothing named there is nothing to resolve. It is
-# excluded from the reasoning above rather than from the scan -- the file IS
-# scanned, and if that service ever grows a `target:` the scanner picks it up
-# with no change here.
-#
-# An earlier version of this comment said Dockerfile.gpu "has exactly one
-# stage, so there is no alternate target to name". That stopped being true in
-# go-qrdb#327, which named its final stage `AS integration` precisely so the
-# GPU integration lane could build -- the same commit that introduced this
-# scanner. It now has two named stages, `go-downloader` and `integration`. The
-# claim is corrected rather than deleted because a reader who checks it should
-# find the file, not a confident sentence about it.
+# There is no Dockerfile.gpu any more (go-qrdb#1654): the CUDA image is the
+# `gpu` stage of build/docker/devcontainer/Dockerfile, and the GPU overlay
+# names `target: gpu` on both services it redirects there, so the base file's
+# `target: dev-integration` is overridden rather than inherited onto a
+# Dockerfile whose stage it is not meant for (the #327 defect).
 COMPOSE_SETS="
-.devcontainer/docker-compose.yml
+build/docker/devcontainer/compose.yaml
 test/integration/api/docker-compose.yml
 test/integration/api/docker-compose.yml:test/integration/api/docker-compose.gpu.yml
 "

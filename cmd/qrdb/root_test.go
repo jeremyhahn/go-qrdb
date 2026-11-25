@@ -102,3 +102,14 @@ func TestIsCompletionCmd_RejectsNonRootAnchoredCompletion(t *testing.T) {
 		t.Error("isCompletionCmd(tenant completion bash) = true, want false -- not anchored at the root")
 	}
 }
+
+// TestRootCmd_NoSealStoreCommand guards ruling 1234: seal-store data is
+// embedded-only and the shipped CLI links no in-process node, so a
+// `qrdb seal-store` group could never succeed in any build. It must not exist.
+func TestRootCmd_NoSealStoreCommand(t *testing.T) {
+	for _, c := range newRootCmd().Commands() {
+		if c.Name() == "seal-store" {
+			t.Fatalf("root command has a %q subcommand; seal-store data is embedded-only (ruling 1234) and no CLI build can serve it", c.Name())
+		}
+	}
+}

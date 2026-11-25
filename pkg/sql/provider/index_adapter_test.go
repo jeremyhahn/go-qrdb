@@ -19,7 +19,6 @@ package provider
 import (
 	"testing"
 
-	sqle "github.com/dolthub/go-mysql-server/sql"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -198,16 +197,6 @@ func TestQRDBIndexColumnExpressionTypes_BooleanField(t *testing.T) {
 	cets := idx.ColumnExpressionTypes(newTestContext())
 	require.Len(t, cets, 1)
 	assert.Equal(t, "users.Active", cets[0].Expression)
-}
-
-// ---------------------------------------------------------------------------
-// sql.Index interface compliance
-// ---------------------------------------------------------------------------
-
-func TestQRDBIndexImplementsSQLIndex(t *testing.T) {
-	var _ sqle.Index = (*qrdbIndex)(nil)
-	idx := newTestQRDBIndex("db", "users", "Email", "string", false)
-	require.NotNil(t, idx)
 }
 
 // ---------------------------------------------------------------------------

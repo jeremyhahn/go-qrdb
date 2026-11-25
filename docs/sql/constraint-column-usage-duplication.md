@@ -1,6 +1,6 @@
 # `constraint_column_usage` is served twice
 
-> **Status: OPEN — awaiting owner ruling** · Last verified: 2026-10-21
+> **Status: OPEN** · Last verified: 2026-10-21
 > Nothing is broken; the two implementations return the same rows. This
 > records which one is canonical.
 

@@ -250,11 +250,8 @@ func TestAwaitUnseal_UnsealQuorumIsAudited(t *testing.T) {
 		done <- e
 	}()
 	// The window is open once awaitUnseal has handed the ceremony its trail.
-	deadline := time.Now().Add(readinessTimeout)
-	for svc.HolderDeps().Audit == nil {
-		require.True(t, time.Now().Before(deadline), "the sealed window never installed the trail")
-		time.Sleep(10 * time.Millisecond)
-	}
+	require.Eventuallyf(t, func() bool { return svc.HolderDeps().Audit != nil },
+		readinessTimeout, 10*time.Millisecond, "the sealed window never installed the trail")
 
 	var secretMaterial [][]byte
 	for _, h := range holders[:2] {

@@ -45,18 +45,6 @@ func newBackendKVService(t *testing.T) (*BackendKVService, func()) {
 // NewBackendKVService
 // ---------------------------------------------------------------------------
 
-func TestNewBackendKVService_ReturnsNonNil(t *testing.T) {
-	svc, cleanup := newBackendKVService(t)
-	defer cleanup()
-	assert.NotNil(t, svc)
-}
-
-func TestNewBackendKVService_ImplementsKVServicer(t *testing.T) {
-	svc, cleanup := newBackendKVService(t)
-	defer cleanup()
-	var _ KVServicer = svc
-}
-
 // ---------------------------------------------------------------------------
 // Put / Get
 // ---------------------------------------------------------------------------

@@ -40,7 +40,7 @@ func vlogPost[Res any](t *Transport, ctx context.Context, method, path string, r
 	}
 	var res Res
 	if err := t.postJSONDecode(ctx, method, path, req, &res); err != nil {
-		return nil, vlogNotFound(err)
+		return nil, notFoundError(err)
 	}
 	return &res, nil
 }
@@ -55,16 +55,17 @@ func vlogGet[Res any](t *Transport, ctx context.Context, method, path string, qu
 	}
 	var res Res
 	if err := t.getJSONDecode(ctx, method, path, &res); err != nil {
-		return nil, vlogNotFound(err)
+		return nil, notFoundError(err)
 	}
 	return &res, nil
 }
 
-// vlogNotFound answers the server's 404 for a log that does not exist with
-// the *transport.KeyNotFoundError every other wire transport returns for it,
+// notFoundError answers the server's 404 for a log, credential or migration
+// conflict that does not exist with the *transport.KeyNotFoundError every
+// other wire transport returns for it,
 // carrying the server's message as the gRPC mapping carries its status
 // message.
-func vlogNotFound(err error) error {
+func notFoundError(err error) error {
 	var reqErr *transport.RequestError
 	if !errors.As(err, &reqErr) || reqErr.StatusCode != http.StatusNotFound {
 		return err

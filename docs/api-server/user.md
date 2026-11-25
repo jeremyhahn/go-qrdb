@@ -78,6 +78,58 @@ port when it is not 443) or `*`; `*` cannot be combined with
 `allow_credentials`, and either mistake stops the node at startup with a
 configuration error naming the key.
 
+## WebTransport sessions on an embedded node
+
+A program that embeds a node can serve WebTransport sessions
+(draft-ietf-webtrans-http3-16) on the REST port's HTTP/3 listener. Register one
+handler for one path in the server options you start the node with:
+
+```go
+n, err := node.NewStandaloneNode(ctx, cfg, []sdkserver.ServerOption{
+	sdkserver.WithWebTransportHandler("/wt",
+		func(sess *sdkserver.WebTransportSession, caller *auth.Identity, tenantID string) {
+			defer sess.CloseWithError(0, "")
+			// serve the session's streams and datagrams for caller in tenantID
+		}),
+})
+```
+
+`CloseWithError` takes a `sdkserver.WebTransportSessionErrorCode`, and
+`CancelRead`/`CancelWrite` a `sdkserver.WebTransportStreamErrorCode`; convert
+a `uint32` code with `sdkserver.WebTransportSessionErrorCode(code)`. Match the
+peer's application errors with `errors.As` against
+`*sdkserver.WebTransportSessionError` or `*sdkserver.WebTransportStreamError`;
+`ErrorCode` holds the code and `Remote` reports whether the peer sent it.
+
+A client opens `https://db.example.com:63002/wt` over HTTP/3. The session is
+authenticated exactly like a REST request, with your client certificate or
+token. A caller REST would refuse gets the same status (401 when
+unauthenticated, for example), and the session is never opened. A request over
+HTTP/1.1 or HTTP/2, or a CONNECT with any `:protocol` other than
+`webtransport-h3`, gets 400. A client that did not send `SETTINGS_WT_ENABLED`=1,
+`SETTINGS_H3_DATAGRAM`=1 or the `reset_stream_at` transport parameter
+(draft-ietf-webtrans-http3-16 section 3.1) has its CONNECT stream reset with
+`H3_MESSAGE_ERROR`, and the session is never opened. A client that sends `SETTINGS_H3_DATAGRAM` without
+`max_datagram_frame_size` has its connection closed with `H3_SETTINGS_ERROR`
+instead.
+A browser's `Origin` must match the host it connects to.
+
+A client-certificate (mTLS) caller authenticates the `CONNECT` exactly as it
+authenticates a REST request: the HTTP/3 listener uses the TLS settings you
+give the REST port, client-certificate verification included, and the same
+binding policy and authenticators run. A certificate REST would refuse (for
+example, one with no enrolled account under `auth.mtls_binding_policy:
+required`) gets the same status, and the session is never opened. A
+certificate from a CA the listener does not trust fails the TLS handshake. The
+handler's `tenantID` is always the authenticated caller's tenant: a client
+`X-QRDB-Tenant` header is ignored.
+
+Without this option the server announces no WebTransport support, and `/wt`
+is an unknown path (404). A nil handler, or a path not starting with `/`, stops
+the server at startup with `InvalidWebTransportHandlerError`. Deviations from
+the draft are listed in
+[docs/reference/README.md](../reference/README.md#the-draft-ietf-webtrans-http3-pin-and-its-deviations).
+
 ## Scoping your requests
 
 **Your tenant comes from your certificate**, not from a flag. To act as a

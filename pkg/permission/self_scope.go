@@ -199,6 +199,13 @@ func selfScopedPermissions() []Permission {
 		// included.
 		DevicesOnboard,
 
+		// device. Each tenant pairs, revokes, shares and syncs its own
+		// devices only, as with devices:onboard.
+		DevicePair,
+		DeviceRevoke,
+		DeviceShare,
+		DeviceSync,
+
 		// embedding
 		EmbeddingEmbed,
 		EmbeddingListModels,
@@ -269,6 +276,7 @@ func selfScopedPermissions() []Permission {
 		PasswordsDelete,
 		PasswordsGenerate,
 		PasswordsLock,
+		PasswordsOverrideOwnership,
 		PasswordsRead,
 		PasswordsUnlock,
 		PasswordsWrite,
@@ -306,6 +314,15 @@ func selfScopedPermissions() []Permission {
 		RolesRead,
 		RolesUnassign,
 		RolesUpdate,
+
+		// groups
+		GroupsAddMember,
+		GroupsCreate,
+		GroupsDelete,
+		GroupsList,
+		GroupsRead,
+		GroupsRemoveMember,
+		GroupsUpdate,
 
 		// seal
 		//

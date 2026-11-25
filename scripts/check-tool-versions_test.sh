@@ -47,7 +47,7 @@ FAILURES=0
 fixture() {
 	DIR="${WORK}/$1"
 	rm -rf "${DIR}"
-	mkdir -p "${DIR}/.github/workflows" "${DIR}/.devcontainer" "${DIR}/scripts"
+	mkdir -p "${DIR}/.github/workflows" "${DIR}/build/docker/devcontainer" "${DIR}/scripts"
 
 	cat > "${DIR}/scripts/tool-pins.sh" <<-'EOF'
 		GO_IMAGE=golang:1.27.2-alpine3.24@sha256:0000
@@ -72,17 +72,18 @@ fixture() {
 		GOLANGCI_GOSEC_VERSION := v2.27.0
 	EOF
 
-	cat > "${DIR}/.devcontainer/Dockerfile" <<-'EOF'
-		FROM golang:1.27.1
+	cat > "${DIR}/build/docker/devcontainer/Dockerfile" <<-'EOF'
+		ARG GO_IMAGE
+		ARG TRIVY_IMAGE
+		FROM ${GO_IMAGE} AS toolchain
+		ARG GOLANGCI_LINT_VERSION=v0.0.0-not-a-dev-stage-pin
+		FROM a AS dev
 		ARG GOLANGCI_LINT_VERSION=v2.14.0
 		ARG GOSEC_VERSION=v2.29.0
 		ARG GOVULNCHECK_VERSION=v1.8.0
 		ARG TRIVY_VERSION=v0.75.0
-		ARG TRIVY_IMAGE=example.test/trivy:0.75.0@sha256:0123
-	EOF
-
-	cat > "${DIR}/.devcontainer/Dockerfile.gpu" <<-'EOF'
-		FROM nvidia/cuda:12.4.0-devel-ubuntu24.04
+		FROM dev AS dev-deps
+		FROM b AS gpu
 		ARG GOLANGCI_LINT_VERSION=v2.14.0
 		ARG GOSEC_VERSION=v2.29.0
 		ARG GOVULNCHECK_VERSION=v1.8.0
@@ -147,29 +148,30 @@ assert "a ci.yml actionlint pin is rejected" 1 \
 	".github/workflows/ci.yml pins ACTIONLINT_VERSION" "${DIR}"
 
 DIR=$(fixture dockerfile-drift)
-sed -i 's/ARG GOLANGCI_LINT_VERSION=v2.14.0/ARG GOLANGCI_LINT_VERSION=v2.7.2/' "${DIR}/.devcontainer/Dockerfile"
-assert "a CPU Dockerfile default off the pin file is rejected" 1 \
-	"GOLANGCI_LINT_VERSION is v2.7.2 in .devcontainer/Dockerfile" "${DIR}"
+sed -i '/^FROM a AS dev$/,/^FROM dev AS dev-deps$/ s/ARG GOLANGCI_LINT_VERSION=v2.14.0/ARG GOLANGCI_LINT_VERSION=v2.7.2/' "${DIR}/build/docker/devcontainer/Dockerfile"
+assert "a dev stage default off the pin file is rejected" 1 \
+	"GOLANGCI_LINT_VERSION is v2.7.2 in build/docker/devcontainer/Dockerfile stage dev" "${DIR}"
 
 DIR=$(fixture gpu-drift)
-sed -i 's/ARG GOVULNCHECK_VERSION=v1.8.0/ARG GOVULNCHECK_VERSION=v1.6.0/' "${DIR}/.devcontainer/Dockerfile.gpu"
-assert "a GPU Dockerfile default off the pin file is rejected" 1 \
-	"GOVULNCHECK_VERSION is v1.6.0 in .devcontainer/Dockerfile.gpu" "${DIR}"
+sed -i '/^FROM b AS gpu$/,$ s/ARG GOVULNCHECK_VERSION=v1.8.0/ARG GOVULNCHECK_VERSION=v1.6.0/' "${DIR}/build/docker/devcontainer/Dockerfile"
+assert "a gpu stage default off the pin file is rejected" 1 \
+	"GOVULNCHECK_VERSION is v1.6.0 in build/docker/devcontainer/Dockerfile stage gpu" "${DIR}"
 
 DIR=$(fixture trivy-drift)
-sed -i 's/ARG TRIVY_VERSION=v0.75.0/ARG TRIVY_VERSION=v0.60.0/' "${DIR}/.devcontainer/Dockerfile"
+sed -i 's/ARG TRIVY_VERSION=v0.75.0/ARG TRIVY_VERSION=v0.60.0/' "${DIR}/build/docker/devcontainer/Dockerfile"
 assert "a trivy default off the pin file is rejected" 1 \
-	"TRIVY_VERSION is v0.60.0 in .devcontainer/Dockerfile but v0.75.0" "${DIR}"
+	"TRIVY_VERSION is v0.60.0 in build/docker/devcontainer/Dockerfile stage dev but v0.75.0" "${DIR}"
 
-DIR=$(fixture trivy-image-drift)
-sed -i 's/^ARG TRIVY_IMAGE=.*/ARG TRIVY_IMAGE=example.test\/trivy:0.60.0@sha256:4567/' "${DIR}/.devcontainer/Dockerfile"
-assert "a trivy image default off the pin file is rejected" 1 \
-	"TRIVY_IMAGE is example.test/trivy:0.60.0@sha256:4567 in .devcontainer/Dockerfile" "${DIR}"
+# The shared global TRIVY_IMAGE has no default; one would be an unheld copy.
+DIR=$(fixture trivy-image-default)
+sed -i 's/^ARG TRIVY_IMAGE$/ARG TRIVY_IMAGE=example.test\/trivy:0.75.0@sha256:0123/' "${DIR}/build/docker/devcontainer/Dockerfile"
+assert "a default on the shared ARG TRIVY_IMAGE is rejected" 1 \
+	"build/docker/devcontainer/Dockerfile gives ARG TRIVY_IMAGE a default" "${DIR}"
 
 # The authority is named in the diagnostic, because "these disagree" does not
 # tell the next person which one to change.
 DIR=$(fixture names-authority)
-sed -i 's/ARG GOSEC_VERSION=v2.29.0/ARG GOSEC_VERSION=v2.28.0/' "${DIR}/.devcontainer/Dockerfile"
+sed -i 's/ARG GOSEC_VERSION=v2.29.0/ARG GOSEC_VERSION=v2.28.0/' "${DIR}/build/docker/devcontainer/Dockerfile"
 assert "the diagnostic names the pin file as the authority" 1 \
 	"scripts/tool-pins.sh is the authority" "${DIR}"
 
@@ -177,7 +179,7 @@ assert "the diagnostic names the pin file as the authority" 1 \
 DIR=$(fixture pin-file-moved)
 sed -i 's/^GOSEC_VERSION=v2.29.0/GOSEC_VERSION=v2.30.0/' "${DIR}/scripts/tool-pins.sh"
 assert "a bump in the pin file alone names the copies left behind" 1 \
-	"GOSEC_VERSION is v2.29.0 in .devcontainer/Dockerfile.gpu but v2.30.0" "${DIR}"
+	"GOSEC_VERSION is v2.29.0 in build/docker/devcontainer/Dockerfile stage gpu but v2.30.0" "${DIR}"
 
 # ---------------------------------------------------------------------------
 # One pin file: the Makefile reads it and does not copy it.
@@ -206,9 +208,10 @@ assert "no pin in ci.yml and actionlint absent from the Dockerfiles is not a fin
 	"tool pins agree" "${DIR}"
 
 DIR=$(fixture gpu-trivy)
-printf 'ARG TRIVY_VERSION=v0.75.0\n' >> "${DIR}/.devcontainer/Dockerfile.gpu"
-assert "an ARG TRIVY_VERSION in the GPU image is rejected" 1 \
-	"Dockerfile.gpu declares ARG TRIVY_VERSION" "${DIR}"
+# The gpu stage is the fixture's last, so an appended line lands inside it.
+printf 'ARG TRIVY_VERSION=v0.75.0\n' >> "${DIR}/build/docker/devcontainer/Dockerfile"
+assert "an ARG TRIVY_VERSION in the gpu stage is rejected" 1 \
+	"stage gpu declares ARG TRIVY_VERSION" "${DIR}"
 
 # ---------------------------------------------------------------------------
 # The discovery floor. These are the cases that keep the gate from passing
@@ -226,12 +229,17 @@ assert "an assignment the pattern no longer matches is a failure" 1 \
 	"no GOVULNCHECK_VERSION pin found in scripts/tool-pins.sh" "${DIR}"
 
 DIR=$(fixture floor-explains)
-sed -i '/GOSEC_VERSION/d' "${DIR}/.devcontainer/Dockerfile"
+sed -i '/GOSEC_VERSION/d' "${DIR}/build/docker/devcontainer/Dockerfile"
 assert "the floor explains why an empty lookup cannot be a pass" 1 \
 	"empty value compares equal to another empty value" "${DIR}"
 
+DIR=$(fixture stage-removed)
+sed -i '/^FROM b AS gpu$/,$d' "${DIR}/build/docker/devcontainer/Dockerfile"
+assert "a removed or renamed stage fails rather than narrowing the gate" 1 \
+	"no GOLANGCI_LINT_VERSION pin found in build/docker/devcontainer/Dockerfile stage gpu" "${DIR}"
+
 DIR=$(fixture file-moved)
-rm "${DIR}/.devcontainer/Dockerfile.gpu"
+rm "${DIR}/build/docker/devcontainer/Dockerfile"
 assert "a moved file fails rather than narrowing the gate" 1 \
 	"does not exist" "${DIR}"
 

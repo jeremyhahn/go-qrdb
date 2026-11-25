@@ -20,7 +20,7 @@ import (
 	"strconv"
 	"strings"
 
-	"gopkg.in/yaml.v3"
+	gocodecyaml "github.com/jeremyhahn/go-codec/pkg/yaml"
 )
 
 // providerMapsFile holds the free-form maps whose keys belong to a
@@ -43,7 +43,7 @@ type providerMapsFile struct {
 // such as go-objstore's forcePathStyle from the provider.
 func restoreProviderKeyCase(cfg *Config, data []byte) error {
 	var file providerMapsFile
-	if err := yaml.Unmarshal(data, &file); err != nil {
+	if err := gocodecyaml.New[providerMapsFile]().Unmarshal(data, &file); err != nil {
 		return err
 	}
 	settings, err := restoreKeyCase("storage.objstore.settings", file.Storage.Objstore.Settings, cfg.Storage.Objstore.Settings)

@@ -273,8 +273,9 @@ func invokeVlog(t *testing.T, roles role.RoleServicer, roleName string, m vlogMe
 		TenantID: vlogTestTenant,
 		Roles:    []string{role.SystemRoleID(vlogTestTenant, roleName)},
 	}
+	fa := authtest.NewFixedAuthenticator(caller)
 	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles),
-		authmw.WithAuthenticator(authtest.NewFixedAuthenticator(caller)))
+		authmw.WithAuthenticator(fa), authmw.WithUserService(fa.Users()))
 	srv := &qrdbServiceServer{authMW: mw, logSvc: svc}
 	info := &grpc.UnaryServerInfo{FullMethod: m.full}
 	ctx := withDatabase(context.Background(), "ledger")

@@ -137,12 +137,43 @@ func TestListTenants_Success(t *testing.T) {
 	tr, cleanup := connectTenantInProcess(t, svc)
 	defer cleanup()
 
-	resp, err := tr.ListTenants(context.Background())
+	resp, err := tr.ListTenants(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("ListTenants: %v", err)
 	}
 	if len(resp.Tenants) == 0 {
 		t.Error("expected at least one tenant")
+	}
+}
+
+// TestListTenants_SendsStatusArg proves the status reaches the server: the
+// mock's only tenant has a legacy empty status, which no filter matches, so a
+// filtered call returns nothing while an unfiltered one returns it, and an
+// unknown status is refused by the server.
+func TestListTenants_SendsStatusArg(t *testing.T) {
+	svc := newMockTenantSvc()
+	tr, cleanup := connectTenantInProcess(t, svc)
+	defer cleanup()
+
+	resp, err := tr.ListTenants(context.Background(), &transport.ListTenantsRequest{})
+	if err != nil {
+		t.Fatalf("ListTenants: %v", err)
+	}
+	if len(resp.Tenants) != 1 {
+		t.Fatalf("unfiltered Tenants = %+v, want the one tenant", resp.Tenants)
+	}
+
+	resp, err = tr.ListTenants(context.Background(), &transport.ListTenantsRequest{Status: transport.TenantStatusActive})
+	if err != nil {
+		t.Fatalf("ListTenants(active): %v", err)
+	}
+	if len(resp.Tenants) != 0 {
+		t.Fatalf("filtered Tenants = %+v, want none", resp.Tenants)
+	}
+
+	if _, err = tr.ListTenants(context.Background(), &transport.ListTenantsRequest{Status: "deleted"}); err == nil ||
+		!errors.As(err, new(*transport.RequestError)) {
+		t.Fatalf("err = %v, want the server's unknown-status refusal", err)
 	}
 }
 
@@ -152,7 +183,7 @@ func TestListTenants_ServiceError(t *testing.T) {
 	tr, cleanup := connectTenantInProcess(t, svc)
 	defer cleanup()
 
-	_, err := tr.ListTenants(context.Background())
+	_, err := tr.ListTenants(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected error from service")
 	}
@@ -167,7 +198,7 @@ func TestListTenants_Closed(t *testing.T) {
 	tr, cleanup := connectTenantInProcess(t, svc)
 	cleanup()
 
-	_, err := tr.ListTenants(context.Background())
+	_, err := tr.ListTenants(context.Background(), nil)
 	var closedErr *transport.ClosedError
 	if !errors.As(err, &closedErr) {
 		t.Fatalf("expected *transport.ClosedError, got %T", err)

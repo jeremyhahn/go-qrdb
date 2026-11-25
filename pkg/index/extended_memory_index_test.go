@@ -247,7 +247,7 @@ func TestExtendedMemoryIndex_ContextCancellation(t *testing.T) {
 	// ScanWithContext timeout
 	ctx2, cancel2 := context.WithTimeout(context.Background(), time.Nanosecond)
 	defer cancel2()
-	time.Sleep(time.Millisecond)
+	<-ctx2.Done()
 	_, err = idx.ScanWithContext(ctx2, nil, nil)
 	assert.Error(t, err)
 }

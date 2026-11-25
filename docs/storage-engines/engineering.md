@@ -1,7 +1,6 @@
 # Storage Engines — Engineering Contract
 
-> **Status: NORMATIVE for shipped behaviour; PROPOSED — pending owner
-> decision — for the object-storage LSM target design (see "Target design" at
+> **Status: NORMATIVE for shipped behaviour; ADOPTED, not yet built, for the object-storage LSM target design (see "Target design" at
 > the end).** · Scope: go-qrdb · Last verified: 2026-10-27
 
 ## Exported surface
@@ -471,10 +470,25 @@ the same status.
 ## Target design: `objstore` as Pebble remote storage
 
 > See [architecture.md](architecture.md#target-design-object-storage-lsm-segment-layout)
-> for the shape, the direction it proposes, and the decisions (OS-1..OS-7)
-> this contract assumes. It is future work under the SPEC row
-> `object-storage-lsm`. **Nothing below is implemented**, and no
-> configuration key, type or error named below exists yet.
+> for the shape, the direction it sets, and the decisions (OS-1..OS-7)
+> this contract assumes. It is work in progress under the SPEC row
+> `object-storage-lsm`. Only the unwired Pebble `remote.Storage` adapter
+> over go-objstore (`pkg/storage/objstore/remote.go`) and its barrier-AEAD
+> encrypting wrapper (`pkg/storage/objstore/encremote.go`, OS-4 C), the
+> `pkg/storage/pebble/remotelsm` `WithRemote` option with its creator-ID marker file
+> (`pkg/storage/pebble/remotelsm/remotelsm.go`) and the store format marker
+> `objstore.EnsureLSMFormat` (`pkg/storage/objstore/lsmformat.go`, OS-5 A),
+> the store opener `objstore.OpenStore` (`pkg/storage/objstore/open.go`, with
+> `ArchiveTierUnsupportedError`), the local object cache
+> `objstore.CachedRemote` (`pkg/storage/objstore/cacheremote.go`, OS-6 A
+> interim, local dir `objstore-lsm-cache`, with `InvalidObjectNameError`; a
+> write's remote commit and its cache publication run under the object's lock,
+> so a concurrent Delete cannot leave a cache entry for a deleted object) and the composed opener in
+> `pkg/server/lifecycle/objstore_lsm.go` (prefix "lsm", locator "qrdb", local
+> dir `objstore-lsm`, a sealed barrier refused with
+> `ObjstoreBarrierSealedError`) exist, all unwired; **nothing else below is
+> implemented**, no configuration key named below exists yet, and
+> `NewLocalStorage` still opens the flat engine.
 
 ### Exported surface (target)
 
@@ -493,9 +507,14 @@ func NewRemote(provider string, settings map[string]string, enc *atrest.Encrypto
 func Locator(provider, prefix string) remote.Locator
 ```
 
-`pkg/storage/pebble` gains one construction option:
+`pkg/storage/pebble/remotelsm` provides one construction option for
+`pkg/storage/pebble`. `pkg/storage/pebble` reaches the binding only through
+its `OpenHook` (installed with `WithOpenHook`), so the lean standalone build
+does not import `objstorage/remote`.
 
 ```go
+package remotelsm
+
 // WithRemote configures the Engine to keep its SSTables on remote storage
 // reached through store, under locator, using strategy to decide which
 // levels are remote (CreateOnSharedAll for a local binding — every level
@@ -503,13 +522,29 @@ func Locator(provider, prefix string) remote.Locator
 // The local dir passed to pebble.New still roots the WAL, MANIFEST and
 // block cache (OS-2) — WithRemote narrows what the local dir holds, it does
 // not replace it.
-func WithRemote(store remote.Storage, locator remote.Locator, strategy remote.CreateOnSharedStrategy) Option
+//
+// WithRemote lives in package pkg/storage/pebble/remotelsm, not in
+// pkg/storage/pebble, so pkg/storage/pebble keeps no objstorage/remote
+// import (lean standalone gate); it installs itself through
+// pebbleStorage.WithOpenHook.
+//
+// New refuses a nil store, an empty locator, CreateOnSharedNone and a
+// Config with DisableWAL with a *pebbleStorage.ConfigError, before it
+// creates any file. The store's CreatorID is generated once and persisted
+// in the file QRDB-CREATORID in Config.DataDir; a marker that differs from
+// the id the MANIFEST records is refused with a *CreatorIDError. WithRemote
+// has no effect on NewFromDB.
+func WithRemote(store remote.Storage, locator remote.Locator, strategy remote.CreateOnSharedStrategy) pebbleStorage.Option
 ```
 
-A `*pebble.DB` opened with `WithRemote` is constructed with a `CreatorID`
-(OS-3): one per owning instance, generated once and persisted as a small local
-marker file beside the WAL/MANIFEST directory — never derived from a qrdb
-key, never shared between instances.
+A `*pebble.DB` opened with `remotelsm.WithRemote` is constructed with a
+`CreatorID` (OS-3): one per owning instance, generated once and persisted as a
+small local marker file, `QRDB-CREATORID` in the data directory beside the
+WAL/MANIFEST — never derived from a qrdb key, never shared between instances.
+A marker that cannot be read or parsed, or a `CreatorID` that differs from the
+one the store's MANIFEST records, is refused at open with a
+`*remotelsm.CreatorIDError` naming the marker file (`Path`), rather than a
+panic.
 
 ### Invariants (target, additive to the ones above)
 
@@ -527,9 +562,9 @@ key, never shared between instances.
 - **Encryption happens in the `remote.Storage` adapter, not in `vfs.FS`.**
   `pkg/atrest.Encryptor.Apply` continues to cover the local WAL/MANIFEST/local
   SSTables exactly as today; it does **not** reach objects written through
-  `WithRemote`. The adapter encrypts the whole object payload with the same
+  `remotelsm.WithRemote`. The adapter encrypts the whole object payload with the same
   `seal.StorageBarrier` AEAD before `CreateObject` and decrypts after
-  `ReadObject`. A barrier-sealed database with `WithRemote` configured and no
+  `ReadObject`. A barrier-sealed database with `remotelsm.WithRemote` configured and no
   working encryptor fails closed at open, matching
   `statemachine.SMStorageUnencryptedError`'s existing precedent for
   `file`-backed state machines.
@@ -546,7 +581,13 @@ key, never shared between instances.
   [../backup-restore/architecture.md](../backup-restore/architecture.md)).
 - **No ranged read yet (OS-6).** Until go-objstore exposes one, `ReadObject`
   fetches the whole object once per open and serves `ReadAt` from a local
-  cache keyed by object name. This is a documented performance limitation of
+  cache keyed by object name. The cache is one file per object under the
+  data dir's `objstore-lsm-cache`, below the encrypting wrapper (it holds the
+  stored, sealed bytes), written through on create, removed on delete, and
+  unbounded otherwise. Concurrent first reads of one object fetch it once, a
+  read racing a delete never leaves the object cached, and object names that
+  do not map to one cache file are refused (`InvalidObjectNameError`). This
+  is a documented performance limitation of
   phase 1, not a silent one: the adapter's doc comment says so, and the real
   fix is the ranged read requested from go-objstore.
 - **The provider credential crosses as go-objstore takes it.** `NewRemote`
@@ -585,7 +626,7 @@ non-replicated binding, is decided with OS-7.
 |---|---|---|
 | `provider` is `glacier` or `azurearchive` | `ArchiveTierUnsupportedError` at construction | **yes** |
 | Store written in the encoded-name layout (`qrdb-objstore-format` version `2`) | refused at open with the typed format error; no migration (OS-5) | **yes** |
-| Barrier sealed, no working encryptor, `WithRemote` configured | refused at open, matching `SMStorageUnencryptedError`'s precedent | **yes** |
+| Barrier sealed, no working encryptor, `remotelsm.WithRemote` configured | refused at open, matching `SMStorageUnencryptedError`'s precedent | **yes** |
 | A second instance attempts to open an already-owned `CreatorID`/prefix | refused — Pebble's own manifest/lock detects the conflict | **yes** |
 | go-objstore `ReadObject` for an object this instance did not write (prefix violated) | not expected to occur (OS-3); if it does, a corruption-class error, not silently served | **yes** |
 | `raft.sm_storage`/`state_storage: objstore` before the phase-3 gate accepts it | refused, as today | **yes** |

@@ -14,7 +14,10 @@
 
 package sdk
 
-import "github.com/jeremyhahn/go-qrdb/pkg/credentials"
+import (
+	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+)
 
 // ---------------------------------------------------------------------------
 // Versioned credential types
@@ -28,6 +31,45 @@ type RotateOptions = credentials.RotateOptions
 
 // RotateResult holds the result of a credential rotation.
 type RotateResult = credentials.RotateResult
+
+// RotationValueSource produces the new value of a scheduled credential
+// rotation. Supply one to an embedded node with
+// node.WithCredentialRotationValueSource, or to a versioned credential
+// service with WithCredentialRotationValueSource.
+type RotationValueSource = credentials.RotationValueSource
+
+// ErrNoRotationValueSource is the cause a due rotation reports when no
+// RotationValueSource is configured.
+var ErrNoRotationValueSource = credentials.ErrNoRotationValueSource
+
+// WithCredentialRotationValueSource sets the source a
+// VersionedCredentialService draws scheduled rotation values from.
+var WithCredentialRotationValueSource = credentials.WithRotationValueSource
+
+// RotationPolicy schedules a credential's rotation: whether it is enabled,
+// the interval, and how many prior versions to retain.
+type RotationPolicy = credentials.RotationPolicy
+
+// CredentialRotationPolicyStatus is a credential's rotation policy together
+// with its next scheduled rotation, as the credential service reports it.
+type CredentialRotationPolicyStatus = service.CredentialRotationPolicyStatus
+
+// MigrationResolution is the operator's choice for a credential whose
+// node-local copy conflicts with the replicated store during migration.
+type MigrationResolution = credentials.MigrationResolution
+
+const (
+	// MigrationImport writes the node-local copy's current value as a new
+	// version of the replicated record, retaining the version it replaces.
+	MigrationImport = credentials.MigrationImport
+	// MigrationDiscard drops the node-local copy and leaves the replicated
+	// record as it is.
+	MigrationDiscard = credentials.MigrationDiscard
+)
+
+// CredentialMigrationConflictError reports a credential whose node-local
+// copy differs from the replicated store, and which parts differ.
+type CredentialMigrationConflictError = credentials.CredentialMigrationConflictError
 
 // ---------------------------------------------------------------------------
 // Credential configuration

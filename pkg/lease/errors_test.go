@@ -54,3 +54,11 @@ func TestInvalidTTLErrorMessage(t *testing.T) {
 		t.Errorf("InvalidTTLError.Error() = %q, want it to contain %q", got, "must be > 0")
 	}
 }
+
+func TestLessorClosedErrorMessage(t *testing.T) {
+	err := &LessorClosedError{}
+	got := err.Error()
+	if got != "lessor is closed" {
+		t.Errorf("LessorClosedError.Error() = %q, want %q", got, "lessor is closed")
+	}
+}

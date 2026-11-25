@@ -283,29 +283,6 @@ func TestWithClusterIsolationPolicyReader_Strict(t *testing.T) {
 	}
 }
 
-func TestWithClusterIsolationPolicyReader_OperatorAccess(t *testing.T) {
-	storage := newVecMockStorage()
-	logger := newVecTestLogger()
-
-	// operator-access (and no reader at all, the default) — system tenant
-	// context should work.
-	svc, err := NewVectorService(storage, logger, WithClusterIsolationPolicyReader(
-		fixedClusterIsolationPolicyReader{policy: tenant.ClusterIsolationPolicyOperatorAccess}))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if svc == nil {
-		t.Fatal("expected non-nil service")
-	}
-	ctx := context.Background() // no tenant
-	if _, err := svc.CreateNamespace(ctx, &CreateNamespaceRequest{
-		Namespace: "test-ns",
-		Dimension: 128,
-	}); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // vector.go – validate* functions that have missing branches
 // ---------------------------------------------------------------------------

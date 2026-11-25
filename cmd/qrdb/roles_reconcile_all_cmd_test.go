@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	gocodecyaml "github.com/jeremyhahn/go-codec/pkg/yaml"
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -141,7 +141,7 @@ func TestRolesReconcileCmd_AllTenantsYAML(t *testing.T) {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 	var got map[string]any
-	if err := yaml.Unmarshal([]byte(out), &got); err != nil {
+	if err := gocodecyaml.New[map[string]any]().Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("output is not YAML: %v: %q", err, out)
 	}
 	for _, key := range []string{"tenants", "skipped", "failed"} {

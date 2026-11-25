@@ -253,7 +253,7 @@ func TestQUICTenant_AfterClose(t *testing.T) {
 	if _, err := tr.GetTenant(context.Background(), "t"); !errors.As(err, &ce) {
 		t.Errorf("GetTenant: %v", err)
 	}
-	if _, err := tr.ListTenants(context.Background()); !errors.As(err, &ce) {
+	if _, err := tr.ListTenants(context.Background(), nil); !errors.As(err, &ce) {
 		t.Errorf("ListTenants: %v", err)
 	}
 	if err := tr.DeleteTenant(context.Background(), "t"); !errors.As(err, &ce) {

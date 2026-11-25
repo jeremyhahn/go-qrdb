@@ -26,6 +26,7 @@ import (
 	"time"
 
 	quicgo "github.com/quic-go/quic-go"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -451,16 +452,10 @@ func TestReplicaForwardQUIC_ADeadTargetsConnectionIsNotReused(t *testing.T) {
 	}
 
 	b.stop()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if _, ok := c.srv.forwarder.cached(b.addr); !ok {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the connection to a dead target stayed open")
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	require.Eventuallyf(t, func() bool {
+		_, ok := c.srv.forwarder.cached(b.addr)
+		return !ok
+	}, 10*time.Second, 50*time.Millisecond, "the connection to a dead target stayed open")
 	if st, body := c.put(t, "kv.Put", putPayload(t)); st != wire.StatusOK || string(body) != "served by raft-c" {
 		t.Fatalf("forward after the target died = %s %q; want the next replica's", wire.StatusName(st), body)
 	}

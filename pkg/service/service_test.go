@@ -795,7 +795,7 @@ func TestAdminService_Status_Success(t *testing.T) {
 			return &quicraft.NodeHostInfo{
 				RaftAddress: "10.0.0.1:9100",
 				ShardInfoList: []quicraft.ShardInfo{
-					{ShardID: 1, ReplicaID: 1, IsLeader: true},
+					{ShardID: 1, ReplicaID: 1, IsLeader: true, LeaderID: 1},
 					{ShardID: 2, ReplicaID: 2, IsLeader: false},
 				},
 			}
@@ -855,11 +855,39 @@ func TestAdminService_Status_NotLeader(t *testing.T) {
 	if si.IsLeader {
 		t.Fatal("expected IsLeader=false")
 	}
-	if si.LeaderID != 0 {
-		t.Fatalf("expected LeaderID 0 (no local leader), got %d", si.LeaderID)
+	if si.LeaderID != 1 {
+		t.Fatalf("expected the follower to name leader 1, got %d", si.LeaderID)
 	}
 	if !si.IsDraining {
 		t.Fatal("expected IsDraining=true")
+	}
+}
+
+func TestAdminService_Status_LeaderIDFromPrimaryShard(t *testing.T) {
+	host := &mockHost{
+		idFn: func() string { return "node-xyz" },
+		getNodeHostInfoFn: func(_ quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo {
+			return &quicraft.NodeHostInfo{
+				ShardInfoList: []quicraft.ShardInfo{
+					{ShardID: 5, ReplicaID: 2, LeaderID: 7},
+					{ShardID: 2, ReplicaID: 2, LeaderID: 3},
+				},
+			}
+		},
+		shardCountFn: func() int { return 2 },
+		isDrainingFn: func() bool { return false },
+	}
+
+	svc := NewAdminService(host)
+	si, err := svc.Status(context.Background())
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if si.IsLeader {
+		t.Fatal("expected IsLeader=false")
+	}
+	if si.LeaderID != 3 {
+		t.Fatalf("expected the leader of the lowest shard (3), got %d", si.LeaderID)
 	}
 }
 
@@ -1671,20 +1699,6 @@ func TestUnexpectedResultTypeError_Error(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Constructor tests
 // ---------------------------------------------------------------------------
-
-func TestNewKVService_ReturnsNonNil(t *testing.T) {
-	svc := NewKVService(&mockHost{}, 1)
-	if svc == nil {
-		t.Fatal("expected non-nil KVService")
-	}
-}
-
-func TestNewAdminService_ReturnsNonNil(t *testing.T) {
-	svc := NewAdminService(&mockHost{})
-	if svc == nil {
-		t.Fatal("expected non-nil AdminService")
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Edge case tests

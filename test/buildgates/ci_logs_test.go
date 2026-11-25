@@ -40,14 +40,14 @@ import (
 	"strings"
 	"testing"
 
-	"gopkg.in/yaml.v3"
+	gocodecyaml "github.com/jeremyhahn/go-codec/pkg/yaml"
 )
 
 // credentialJobs are the jobs that run a step which could print the forge
 // credentials: a make target, a script, npm or curl. The runner injects the
 // credentials into every job (dependency-resolution.md §6), so each of these
 // masks them in its first step after the checkout.
-var credentialJobs = []string{"docker-build", "lint", "lint-gates", "image", "coverage", "coverage-merge", "test-clusterproof", "coverage-fts", "test-tags", "test-sdk", "test-typescript", "preflight", "integration-standalone", "integration-features", "fips", "soak"}
+var credentialJobs = []string{"docker-build", "lint", "lint-gates", "image", "coverage", "coverage-merge", "test-clusterproof", "coverage-fts", "test-tags", "test-sdk", "test-typescript", "preflight", "integration-standalone", "integration-features", "fips", "soak", "clusterproof-soak"}
 
 // unmaskedJobs are the jobs that hold the credentials but run only inline
 // steps that cannot print them, each with the reason. Every job in ci.yml is
@@ -56,6 +56,7 @@ var unmaskedJobs = map[string]string{
 	"ci-gate":            "prints only the jobs' results",
 	"deps-bump-dispatch": "no checkout and no forge credential; dispatches deps-bump.yml with github.token",
 	"signatures":         "uses only the read-only github.token to read commit metadata; prints signers and shas, no credential",
+	"row":                "ci-template v1.55: checks out the base with no persisted credential and reads the labels with the read-only github.token; prints the head branch, labels and base sha, no credential",
 }
 
 const maskStepName = "Mask the forge credentials"
@@ -88,7 +89,7 @@ type ciLogWorkflow struct {
 func parseLogWorkflow(t *testing.T, body string) ciLogWorkflow {
 	t.Helper()
 	var wf ciLogWorkflow
-	if err := yaml.Unmarshal([]byte(body), &wf); err != nil {
+	if err := gocodecyaml.New[ciLogWorkflow]().Unmarshal([]byte(body), &wf); err != nil {
 		t.Fatalf("parse workflow: %v", err)
 	}
 	return wf
@@ -273,7 +274,7 @@ func TestEnvPrintProblems_CanFail(t *testing.T) {
 		`printenv GIT_CONFIG_KEY_0`,
 		`set -x`,
 		`set -o xtrace`,
-		`cat .devcontainer/.env`,
+		`cat build/docker/devcontainer/.env`,
 		`cat "$RUNNER_TEMP/gomodauth.env"`,
 		`tail "$MODULE_ENV_FILE"`,
 	} {

@@ -130,11 +130,13 @@ func TestWatch_OtherTenantSealLeavesTheStream(t *testing.T) {
 	for range ch {
 	}
 	deadline := time.Now().Add(10 * time.Second)
+	poll := time.NewTicker(5 * time.Millisecond)
+	defer poll.Stop()
 	for streams.Len() != 0 {
 		if time.Now().After(deadline) {
 			t.Fatalf("subscriptions after the watch ended = %d, want 0", streams.Len())
 		}
-		time.Sleep(5 * time.Millisecond)
+		<-poll.C
 	}
 }
 

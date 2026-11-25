@@ -17,6 +17,7 @@ package errclass
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
@@ -32,6 +33,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
@@ -487,6 +489,19 @@ func TestClassify_ResolveErrorDefinitiveCausesAreNotUnavailable(t *testing.T) {
 	}
 }
 
+// TestClassify_CorruptMigrationClaimIsDataLoss pins that an undecodable
+// migration claim is DataLoss, not the retryable Unavailable of a store
+// that is not bound yet: a retry never repairs the record.
+func TestClassify_CorruptMigrationClaimIsDataLoss(t *testing.T) {
+	err := &credentials.OperationError{
+		Op:    "migrate",
+		Cause: &credentials.OperationError{Op: "decode migration claim", Cause: fmt.Errorf("%w: k", credentials.ErrCorruptMigrationClaim)},
+	}
+	if got := Classify(err); got != DataLoss {
+		t.Fatalf("Classify = %v, want DataLoss", got)
+	}
+}
+
 type selfClassedError struct{}
 
 func (selfClassedError) Error() string     { return "self" }
@@ -542,9 +557,9 @@ func TestClassify_OnboardingRows(t *testing.T) {
 		{"missing admin credential", &bootstrap.MissingAdminCredentialError{}, InvalidArgument},
 		{"conflicting admin credential", &bootstrap.ConflictingAdminCredentialError{}, InvalidArgument},
 		{"invalid trust anchors at provisioning", &bootstrap.InvalidTrustAnchorsError{Cause: errors.New("bad PEM")}, InvalidArgument},
-		{"incomplete tenant SO", &bootstrap.IncompleteTenantSOError{Field: "so_pin"}, InvalidArgument},
-		{"conflicting SO credential", &bootstrap.ConflictingSOCredentialError{}, InvalidArgument},
-		{"SO matches admin", &bootstrap.SOMatchesAdminError{Field: "key"}, InvalidArgument},
+		{"incomplete tenant SO", &firstboot.IncompleteSOError{Field: "so_pin"}, InvalidArgument},
+		{"conflicting SO credential", &firstboot.ConflictingSOCredentialError{}, InvalidArgument},
+		{"SO matches admin", &firstboot.SOMatchesAdminError{Field: "key"}, InvalidArgument},
 		{"SO partly matches admin", &bootstrap.SOPartlyMatchesAdminError{Field: "username"}, InvalidArgument},
 		{"SO credential rejected classifies as its cause", &bootstrap.SOCredentialRejectedError{Cause: &cert.InvalidCSRError{}}, InvalidArgument},
 		{"SO enrolment classifies as its cause", &bootstrap.TenantSOEnrollmentError{Op: "PIN commit", Cause: &bootstrap.MissingProvisioningSeamError{}}, Unimplemented},

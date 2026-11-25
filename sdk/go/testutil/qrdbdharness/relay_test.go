@@ -114,11 +114,13 @@ func waitForwarded(t *testing.T, relay *UDPRelay, want uint64) {
 func waitCount(t *testing.T, what string, count func() uint64, want uint64) {
 	t.Helper()
 	deadline := time.Now().Add(relayIOTimeout)
+	poll := time.NewTicker(time.Millisecond)
+	defer poll.Stop()
 	for count() < want {
 		if time.Now().After(deadline) {
 			t.Fatalf("relay %s %d datagrams, want at least %d", what, count(), want)
 		}
-		time.Sleep(time.Millisecond)
+		<-poll.C
 	}
 }
 

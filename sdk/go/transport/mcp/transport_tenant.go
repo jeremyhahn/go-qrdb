@@ -268,12 +268,16 @@ func (t *Transport) ReconcileDeletedTenants(ctx context.Context) (*transport.Rec
 }
 
 // ListTenants returns all tenants by calling the qrdb_tenant_list MCP tool.
-func (t *Transport) ListTenants(ctx context.Context) (*transport.ListTenantsResponse, error) {
+func (t *Transport) ListTenants(ctx context.Context, req *transport.ListTenantsRequest) (*transport.ListTenantsResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 
-	text, err := t.callTool(ctx, "qrdb_tenant_list", nil)
+	var args map[string]any
+	if s := req.GetStatus(); s != "" {
+		args = map[string]any{"status": string(s)}
+	}
+	text, err := t.callTool(ctx, "qrdb_tenant_list", args)
 	if err != nil {
 		return nil, &transport.RequestError{Method: "ListTenants", Err: err}
 	}
@@ -288,7 +292,7 @@ func (t *Transport) ListTenants(ctx context.Context) (*transport.ListTenantsResp
 		tenants[i] = mcpTenantInfoToTransport(&raw[i])
 	}
 
-	return &transport.ListTenantsResponse{Tenants: tenants}, nil
+	return transport.EnforceStatusFilter(req, &transport.ListTenantsResponse{Tenants: tenants})
 }
 
 // DeleteTenant removes a tenant by calling the qrdb_tenant_delete MCP tool.

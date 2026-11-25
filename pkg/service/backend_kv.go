@@ -15,6 +15,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"sort"
@@ -25,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
@@ -107,9 +109,67 @@ func (s *BackendKVService) translateSealed(err error) error {
 	return err
 }
 
+// refuseReserved refuses a key inside the verifiable log's reserved keyspace
+// (vlog.IsTableKey). A database's logs live in its tenant's Raft group, never
+// in its own backend, so the keyspace stays reserved there: a kv write would
+// plant a record the log service never wrote, and a kv read or scan must not
+// surface one.
+func refuseReserved(key []byte) error {
+	if vlog.IsTableKey(key) {
+		return &ReservedKeyError{Key: string(key)}
+	}
+	return nil
+}
+
+// withoutReserved drops every reserved verifiable-log key from keys.
+func withoutReserved(keys []string) []string {
+	out := keys[:0]
+	for _, k := range keys {
+		if !vlog.IsTableKey([]byte(k)) {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// reservedRanges are the half-open key ranges vlog.IsTableKey reserves.
+var reservedRanges = [][2][]byte{
+	{[]byte(vlog.TablePrefix), prefixUpperBound([]byte(vlog.TablePrefix))},
+	{[]byte(vlog.LogTablePrefix), prefixUpperBound([]byte(vlog.LogTablePrefix))},
+}
+
+// prefixUpperBound returns the smallest key greater than every key with
+// prefix p (nil when no such key exists).
+func prefixUpperBound(p []byte) []byte {
+	end := append([]byte(nil), p...)
+	for i := len(end) - 1; i >= 0; i-- {
+		if end[i] < 0xff {
+			end[i]++
+			return end[:i+1]
+		}
+	}
+	return nil
+}
+
+// refuseReservedRange refuses a delete range [start, end) (an empty end is
+// unbounded) that overlaps a reserved verifiable-log range.
+func refuseReservedRange(start, end []byte) error {
+	for _, r := range reservedRanges {
+		startsBeforeRangeEnd := r[1] == nil || bytes.Compare(start, r[1]) < 0
+		endsAfterRangeStart := len(end) == 0 || bytes.Compare(end, r[0]) > 0
+		if startsBeforeRangeEnd && endsAfterRangeStart {
+			return &ReservedKeyError{Key: string(r[0]), Range: true}
+		}
+	}
+	return nil
+}
+
 // Put stores a key-value pair via the underlying backend.
 func (s *BackendKVService) Put(ctx context.Context, key string, value []byte) error {
 	if err := s.refuseIfDropping(); err != nil {
+		return err
+	}
+	if err := refuseReserved([]byte(key)); err != nil {
 		return err
 	}
 	return s.translateSealed(s.backend.Put(ctx, []byte(key), value))
@@ -128,6 +188,9 @@ func (s *BackendKVService) Put(ctx context.Context, key string, value []byte) er
 // names the limitation instead of failing obscurely.
 func (s *BackendKVService) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
 	if err := s.refuseIfDropping(); err != nil {
+		return false, err
+	}
+	if err := refuseReserved([]byte(key)); err != nil {
 		return false, err
 	}
 	atomicBackend, ok := s.backend.(database.AtomicBackend)
@@ -152,6 +215,9 @@ func (s *BackendKVService) CompareAndDelete(ctx context.Context, key string, exp
 	if err := s.refuseIfDropping(); err != nil {
 		return false, err
 	}
+	if err := refuseReserved([]byte(key)); err != nil {
+		return false, err
+	}
 	atomicBackend, ok := s.backend.(database.AtomicBackend)
 	if !ok {
 		// Marked: the capability was refused up front, so the write is
@@ -174,6 +240,9 @@ func (s *BackendKVService) CompareAndSwap(ctx context.Context, key string, expec
 	if err := s.refuseIfDropping(); err != nil {
 		return false, err
 	}
+	if err := refuseReserved([]byte(key)); err != nil {
+		return false, err
+	}
 	atomicBackend, ok := s.backend.(database.AtomicBackend)
 	if !ok {
 		// Marked: the capability was refused up front, so the write is
@@ -191,6 +260,9 @@ func (s *BackendKVService) CompareAndSwap(ctx context.Context, key string, expec
 // Get retrieves a value by key. Returns KeyNotFoundError when the key
 // does not exist.
 func (s *BackendKVService) Get(ctx context.Context, key string) ([]byte, error) {
+	if err := refuseReserved([]byte(key)); err != nil {
+		return nil, err
+	}
 	v, err := s.backend.Get(ctx, []byte(key))
 	if err != nil {
 		return nil, s.translateSealed(err)
@@ -206,11 +278,17 @@ func (s *BackendKVService) Delete(ctx context.Context, key string) error {
 	if err := s.refuseIfDropping(); err != nil {
 		return err
 	}
+	if err := refuseReserved([]byte(key)); err != nil {
+		return err
+	}
 	return s.translateSealed(s.backend.Delete(ctx, []byte(key)))
 }
 
 func (s *BackendKVService) DeleteRange(ctx context.Context, start, end []byte) error {
 	if err := s.refuseIfDropping(); err != nil {
+		return err
+	}
+	if err := refuseReservedRange(start, end); err != nil {
 		return err
 	}
 	return s.translateSealed(s.backend.DeleteRange(ctx, start, end))
@@ -222,7 +300,7 @@ func (s *BackendKVService) List(ctx context.Context, prefix string) ([]string, e
 	if err != nil {
 		return nil, s.translateSealed(err)
 	}
-	filtered := FilterInternalKeys(keys, prefix)
+	filtered := withoutReserved(FilterInternalKeys(keys, prefix))
 	sort.Strings(filtered)
 	return filtered, nil
 }
@@ -235,6 +313,7 @@ func (s *BackendKVService) ListAll(ctx context.Context, prefix string) ([]string
 	if err != nil {
 		return nil, s.translateSealed(err)
 	}
+	keys = withoutReserved(keys)
 	sort.Strings(keys)
 	return keys, nil
 }
@@ -301,6 +380,9 @@ func (s *BackendKVService) ScanWithConsistency(ctx context.Context, prefix strin
 
 // ExistsWithConsistency checks whether a key exists. Consistency is ignored.
 func (s *BackendKVService) ExistsWithConsistency(ctx context.Context, key string, _ consistency.ReadOptions) (bool, error) {
+	if err := refuseReserved([]byte(key)); err != nil {
+		return false, err
+	}
 	v, err := s.backend.Get(ctx, []byte(key))
 	if err != nil {
 		return false, s.translateSealed(err)

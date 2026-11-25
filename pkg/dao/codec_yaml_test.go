@@ -1,5 +1,3 @@
-//go:build codec_yaml
-
 // Copyright (c) 2025 Jeremy Hahn
 // Copyright (c) 2025 Automate The Things, LLC
 //
@@ -16,6 +14,7 @@
 package dao
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -102,4 +101,23 @@ func TestCodecRoundTripYAML(t *testing.T) {
 	assert.Equal(t, original.ID, decoded.ID)
 	assert.Equal(t, original.Name, decoded.Name)
 	assert.Equal(t, original.Value, decoded.Value)
+}
+
+// TestCodecMarshalPanicRecoveredYAML proves a value yaml.v3 panics on
+// returns an encoding error instead of panicking.
+func TestCodecMarshalPanicRecoveredYAML(t *testing.T) {
+	c, err := NewCodec[map[string]any](CodecYAML)
+	require.NoError(t, err)
+
+	var data []byte
+	require.NotPanics(t, func() {
+		data, err = c.Marshal(map[string]any{"value": func() {}})
+	})
+	require.Error(t, err)
+	assert.Nil(t, data)
+	var cpe *CodecPanicError
+	require.True(t, errors.As(err, &cpe), "want *CodecPanicError, got %v", err)
+	assert.Equal(t, CodecYAML, cpe.Codec)
+	var sfe SerializationFailedError
+	assert.True(t, errors.As(err, &sfe), "want SerializationFailedError, got %T", err)
 }

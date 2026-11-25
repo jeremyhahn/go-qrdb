@@ -20,6 +20,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 )
 
@@ -137,17 +139,11 @@ func TestServer_Stop_WaitsForInFlightHandlerBeforeClosingItsConnection(t *testin
 // timing with a fixed delay.
 func awaitAcceptClosing(t *testing.T, srv *Server) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	require.Eventuallyf(t, func() bool {
 		srv.acceptClosingMu.Lock()
-		closing := srv.acceptClosing
-		srv.acceptClosingMu.Unlock()
-		if closing {
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatal("acceptClosing was never set")
+		defer srv.acceptClosingMu.Unlock()
+		return srv.acceptClosing
+	}, 5*time.Second, time.Millisecond, "acceptClosing was never set")
 }
 
 // TestServer_Stop_RefusesStreamsAcceptedAfterDrainBegins is the Codex-review

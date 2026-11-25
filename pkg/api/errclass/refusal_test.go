@@ -66,6 +66,7 @@ func TestRefusal_barrierSentinels(t *testing.T) {
 		seal.ErrCredentialMismatch:       transport.ReasonBarrierCredentialMismatch,
 		seal.ErrPassphraseChangeConflict: transport.ReasonBarrierPassphraseChangeConflict,
 		seal.ErrRootKeyWriteInProgress:   transport.ReasonBarrierRootKeyWriteInProgress,
+		seal.ErrUnsealFailed:             transport.ReasonBarrierUnsealFailed,
 	}
 	for sentinel, want := range cases {
 		reason, md, ok := Refusal(&wrappedError{sentinel})
@@ -75,6 +76,24 @@ func TestRefusal_barrierSentinels(t *testing.T) {
 		if got := transport.RefusalError(reason, md); !errors.Is(got, sentinel) {
 			t.Fatalf("RefusalError(%q) = %v, want %v", reason, got, sentinel)
 		}
+	}
+}
+
+func TestClassify_unsealFailedIsInternal(t *testing.T) {
+	err := &seal.UnsealError{Strategy: "passphrase", Err: seal.ErrSealed}
+	if got := Classify(err); got != Internal {
+		t.Fatalf("Classify(%v) = %v, want Internal", err, got)
+	}
+	reason, md, ok := Refusal(err)
+	if !ok || reason != transport.ReasonBarrierUnsealFailed {
+		t.Fatalf("Refusal(%v) = %q, %v, %v; want %q, true", err, reason, md, ok, transport.ReasonBarrierUnsealFailed)
+	}
+	got := transport.RefusalError(reason, nil)
+	if !errors.Is(got, seal.ErrUnsealFailed) {
+		t.Fatalf("RefusalError(%q) = %v, want it to match seal.ErrUnsealFailed", reason, got)
+	}
+	if errors.Is(got, seal.ErrCredentialMismatch) {
+		t.Fatalf("RefusalError(%q) = %v, must not match seal.ErrCredentialMismatch", reason, got)
 	}
 }
 

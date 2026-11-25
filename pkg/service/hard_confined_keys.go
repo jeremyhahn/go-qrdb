@@ -14,7 +14,11 @@
 
 package service
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
+)
 
 // hardConfinedPrefixes are "__sys:cluster_ca/" and "__sys:cert_ca/", the
 // sub-prefixes of the internal key namespace (see internal_keys.go) under
@@ -78,37 +82,105 @@ import "strings"
 // requires its at-rest protection to match Key A's, but nothing had
 // extended this embedded-transport guard to its prefix, so an embedded
 // caller could read a tenant's login CA private key directly by name.
-var hardConfinedPrefixes = []string{
+var hardConfinedPrefixes = append(append([]string(nil), hardConfinedMaterialPrefixes...), hardConfinedWholePrefixes...)
+
+// hardConfinedMaterialPrefixes are the CA prefixes of hardConfinedPrefixes,
+// under which only the "material" record is confined (see the doc comment
+// above).
+var hardConfinedMaterialPrefixes = []string{
 	InternalKeyPrefixSystem + "cluster_ca/",
 	InternalKeyPrefixSystem + "cert_ca/",
 }
 
-// hardConfinedWholePrefixes are internal sub-prefixes confined WHOLE on
-// the embedded transport: every key under one is refused to a point
-// read, write, delete, compare or transaction op, refused as an
-// enumeration or watch root, and filtered out of any broader sweep, with
-// no "/material" suffix test. "__sys:cert_delegation_policy/" duplicates
-// pkg/cert's unexported prefixDelegationPolicy, for the same reason
-// hardConfinedMaterialSuffix duplicates cakey's record name (go-qrdb#1187):
-// a standing delegation policy authorizes certificate issuance, so an
-// embedded caller holding only kv:put must not be able to write one
-// around CertEnrollmentService's own policy-admin check. pkg/cert's own
-// narrow self-scan of one tenant's policies (ListDelegationPolicies)
-// stays visible through FilterInternalMap's owner escape, exactly as
+// hardConfinedWholePrefixes are the prefixes of hardConfinedPrefixes under
+// which EVERY record is confined, not only a "material" one.
+// "__sys:credentials/" is the credential service's replicated store
+// (pkg/credentials, docs/credentials/architecture.md, "Storage"): each
+// record under it is a credential's current value, and is reached only through the credential verbs, which
+// authorize and audit every access. A point Get through the embedded KV
+// would read a value without credentials:retrieve and a Put would replace
+// one with no credential authorization or audit, so the whole prefix is
+// refused. The credential service's own store (pkg/server/lifecycle's
+// kvSealBackend) reaches it through the node's own KV service, never through
+// the embedded decorators, and its self-scan rooted at this prefix stays
+// unfiltered (isHardConfinedKeyForScan).
+// credentials.MigrationClaimPrefix holds the migration claims: each names
+// the copy a credential's migration settled on and whether its import is
+// complete, so a Put through the embedded KV would redirect or replay a
+// migration.
+// credentials.MigrationImportPrefix holds the migration import records: each
+// tells a retried conflict import that its copy is already committed, so one
+// deleted through the embedded KV would let the retry import a stale value
+// over a newer credential.
+// credentials.MetaKeyPrefix, VersionKeyPrefix and StagedKeyPrefix hold a
+// credential's metadata, its retained versions and its staged rotation
+// values: former and future secret values, and the record that says which
+// version is current and when it rotates.
+// "__sys:cert_delegation_policy/" duplicates pkg/cert's unexported
+// prefixDelegationPolicy, for the same reason hardConfinedMaterialSuffix
+// duplicates cakey's record name (go-qrdb#1187): a standing delegation
+// policy authorizes certificate issuance, so an embedded caller holding
+// only kv:put must not be able to write one around
+// CertEnrollmentService's own policy-admin check. pkg/cert's own narrow
+// self-scan of one tenant's policies (ListDelegationPolicies) stays
+// visible through FilterInternalMap's owner escape, exactly as
 // CACertPEMs' certificate scan does (isHardConfinedKeyForScan).
+// credentials.LayoutMovedPrefix holds the store-move markers: a marker
+// tells a later move pass the destination copy of a credential is
+// committed, so the pass deletes the source records without copying
+// them, and a marker forged through the embedded KV would destroy the
+// only copy; it also holds the move's conflict records, and one deleted
+// through the embedded KV would let a stale source copy bring a deleted
+// credential back. credentials.LayoutSourcePrefix holds a source store's
+// identity, which the marker keys name: a forged or replaced identity
+// would let a move pass claim another source's markers.
+//
+// The two first-boot handoff records are confined the same way, as exact
+// keys (no other "system/" key is): the pending system SO record
+// authorizes an SO enrolment (account, certificate, trust pool, PIN) and
+// the pending admin certificate record a bootstrap admin binding, so an
+// embedded caller holding only kv:put must not forge, read, replace or
+// delete either around roles:assign. First boot reads and writes them
+// through the node's raw store, never the wrapped one.
 var hardConfinedWholePrefixes = []string{
+	InternalKeyPrefixSystem + "credentials/",
+	credentials.MigrationClaimPrefix,
+	credentials.MigrationImportPrefix,
+	credentials.MetaKeyPrefix,
+	credentials.VersionKeyPrefix,
+	credentials.StagedKeyPrefix,
+	credentials.LayoutMovedPrefix,
+	credentials.LayoutSourcePrefix,
 	delegationPolicyConfinedPrefix,
+	pendingSystemSOConfinedKey,
+	pendingAdminCertConfinedKey,
 }
+
+// pendingSystemSOConfinedKey is the raw key of the ceremony -> first-boot
+// system SO handoff: tenant.IdentityNamespace(tenantid.System) +
+// firstboot.PendingSystemSOKey, as sdk/go/node's systemPendingAdminCertStore
+// composes it on the node's own shard. It is reproduced, not composed, for
+// the same reason as delegationPolicyConfinedPrefix;
+// TestPendingAdminCertStore_SystemSORecordIsHardConfined fails if they drift.
+const pendingSystemSOConfinedKey = "system/pending-system-so"
+
+// pendingAdminCertConfinedKey is the raw key of the ceremony -> first-boot
+// bootstrap admin certificate handoff: tenant.IdentityNamespace(tenantid.System)
+// + firstboot.PendingAdminCertKey, composed the same way as
+// pendingSystemSOConfinedKey; TestPendingAdminCertStore_SystemSORecordIsHardConfined
+// fails if they drift.
+const pendingAdminCertConfinedKey = "system/pending-admin-cert"
 
 // delegationPolicyConfinedPrefix duplicates pkg/cert's unexported
 // prefixDelegationPolicy; TestDelegationPolicy_RecordsSitUnderTheConfinedPrefix
 // fails if the two drift apart.
 const delegationPolicyConfinedPrefix = "__sys:cert_delegation_policy/"
 
-// hardConfinedAllPrefixes is hardConfinedPrefixes followed by
-// hardConfinedWholePrefixes: every confined namespace, for the
-// root, range and overlap tests below that do not look at a key's suffix.
-var hardConfinedAllPrefixes = append(append([]string{}, hardConfinedPrefixes...), hardConfinedWholePrefixes...)
+// hardConfinedAllPrefixes is every confined namespace, for the root,
+// range and overlap tests below that do not look at a key's suffix:
+// hardConfinedPrefixes already lists hardConfinedMaterialPrefixes followed
+// by hardConfinedWholePrefixes.
+var hardConfinedAllPrefixes = hardConfinedPrefixes
 
 // hardConfinedMaterialSuffix is cakey.SoftwareProvider's literal record
 // name for the private half of any CA it manages (keyMaterial in
@@ -120,8 +192,9 @@ const hardConfinedMaterialSuffix = "/material"
 
 // hardConfinedPrefixEnds are the exclusive upper bounds of every key under
 // the matching entry of hardConfinedPrefixes: the smallest string that
-// sorts after all of them. Incrementing the prefix's last byte is correct
-// here because that byte is '/' (0x2F, not 0xFF) and can never overflow.
+// sorts after all of them. Incrementing the entry's last byte is correct
+// here because that byte is always below 0xFF ('/' for the prefixes, 'o'
+// and 't' for the exact handoff keys) and so can never overflow.
 // Used only by hardConfinedRangeOverlaps/hardConfinedOverlapRanges to
 // decide whether a RANGE could reach a confined key at all -- a coarser,
 // prefix-only test than isHardConfinedKey's, deliberately: narrowing a
@@ -175,7 +248,7 @@ func isHardConfinedMaterialKey(key string) bool {
 	if !strings.HasSuffix(key, hardConfinedMaterialSuffix) {
 		return false
 	}
-	for _, p := range hardConfinedPrefixes {
+	for _, p := range hardConfinedMaterialPrefixes {
 		if strings.HasPrefix(key, p) {
 			return true
 		}
@@ -275,7 +348,8 @@ func hardConfinedOverlapRanges(start, end []byte) [][2][]byte {
 // enumeration whose own query root was scanPrefix. Every "material"
 // record is always stripped (isHardConfinedKey, unconditionally -- a
 // scan never has a legitimate reason to see a CA's private key). A
-// "certificate" record is stripped TOO, but ONLY when scanPrefix is
+// "certificate" record, like every record under hardConfinedWholePrefixes,
+// is stripped TOO, but ONLY when scanPrefix is
 // broader than (an ancestor of) the confined CA root key belongs to --
 // "__sys:" itself, or any other sweep wider than the CA subsystem's own
 // namespace -- never when scanPrefix is at or below that root, which is

@@ -1,0 +1,527 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//go:build qrdb_vlog
+
+package service
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
+)
+
+const barrierTenantPass = "vault-pass"
+
+// standaloneBarrierFixture is a standalone node's view of barrier tenant
+// "vault": a registry holding its barrier over a raw memory backend, and a
+// log service whose resolver has no home group for it.
+type standaloneBarrierFixture struct {
+	reg     *seal.BarrierRegistry
+	backend *seal.MemoryBackend
+	svc     LogService
+	route   *logRoute
+	ctx     context.Context
+	// wrap, when set, replaces the KV store the source hands out.
+	wrap func(kvstore.KVStore) kvstore.KVStore
+}
+
+// standaloneBarrierResolver resolves no group for any tenant, as a
+// standalone node's resolver does for a barrier tenant, and is the
+// fixture's LogBarrierStoreSource.
+type standaloneBarrierResolver struct{ f *standaloneBarrierFixture }
+
+func (r *standaloneBarrierResolver) ResolveAuditShard(_ context.Context, tenantID string) (Host, uint64, error) {
+	return nil, 0, &BarrierStoreUnavailableError{TenantID: tenantID}
+}
+
+func (r *standaloneBarrierResolver) TenantLogStore(_ context.Context, tenantID string) (LogBarrier, kvstore.KVStore, error) {
+	tb, err := r.f.reg.GetTenant(tenantID)
+	if err != nil {
+		return nil, nil, err
+	}
+	kv, err := seal.NewTenantBarrierKVStore(tb)
+	if err != nil {
+		return nil, nil, err
+	}
+	if r.f.wrap != nil {
+		kv = r.f.wrap(kv)
+	}
+	return tb, kv, nil
+}
+
+func newStandaloneBarrierFixture(t *testing.T) *standaloneBarrierFixture {
+	t.Helper()
+	return newStandaloneBarrierFixtureWithSigners(t, nil)
+}
+
+// newStandaloneBarrierFixtureWithSigners is newStandaloneBarrierFixture
+// with signers as the service's head-signer provider.
+func newStandaloneBarrierFixtureWithSigners(t *testing.T, signers vlog.HeadSignerProvider) *standaloneBarrierFixture {
+	t.Helper()
+	ctx := context.Background()
+	system, _ := newTestSoftwareBarrier(t)
+	if err := system.Initialize(ctx, seal.MustCredentials(ctx, []byte("system-pass"))); err != nil {
+		t.Fatalf("Initialize system: %v", err)
+	}
+	reg, err := seal.NewBarrierRegistry(testLogger(), system)
+	if err != nil {
+		t.Fatalf("NewBarrierRegistry: %v", err)
+	}
+	f := &standaloneBarrierFixture{reg: reg, ctx: tenant.WithTenantID(ctx, "vault")}
+	f.backend = f.registerVault(t)
+	svc, err := NewLogService(LogServiceConfig{Resolver: &standaloneBarrierResolver{f: f}, Databases: noDatabases(t), Signers: signers})
+	if err != nil {
+		t.Fatalf("NewLogService: %v", err)
+	}
+	f.svc, f.route = svc, svc.(*logService).route
+	return f
+}
+
+// registerVault registers and initializes a fresh barrier for "vault" over
+// a fresh memory backend, returning the backend.
+func (f *standaloneBarrierFixture) registerVault(t *testing.T) *seal.MemoryBackend {
+	t.Helper()
+	ctx := context.Background()
+	strategy, err := seal.NewSoftwareStrategy(ctx, []byte(barrierTenantPass))
+	if err != nil {
+		t.Fatalf("NewSoftwareStrategy: %v", err)
+	}
+	backend := seal.NewMemoryBackend()
+	tb, err := f.reg.RegisterTenant(ctx, "vault", backend, seal.BarrierConfig{}, strategy)
+	if err != nil {
+		t.Fatalf("RegisterTenant: %v", err)
+	}
+	if err := tb.Barrier().Initialize(ctx, seal.MustCredentials(ctx, []byte(barrierTenantPass))); err != nil {
+		t.Fatalf("Initialize vault: %v", err)
+	}
+	return backend
+}
+
+var barrierTenantRef = LogRef{Database: "ledger", Log: "events"}
+
+// createAndAppend creates the fixture's log and appends entries to it.
+func (f *standaloneBarrierFixture) createAndAppend(t *testing.T, entries [][]byte) *CreateLogResponse {
+	t.Helper()
+	created, err := f.svc.CreateLog(f.ctx, &CreateLogRequest{LogRef: barrierTenantRef, Origin: "example.test/vault/events", SigningKeyType: vlog.SignatureEd25519})
+	if err != nil {
+		t.Fatalf("CreateLog: %v", err)
+	}
+	appended, err := f.svc.Append(f.ctx, &AppendRequest{LogRef: barrierTenantRef, Entries: entries})
+	if err != nil || appended.FirstIndex != 0 || appended.Count != len(entries) {
+		t.Fatalf("Append = %+v, %v; want first index 0, count %d", appended, err, len(entries))
+	}
+	return created
+}
+
+// headSize returns the size of the fixture log's head.
+func (f *standaloneBarrierFixture) headSize(t *testing.T) uint64 {
+	t.Helper()
+	head, err := f.svc.Head(f.ctx, &HeadRequest{LogRef: barrierTenantRef})
+	if err != nil {
+		t.Fatalf("Head: %v", err)
+	}
+	return head.Head.Size
+}
+
+func TestLogService_ServesABarrierTenantOnItsStandaloneBarrier(t *testing.T) {
+	f := newStandaloneBarrierFixture(t)
+	entries := [][]byte{[]byte("vault-entry-alpha-0001"), []byte("vault-entry-bravo-0002"), []byte("vault-entry-charlie-0003")}
+	created := f.createAndAppend(t, entries)
+	got, err := f.svc.GetEntries(f.ctx, &GetEntriesRequest{LogRef: barrierTenantRef})
+	if err != nil || len(got.Entries) != len(entries) {
+		t.Fatalf("GetEntries = %+v, %v; want %d entries", got, err, len(entries))
+	}
+	for i, e := range got.Entries {
+		if e.Index != uint64(i) || !bytes.Equal(e.Body, entries[i]) {
+			t.Errorf("entry %d = %d %q, want %d %q", i, e.Index, e.Body, i, entries[i])
+		}
+	}
+	if size := f.headSize(t); size != 3 {
+		t.Fatalf("head size = %d, want 3", size)
+	}
+	if proof, err := f.svc.ProveInclusion(f.ctx, &InclusionRequest{LogRef: barrierTenantRef, Index: 1, Size: 3}); err != nil || len(proof.Hashes) == 0 {
+		t.Fatalf("ProveInclusion = %+v, %v; want a proof", proof, err)
+	}
+	if proof, err := f.svc.ProveConsistency(f.ctx, &ConsistencyRequest{LogRef: barrierTenantRef, Size1: 1, Size2: 3}); err != nil || len(proof.Hashes) == 0 {
+		t.Fatalf("ProveConsistency = %+v, %v; want a proof", proof, err)
+	}
+	signed, err := f.svc.SignHead(f.ctx, &SignHeadRequest{LogRef: barrierTenantRef})
+	if err != nil {
+		t.Fatalf("SignHead: %v", err)
+	}
+	pub, err := created.Key.Public()
+	if err != nil {
+		t.Fatalf("created key: %v", err)
+	}
+	if err := vlog.VerifyHead(pub, "example.test/vault/events", signed.Head); err != nil || signed.Head.Size != 3 {
+		t.Fatalf("VerifyHead(size %d) = %v; want a verified head of size 3", signed.Head.Size, err)
+	}
+
+	// Every record is in the reserved keyspace, none in the home store's.
+	tb, err := f.reg.GetTenant("vault")
+	if err != nil {
+		t.Fatalf("GetTenant: %v", err)
+	}
+	ctx := context.Background()
+	if keys, err := tb.List(ctx, barrierLogPrefix); err != nil || len(keys) == 0 {
+		t.Fatalf("List(%s) = %v, %v; want the log's records", barrierLogPrefix, keys, err)
+	}
+	if keys, err := tb.List(ctx, tenant.HomeName+"/"); err != nil || len(keys) != 0 {
+		t.Fatalf("List(%s/) = %v, %v; want nothing in the home keyspace", tenant.HomeName, keys, err)
+	}
+
+	// The raw backend holds no entry in plaintext.
+	raw, err := f.backend.List(ctx, "")
+	if err != nil || len(raw) == 0 {
+		t.Fatalf("raw List = %v, %v; want the barrier's records", raw, err)
+	}
+	for _, k := range raw {
+		v, err := f.backend.Get(ctx, k)
+		if err != nil {
+			t.Fatalf("raw Get(%s): %v", k, err)
+		}
+		for _, e := range entries {
+			if bytes.Contains(v, e) || bytes.Contains([]byte(k), e) {
+				t.Errorf("raw record %s holds %q in plaintext", k, e)
+			}
+		}
+	}
+}
+
+func TestLogService_SealedStandaloneBarrierTenantRefuses(t *testing.T) {
+	f := newStandaloneBarrierFixture(t)
+	f.createAndAppend(t, [][]byte{[]byte("one"), []byte("two"), []byte("three")})
+	if err := f.reg.SealTenant("vault"); err != nil {
+		t.Fatalf("SealTenant: %v", err)
+	}
+	if _, err := f.svc.Append(f.ctx, &AppendRequest{LogRef: barrierTenantRef, Entries: [][]byte{[]byte("sealed")}}); !errors.Is(err, tenant.ErrTenantSealed) {
+		t.Fatalf("Append on a sealed barrier = %v, want tenant.ErrTenantSealed", err)
+	}
+	if _, err := f.svc.Head(f.ctx, &HeadRequest{LogRef: barrierTenantRef}); !errors.Is(err, tenant.ErrTenantSealed) {
+		t.Fatalf("Head on a sealed barrier = %v, want tenant.ErrTenantSealed", err)
+	}
+	if s := f.route.barriers["vault"]; s == nil || s.logs.chain != nil {
+		t.Fatalf("store %v keeps its chain across the seal", s)
+	}
+	ctx := context.Background()
+	if err := f.reg.UnsealTenant(ctx, "vault", seal.MustCredentials(ctx, []byte(barrierTenantPass))); err != nil {
+		t.Fatalf("UnsealTenant: %v", err)
+	}
+	if size := f.headSize(t); size != 3 {
+		t.Fatalf("head size after unseal = %d, want 3", size)
+	}
+	appended, err := f.svc.Append(f.ctx, &AppendRequest{LogRef: barrierTenantRef, Entries: [][]byte{[]byte("four")}})
+	if err != nil || appended.FirstIndex != 3 {
+		t.Fatalf("Append after unseal = %+v, %v; want first index 3", appended, err)
+	}
+	if size := f.headSize(t); size != 4 {
+		t.Fatalf("head size = %d, want 4", size)
+	}
+}
+
+// fencingBarrierResolver is a standaloneBarrierResolver whose log store
+// admits operations as the tenant-host registry's home gate does: refused
+// while fenced, and counted in flight until released.
+type fencingBarrierResolver struct {
+	standaloneBarrierResolver
+	fenced   bool
+	admitted int
+	inflight int
+}
+
+var errLogFenced = errors.New("tenant migration in progress")
+
+func (r *fencingBarrierResolver) AdmitTenantLog(tenantID string) (func(), error) {
+	if tenantID != "vault" {
+		return nil, errors.New("admitted a tenant other than vault: " + tenantID)
+	}
+	if r.fenced {
+		return nil, errLogFenced
+	}
+	r.admitted++
+	r.inflight++
+	return func() { r.inflight-- }, nil
+}
+
+// TestLogService_StandaloneBarrierLogOpsPassTheHomeGate pins that every read
+// and write of a barrier tenant's standalone log store is admitted through
+// the source's LogStoreAdmission and released when it ends, and that a
+// fenced gate (an encryption migration) refuses them with its error.
+func TestLogService_StandaloneBarrierLogOpsPassTheHomeGate(t *testing.T) {
+	f := newStandaloneBarrierFixture(t)
+	gate := &fencingBarrierResolver{standaloneBarrierResolver: standaloneBarrierResolver{f: f}}
+	svc, err := NewLogService(LogServiceConfig{Resolver: gate, Databases: noDatabases(t)})
+	if err != nil {
+		t.Fatalf("NewLogService: %v", err)
+	}
+	f.svc, f.route = svc, svc.(*logService).route
+	f.createAndAppend(t, [][]byte{[]byte("one"), []byte("two")})
+	if size := f.headSize(t); size != 2 {
+		t.Fatalf("head size = %d, want 2", size)
+	}
+	if gate.admitted == 0 || gate.inflight != 0 {
+		t.Fatalf("gate admitted %d, %d still in flight; want admissions, all released", gate.admitted, gate.inflight)
+	}
+	gate.fenced = true
+	if _, err := f.svc.Append(f.ctx, &AppendRequest{LogRef: barrierTenantRef, Entries: [][]byte{[]byte("fenced")}}); !errors.Is(err, errLogFenced) {
+		t.Fatalf("Append through a fenced gate = %v, want the gate's error", err)
+	}
+	if _, err := f.svc.Head(f.ctx, &HeadRequest{LogRef: barrierTenantRef}); !errors.Is(err, errLogFenced) {
+		t.Fatalf("Head through a fenced gate = %v, want the gate's error", err)
+	}
+	gate.fenced = false
+	if size := f.headSize(t); size != 2 {
+		t.Fatalf("head size after the fence lifts = %d, want 2", size)
+	}
+}
+
+// A sealed standalone barrier refuses a create or a rotation before the
+// signer provider is asked for a key.
+func TestLogService_SealedStandaloneBarrierTenantMintsNoKey(t *testing.T) {
+	hsm := newHSMProvider()
+	f := newStandaloneBarrierFixtureWithSigners(t, hsm)
+	if _, err := f.svc.CreateLog(f.ctx, &CreateLogRequest{LogRef: barrierTenantRef, Origin: "vault/ledger/events", SigningKeyType: vlog.SignatureEd25519}); err != nil {
+		t.Fatalf("CreateLog: %v", err)
+	}
+	if err := f.reg.SealTenant("vault"); err != nil {
+		t.Fatalf("SealTenant: %v", err)
+	}
+	minted := len(hsm.created)
+	other := LogRef{Database: barrierTenantRef.Database, Log: "other"}
+	if _, err := f.svc.CreateLog(f.ctx, &CreateLogRequest{LogRef: other, Origin: "vault/ledger/other", SigningKeyType: vlog.SignatureEd25519}); !errors.Is(err, tenant.ErrTenantSealed) {
+		t.Fatalf("CreateLog on a sealed barrier = %v, want tenant.ErrTenantSealed", err)
+	}
+	if _, err := f.svc.RotateKey(f.ctx, &RotateKeyRequest{LogRef: barrierTenantRef, SigningKeyType: vlog.SignatureEd25519}); !errors.Is(err, tenant.ErrTenantSealed) {
+		t.Fatalf("RotateKey on a sealed barrier = %v, want tenant.ErrTenantSealed", err)
+	}
+	if len(hsm.created) != minted {
+		t.Fatalf("the provider minted %d keys for refused requests", len(hsm.created)-minted)
+	}
+}
+
+func TestLogService_RecycledStandaloneBarrierDropsTheChain(t *testing.T) {
+	f := newStandaloneBarrierFixture(t)
+	f.createAndAppend(t, [][]byte{[]byte("one")})
+	before := f.route.barriers["vault"]
+	if before == nil || before.logs.chain == nil {
+		t.Fatalf("store %v holds no chain after an append", before)
+	}
+	if err := f.reg.RemoveTenant("vault"); err != nil {
+		t.Fatalf("RemoveTenant: %v", err)
+	}
+	f.registerVault(t)
+	// The new barrier holds no log: an append must not continue the old
+	// barrier's chain.
+	if _, err := f.svc.Append(f.ctx, &AppendRequest{LogRef: barrierTenantRef, Entries: [][]byte{[]byte("two")}}); err == nil {
+		t.Fatal("Append on the recycled barrier succeeded; want the log absent")
+	}
+	after := f.route.barriers["vault"]
+	if after == nil || after == before {
+		t.Fatalf("store after recycle = %p, before = %p; want a fresh store", after, before)
+	}
+	f.createAndAppend(t, [][]byte{[]byte("fresh")})
+	if size := f.headSize(t); size != 1 {
+		t.Fatalf("head size on the recycled barrier = %d, want 1", size)
+	}
+}
+
+// TestLogService_ForgetTenantLogsReleasesTheStandaloneStore proves DELETE
+// TENANT's eviction drops the standalone barrier tenant's log store, chain
+// and staged bodies included, and that a later write builds a fresh one.
+func TestLogService_ForgetTenantLogsReleasesTheStandaloneStore(t *testing.T) {
+	f := newStandaloneBarrierFixture(t)
+	f.createAndAppend(t, [][]byte{[]byte("one")})
+	before := f.route.barriers["vault"]
+	if before == nil {
+		t.Fatal("no store for vault after an append")
+	}
+	forgetter, ok := f.svc.(interface{ ForgetTenantLogs(string) })
+	if !ok {
+		t.Fatalf("%T has no ForgetTenantLogs", f.svc)
+	}
+	forgetter.ForgetTenantLogs("vault")
+	if s, held := f.route.barriers["vault"]; held {
+		t.Fatalf("store %p still held after ForgetTenantLogs", s)
+	}
+	if _, err := f.svc.Append(f.ctx, &AppendRequest{LogRef: barrierTenantRef, Entries: [][]byte{[]byte("two")}}); err != nil {
+		t.Fatalf("Append after ForgetTenantLogs: %v", err)
+	}
+	after := f.route.barriers["vault"]
+	if after == nil || after == before {
+		t.Fatalf("store after forget = %p, before = %p; want a fresh store", after, before)
+	}
+	if size := f.headSize(t); size != 2 {
+		t.Fatalf("head size after forget = %d, want 2 (the log persists on the barrier)", size)
+	}
+}
+
+// TestLogService_FailedTenantLogStoreLookupEvicts proves a tenant whose
+// store lookup fails (its barrier removed) no longer keeps the store built
+// for it.
+func TestLogService_FailedTenantLogStoreLookupEvicts(t *testing.T) {
+	f := newStandaloneBarrierFixture(t)
+	f.createAndAppend(t, [][]byte{[]byte("one")})
+	if f.route.barriers["vault"] == nil {
+		t.Fatal("no store for vault after an append")
+	}
+	if err := f.reg.RemoveTenant("vault"); err != nil {
+		t.Fatalf("RemoveTenant: %v", err)
+	}
+	if _, err := f.svc.Append(f.ctx, &AppendRequest{LogRef: barrierTenantRef, Entries: [][]byte{[]byte("two")}}); err == nil {
+		t.Fatal("Append on a removed barrier succeeded; want the lookup refused")
+	}
+	if s, held := f.route.barriers["vault"]; held {
+		t.Fatalf("store %p still held after a failed lookup", s)
+	}
+}
+
+// migrateVault replaces vault's registered barrier the way an encryption
+// migration's commit does (seal.BarrierRegistry.ReplaceTenantBarrier):
+// the registry then holds a new, initialized barrier over its own backend,
+// and the old one stays unsealed.
+func (f *standaloneBarrierFixture) migrateVault(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+	b, _ := newTestSoftwareBarrier(t)
+	if err := b.Initialize(ctx, seal.MustCredentials(ctx, []byte(barrierTenantPass))); err != nil {
+		t.Fatalf("Initialize the replacement barrier: %v", err)
+	}
+	if err := f.reg.ReplaceTenantBarrier("vault", seal.WrapTenantBarrier("vault", b)); err != nil {
+		t.Fatalf("ReplaceTenantBarrier: %v", err)
+	}
+}
+
+// A create that resolved its standalone store before an encryption
+// migration replaced the tenant barrier, and proposes after, is refused
+// with ErrLogStoreReplaced and writes nothing through the old barrier; the
+// caller's retry lands on the replacement barrier.
+func TestLogService_StandaloneBarrierCreateAcrossMigrationRefusesTheReplacedBarrier(t *testing.T) {
+	signers := newPausingSigners()
+	f := newStandaloneBarrierFixtureWithSigners(t, signers)
+	ctx := context.Background()
+	before, err := f.backend.List(ctx, "")
+	if err != nil {
+		t.Fatalf("List the old backend: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.svc.CreateLog(f.ctx, &CreateLogRequest{LogRef: barrierTenantRef, Origin: "vault/ledger/events", SigningKeyType: vlog.SignatureEd25519})
+		done <- err
+	}()
+	<-signers.entered
+	f.migrateVault(t)
+	close(signers.release)
+	if err := <-done; !errors.Is(err, ErrLogStoreReplaced) {
+		t.Fatalf("CreateLog across the migration = %v, want ErrLogStoreReplaced", err)
+	}
+	after, err := f.backend.List(ctx, "")
+	if err != nil || len(after) != len(before) {
+		t.Fatalf("the old barrier's backend holds %d keys (%v), had %d: the create wrote through the replaced barrier", len(after), err, len(before))
+	}
+	f.createAndAppend(t, [][]byte{[]byte("after-migration")})
+	if size := f.headSize(t); size != 1 {
+		t.Fatalf("head size on the replacement barrier = %d, want 1", size)
+	}
+}
+
+// TestLogService_DropDatabaseLogsOnAStandaloneBarrierReclaimsEveryLog proves
+// a dropped database's logs on a barrier tenant's standalone store are
+// deleted: its logs no longer list, the old log reads as not found, a second
+// reclaim finds nothing left, and a database recreated under the same name
+// starts its log again at index 0.
+func TestLogService_DropDatabaseLogsOnAStandaloneBarrierReclaimsEveryLog(t *testing.T) {
+	f := newStandaloneBarrierFixture(t)
+	f.createAndAppend(t, [][]byte{[]byte("one"), []byte("two")})
+	second := LogRef{Database: barrierTenantRef.Database, Log: "second"}
+	if _, err := f.svc.CreateLog(f.ctx, &CreateLogRequest{LogRef: second, Origin: "example.test/vault/second", SigningKeyType: vlog.SignatureEd25519}); err != nil {
+		t.Fatalf("CreateLog second: %v", err)
+	}
+	if err := f.svc.(*logService).DropDatabaseLogs(f.ctx, "vault", barrierTenantRef.Database, ""); err != nil {
+		t.Fatalf("DropDatabaseLogs: %v", err)
+	}
+	listed, err := f.svc.ListLogs(f.ctx, &ListLogsRequest{Database: barrierTenantRef.Database})
+	if err != nil || len(listed.Logs) != 0 {
+		t.Fatalf("ListLogs after the drop = %+v, %v; want none", listed, err)
+	}
+	var notFound *vlog.LogNotFoundError
+	if _, err := f.svc.Head(f.ctx, &HeadRequest{LogRef: barrierTenantRef}); !errors.As(err, &notFound) {
+		t.Fatalf("Head of the dropped log = %v; want LogNotFoundError", err)
+	}
+	if err := f.svc.(*logService).DropDatabaseLogs(f.ctx, "vault", barrierTenantRef.Database, ""); err != nil {
+		t.Fatalf("DropDatabaseLogs of an already reclaimed database: %v", err)
+	}
+	f.createAndAppend(t, [][]byte{[]byte("fresh")})
+	if size := f.headSize(t); size != 1 {
+		t.Fatalf("head size of the recreated log = %d, want 1", size)
+	}
+}
+
+// unbatchedKVStore hides every capability of its store but KVStore.
+type unbatchedKVStore struct{ kvstore.KVStore }
+
+func TestLogService_StandaloneBarrierStoreWithoutAtomicBatchRefuses(t *testing.T) {
+	f := newStandaloneBarrierFixture(t)
+	f.wrap = func(kv kvstore.KVStore) kvstore.KVStore { return unbatchedKVStore{kv} }
+	_, err := f.svc.CreateLog(f.ctx, &CreateLogRequest{LogRef: barrierTenantRef, Origin: "example.test/vault/events", SigningKeyType: vlog.SignatureEd25519})
+	if !errors.Is(err, errBarrierLogStoreNotAtomic) {
+		t.Fatalf("CreateLog over an unbatched store = %v, want errBarrierLogStoreNotAtomic", err)
+	}
+	tb, err := f.reg.GetTenant("vault")
+	if err != nil {
+		t.Fatalf("GetTenant: %v", err)
+	}
+	if keys, err := tb.List(context.Background(), barrierLogPrefix); err != nil || len(keys) != 0 {
+		t.Fatalf("List(%s) = %v, %v; want nothing written", barrierLogPrefix, keys, err)
+	}
+}
+
+// homeGroupSource is a LogGroupSource with no standalone store.
+type homeGroupSource struct{}
+
+func (homeGroupSource) TenantHomeGroup(context.Context, string) (Host, uint64, error) {
+	return nil, 7, nil
+}
+
+// barrierStoreGroupSource is a LogGroupSource that is a LogBarrierStoreSource.
+type barrierStoreGroupSource struct {
+	homeGroupSource
+	tenantID string
+}
+
+func (s *barrierStoreGroupSource) TenantLogStore(_ context.Context, tenantID string) (LogBarrier, kvstore.KVStore, error) {
+	s.tenantID = tenantID
+	return nil, nil, errors.New("served")
+}
+
+func TestSystemShardAuditResolver_TenantLogStoreForwardsToItsGroups(t *testing.T) {
+	ctx := context.Background()
+	var unavailable *BarrierStoreUnavailableError
+	if _, _, err := NewSystemShardLogResolver(nil, 1, nil, homeGroupSource{}).TenantLogStore(ctx, "vault"); !errors.As(err, &unavailable) || unavailable.TenantID != "vault" {
+		t.Fatalf("TenantLogStore without a store source = %v, want BarrierStoreUnavailableError for vault", err)
+	}
+	if _, _, err := NewSystemShardLogResolver(nil, 1, nil, nil).TenantLogStore(ctx, "vault"); !errors.As(err, &unavailable) {
+		t.Fatalf("TenantLogStore without groups = %v, want BarrierStoreUnavailableError", err)
+	}
+	src := &barrierStoreGroupSource{}
+	if _, _, err := NewSystemShardLogResolver(nil, 1, nil, src).TenantLogStore(ctx, "vault"); err == nil || err.Error() != "served" || src.tenantID != "vault" {
+		t.Fatalf("TenantLogStore = %v (asked for %q), want the source's answer for vault", err, src.tenantID)
+	}
+}

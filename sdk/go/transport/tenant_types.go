@@ -167,9 +167,10 @@ type CreateTenantRequest struct {
 	AdminChainPEM string `json:"admin_chain_pem,omitempty"`
 	// TrustAnchorsPEM registers the tenant's trust anchors with it.
 	TrustAnchorsPEM string `json:"trust_anchors_pem,omitempty"`
-	// SOUsername is the tenant's security officer, optional: a second
-	// principal, distinct from the admin by name and by key, holding the
-	// tenant's so role alone. SOUsername, exactly one of SOCSRPEM and
+	// SOUsername is the tenant's security officer, optional: under strict
+	// separation of duties a second principal, distinct from the admin by
+	// name and by key; in the standard posture it may be the admin itself,
+	// by name and key together; holding the tenant's so role alone. SOUsername, exactly one of SOCSRPEM and
 	// SOCertPEM, and SOPin are given together or not at all.
 	SOUsername string `json:"so_username,omitempty"`
 	// SOCSRPEM is the SO's certificate signing request, signed as
@@ -272,9 +273,52 @@ type GetTenantResponse struct {
 	Tenant TenantInfo `json:"tenant"`
 }
 
+// ListTenantsRequest filters the tenant listing. An empty Status is no filter:
+// every tenant the caller may list. TenantStatusActive, TenantStatusSuspended
+// or TenantStatusDisabled lists only the tenants in that status; any other
+// value is refused by the server as an invalid status. Deleted tenants are not
+// a status: list them with ListDeletedTenants.
+type ListTenantsRequest struct {
+	Status TenantStatus `json:"status,omitempty"`
+}
+
+// GetStatus returns the requested status filter; empty for a nil request.
+func (r *ListTenantsRequest) GetStatus() TenantStatus {
+	if r == nil {
+		return ""
+	}
+	return r.Status
+}
+
 // ListTenantsResponse contains a list of tenants.
 type ListTenantsResponse struct {
 	Tenants []TenantInfo `json:"tenants"`
+}
+
+// EnforceStatusFilter refuses a tenant list that does not honour the
+// request's status filter. A server older than the filter drops it and
+// answers every tenant; returning that list as if filtered would mislead the
+// caller (SPEC rolling upgrades (5)). When req carries a status and any
+// returned tenant's status differs from it, including a tenant with no
+// status at all, the answer is refused with *CapabilityUnsupportedError and
+// no tenants. An unfiltered request, or an answer whose every tenant
+// matches, passes unchanged: a fully matching answer is the correct set
+// whatever the server did with the filter.
+func EnforceStatusFilter(req *ListTenantsRequest, resp *ListTenantsResponse) (*ListTenantsResponse, error) {
+	want := req.GetStatus()
+	if want == "" || resp == nil {
+		return resp, nil
+	}
+	for i := range resp.Tenants {
+		if got := resp.Tenants[i].Status; got != want {
+			return nil, &CapabilityUnsupportedError{
+				Message: "server ignored the tenant list status filter " + strconv.Quote(string(want)) +
+					": it answered tenant " + strconv.Quote(resp.Tenants[i].ID) +
+					" with status " + strconv.Quote(string(got)) + "; upgrade the server",
+			}
+		}
+	}
+	return resp, nil
 }
 
 // DeletedTenant is one retired tenant id and its deletion record. A deleted

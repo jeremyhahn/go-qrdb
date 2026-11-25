@@ -1,49 +1,4 @@
-# go-qrdb CI image: one service per shipped stage of the Dockerfile
-# beside this file (handbook devcontainer.md §3, §6).
-#
-#   integration  `make integration-test`: the integration suites, without -race, in
-#                the integration image, which carries the source. The Makefile
-#                builds that image (with the forge credentials as a BuildKit
-#                secret), names it in QRDB_IT_IMAGE and runs this file
-#                under its own project name, so two runs on one daemon never
-#                share a container, network or volume.
-#   toolchain    `make docker-run CMD='make lint'`: a command in the toolchain
-#                image, as the invoking user, with the checkout bind-mounted.
-#                For a workstation: on a CI runner the bind mount would resolve
-#                on the daemon's host, so CI copies the checkout in instead
-#                (scripts/in-toolchain-image.sh).
-#
-# SECURITY POSTURE (x-posture, both services):
-#
-#   cap_drop ALL, no cap_add: the suites bind loopback ports above 1024, write
-#     only their own temp directories and need no privilege.
-#   no-new-privileges: nothing can gain privilege through a setuid binary.
-#   Docker's default seccomp and AppArmor profiles stay on.
-#   user: never root, so no test passes only because root bypasses a check.
-#   read_only: the root filesystem, the baked source and the module cache
-#     cannot be written. Writable: /tmp and the build-cache volume.
-#   /tmp (HOME, go's $WORK, the test binaries and every t.TempDir) is an
-#     anonymous volume, on the daemon's disk as on a host, removed with the
-#     container by `run --rm` and `down --volumes`. Not a tmpfs: a size-capped
-#     one fills under a parallel cluster selection (run 54973, about 400 MB per
-#     three-node cluster: each node preallocates a 64 MiB WAL segment), and its
-#     pages count against mem_limit. Without nosuid and nodev, cap_drop ALL
-#     still leaves no CAP_MKNOD to make a device node and no-new-privileges
-#     still stops a setuid binary gaining privilege.
-#   network_mode none: the clusters talk QUIC over loopback only, and the
-#     modules are baked into the image with GOPROXY=off.
-#   init: a real PID 1 reaps children and forwards signals.
-#   pids_limit / mem_limit: bounds, so a runaway test cannot starve a shared
-#     runner host. No cpus cap: the clusters are CPU-bound and their
-#     election timeouts are tuned for an unthrottled host.
-#
-# ULIMITS:
-#   memlock 64 MiB soft = hard: finite and the same on every daemon, so the
-#     go-enclave locked memory the sealed replicas use has one ceiling
-#     everywhere rather than the daemon's default.
-#   core 1 MiB, non-zero: go-enclave lowers RLIMIT_CORE itself; a container
-#     that started at 0 would hide whether it did.
-#   nofile: explicit; a five-node cluster holds many sockets and WAL files.
+# go-qrdb CI image: one service per shipped stage of the Dockerfile beside this file.
 
 x-posture: &posture
   init: true
@@ -68,6 +23,38 @@ x-posture: &posture
       hard: 65536
   working_dir: /src
 
+# The analyser pins this image bakes in.
+x-go-scanner-pins: &go-scanner-pins
+  GOLANGCI_LINT_VERSION:
+  GOSEC_VERSION:
+  GOVULNCHECK_VERSION:
+  # Every service needs GO_IMAGE and TRIVY_IMAGE for the Dockerfile's global FROMs.
+  GO_IMAGE:
+  TRIVY_IMAGE:
+
+# The gpu stage bakes no trivy, so TRIVY_VERSION is withheld from it.
+x-scanner-pins: &scanner-pins
+  <<: *go-scanner-pins
+  TRIVY_VERSION:
+
+# Optional dev-cache passthrough.
+x-devcache-build-args: &devcache-build-args
+  DEVCACHE_APT_PROXY: ${DEVCACHE_APT_PROXY:-}
+  DEVCACHE_NPM_REGISTRY: ${DEVCACHE_NPM_REGISTRY:-}
+
+# GOPRIVATE keeps first-party modules off any proxy.
+x-devcache-env: &devcache-env
+  - DEVCACHE_APT_PROXY=${DEVCACHE_APT_PROXY:-}
+  - DEVCACHE_NPM_REGISTRY=${DEVCACHE_NPM_REGISTRY:-}
+  - DEVCACHE_GOPROXY=${DEVCACHE_GOPROXY:-}
+  - DEVCACHE_GOPRIVATE=${DEVCACHE_GOPRIVATE:-}
+  - DEVCACHE_DOCKER_MIRROR=${DEVCACHE_DOCKER_MIRROR:-}
+  - DEVCACHE_MCR_MIRROR=${DEVCACHE_MCR_MIRROR:-}
+  - DEVCACHE_GHCR_MIRROR=${DEVCACHE_GHCR_MIRROR:-}
+  - DEVCACHE_PLAYWRIGHT_HOST=${DEVCACHE_PLAYWRIGHT_HOST:-}
+  - GOPROXY=${DEVCACHE_GOPROXY:+${DEVCACHE_GOPROXY}|}https://proxy.golang.org
+
+# These services bind-mount the worktree over /workspace/go-qrdb.
 services:
   integration:
     <<: *posture
@@ -81,8 +68,7 @@ services:
       GOTOOLCHAIN: local
       GOFLAGS: -mod=readonly
       GOPROXY: "off"
-      # Empty is Go's default, the container's CPU limit; the Makefile's
-      # IT_GOMAXPROCS pins a count (#682 tuned the cluster suites on 8).
+      # Empty is Go's default; the Makefile's IT_GOMAXPROCS pins a count.
       GOMAXPROCS: ${QRDB_IT_GOMAXPROCS:-}
       HOME: /tmp
 
@@ -101,6 +87,169 @@ services:
       GOPROXY: "off"
       HOME: /tmp
 
+  devcontainer:
+    build:
+      context: ../../..
+      dockerfile: build/docker/devcontainer/Dockerfile
+      target: dev-deps
+      args:
+        <<: [*scanner-pins, *devcache-build-args]
+      secrets:
+        - gomodauth
+    image: go-qrdb-dev:latest
+    volumes:
+      - ../../..:/workspace/go-qrdb
+      - ../../../../go-quicraft:/workspace/go-quicraft
+      - ../../../../go-truststrap:/workspace/go-truststrap
+      - ../../../../go-objstore:/workspace/go-objstore
+      - go-build-cache:/root/.cache/go-build
+    working_dir: /workspace/go-qrdb
+    environment: *devcache-env
+    # No runtime module credentials: dev-deps bakes the module cache into the image.
+    cap_add:
+      - NET_ADMIN
+      - IPC_LOCK
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+
+  client-build:
+    build:
+      context: ../../..
+      dockerfile: build/docker/devcontainer/Dockerfile
+      target: dev-deps
+      args:
+        <<: [*scanner-pins, *devcache-build-args]
+      secrets:
+        - gomodauth
+    image: go-qrdb-dev:latest
+    volumes:
+      - ../../..:/workspace/go-qrdb
+      - ../../../../go-quicraft:/workspace/go-quicraft
+      - ../../../../go-truststrap:/workspace/go-truststrap
+      - ../../../../go-objstore:/workspace/go-objstore
+      - go-build-cache:/root/.cache/go-build
+    working_dir: /workspace/go-qrdb
+    environment:
+      # Optional dev-cache passthrough.
+      - DEVCACHE_APT_PROXY=${DEVCACHE_APT_PROXY:-}
+      - DEVCACHE_NPM_REGISTRY=${DEVCACHE_NPM_REGISTRY:-}
+      - DEVCACHE_GOPROXY=${DEVCACHE_GOPROXY:-}
+      - DEVCACHE_GOPRIVATE=${DEVCACHE_GOPRIVATE:-}
+      - DEVCACHE_DOCKER_MIRROR=${DEVCACHE_DOCKER_MIRROR:-}
+      - DEVCACHE_MCR_MIRROR=${DEVCACHE_MCR_MIRROR:-}
+      - DEVCACHE_GHCR_MIRROR=${DEVCACHE_GHCR_MIRROR:-}
+      - DEVCACHE_PLAYWRIGHT_HOST=${DEVCACHE_PLAYWRIGHT_HOST:-}
+      - GOPROXY=${DEVCACHE_GOPROXY:+${DEVCACHE_GOPROXY}|}https://proxy.golang.org
+    command: ["make", "_build-client"]
+
+  e2e:
+    build:
+      context: ../../..
+      dockerfile: build/docker/devcontainer/Dockerfile
+      target: dev-deps
+      args:
+        <<: [*scanner-pins, *devcache-build-args]
+      secrets:
+        - gomodauth
+    image: go-qrdb-e2e:latest
+    volumes:
+      - ../../..:/workspace/go-qrdb
+      - ../../../../go-quicraft:/workspace/go-quicraft
+      - ../../../../go-truststrap:/workspace/go-truststrap
+      - ../../../../go-objstore:/workspace/go-objstore
+      - go-build-cache:/root/.cache/go-build
+    working_dir: /workspace/go-qrdb
+    environment:
+      - CI=true
+      # Optional dev-cache passthrough.
+      - DEVCACHE_APT_PROXY=${DEVCACHE_APT_PROXY:-}
+      - DEVCACHE_NPM_REGISTRY=${DEVCACHE_NPM_REGISTRY:-}
+      - DEVCACHE_GOPROXY=${DEVCACHE_GOPROXY:-}
+      - DEVCACHE_GOPRIVATE=${DEVCACHE_GOPRIVATE:-}
+      - DEVCACHE_DOCKER_MIRROR=${DEVCACHE_DOCKER_MIRROR:-}
+      - DEVCACHE_MCR_MIRROR=${DEVCACHE_MCR_MIRROR:-}
+      - DEVCACHE_GHCR_MIRROR=${DEVCACHE_GHCR_MIRROR:-}
+      - DEVCACHE_PLAYWRIGHT_HOST=${DEVCACHE_PLAYWRIGHT_HOST:-}
+      - GOPROXY=${DEVCACHE_GOPROXY:+${DEVCACHE_GOPROXY}|}https://proxy.golang.org
+    command: ["make", "_test-e2e"]
+    # The e2e suite starts qrdbd; same locked-memory caps as devcontainer.
+    cap_add:
+      - IPC_LOCK
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+
+  devcontainer-gpu:
+    build:
+      context: ../../..
+      dockerfile: build/docker/devcontainer/Dockerfile
+      target: gpu
+      args: *go-scanner-pins
+      secrets:
+        - gomodauth
+    image: go-qrdb-gpu-dev:latest
+    volumes:
+      - ../../..:/workspace/go-qrdb
+      - ../../../../go-quicraft:/workspace/go-quicraft
+      - ../../../../go-truststrap:/workspace/go-truststrap
+      - ../../../../go-objstore:/workspace/go-objstore
+    working_dir: /workspace/go-qrdb
+    # qrdbd mlocks its protected memory.
+    cap_add:
+      - NET_ADMIN
+      - IPC_LOCK
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  benchmark:
+    build:
+      context: ../../..
+      dockerfile: build/docker/devcontainer/Dockerfile
+      target: dev-deps
+      args:
+        <<: [*scanner-pins, *devcache-build-args]
+      secrets:
+        - gomodauth
+    image: go-qrdb-dev:latest
+    volumes:
+      - ../../..:/workspace/go-qrdb
+      - ../../../../go-quicraft:/workspace/go-quicraft
+      - ../../../../go-truststrap:/workspace/go-truststrap
+      - ../../../../go-objstore:/workspace/go-objstore
+      - go-build-cache:/root/.cache/go-build
+    working_dir: /workspace/go-qrdb
+    environment: *devcache-env
+    # Module credentials for go test at run time; qrdbd mlocks its protected memory.
+    cap_add:
+      - NET_ADMIN
+      - IPC_LOCK
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+
+# The BuildKit secret that carries module credentials into `go mod download`.
+secrets:
+  gomodauth:
+    environment: GOMODAUTH
+
+# go-build-cache backs the dev-deps services' /root/.cache/go-build.
 volumes:
   gocache:
   toolchain-gocache:
+  go-build-cache:

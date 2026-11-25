@@ -37,6 +37,7 @@ type refusalEncoder func(err error) (reason string, md map[string]string, ok boo
 var refusals = []refusalEncoder{
 	replicaforward.Refusal,
 	factorConditionRefusal,
+	soRoleRefusal,
 	userConcurrentUpdateRefusal,
 	lockRefusal,
 	serverWriteRefusal,
@@ -95,6 +96,20 @@ func Refusal(err error) (reason string, md map[string]string, ok bool) {
 func factorConditionRefusal(err error) (string, map[string]string, bool) {
 	if e, ok := errors.AsType[*auth.FactorConditionFailedError](err); ok {
 		return auth.ReasonFactorConditionFailed, e.Metadata(), true
+	}
+	return "", nil, false
+}
+
+// soRoleRefusal carries the separation-of-duties refusals of the SO gate
+// and of compliance mode (go-qrdb#1129): an SO-exclusive act by a caller
+// that is not a separate SO, and a role write or act that would combine the
+// SO and Admin roles, naming the tenant.
+func soRoleRefusal(err error) (string, map[string]string, bool) {
+	if e, ok := errors.AsType[*auth.SORoleConflictError](err); ok {
+		return auth.ReasonSORoleConflict, e.Metadata(), true
+	}
+	if _, ok := errors.AsType[*auth.SORoleRequiredError](err); ok {
+		return auth.ReasonSORoleRequired, nil, true
 	}
 	return "", nil, false
 }
