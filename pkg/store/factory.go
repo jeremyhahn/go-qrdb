@@ -16,7 +16,6 @@ package store
 
 import (
 	"github.com/cockroachdb/pebble/v2"
-	"github.com/cockroachdb/pebble/v2/vfs"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
@@ -55,7 +54,7 @@ func WithMaxOpenFiles(n int) Option {
 // the state machine keeps nothing on disk. Pass it before WithEncryptor.
 func WithMemFS() Option {
 	return func(o *pebble.Options) {
-		o.FS = vfs.NewMem()
+		o.FS = pebblestore.NewMemFS()
 	}
 }
 
