@@ -313,7 +313,9 @@ func (s *embeddedKVStore) Exists(ctx context.Context, key string) (bool, error) 
 }
 
 // RegisterEntityIndexes maps each definition onto the engine's and registers
-// them; see NewEmbeddedKVStore for the definitions it refuses. Registration
+// them; see NewEmbeddedKVStore for the definitions it refuses. A newly
+// registered index is rebuilt from the stored records only: entries left in
+// the storage by an earlier store instance are cleared first. Registration
 // is all-or-nothing: when the backfill of any index cannot write an entry (a
 // unique index over existing duplicate values, or a storage write failure),
 // the error is returned and none of the call's indexes is registered.

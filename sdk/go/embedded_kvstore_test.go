@@ -1130,3 +1130,78 @@ func TestEmbeddedKVStore_NonJSONOverwriteReleasesCompoundTuple(t *testing.T) {
 		t.Fatalf("QueryCompoundIndex after Delete = %q, %v; want [seat/2]", keys, err)
 	}
 }
+
+func TestEmbeddedKVStore_ReopenOverwriteBeforeRegisterLeavesNoStaleEntry(t *testing.T) {
+	cases := map[string]struct {
+		def   kvstore.EntityIndex
+		a, b  []byte
+		query func(ctx context.Context, store KVStore, value string) ([][]byte, error)
+	}{
+		"single": {
+			def: kvstore.EntityIndex{FieldName: "Email", JSONFieldName: "email", Unique: true},
+			a:   []byte(`{"email":"a"}`),
+			b:   []byte(`{"email":"b"}`),
+			query: func(ctx context.Context, store KVStore, value string) ([][]byte, error) {
+				return store.QueryIndex(ctx, "member.Email", []byte(value))
+			},
+		},
+		"compound": {
+			def: kvstore.EntityIndex{FieldNames: []string{"Team", "State"}, JSONFieldNames: []string{"team", "state"}, Unique: true},
+			a:   []byte(`{"team":"t","state":"a"}`),
+			b:   []byte(`{"team":"t","state":"b"}`),
+			query: func(ctx context.Context, store KVStore, value string) ([][]byte, error) {
+				return store.QueryCompoundIndex(ctx, "member.Team_State", [][]byte{[]byte("t"), []byte(value)})
+			},
+		},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			dir := t.TempDir()
+			open := func() (KVStore, sdkstorage.Storage) {
+				t.Helper()
+				stg, err := sdkstorage.NewPebbleStorage(sdkstorage.DefaultPebbleConfig(dir))
+				if err != nil {
+					t.Fatalf("NewPebbleStorage: %v", err)
+				}
+				store, err := NewEmbeddedKVStore(stg)
+				if err != nil {
+					t.Fatalf("NewEmbeddedKVStore: %v", err)
+				}
+				return store, stg
+			}
+			register := func(store KVStore) {
+				t.Helper()
+				if err := store.RegisterEntityIndexes("member", []kvstore.EntityIndex{c.def}); err != nil {
+					t.Fatalf("RegisterEntityIndexes: %v", err)
+				}
+			}
+
+			store, stg := open()
+			register(store)
+			if err := store.Put(ctx, "member/1", c.a); err != nil {
+				t.Fatalf("Put member/1 a: %v", err)
+			}
+			if err := stg.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+
+			store, stg = open()
+			t.Cleanup(func() { _ = stg.Close() })
+			if err := store.Put(ctx, "member/1", c.b); err != nil {
+				t.Fatalf("Put member/1 b: %v", err)
+			}
+			register(store)
+
+			if keys, err := c.query(ctx, store, "a"); err != nil || len(keys) != 0 {
+				t.Fatalf("query a = %q, %v; want no keys", keys, err)
+			}
+			if keys, err := c.query(ctx, store, "b"); err != nil || len(keys) != 1 || string(keys[0]) != "member/1" {
+				t.Fatalf("query b = %q, %v; want [member/1]", keys, err)
+			}
+			if err := store.Put(ctx, "member/2", c.a); err != nil {
+				t.Fatalf("Put member/2 a: %v; want the released value admitted", err)
+			}
+		})
+	}
+}

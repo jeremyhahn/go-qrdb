@@ -3347,6 +3347,78 @@ func TestKVEngine_PutWithIndexes_NonJSONOverwriteReleasesCompoundUniqueValue(t *
 	})
 }
 
+func TestKVEngine_RegisterEntityType_ClearsPersistedEntriesOfANewIndex(t *testing.T) {
+	cases := map[string]struct {
+		def     EntityIndex
+		a, b    []byte
+		holders func(t *testing.T, eng *KVEngine, value []byte) [][]byte
+	}{
+		"single": {
+			def: EntityIndex{FieldName: "Email", JSONFieldName: "email", Unique: true},
+			a:   []byte(`{"email":"a@x"}`),
+			b:   []byte(`{"email":"b@x"}`),
+			holders: func(t *testing.T, eng *KVEngine, value []byte) [][]byte {
+				t.Helper()
+				ids, err := eng.indexes[eng.buildIndexName("member", "Email")].Get(value)
+				if err != nil {
+					t.Fatalf("Get %s: %v", value, err)
+				}
+				return ids
+			},
+		},
+		"compound": {
+			def: EntityIndex{FieldNames: []string{"Team", "State"}, JSONFieldNames: []string{"team", "state"}, Unique: true},
+			a:   []byte(`{"team":"t","state":"a"}`),
+			b:   []byte(`{"team":"t","state":"b"}`),
+			holders: func(t *testing.T, eng *KVEngine, value []byte) [][]byte {
+				t.Helper()
+				ids, err := eng.compoundIndexes[eng.buildCompoundIndexName("member", []string{"Team", "State"})].GetCompound([][]byte{[]byte("t"), value})
+				if err != nil {
+					t.Fatalf("GetCompound %s: %v", value, err)
+				}
+				return ids
+			},
+		},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			stg := memory.NewStorage()
+			t.Cleanup(func() { _ = stg.Close() })
+
+			first := NewKVEngine(stg, WithKVLogger(testLogger(t)))
+			if err := first.RegisterEntityType("member", []EntityIndex{c.def}); err != nil {
+				t.Fatalf("RegisterEntityType: %v", err)
+			}
+			if err := first.PutWithIndexes([]byte("member/1"), c.a); err != nil {
+				t.Fatalf("PutWithIndexes member/1 a: %v", err)
+			}
+
+			// A second engine over the same storage starts with an empty catalog.
+			second := NewKVEngine(stg, WithKVLogger(testLogger(t)))
+			if err := second.PutWithIndexes([]byte("member/1"), c.b); err != nil {
+				t.Fatalf("PutWithIndexes member/1 b: %v", err)
+			}
+			if err := second.RegisterEntityType("member", []EntityIndex{c.def}); err != nil {
+				t.Fatalf("RegisterEntityType again: %v", err)
+			}
+
+			valA, valB := []byte("a@x"), []byte("b@x")
+			if name == "compound" {
+				valA, valB = []byte("a"), []byte("b")
+			}
+			if ids := c.holders(t, second, valA); len(ids) != 0 {
+				t.Errorf("holders of a = %q, want none", ids)
+			}
+			if ids := c.holders(t, second, valB); len(ids) != 1 || string(ids[0]) != "member/1" {
+				t.Errorf("holders of b = %q, want [member/1]", ids)
+			}
+			if err := second.PutWithIndexes([]byte("member/2"), c.a); err != nil {
+				t.Errorf("PutWithIndexes member/2 a: %v, want the released value admitted", err)
+			}
+		})
+	}
+}
+
 func TestKVEngine_DeleteWithIndexes_RemovesKey(t *testing.T) {
 	stg := memory.NewStorage()
 	defer func() { _ = stg.Close() }()

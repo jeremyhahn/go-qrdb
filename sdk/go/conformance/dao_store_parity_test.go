@@ -273,6 +273,43 @@ func TestDAOStoreParity(t *testing.T) {
 	}
 }
 
+// TestDAOStoreParity_ReRegisterAfterOverwriteLeavesNoStaleEntry registers
+// member's indexes again after member/1 moved from email a to b; every store
+// then answers a with no member and admits a second member claiming a.
+func TestDAOStoreParity_ReRegisterAfterOverwriteLeavesNoStaleEntry(t *testing.T) {
+	const want = "a=[] b=[1:b] save2=ok a=[2:a]"
+	run := func(t *testing.T, store sdk.KVStore) string {
+		t.Helper()
+		ctx := context.Background()
+		members := newParityDAOs(t, store).members
+		if err := members.Save(ctx, &daoMember{ID: 1, Email: "a", Team: "red"}); err != nil {
+			t.Fatalf("Save member/1 a: %v", err)
+		}
+		if err := members.Save(ctx, &daoMember{ID: 1, Email: "b", Team: "red"}); err != nil {
+			t.Fatalf("Save member/1 b: %v", err)
+		}
+		members = newParityDAOs(t, store).members
+		a := memberIDs(members.QueryByIndex(ctx, "Email", "a"))
+		b := memberIDs(members.QueryByIndex(ctx, "Email", "b"))
+		save2 := parityOutcome(members.Save(ctx, &daoMember{ID: 2, Email: "a", Team: "red"}))
+		a2 := memberIDs(members.QueryByIndex(ctx, "Email", "a"))
+		return fmt.Sprintf("a=%s b=%s save2=%s a=%s", a, b, save2, a2)
+	}
+
+	t.Run(embeddedStoreKind, func(t *testing.T) {
+		if got := run(t, newEmbeddedParityStore(t)); got != want {
+			t.Fatalf("outcome = %q, want %q", got, want)
+		}
+	})
+	for _, c := range serviceStoreCells() {
+		t.Run(c.name(), func(t *testing.T) {
+			if got := run(t, bootServiceStore(t, c)); got != want {
+				t.Fatalf("outcome = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 // TestDAOStoreParity_ClientStore runs the same table over the third DAO
 // store, the client adapter a remote embedder holds (sdk.NewKVStoreAdapter,
 // the store Client.KVStore returns), on every transport of the matrix: a

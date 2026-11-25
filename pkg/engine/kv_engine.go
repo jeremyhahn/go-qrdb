@@ -1399,6 +1399,11 @@ func (e *KVEngine) RegisterEntityType(entityType string, indexes []EntityIndex) 
 		e.indexScopes[idxName] = ComposeIndexScope(idxName, entityScope)
 		addedSingle = append(addedSingle, idxName)
 
+		// A newly registered index is rebuilt from the stored records only.
+		if cErr := idx.Clear(); cErr != nil {
+			return fmt.Errorf("register index %s: clear: %w", idxName, cErr)
+		}
+
 		// Backfill from existing keys matching the entity prefix.
 		prefix := []byte(entityScope)
 		if bErr := BackfillIndexWithPrefix(e.stg, idx, def.JSONFieldName, prefix); bErr != nil {
@@ -1446,6 +1451,12 @@ func (e *KVEngine) registerCompoundIndex(entityType string, def EntityIndex, log
 	e.compoundIndexes[idxName] = idx
 	e.compoundIndexFields[idxName] = def.JSONFieldNames
 	e.compoundIndexScopes[idxName] = ComposeIndexScope(idxName, entityScope)
+
+	// A newly registered index is rebuilt from the stored records only.
+	if cErr := idx.Clear(); cErr != nil {
+		cErr = fmt.Errorf("register compound index %s: clear: %w", idxName, cErr)
+		return "", errors.Join(cErr, e.unregisterCompoundIndex(idxName))
+	}
 
 	// Backfill from existing data. On failure the index is cleared and
 	// unregistered, so a retry builds it again instead of keeping an
