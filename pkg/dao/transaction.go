@@ -62,6 +62,14 @@ type DAOTransaction[E Entity] interface {
 
 	// Commit atomically applies all queued operations.
 	// After commit, the transaction is closed and cannot be reused.
+	//
+	// The ops go to the store as ONE kvstore.MultiGuardedBatchKVStore
+	// PutAllIfAllUnchanged batch: all are applied or none. Refusals, each
+	// leaving the store unchanged: a failed condition (ConditionFailedError),
+	// a record changed after its condition was evaluated
+	// (TransactionCommitError wrapping kvstore.ErrNotApplied), an ID
+	// collision (*IDCollisionError) and a store without the batch interface
+	// (*AtomicBatchUnsupportedError; there is no sequential fallback).
 	Commit(ctx context.Context) error
 
 	// Rollback discards all queued operations.
