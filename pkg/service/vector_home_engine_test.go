@@ -23,6 +23,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -80,6 +81,27 @@ func TestVectorService_IsolatedTenantVectorsLiveInHomeStore(t *testing.T) {
 	_, err = svc.DeleteNamespace(ctx, &DeleteNamespaceRequest{Namespace: "docs"})
 	require.NoError(t, err)
 	require.Empty(t, vectorHomeKeys(t, home), "deleting the namespace leaves no vector key in the home store")
+}
+
+// TestVectorService_CachedSearchRunsTheHomeCheck: once a namespace's index is
+// cached, a search for a tenant its home refuses is refused, as the first
+// search would be.
+func TestVectorService_CachedSearchRunsTheHomeCheck(t *testing.T) {
+	homes := newFakeVectorHomes()
+	svc, _ := newHomedVectorService(t, homes)
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+
+	exerciseVectorNamespace(t, ctx, svc)
+
+	homes.mu.Lock()
+	homes.resolveErr = errors.New("home unavailable")
+	homes.mu.Unlock()
+	search := &SearchSimilarRequest{Namespace: "docs", QueryVector: []float32{1, 0}, K: 1}
+	_, err := svc.SearchSimilar(ctx, search)
+	var homeErr *TenantVectorHomeError
+	require.ErrorAs(t, err, &homeErr, "a cached search for a refused tenant")
+	_, err = svc.SearchByID(ctx, &SearchByIDRequest{Namespace: "docs", ID: 1, K: 1})
+	require.ErrorAs(t, err, &homeErr, "a cached search by ID for a refused tenant")
 }
 
 func TestVectorService_PrefixTenantStaysNodeWide(t *testing.T) {

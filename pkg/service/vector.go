@@ -808,6 +808,10 @@ func (v *vectorService) loadNamespaces() error {
 
 // ensureHNSWIndex ensures that an HNSW index exists for the given namespace.
 func (v *vectorService) ensureHNSWIndex(ctx context.Context, namespace string) (interfaces.HNSWIndex, error) {
+	// A cached index is served only to a tenant its home store admits, as an uncached one is.
+	if _, err := v.storageForNamespace(ctx, namespace); err != nil {
+		return nil, err
+	}
 	return v.ensureHNSWIndexFrom(ctx, v.routed, namespace)
 }
 
