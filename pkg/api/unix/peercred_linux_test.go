@@ -10,7 +10,9 @@ import (
 	"sync"
 	"testing"
 
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
@@ -99,6 +101,76 @@ func TestUnixPeerCredential_AddrStringUnchanged(t *testing.T) {
 	}
 	if got.String() != got.Addr.String() || got.Network() != got.Addr.Network() {
 		t.Fatalf("socket peer address %s/%s differs from the accepted conn's %s/%s", got.Network(), got.String(), got.Addr.Network(), got.Addr.String())
+	}
+}
+
+func TestPeerCredCredentials_CloneKeepsWrapper(t *testing.T) {
+	creds := newPeerCredCredentials(credentials.NewTLS(selfSignedTLSConfig(t)))
+	clone := creds.Clone()
+	if _, ok := clone.(*peerCredCredentials); !ok {
+		t.Fatalf("Clone returned %T, want *peerCredCredentials", clone)
+	}
+	if clone == creds {
+		t.Fatal("Clone returned the same credentials value")
+	}
+}
+
+func TestPeerCredAddr_NilAddr(t *testing.T) {
+	a := &peerCredAddr{cred: auth.PeerCredential{UID: 1}}
+	if a.Network() != "unix" {
+		t.Fatalf("Network() = %q, want unix", a.Network())
+	}
+	if a.String() != "" {
+		t.Fatalf("String() = %q, want empty", a.String())
+	}
+}
+
+type ctxServerStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (s *ctxServerStream) Context() context.Context { return s.ctx }
+
+func TestPeerCredStreamInterceptor(t *testing.T) {
+	cred := auth.PeerCredential{UID: 42}
+	withCred := peer.NewContext(context.Background(), &peer.Peer{Addr: &peerCredAddr{cred: cred}})
+	plain := peer.NewContext(context.Background(), &peer.Peer{Addr: &net.UnixAddr{Name: "/run/qrdb.sock", Net: "unix"}})
+
+	tests := []struct {
+		name     string
+		ctx      context.Context
+		wantWrap bool
+	}{
+		{name: "no peer", ctx: context.Background()},
+		{name: "plain address", ctx: plain},
+		{name: "peer credential", ctx: withCred, wantWrap: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ss := &ctxServerStream{ctx: tc.ctx}
+			var got grpc.ServerStream
+			err := peerCredStreamInterceptor(nil, ss, nil, func(_ any, s grpc.ServerStream) error {
+				got = s
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("interceptor: %v", err)
+			}
+			if !tc.wantWrap {
+				if got != ss {
+					t.Fatalf("handler got %T, want the original stream", got)
+				}
+				return
+			}
+			if got == ss {
+				t.Fatal("handler got the original stream, want a wrapped one")
+			}
+			bound, ok := auth.PeerCredentialFromContext(got.Context())
+			if !ok || bound.UID != cred.UID {
+				t.Fatalf("stream context credential = %+v (ok=%v), want UID %d", bound, ok, cred.UID)
+			}
+		})
 	}
 }
 
