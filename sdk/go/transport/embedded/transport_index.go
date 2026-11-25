@@ -39,9 +39,6 @@ func (t *Transport) IndexCreate(ctx context.Context, name, fieldName string, con
 	if err := t.authorize(ctx, "IndexCreate"); err != nil {
 		return err
 	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	if t.indexSvc == nil {
 		return &NilServiceError{Service: "IndexServicer"}
 	}
@@ -73,9 +70,6 @@ func (t *Transport) IndexDrop(ctx context.Context, name string) error {
 	if err := t.authorize(ctx, "IndexDrop"); err != nil {
 		return err
 	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	if t.indexSvc == nil {
 		return &NilServiceError{Service: "IndexServicer"}
 	}
@@ -91,9 +85,6 @@ func (t *Transport) IndexQuery(ctx context.Context, indexName, value string) (*t
 	}
 	if err := t.authorize(ctx, "IndexQuery"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.indexSvc == nil {
 		return nil, &NilServiceError{Service: "IndexServicer"}
@@ -118,9 +109,6 @@ func (t *Transport) IndexScan(ctx context.Context, indexName string, start, end 
 	}
 	if err := t.authorize(ctx, "IndexScan"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.indexSvc == nil {
 		return nil, &NilServiceError{Service: "IndexServicer"}
@@ -155,9 +143,6 @@ func (t *Transport) IndexList(ctx context.Context) (*transport.IndexListResponse
 	}
 	if err := t.authorize(ctx, "IndexList"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.indexSvc == nil {
 		return nil, &NilServiceError{Service: "IndexServicer"}

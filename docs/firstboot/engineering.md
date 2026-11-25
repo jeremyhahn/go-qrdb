@@ -185,6 +185,7 @@ a second, unrelated credential bound instead.
 | `NotLeader` | a follower attempted creation | n/a — it waits for replication |
 | `AdminCertBindingRequiredError` | `MTLSBindingPolicy` is `required` and the admin could not log in by certificate: `Reason` is one of `AdminBindingNoBinder`, `AdminBindingNone`, `AdminBindingAllExpired`, `AdminBindingMissing`, `AdminBindingCannotAuthenticate` (lifecycle forbids login), `AdminBindingMTLSNotPermitted` (method policy excludes mtls), `AdminBindingUnverifiable` | **only `AdminBindingNoBinder`, and only when a credential path IS otherwise configured** (a wiring bug: nothing would ever bind the certificate a path would issue) — see below |
 | `AdminLookupError` | the admin could not be read while checking that posture | **yes** — no verdict is not a pass |
+| `MissingSOSeamError` | the SO bootstrap pre-flight finds a seam the SO's enrolment needs unwired (the list is in [architecture.md](architecture.md)) | **yes** — nothing is written; the caller wires the seam |
 
 Of the reasons a certificate can fix, only ONE refuses before any write:
 `AdminBindingNoBinder`, and only when a credential path (a CA, a Signer with

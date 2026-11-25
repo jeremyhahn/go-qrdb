@@ -17,11 +17,13 @@ package mcp
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	mcpapi "github.com/jeremyhahn/go-qrdb/pkg/api/mcp"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -45,6 +47,8 @@ type mockCredentialSvc struct {
 	retrieveVersionErr error
 	listVersionsErr    error
 	gcExpiredErr       error
+	setPolicyErr       error
+	conflictsErr       error
 
 	// Configurable strategy / responses.
 	strategy       string
@@ -64,6 +68,8 @@ type mockCredentialSvc struct {
 	lastRetrieveVersion  uint64
 	lastListVersionsName string
 	lastGCName           string
+	lastPolicyName       string
+	lastPolicy           credentials.RotationPolicy
 }
 
 var _ service.CredentialServicer = (*mockCredentialSvc)(nil)
@@ -181,6 +187,44 @@ func (m *mockCredentialSvc) CredentialGCExpired(_ context.Context, name string) 
 		return 0, m.gcExpiredErr
 	}
 	return m.reapCount, nil
+}
+
+func (m *mockCredentialSvc) CredentialSetRotationPolicy(_ context.Context, name string, policy credentials.RotationPolicy) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastPolicyName = name
+	m.lastPolicy = policy
+	if m.setPolicyErr != nil {
+		return m.setPolicyErr
+	}
+	if name == "missing" {
+		return credentials.ErrCredentialNotFound
+	}
+	return nil
+}
+
+func (m *mockCredentialSvc) CredentialRotationPolicy(_ context.Context, name string) (*service.CredentialRotationPolicyStatus, error) {
+	if name == "missing" {
+		return nil, credentials.ErrCredentialNotFound
+	}
+	return &service.CredentialRotationPolicyStatus{Policy: credentials.RotationPolicy{Enabled: true, Interval: time.Hour, RetainVersions: 2}}, nil
+}
+
+func (m *mockCredentialSvc) CredentialMigrationConflicts(_ context.Context) ([]credentials.CredentialMigrationConflictError, error) {
+	if m.conflictsErr != nil {
+		return nil, m.conflictsErr
+	}
+	return []credentials.CredentialMigrationConflictError{{Name: "db", Value: true, Policy: true}}, nil
+}
+
+func (m *mockCredentialSvc) CredentialResolveMigrationConflict(_ context.Context, name string, how credentials.MigrationResolution) error {
+	if how != credentials.MigrationImport && how != credentials.MigrationDiscard {
+		return credentials.ErrInvalidMigrationResolution
+	}
+	if name == "missing" {
+		return credentials.ErrMigrationConflictNotFound
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -522,6 +566,166 @@ func TestCredentialRotate_ServiceError(t *testing.T) {
 	var reqErr *transport.RequestError
 	if !errors.As(err, &reqErr) {
 		t.Errorf("expected *transport.RequestError, got %T", err)
+	}
+}
+
+func TestCredentialSetRotationPolicy_Success(t *testing.T) {
+	svc := newMockCredentialSvc()
+	tr, cleanup := connectCredentialInProcess(t, svc)
+	defer cleanup()
+
+	if err := tr.CredentialSetRotationPolicy(context.Background(), &transport.CredentialSetRotationPolicyRequest{
+		Name: "db-password", Enabled: true, Interval: "24h", RetainVersions: 3,
+	}); err != nil {
+		t.Fatalf("CredentialSetRotationPolicy: %v", err)
+	}
+
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	want := credentials.RotationPolicy{Enabled: true, Interval: 24 * time.Hour, RetainVersions: 3}
+	if svc.lastPolicyName != "db-password" || svc.lastPolicy != want {
+		t.Errorf("service saw %q %+v, want db-password %+v", svc.lastPolicyName, svc.lastPolicy, want)
+	}
+}
+
+func TestCredentialSetRotationPolicy_InvalidPolicy(t *testing.T) {
+	svc := newMockCredentialSvc()
+	svc.setPolicyErr = &credentials.InvalidRotationPolicyError{Reason: "interval must be positive"}
+	tr, cleanup := connectCredentialInProcess(t, svc)
+	defer cleanup()
+
+	err := tr.CredentialSetRotationPolicy(context.Background(), &transport.CredentialSetRotationPolicyRequest{
+		Name: "n", Enabled: true, Interval: "0s", RetainVersions: 1,
+	})
+	// CredentialSetRotationPolicy's RequestError wraps the tool call's, which carries the code.
+	var outer, inner *transport.RequestError
+	if !errors.As(err, &outer) || !errors.As(outer.Err, &inner) || inner.StatusCode != int(wire.CodeInvalidArgument) {
+		t.Fatalf("expected an InvalidArgument tool refusal, got %T: %v", err, err)
+	}
+}
+
+func TestCredentialSetRotationPolicy_NilRequest(t *testing.T) {
+	tr, cleanup := connectCredentialInProcess(t, newMockCredentialSvc())
+	defer cleanup()
+
+	var reqErr *transport.RequestError
+	if err := tr.CredentialSetRotationPolicy(context.Background(), nil); !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
+	}
+}
+
+func TestCredentialRotationPolicy_Success(t *testing.T) {
+	tr, cleanup := connectCredentialInProcess(t, newMockCredentialSvc())
+	defer cleanup()
+
+	resp, err := tr.CredentialRotationPolicy(context.Background(), "db-password")
+	if err != nil {
+		t.Fatalf("CredentialRotationPolicy: %v", err)
+	}
+	if resp.Name != "db-password" || !resp.Enabled || resp.Interval != time.Hour.String() || resp.RetainVersions != 2 {
+		t.Errorf("unexpected resp: %+v", resp)
+	}
+}
+
+func TestCredentialRotationPolicy_NotFound(t *testing.T) {
+	tr, cleanup := connectCredentialInProcess(t, newMockCredentialSvc())
+	defer cleanup()
+
+	var nf *transport.KeyNotFoundError
+	if _, err := tr.CredentialRotationPolicy(context.Background(), "missing"); !errors.As(err, &nf) {
+		t.Fatalf("expected KeyNotFoundError for an unknown credential, got %T: %v", err, err)
+	}
+}
+
+func TestCredentialMigrationConflicts_Success(t *testing.T) {
+	tr, cleanup := connectCredentialInProcess(t, newMockCredentialSvc())
+	defer cleanup()
+
+	resp, err := tr.CredentialMigrationConflicts(context.Background())
+	if err != nil {
+		t.Fatalf("CredentialMigrationConflicts: %v", err)
+	}
+	want := transport.CredentialMigrationConflict{Name: "db", Value: true, Policy: true}
+	if len(resp.Conflicts) != 1 || resp.Conflicts[0] != want {
+		t.Errorf("unexpected resp: %+v", resp)
+	}
+}
+
+func TestCredentialMigrationConflicts_Closed(t *testing.T) {
+	tr, cleanup := connectCredentialInProcess(t, newMockCredentialSvc())
+	cleanup()
+
+	var ce *transport.ClosedError
+	if _, err := tr.CredentialMigrationConflicts(context.Background()); !errors.As(err, &ce) {
+		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
+	}
+}
+
+// TestCredentialMigrationConflicts_StoreUnavailable pins the typed refusal
+// of a listing the service cannot serve: a store not yet bound comes back
+// as the tool's Unavailable code, not as an empty list.
+func TestCredentialMigrationConflicts_StoreUnavailable(t *testing.T) {
+	svc := newMockCredentialSvc()
+	svc.conflictsErr = credentials.ErrStoreUnavailable
+	tr, cleanup := connectCredentialInProcess(t, svc)
+	defer cleanup()
+
+	resp, err := tr.CredentialMigrationConflicts(context.Background())
+	var outer, inner *transport.RequestError
+	if !errors.As(err, &outer) || !errors.As(outer.Err, &inner) || inner.StatusCode != int(wire.CodeUnavailable) {
+		t.Fatalf("expected an Unavailable tool refusal, got %T: %v (resp %+v)", err, err, resp)
+	}
+}
+
+func TestCredentialResolveMigrationConflict_Success(t *testing.T) {
+	tr, cleanup := connectCredentialInProcess(t, newMockCredentialSvc())
+	defer cleanup()
+
+	if err := tr.CredentialResolveMigrationConflict(context.Background(),
+		&transport.CredentialResolveMigrationConflictRequest{Name: "db", Resolution: "import"}); err != nil {
+		t.Fatalf("CredentialResolveMigrationConflict: %v", err)
+	}
+}
+
+func TestCredentialResolveMigrationConflict_NotFound(t *testing.T) {
+	tr, cleanup := connectCredentialInProcess(t, newMockCredentialSvc())
+	defer cleanup()
+
+	err := tr.CredentialResolveMigrationConflict(context.Background(),
+		&transport.CredentialResolveMigrationConflictRequest{Name: "missing", Resolution: "discard"})
+	var nf *transport.KeyNotFoundError
+	if !errors.As(err, &nf) {
+		t.Fatalf("expected KeyNotFoundError, got %T: %v", err, err)
+	}
+}
+
+// TestCredentialResolveMigrationConflict_UnknownResolution pins that an
+// unknown resolution travels to the tool unchanged and comes back refused
+// with the ErrInvalidMigrationResolution text.
+func TestCredentialResolveMigrationConflict_UnknownResolution(t *testing.T) {
+	tr, cleanup := connectCredentialInProcess(t, newMockCredentialSvc())
+	defer cleanup()
+
+	err := tr.CredentialResolveMigrationConflict(context.Background(),
+		&transport.CredentialResolveMigrationConflictRequest{Name: "db", Resolution: "merge"})
+	// The typed code first: the text alone would pass on any refusal
+	// that happens to quote it.
+	var outer, inner *transport.RequestError
+	if !errors.As(err, &outer) || !errors.As(outer.Err, &inner) || inner.StatusCode != int(wire.CodeInvalidArgument) {
+		t.Fatalf("expected an InvalidArgument tool refusal, got %T: %v", err, err)
+	}
+	if !strings.Contains(err.Error(), credentials.ErrInvalidMigrationResolution.Error()) {
+		t.Fatalf("expected ErrInvalidMigrationResolution text, got %v", err)
+	}
+}
+
+func TestCredentialResolveMigrationConflict_NilRequest(t *testing.T) {
+	tr, cleanup := connectCredentialInProcess(t, newMockCredentialSvc())
+	defer cleanup()
+
+	var reqErr *transport.RequestError
+	if err := tr.CredentialResolveMigrationConflict(context.Background(), nil); !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
 	}
 }
 

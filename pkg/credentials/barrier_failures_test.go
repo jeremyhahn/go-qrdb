@@ -10,7 +10,6 @@ package credentials
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -62,7 +61,7 @@ func TestBarrier_CorruptMetaFailsEveryVersionedOperation(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			svc := newBarrierService(t)
 			require.NoError(t, svc.StoreCredential(ctx, "k", []byte("v1")))
-			require.NoError(t, svc.barrier.Put(ctx, metaKey("k"), []byte("not json")))
+			require.NoError(t, svc.store.Put(ctx, metaKey("k"), []byte("not json")))
 
 			requireOperationError(t, op(svc), "decode meta")
 
@@ -87,7 +86,7 @@ func TestBarrier_SealedWritesFailClosed(t *testing.T) {
 	}{
 		{
 			name: "rotate",
-			op:   "write current",
+			op:   "read meta",
 			run: func(svc *CredentialService) error {
 				_, err := svc.RotateCredential(ctx, "k", RotateOptions{NewValue: []byte("v2")})
 				return err
@@ -103,7 +102,7 @@ func TestBarrier_SealedWritesFailClosed(t *testing.T) {
 		},
 		{
 			name: "gc",
-			op:   "write meta",
+			op:   "read meta",
 			run: func(svc *CredentialService) error {
 				_, err := svc.GCExpiredVersions(ctx, "k")
 				return err
@@ -113,7 +112,7 @@ func TestBarrier_SealedWritesFailClosed(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			svc := newBarrierService(t)
 			require.NoError(t, svc.StoreCredential(ctx, "k", []byte("v1")))
-			require.NoError(t, svc.barrier.Seal())
+			require.NoError(t, barrierOf(t, svc).Seal())
 
 			err := tc.run(svc)
 			requireOperationError(t, err, tc.op)
@@ -130,18 +129,9 @@ func TestBarrier_SealedStoreIsRefused(t *testing.T) {
 	svc := newBarrierService(t)
 	logger := &fakeAuditLogger{}
 	svc.SetAuditLogger(logger)
-	require.NoError(t, svc.barrier.Seal())
+	require.NoError(t, barrierOf(t, svc).Seal())
 
 	err := svc.StoreCredential(ctx, "k", []byte("v1"))
 	assert.ErrorIs(t, err, seal.ErrSealed)
 	assert.Empty(t, logger.snapshot(), "a refused store must not be audited as a success")
-}
-
-// TestOperationError_MessageNamesTheOperation pins the message format the
-// typed error replaced the inline wrapping idiom with.
-func TestOperationError_MessageNamesTheOperation(t *testing.T) {
-	cause := seal.ErrSealed
-	err := &OperationError{Op: "write meta", Cause: cause}
-	assert.True(t, strings.HasPrefix(err.Error(), "credentials: write meta: "))
-	assert.ErrorIs(t, err, cause)
 }

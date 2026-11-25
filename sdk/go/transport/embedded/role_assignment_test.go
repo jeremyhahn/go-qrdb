@@ -407,7 +407,7 @@ func TestEmbeddedSORole_OnlyTheTenantSOGrantsOrRevokesIt(t *testing.T) {
 				}
 				return
 			}
-			var denied *authmw.SORoleRequiredError
+			var denied *auth.SORoleRequiredError
 			if !errors.As(err, &denied) {
 				t.Fatalf("want *SORoleRequiredError, got %T: %v", err, err)
 			}
@@ -490,7 +490,7 @@ func TestEmbeddedSORole_AdminWriteOverlappingAnSOGrant(t *testing.T) {
 			}
 
 			err = tt.call(tr, roleAssignmentIdentityCtx("acme", "admin"))
-			var denied *authmw.SORoleRequiredError
+			var denied *auth.SORoleRequiredError
 			if !errors.As(err, &denied) {
 				t.Fatalf("want *SORoleRequiredError, got %T: %v", err, err)
 			}

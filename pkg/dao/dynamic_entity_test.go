@@ -50,10 +50,6 @@ func TestDynamicEntity_SetEntityID_Overwrite(t *testing.T) {
 	assert.Equal(t, uint64(999), e.ID)
 }
 
-func TestDynamicEntity_ImplementsEntity(t *testing.T) {
-	var _ Entity = (*DynamicEntity)(nil)
-}
-
 func TestDynamicEntity_WithFields(t *testing.T) {
 	e := &DynamicEntity{
 		ID: 1,
@@ -489,8 +485,4 @@ func TestDynamicFieldHashGenerator_SaveWithFieldHash(t *testing.T) {
 	got, err := d.Get(ctx, expectedID)
 	require.NoError(t, err)
 	assert.Equal(t, "Alice", got.Fields["name"])
-}
-
-func TestDynamicFieldHashGenerator_ImplementsIDGenerator(t *testing.T) {
-	var _ IDGenerator = (*DynamicFieldHashGenerator)(nil)
 }

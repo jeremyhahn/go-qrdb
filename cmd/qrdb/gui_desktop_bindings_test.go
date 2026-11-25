@@ -32,11 +32,12 @@ import (
 //	KVBinding, AdminBinding, MVCCBinding, TransactionBinding,
 //	BatchBinding, WatchBinding, LeaseBinding, IndexBinding,
 //	TimeSeriesBinding, VectorBinding, UserBinding, InvitationBinding,
-//	RoleBinding, CertBinding, DatabaseBinding, CollectionBinding, SQLBinding,
+//	RoleBinding, GroupBinding, CertBinding, DatabaseBinding, CollectionBinding,
+//	SQLBinding,
 //	SealBinding, ConfigBinding, TenantBinding, BackupBinding,
 //	OfficerBinding, CeremonyBinding, RebalanceBinding, LockBinding,
 //	CredentialBinding, AuditBinding, VlogBinding, DaemonBinding
-const expectedBindingCount = 32
+const expectedBindingCount = 33
 
 // TestGUIBindings_AllBindingsPresent verifies that bindList returns the
 // expected number of non-nil binding instances. A nil entry means a binding

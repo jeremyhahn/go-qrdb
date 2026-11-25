@@ -923,6 +923,8 @@ func awaitWritable(t *testing.T, c cell, kv transport.KVClient) {
 	ctx := boundedCtx(t)
 	start := time.Now()
 	deadline := start.Add(callTimeout)
+	poll := time.NewTicker(50 * time.Millisecond)
+	defer poll.Stop()
 	for {
 		err := kv.Put(ctx, "conformance/readiness", []byte("1"))
 		if err == nil {
@@ -949,7 +951,7 @@ func awaitWritable(t *testing.T, c cell, kv transport.KVClient) {
 		if time.Now().After(deadline) {
 			t.Fatalf("%s: never became writable within %s: %v", c.name(), callTimeout, err)
 		}
-		time.Sleep(50 * time.Millisecond)
+		<-poll.C
 	}
 }
 

@@ -1583,6 +1583,86 @@ export interface RedeemInvitationRequest {
 // ---------------------------------------------------------------------------
 
 /**
+ * An IAM group. A group carries roles; every member inherits them. The
+ * group lives in its tenant's store (inside the barrier of a
+ * dedicated-isolation tenant).
+ */
+export interface Group {
+    /** Globally unique group identifier. */
+    readonly id: string;
+    /** Tenant that owns this group. */
+    readonly tenantId: string;
+    /** Unique group name within the tenant. */
+    readonly name: string;
+    /** Free-form description (empty when unset). */
+    readonly description: string;
+    /** IDs of the roles every member inherits. */
+    readonly roleIds: readonly string[];
+    /** ISO 8601 creation timestamp. */
+    readonly createdAt: string;
+    /** ISO 8601 last update timestamp. */
+    readonly updatedAt: string;
+}
+
+/** Parameters for creating a group. */
+export interface CreateGroupRequest {
+    /** Unique group name within the tenant. */
+    readonly name: string;
+    /** Target tenant ID (defaults to the caller's tenant). */
+    readonly tenantId?: string;
+    /** Free-form description. */
+    readonly description?: string;
+    /** Role IDs the members inherit. */
+    readonly roleIds?: readonly string[];
+}
+
+/**
+ * Partial update of a group. Omitted fields are left unchanged; an empty
+ * roleIds list removes every role. Removing the Security Officer role (or
+ * deleting a group that carries it) needs the tenant's Security Officer.
+ */
+export interface UpdateGroupRequest {
+    /** Group identifier. */
+    readonly id: string;
+    /** New name. */
+    readonly name?: string;
+    /** New description. */
+    readonly description?: string;
+    /** Replacement role ID list. */
+    readonly roleIds?: readonly string[];
+}
+
+/** Parameters for listing a tenant's groups. */
+export interface ListGroupsRequest {
+    /** Tenant to list (defaults to the caller's tenant). */
+    readonly tenantId?: string;
+    /** 1-based page number. */
+    readonly page?: number;
+    /** Page size. */
+    readonly pageSize?: number;
+}
+
+/** A page of groups. */
+export interface ListGroupsResponse {
+    /** Groups on this page. */
+    readonly groups: readonly Group[];
+    /** Total groups in the tenant. */
+    readonly total: number;
+    /** Whether a further page exists. */
+    readonly hasMore: boolean;
+}
+
+/** A member of a group. */
+export interface GroupMember {
+    /** Member user ID (decimal string). */
+    readonly userId: string;
+    /** Member username. */
+    readonly username: string;
+    /** Member's tenant. */
+    readonly tenantId: string;
+}
+
+/**
  * An RBAC role entity. Roles aggregate fine-grained permissions and can
  * be assigned to users.
  */

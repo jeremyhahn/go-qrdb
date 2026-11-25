@@ -36,9 +36,6 @@ func (t *Transport) EnrollFactor(ctx context.Context, req *transport.EnrollFacto
 	if err := t.authorize(ctx, "EnrollFactor"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.authFactorSvc == nil {
 		return nil, &NilServiceError{Service: "AuthFactorServicer"}
 	}
@@ -82,9 +79,6 @@ func (t *Transport) ChallengeFactor(ctx context.Context, req *transport.Challeng
 	if err := t.authorize(ctx, "ChallengeFactor"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.authFactorSvc == nil {
 		return nil, &NilServiceError{Service: "AuthFactorServicer"}
 	}
@@ -113,9 +107,6 @@ func (t *Transport) VerifyFactor(ctx context.Context, req *transport.VerifyFacto
 	if err := t.authorize(ctx, "VerifyFactor"); err != nil {
 		return err
 	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	if t.authFactorSvc == nil {
 		return &NilServiceError{Service: "AuthFactorServicer"}
 	}
@@ -140,9 +131,6 @@ func (t *Transport) ListFactors(ctx context.Context, req *transport.ListFactorsR
 	}
 	if err := t.authorize(ctx, "ListFactors"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.authFactorSvc == nil {
 		return nil, &NilServiceError{Service: "AuthFactorServicer"}
@@ -194,9 +182,6 @@ func (t *Transport) RevokeFactor(ctx context.Context, req *transport.RevokeFacto
 	}
 	if err := t.authorize(ctx, "RevokeFactor"); err != nil {
 		return err
-	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
 	}
 	if t.authFactorSvc == nil {
 		return &NilServiceError{Service: "AuthFactorServicer"}

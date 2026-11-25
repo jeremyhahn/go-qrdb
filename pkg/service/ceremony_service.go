@@ -95,6 +95,18 @@ type CeremonyInitializeOptions struct {
 	// there is no credential-less default.
 	AdminGenerate bool
 
+	// SOUsername names the system tenant's Security Officer the ceremony
+	// enrols at first boot (go-qrdb#1128), with exactly one of SOCSRPEM
+	// (signed under the system tenant) and SOCertPEM (adopted, verified
+	// against AdminCertPoolPEM through SOChainPEM). The SO's PIN is SOPin.
+	// It is optional in both separation-of-duties postures: without an SO
+	// a strict node refuses only the SO-exclusive operations, and a
+	// standard node lets its admin perform them.
+	SOUsername string
+	SOCSRPEM   string
+	SOCertPEM  string
+	SOChainPEM string
+
 	// Secret is the passphrase (or other strategy-specific credential) the
 	// system barrier is initialized with (go-qrdb#548): qrdb init is the
 	// only system bootstrap, bringing the barrier up itself as part of
@@ -178,6 +190,10 @@ type CeremonyInitResult struct {
 	// AdminCredentialSource records which path produced AdminCertPEM: "csr",
 	// "byoc", or "generated".
 	AdminCredentialSource string
+
+	// SOCertPEM is the system SO's issued or adopted certificate, present
+	// when the ceremony named one (go-qrdb#1128).
+	SOCertPEM []byte
 }
 
 // WipeAdminKeyPEM zeroes r's generated admin key material in place and clears
@@ -272,6 +288,10 @@ func (s *CeremonyService) CeremonyInitialize(ctx context.Context, ca ceremony.Ce
 		AdminCertPEM:           []byte(opts.AdminCertPEM),
 		AdminCertPoolPEM:       []byte(opts.AdminCertPoolPEM),
 		AdminGenerate:          opts.AdminGenerate,
+		SOUsername:             opts.SOUsername,
+		SOCSRPEM:               []byte(opts.SOCSRPEM),
+		SOCertPEM:              []byte(opts.SOCertPEM),
+		SOChainPEM:             []byte(opts.SOChainPEM),
 		Secret:                 opts.Secret,
 	}
 	if id := auth.IdentityFromContext(ctx); id != nil {
@@ -282,16 +302,18 @@ func (s *CeremonyService) CeremonyInitialize(ctx context.Context, ca ceremony.Ce
 		return nil, err
 	}
 	out := ceremonyInitResultFromCore(result)
-	for i, h := range result.Holders {
-		out.Holders = append(out.Holders, CeremonyHolderCert{Username: opts.Officers[i].Username, Role: h.Role, CertPEM: h.CertPEM})
+	// Each holder carries its own username: a retry completing an earlier
+	// call hands back that call's holders, so the request's positions
+	// must not name them.
+	for _, h := range result.Holders {
+		out.Holders = append(out.Holders, CeremonyHolderCert{Username: h.Username, Role: h.Role, CertPEM: h.CertPEM})
 	}
 	return out, nil
 }
 
 // ceremonyInitResultFromCore maps the ceremony-package result onto the
-// service-layer type, except Holders: zipping a RegisterOfficerResult (which
-// carries no username of its own) with its officer needs the caller's own
-// request, so CeremonyInitialize fills Holders in itself after calling this.
+// service-layer type, except Holders, which CeremonyInitialize fills in
+// itself from each RegisterOfficerResult's own Username.
 // CeremonyReissueAdminCredential's result never carries holders at all, so
 // it does not need to.
 func ceremonyInitResultFromCore(result *ceremony.InitResult) *CeremonyInitResult {
@@ -304,6 +326,7 @@ func ceremonyInitResultFromCore(result *ceremony.InitResult) *CeremonyInitResult
 		AdminCertPEM:          result.AdminCertPEM,
 		AdminKeyPEM:           result.AdminKeyPEM,
 		AdminCredentialSource: string(result.AdminCredentialSource),
+		SOCertPEM:             result.SOCertPEM,
 	}
 }
 

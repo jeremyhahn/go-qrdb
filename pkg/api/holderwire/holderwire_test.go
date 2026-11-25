@@ -168,3 +168,19 @@ func TestCeremonyInit(t *testing.T) {
 		t.Errorf("holders = %+v", resp.Holders)
 	}
 }
+
+// The system SO's fields cross both ways (go-qrdb#1128).
+func TestCeremonyInit_SystemSO(t *testing.T) {
+	opts, err := CeremonyInitFrom(&transport.CeremonyInitializeRequest{
+		SOUsername: "secofficer", SOCSRPEM: "csr", SOCertPEM: "cert", SOChainPEM: "chain",
+	})
+	if err != nil {
+		t.Fatalf("CeremonyInitFrom: %v", err)
+	}
+	if opts.SOUsername != "secofficer" || opts.SOCSRPEM != "csr" || opts.SOCertPEM != "cert" || opts.SOChainPEM != "chain" {
+		t.Errorf("CeremonyInitFrom SO = %+v", opts)
+	}
+	if resp := CeremonyInitTo(&service.CeremonyInitResult{SOCertPEM: []byte("so-cert")}); resp.SOCertPEM != "so-cert" {
+		t.Errorf("CeremonyInitTo SOCertPEM = %q", resp.SOCertPEM)
+	}
+}

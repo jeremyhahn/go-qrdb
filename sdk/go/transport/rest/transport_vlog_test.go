@@ -55,18 +55,18 @@ func TestRESTVlog_Guards(t *testing.T) {
 func TestRESTVlog_NotFoundMapsOnly404(t *testing.T) {
 	cause := errors.New("vlog: log a/b/c not found")
 	var knf *transport.KeyNotFoundError
-	if err := vlogNotFound(&transport.RequestError{Method: "VlogHead", StatusCode: http.StatusNotFound, Err: cause}); !errors.As(err, &knf) || knf.Key != cause.Error() {
+	if err := notFoundError(&transport.RequestError{Method: "VlogHead", StatusCode: http.StatusNotFound, Err: cause}); !errors.As(err, &knf) || knf.Key != cause.Error() {
 		t.Fatalf("404: err = %v (%T), want *transport.KeyNotFoundError carrying the server message", err, err)
 	}
-	if err := vlogNotFound(&transport.RequestError{Method: "VlogHead", StatusCode: http.StatusNotFound}); !errors.As(err, &knf) || knf.Key != "VlogHead" {
+	if err := notFoundError(&transport.RequestError{Method: "VlogHead", StatusCode: http.StatusNotFound}); !errors.As(err, &knf) || knf.Key != "VlogHead" {
 		t.Fatalf("404 without a message: err = %v, want KeyNotFoundError naming the method", err)
 	}
 	for name, err := range map[string]error{
 		"400":   &transport.RequestError{Method: "VlogAppend", StatusCode: http.StatusBadRequest, Err: cause},
 		"plain": cause,
 	} {
-		if got := vlogNotFound(err); got != err {
-			t.Errorf("%s: vlogNotFound = %v, want the error unchanged", name, got)
+		if got := notFoundError(err); got != err {
+			t.Errorf("%s: notFoundError = %v, want the error unchanged", name, got)
 		}
 	}
 }

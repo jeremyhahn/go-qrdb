@@ -29,6 +29,7 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
@@ -312,6 +313,7 @@ type qrdbServiceServer struct {
 	volumeSvc     volume.Service
 	userSvc       user.UserServicer
 	roleSvc       role.RoleServicer
+	groupSvc      group.GroupServicer
 	certProv      cert.CertProvider
 	certEnroll    service.CertEnrollmentServicer
 	invitationSvc service.InvitationServicer

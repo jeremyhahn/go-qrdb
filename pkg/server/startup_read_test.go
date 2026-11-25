@@ -19,9 +19,12 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
@@ -275,23 +278,50 @@ func TestRunStartupRead_ContextEnds(t *testing.T) {
 		t.Fatalf("err = %v after %d calls, want context.Canceled and the read's answer after 1", err, calls)
 	}
 
-	ctx, cancel = context.WithCancel(context.Background())
-	defer cancel()
-	go func() {
-		time.Sleep(20 * time.Millisecond)
+	// The caller gives up while the call is durably blocked in the
+	// minute-long backoff after the first attempt, so the backoff's cancel
+	// case is where the cancel lands.
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		var reads atomic.Int32
+		done := make(chan error, 1)
+		start := time.Now()
+		go func() {
+			_, err := RunStartupRead(ctx, StartupRead{Op: "abandoned", Budget: time.Minute, Delay: time.Minute}, func(context.Context) (int, error) {
+				reads.Add(1)
+				return 0, quicraft.ErrReadIndexNotReady
+			})
+			done <- err
+		}()
+		synctest.Wait()
+		if got := reads.Load(); got != 1 {
+			t.Fatalf("reads before the cancel = %d, want 1 (blocked in the backoff)", got)
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("RunStartupRead returned %v before the cancel, want it blocked in the backoff", err)
+		default:
+		}
 		cancel()
-	}()
-	start := time.Now()
-	_, err = RunStartupRead(ctx, StartupRead{Op: "abandoned", Budget: time.Minute, Delay: time.Minute}, func(context.Context) (int, error) {
-		return 0, quicraft.ErrReadIndexNotReady
+		synctest.Wait()
+		var err error
+		select {
+		case err = <-done:
+		default:
+			t.Fatal("RunStartupRead did not return once ctx was cancelled during the backoff")
+		}
+		var sre *StartupReadError
+		if !errors.As(err, &sre) || !errors.Is(err, context.Canceled) || !errors.Is(err, quicraft.ErrReadIndexNotReady) {
+			t.Fatalf("err = %v (%T), want *StartupReadError matching context.Canceled and ErrReadIndexNotReady", err, err)
+		}
+		if got := reads.Load(); got != 1 {
+			t.Errorf("reads = %d, want 1", got)
+		}
+		if elapsed := time.Since(start); elapsed != 0 {
+			t.Errorf("fake time advanced %s, want an immediate return once ctx was cancelled", elapsed)
+		}
 	})
-	var sre *StartupReadError
-	if !errors.As(err, &sre) || !errors.Is(err, context.Canceled) || !errors.Is(err, quicraft.ErrReadIndexNotReady) {
-		t.Fatalf("err = %v (%T), want *StartupReadError matching context.Canceled and ErrReadIndexNotReady", err, err)
-	}
-	if time.Since(start) > 2*time.Second {
-		t.Errorf("took %s, want an immediate return once ctx was cancelled", time.Since(start))
-	}
 }
 
 // An attempt in flight when the caller gives up ends with it, and is not
@@ -299,11 +329,9 @@ func TestRunStartupRead_ContextEnds(t *testing.T) {
 func TestRunStartupRead_ContextEndsMidAttempt(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go func() {
-		time.Sleep(20 * time.Millisecond)
-		cancel()
-	}()
 	_, err := RunStartupRead(ctx, StartupRead{Op: "in flight", Budget: time.Minute}, func(actx context.Context) (int, error) {
+		// The caller gives up while this attempt is in flight.
+		cancel()
 		<-actx.Done()
 		return 0, actx.Err()
 	})
@@ -339,6 +367,7 @@ func TestRunStartupRead_ReportsProgressWhileRetrying(t *testing.T) {
 }
 
 func TestRunStartupRead_ReportsAnAttemptThatOutlivesItsBound(t *testing.T) {
+	const progress = `level=WARN msg="startup read still waiting" op="write on the boot context"`
 	logger, logs := captureLogger()
 	_, err := RunStartupRead(context.Background(), StartupRead{
 		Op:             "write on the boot context",
@@ -347,16 +376,21 @@ func TestRunStartupRead_ReportsAnAttemptThatOutlivesItsBound(t *testing.T) {
 		ReportInterval: 30 * time.Millisecond,
 		Logger:         logger,
 	}, func(context.Context) (int, error) {
-		// Ignores its attempt's context, as a step on the boot's own does.
-		time.Sleep(200 * time.Millisecond)
+		// Ignores its attempt's context, as a step on the boot's own does,
+		// and returns only once the second progress line is in the log, so
+		// the attempt outlives its bound by as long as the reports take.
+		deadline := time.Now().Add(10 * time.Second)
+		for strings.Count(logs.String(), progress) < 2 && time.Now().Before(deadline) {
+			runtime.Gosched()
+		}
 		return 7, nil
 	})
 	if err != nil {
 		t.Fatalf("RunStartupRead: %v", err)
 	}
 	got := logs.String()
-	if n := strings.Count(got, `level=WARN msg="startup read still waiting" op="write on the boot context"`); n < 2 {
-		t.Errorf("%d progress lines over a 200ms attempt reported every 30ms, want several; log = %q", n, got)
+	if n := strings.Count(got, progress); n < 2 {
+		t.Errorf("%d progress lines while an attempt outlived its bound, reported every 30ms, want several; log = %q", n, got)
 	}
 }
 

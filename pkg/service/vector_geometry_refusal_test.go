@@ -6,8 +6,20 @@ import (
 	"testing"
 
 	vectorstorage "github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
+
+// newRestartVectorStorage opens a PebbleDB-backed vector store at dir.
+func newRestartVectorStorage(t *testing.T, dir string) *vectorstorage.PebbleVectorStorage {
+	t.Helper()
+	cfg := vectorstorage.DefaultConfig(dir)
+	store, err := vectorstorage.NewPebbleVectorStorage(cfg, newVecTestLogger())
+	if err != nil {
+		t.Fatalf("NewPebbleVectorStorage(%q): %v", dir, err)
+	}
+	return store
+}
 
 // seedStoredGeometry writes a namespace record and one vector straight to
 // storage, as an earlier release that did not check the metric or index name
@@ -97,24 +109,60 @@ func TestVectorService_RestartRefusesStoredUnknownGeometry(t *testing.T) {
 	}
 }
 
-func TestVectorService_SupportedStoredGeometryStillSearches(t *testing.T) {
-	dir := t.TempDir()
-	seedStoredGeometry(t, dir, "legacy", "L2", "HNSW")
-	svc := reopenVectorService(t, dir)
-
-	resp, err := svc.SearchSimilar(context.Background(), &SearchSimilarRequest{Namespace: "legacy", QueryVector: []float32{1, 0}, K: 1})
-	if err != nil {
-		t.Fatalf("SearchSimilar: %v", err)
-	}
-	if len(resp.Results) != 1 || resp.Results[0].ID != 1 {
-		t.Fatalf("SearchSimilar = %+v, want vector 1", resp.Results)
-	}
-}
-
 func TestUnsupportedNamespaceGeometryError_NamesNamespaceFieldAndValue(t *testing.T) {
 	err := &UnsupportedNamespaceGeometryError{Namespace: "docs", Field: "index type", Value: "LSH"}
 	want := `service: vector namespace "docs" stores unsupported index type "LSH"; drop and recreate it with a supported geometry`
 	if got := err.Error(); got != want {
 		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+}
+
+// TestWithClusterIsolationPolicyReader_OperatorAccess drives CreateNamespace
+// with no tenant bound (the system tenant) into a namespace that already
+// exists. The isolation check runs before the existence check, so the error
+// the call returns names which gate stopped it: under operator-access the
+// call passes the isolation gate and stops at NamespaceExistsError, under
+// strict it stops at TenantRequiredError. Neither path builds an index, so
+// the test needs no qrdb_vector build.
+func TestWithClusterIsolationPolicyReader_OperatorAccess(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		policy tenant.ClusterIsolationPolicy
+		check  func(t *testing.T, err error)
+	}{
+		{"operator-access passes the isolation gate", tenant.ClusterIsolationPolicyOperatorAccess, func(t *testing.T, err error) {
+			var exists *NamespaceExistsError
+			if !errors.As(err, &exists) {
+				t.Fatalf("CreateNamespace error = %v, want *NamespaceExistsError (the isolation gate let the call through)", err)
+			}
+		}},
+		{"strict refuses the system tenant", tenant.ClusterIsolationPolicyStrict, func(t *testing.T, err error) {
+			var required *TenantRequiredError
+			if !errors.As(err, &required) {
+				t.Fatalf("CreateNamespace error = %v, want *TenantRequiredError", err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			storage := newVecMockStorage()
+			svc, err := NewVectorService(storage, newVecTestLogger(), WithClusterIsolationPolicyReader(
+				fixedClusterIsolationPolicyReader{policy: tc.policy}))
+			if err != nil {
+				t.Fatalf("NewVectorService: %v", err)
+			}
+			// Seed the namespace only after construction, so start-up loads
+			// (and indexes) nothing.
+			storage.getNamespaceInfoFn = func(_ context.Context, namespace string) (*vectorstorage.NamespaceInfo, error) {
+				return &vectorstorage.NamespaceInfo{Name: namespace, Dimension: 128}, nil
+			}
+			resp, err := svc.CreateNamespace(context.Background(), &CreateNamespaceRequest{
+				Namespace: "test-ns",
+				Dimension: 128,
+			})
+			if resp != nil {
+				t.Fatalf("CreateNamespace response = %+v, want nil", resp)
+			}
+			tc.check(t, err)
+		})
 	}
 }

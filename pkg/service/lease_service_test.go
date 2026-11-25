@@ -35,13 +35,6 @@ import (
 // NewLeaseService
 // ---------------------------------------------------------------------------
 
-func TestLeaseService_NewLeaseService_ReturnsNonNil(t *testing.T) {
-	svc := NewLeaseService(&mockHost{}, 1)
-	if svc == nil {
-		t.Fatal("expected non-nil LeaseService")
-	}
-}
-
 func TestLeaseService_NewLeaseService_PreservesShardID(t *testing.T) {
 	var capturedProposeShardID uint64
 	var capturedReadShardID uint64

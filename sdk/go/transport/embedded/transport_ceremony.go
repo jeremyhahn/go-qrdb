@@ -55,9 +55,6 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 	// on every transport's boot-time sealed listener, because an embedded node
 	// has no IAM store to authenticate against while sealed. It is gated by
 	// the CA state (pre-operational) the ceremony service checks, not an RBAC permission.
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.ceremonySvc == nil {
 		return nil, &NilServiceError{Service: "CeremonyServicer"}
 	}
@@ -117,9 +114,6 @@ func (t *Transport) CeremonyStatus(ctx context.Context) (*transport.CeremonyStat
 	}
 	if err := t.authorize(ctx, "CeremonyStatus"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.ceremonySvc == nil {
 		return nil, &NilServiceError{Service: "CeremonyServicer"}
@@ -192,9 +186,6 @@ func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRI
 	// on every transport's boot-time sealed listener, because an embedded node
 	// has no IAM store to authenticate against while sealed. It is gated by
 	// the SO PIN the ceremony service verifies, not an RBAC permission.
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.ceremonySvc == nil {
 		return nil, &NilServiceError{Service: "CeremonyServicer"}
 	}

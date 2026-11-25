@@ -51,7 +51,7 @@ func TestRefusalError_unknownReasonIsNil(t *testing.T) {
 }
 
 func TestBarrierRefusal_roundTripsEverySentinel(t *testing.T) {
-	for _, sentinel := range []error{seal.ErrNotInitialized, seal.ErrCredentialMismatch, seal.ErrPassphraseChangeConflict, seal.ErrRootKeyWriteInProgress} {
+	for _, sentinel := range []error{seal.ErrNotInitialized, seal.ErrCredentialMismatch, seal.ErrPassphraseChangeConflict, seal.ErrRootKeyWriteInProgress, seal.ErrUnsealFailed} {
 		reason, ok := BarrierRefusal(errors.Join(errors.New("context"), sentinel))
 		if !ok || reason == "" {
 			t.Fatalf("BarrierRefusal(%v) = %q, %v; want a reason", sentinel, reason, ok)

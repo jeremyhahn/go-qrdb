@@ -415,7 +415,7 @@ func TestLeaderAddress_NamesTheLeaderOfEveryNotLeaderRefusal(t *testing.T) {
 		err  error
 		want string
 	}{
-		"not leader":                  {&NotLeaderError{ShardID: 1, LeaderID: 3, LeaderAddress: "raft-3"}, "raft-3"},
+		"not leader":                  {&NotLeaderError{ShardID: 1, LeaderID: 3, LeaderAddress: "node-3"}, "node-3"},
 		"not leader, leader unknown":  {&NotLeaderError{ShardID: 1}, ""},
 		"wrapped not leader":          {errors.Join(errors.New("remove"), &NotLeaderError{ShardID: 1, LeaderID: 2, LeaderAddress: "raft-2"}), "raft-2"},
 		"admin credential not leader": {&AdminCredentialNotLeaderError{LeaderAddress: "raft-4"}, "raft-4"},

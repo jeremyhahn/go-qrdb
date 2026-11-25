@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
@@ -185,11 +187,5 @@ func assertOpenWatchesEnd(t *testing.T, opts []ServerOption, stop func(*database
 // waitFor polls cond for up to five seconds.
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatal("condition not met within 5s")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	require.Eventually(t, cond, 5*time.Second, 10*time.Millisecond, "condition not met within 5s")
 }

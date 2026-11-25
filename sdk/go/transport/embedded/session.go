@@ -37,9 +37,6 @@ func (c *sessionClient) ResolveIdentity(ctx context.Context, bearer string) (*tr
 	if err != nil {
 		return nil, err
 	}
-	if c.transport.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if c.transport.sessionIssuer == nil {
 		return nil, &MissingSessionIssuerError{}
 	}
@@ -58,9 +55,6 @@ func (c *sessionClient) Revoke(ctx context.Context, bearer string) error {
 	ctx, err := c.transport.admit(ctx, "SessionClient.Revoke")
 	if err != nil {
 		return err
-	}
-	if c.transport.closed.Load() {
-		return &transport.ClosedError{}
 	}
 	if c.transport.sessionIssuer == nil {
 		return &MissingSessionIssuerError{}

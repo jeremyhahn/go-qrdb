@@ -79,11 +79,6 @@ func TestWebUIHandler_ReturnsNil(t *testing.T) {
 	assert.Nil(t, h, "webUIHandler must return nil when web UI is not embedded")
 }
 
-func TestWebUIHandler_ImplementsHTTPHandler(t *testing.T) {
-	// Confirm the return type is compatible with http.Handler (nil is valid).
-	_ = webUIHandler()
-}
-
 // ---------------------------------------------------------------------------
 // start.go: defaultAuthFactors (line 1922)
 // ---------------------------------------------------------------------------
