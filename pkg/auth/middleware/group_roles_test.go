@@ -18,9 +18,11 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -284,5 +286,222 @@ func TestAuthorizeGroupRoles_SelfGrantJudgedFromTheCurrentRecord(t *testing.T) {
 	broken := errors.New("store down")
 	if err := mw.AuthorizeGroupRoles(ctx, &recordUsers{err: broken}, roles, "acme", "g-mine", []string{builtIn}); !errors.Is(err, broken) {
 		t.Fatalf("user lookup failure: err = %v, want it returned", err)
+	}
+}
+
+// groupGuardMW is a strict-separation middleware over the built-in roles of
+// tenant acme that grants perms.
+func groupGuardMW(f soRoleFixture, perms ...permission.Permission) *AuthMiddleware {
+	return newTestMiddleware(rbac.New(&grantingRoleServicer{perms: perms}), WithRoleResolver(f.roles), WithStrictSeparation(true))
+}
+
+func TestAuthorizeGroupMemberRemoval_Guard(t *testing.T) {
+	f := newSORoleFixture(t)
+	member := &userTenantFixture{u: &user.User{ID: 7, TenantID: "acme", RoleIDs: []string{f.userRole}}}
+	plain := &group.Group{ID: "g-plain", TenantID: "acme", RoleIDs: []string{f.userRole}}
+	carrying := &group.Group{ID: "g-so", TenantID: "acme", RoleIDs: []string{f.so}}
+	remover := groupGuardMW(f, permission.GroupsRemoveMember)
+
+	t.Run("nil middleware", func(t *testing.T) {
+		var m *AuthMiddleware
+		if err := m.AuthorizeGroupMemberRemoval(f.caller(f.admin), member, 7, carrying); err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+	})
+	t.Run("member not found", func(t *testing.T) {
+		gone := &userTenantFixture{err: &user.UserNotFoundError{ID: 7}}
+		var nf *user.UserNotFoundError
+		if err := remover.AuthorizeGroupMemberRemoval(f.caller(f.admin), gone, 7, plain); !errors.As(err, &nf) {
+			t.Fatalf("err = %v, want *user.UserNotFoundError", err)
+		}
+	})
+	t.Run("without groups:remove_member", func(t *testing.T) {
+		mw := groupGuardMW(f, permission.GroupsAddMember)
+		if err := mw.AuthorizeGroupMemberRemoval(f.caller(f.admin), member, 7, plain); err == nil {
+			t.Fatal("remove member allowed without groups:remove_member")
+		}
+	})
+	t.Run("member of another tenant", func(t *testing.T) {
+		foreign := &userTenantFixture{u: &user.User{ID: 7, TenantID: "other"}}
+		if err := remover.AuthorizeGroupMemberRemoval(f.caller(f.admin), foreign, 7, plain); err == nil {
+			t.Fatal("remove member of another tenant allowed")
+		}
+	})
+	t.Run("group without the so role", func(t *testing.T) {
+		if err := remover.AuthorizeGroupMemberRemoval(f.caller(f.admin), member, 7, plain); err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+	})
+	t.Run("non-SO caller and a group carrying so", func(t *testing.T) {
+		wantErrorAs[*SORoleRequiredError](t, remover.AuthorizeGroupMemberRemoval(f.caller(f.admin), member, 7, carrying))
+	})
+	t.Run("SO caller and a group carrying so", func(t *testing.T) {
+		wantNoError(t, remover.AuthorizeGroupMemberRemoval(f.caller(f.so), member, 7, carrying))
+	})
+}
+
+func TestAuthorizeGroupMembership_SOAndSelf(t *testing.T) {
+	f := newSORoleFixture(t)
+	carrying := &group.Group{ID: "g-so", TenantID: "acme", RoleIDs: []string{f.so}}
+	adder := groupGuardMW(f, permission.GroupsAddMember)
+
+	t.Run("nil middleware", func(t *testing.T) {
+		var m *AuthMiddleware
+		if err := m.AuthorizeGroupMembership(f.caller(f.admin), nil, nil, 7, carrying); err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+	})
+	t.Run("member lookup fails", func(t *testing.T) {
+		broken := errors.New("store down")
+		if err := adder.AuthorizeGroupMembership(f.caller(f.admin), &userTenantFixture{err: broken}, f.roles, 7, carrying); !errors.Is(err, broken) {
+			t.Fatalf("err = %v, want the lookup error", err)
+		}
+	})
+	t.Run("non-SO caller adds to a group carrying so", func(t *testing.T) {
+		member := &userTenantFixture{u: &user.User{ID: 7, TenantID: "acme"}}
+		wantErrorAs[*SORoleRequiredError](t, adder.AuthorizeGroupMembership(f.caller(f.admin), member, f.roles, 7, carrying))
+	})
+	t.Run("self-join is judged as self-assignment", func(t *testing.T) {
+		builtIn, _, roles := grantRuleFixture()
+		mw := mwWithPerms(permission.GroupsAddMember)
+		self := &userTenantFixture{u: &user.User{ID: 1, TenantID: "acme"}}
+		g := &group.Group{ID: "g-signers", TenantID: "acme", RoleIDs: []string{builtIn}}
+		var exceeds *role.GrantExceedsHolderError
+		if err := mw.AuthorizeGroupMembership(selfCtx(), self, roles, 1, g); !errors.As(err, &exceeds) {
+			t.Fatalf("err = %v, want *role.GrantExceedsHolderError", err)
+		}
+	})
+}
+
+func TestCallerInGroup_CurrentRecord(t *testing.T) {
+	ctxFor := func(id *auth.Identity) context.Context {
+		return tenant.WithTenantID(auth.WithIdentity(context.Background(), id), "acme")
+	}
+	plain := &auth.Identity{Subject: auth.UserSubject(1), UserID: 1, TenantID: "acme"}
+	listed := &auth.Identity{Subject: auth.UserSubject(1), UserID: 1, TenantID: "acme", Groups: []string{"g-1"}}
+	noUserID := &auth.Identity{Subject: "acme-svc", TenantID: "acme"}
+	foreign := &auth.Identity{Subject: auth.UserSubject(1), UserID: 1, TenantID: "other", Groups: []string{"g-1"}}
+	broken := errors.New("store down")
+	records := func(u *user.User) user.UserServicer {
+		return &recordUsers{records: map[uint64]*user.User{1: u}}
+	}
+	for _, tc := range []struct {
+		name    string
+		ctx     context.Context
+		users   user.UserServicer
+		groupID string
+		want    bool
+		wantErr error
+	}{
+		{name: "no identity", ctx: context.Background(), groupID: "g-1"},
+		{name: "identity of another tenant", ctx: ctxFor(foreign), groupID: "g-1"},
+		{name: "empty group id", ctx: ctxFor(listed), groupID: ""},
+		{name: "identity lists the group", ctx: ctxFor(listed), groupID: "g-1", want: true},
+		{name: "nil user service", ctx: ctxFor(plain), groupID: "g-1"},
+		{name: "identity without a user id", ctx: ctxFor(noUserID), users: records(&user.User{ID: 1, TenantID: "acme", GroupIDs: []string{"g-1"}}), groupID: "g-1"},
+		{name: "user not found", ctx: ctxFor(plain), users: &recordUsers{records: map[uint64]*user.User{}}, groupID: "g-1"},
+		{name: "store error", ctx: ctxFor(plain), users: &recordUsers{err: broken}, groupID: "g-1", wantErr: broken},
+		{name: "record lists the group", ctx: ctxFor(plain), users: records(&user.User{ID: 1, TenantID: "acme", GroupIDs: []string{"g-1"}}), groupID: "g-1", want: true},
+		{name: "record has a pending join", ctx: ctxFor(plain), users: records(&user.User{ID: 1, TenantID: "acme", PendingGroupIDs: []string{"g-1"}}), groupID: "g-1", want: true},
+		{name: "record of another tenant", ctx: ctxFor(plain), users: records(&user.User{ID: 1, TenantID: "other", GroupIDs: []string{"g-1"}}), groupID: "g-1"},
+		{name: "record without the group", ctx: ctxFor(plain), users: records(&user.User{ID: 1, TenantID: "acme"}), groupID: "g-1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := callerInGroup(tc.ctx, tc.users, "acme", tc.groupID)
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("err = %v, want %v", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("callerInGroup = %v, %v; want %v, nil", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestAuthorizeGroupRoles_NoRolesNoop(t *testing.T) {
+	var m *AuthMiddleware
+	if err := m.AuthorizeGroupRoles(selfCtx(), nil, nil, "acme", "g-1", []string{"r-1"}); err != nil {
+		t.Fatalf("nil middleware: err = %v, want nil", err)
+	}
+	mw := mwWithPerms()
+	if err := mw.AuthorizeGroupRoles(selfCtx(), nil, nil, "acme", "g-1", nil); err != nil {
+		t.Fatalf("no roles: err = %v, want nil", err)
+	}
+}
+
+func TestAuthorizeGroupRoles_SOGate(t *testing.T) {
+	f := newSORoleFixture(t)
+	mw := groupGuardMW(f, permission.GroupsUpdate)
+	wantErrorAs[*SORoleRequiredError](t, mw.AuthorizeGroupRoles(f.caller(f.admin), nil, f.roles, "acme", "g-1", []string{f.so}))
+}
+
+func TestAuthorizeGroupRoleRemoval_RoleLookupFailsClosed(t *testing.T) {
+	mw := newTestMiddleware(rbac.New(&grantingRoleServicer{}), WithRoleResolver(failingRoles{err: &role.StoreError{Op: "get", Err: context.DeadlineExceeded}}), WithStrictSeparation(true))
+	g := &group.Group{ID: "g-so", TenantID: "acme", RoleIDs: []string{"r-1"}}
+	ctx := tenant.WithTenantID(auth.WithIdentity(context.Background(), &auth.Identity{Subject: "acme-caller", TenantID: "acme"}), "acme")
+	wantErrorAs[*SORoleUnresolvedError](t, mw.AuthorizeGroupRoleRemoval(ctx, g, []string{"r-1"}))
+}
+
+// nilGroupResolver answers every lookup with no group and no error.
+type nilGroupResolver struct{}
+
+func (nilGroupResolver) GetGroup(context.Context, string) (*group.Group, error) { return nil, nil }
+
+func TestEffectiveRoles_SkipsNilAndForeignGroups(t *testing.T) {
+	operator := role.SystemRoleID(claimRolesTenant, role.RoleNameOperator)
+	foreign := &mapGroupResolver{groups: map[string]*group.Group{
+		"g-foreign": {ID: "g-foreign", TenantID: "other", RoleIDs: []string{"r-foreign"}},
+	}}
+	for name, r := range map[string]GroupResolver{"nil group": nilGroupResolver{}, "foreign group": foreign} {
+		t.Run(name, func(t *testing.T) {
+			m := newTestMiddleware(&mockAuthorizer{}, WithGroupResolver(r))
+			got, err := m.effectiveRoles(context.Background(), &user.User{TenantID: claimRolesTenant, RoleIDs: []string{operator}, GroupIDs: []string{"g-foreign"}})
+			if err != nil || !slices.Equal(got, []string{operator}) {
+				t.Fatalf("effectiveRoles = %v, %v; want %v, nil", got, err, []string{operator})
+			}
+		})
+	}
+}
+
+func TestAuthorizeRoleAssignment_SelfIsJudgedAsSelfAssignment(t *testing.T) {
+	builtIn, _, roles := grantRuleFixture()
+	mw := mwWithPerms(permission.RolesAssign)
+	self := &userTenantFixture{u: &user.User{ID: 1, TenantID: "acme"}}
+	var exceeds *role.GrantExceedsHolderError
+	if err := mw.AuthorizeRoleAssignment(selfCtx(), self, roles, 1, builtIn); !errors.As(err, &exceeds) {
+		t.Fatalf("err = %v, want *role.GrantExceedsHolderError", err)
+	}
+}
+
+func TestStrictSeparation_Reported(t *testing.T) {
+	var m *AuthMiddleware
+	if m.StrictSeparation() {
+		t.Fatal("nil middleware reports strict separation")
+	}
+	if !newTestMiddleware(&mockAuthorizer{}, WithStrictSeparation(true)).StrictSeparation() {
+		t.Fatal("strict separation not reported")
+	}
+}
+
+func TestErrorMessages_NameTheirSubject(t *testing.T) {
+	cause := errors.New("store down")
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{&TenantOwnerUnresolvedError{TenantID: "acme", Err: cause}, `cannot decide tenant ownership in tenant "acme": store down`},
+		{&TenantOwnerUnresolvedError{TenantID: "acme"}, `cannot decide tenant ownership in tenant "acme"`},
+		{&TenantStatusUnavailableError{TenantID: "acme", Err: cause}, "tenant acme status unavailable: store down"},
+		{&CertSerialUnresolvableError{Serial: "0a"}, "revocation of serial 0a"},
+		{&FirstInitCertificateMismatchError{TenantID: "acme", Username: "carol"}, "carol"},
+		{&FirstInitNotOnboardedError{TenantID: "acme"}, "tenant acme"},
+		{&AwaitingAdminCredentialError{}, ""},
+	} {
+		if msg := tc.err.Error(); msg == "" || !strings.Contains(msg, tc.want) {
+			t.Fatalf("%T.Error() = %q, want it to contain %q", tc.err, msg, tc.want)
+		}
 	}
 }
