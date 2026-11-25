@@ -16,15 +16,19 @@
 func Available() bool          // true only in a qrdb_fts build
 
 // Analyzer
-type Stemmer interface { /* stemming contract */ }
+type Stemmer interface{ Stem(word string) string }
 type Analyzer struct{ /* ... */ }
 type AnalyzerOption func(*Analyzer)
 
 func NewAnalyzer(opts ...AnalyzerOption) *Analyzer
 func WithStemmer(s Stemmer) AnalyzerOption
 func WithStopWords(words []string) AnalyzerOption
+func (a *Analyzer) Analyze(text string) []string
+func (a *Analyzer) AnalyzeWithPositions(text string) []TokenPosition
 
 type SimpleStemmer struct{}
+
+func (s SimpleStemmer) Stem(word string) string
 
 // Tokenizer
 type Tokenizer struct{ /* ... */ }
@@ -32,6 +36,8 @@ type TokenPosition struct{ /* ... */ }
 
 func NewTokenizer() *Tokenizer
 func NewTokenizerWithStopWords(words []string) *Tokenizer
+func (t *Tokenizer) Tokenize(text string) []string
+func (t *Tokenizer) TokenizeWithPositions(text string) []TokenPosition
 
 // Inverted index (low level)
 type InvertedIndex struct{ /* ... */ }
