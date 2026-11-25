@@ -113,7 +113,7 @@ var awaitingAdminCredentialAllowlist = sealedwindow.EmbeddedAwaitingAdminCredent
 // (the transport New built was closed), so a clone retained past its root's
 // Close serves nothing.
 func (t *Transport) gate(method string) error {
-	if t.life != nil && t.life.closed.Load() {
+	if t.closed.Load() || (t.life != nil && t.life.closed.Load()) {
 		return &transport.ClosedError{}
 	}
 	if t.awaitingAdminCredentialProbe != nil && t.awaitingAdminCredentialProbe.AwaitingAdminCredential() {
