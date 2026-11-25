@@ -177,13 +177,13 @@ func TestGroupService_RoleRemovalSOGate(t *testing.T) {
 	// groups:delete is SO-exclusive among the built-in roles; a tenant role
 	// carrying it puts a non-SO caller in front of the role-change gate.
 	keeper := authtest.CustomRole(t, roles, "acme", "group-keeper", permission.GroupsRead, permission.GroupsUpdate, permission.GroupsDelete)
-	asAdmin, asSO := caller(admin, keeper), caller(admin, so)
+	asAdmin, asSO := caller(admin, keeper), caller(so)
 	g, err := groups.CreateGroup(asSO, &group.CreateGroupRequest{TenantID: "acme", Name: "signers", RoleIDs: []string{so}})
 	if err != nil {
 		t.Fatalf("create group: %v", err)
 	}
 
-	var refused *middleware.SORoleRequiredError
+	var refused *auth.SORoleRequiredError
 	if _, err := svc.Update(asAdmin, &group.UpdateGroupRequest{ID: g.ID, RoleIDs: []string{}}); !errors.As(err, &refused) {
 		t.Fatalf("admin drops so from the group: %v, want *SORoleRequiredError", err)
 	}
@@ -341,7 +341,7 @@ func TestGroupService_DeleteJudgedAgainstClaimedRecord(t *testing.T) {
 			t.Fatalf("racing SO add: %v", err)
 		}
 	}
-	var refused *middleware.SORoleRequiredError
+	var refused *auth.SORoleRequiredError
 	var conflict *group.GroupConflictError
 	if err := f.svc.Delete(asAdmin, g.ID); !errors.As(err, &refused) && !errors.As(err, &conflict) {
 		t.Fatalf("admin delete racing an SO add: %v, want *SORoleRequiredError or *GroupConflictError", err)
@@ -366,7 +366,7 @@ func TestGroupService_DeleteRetriesAfterAnInterruptedDelete(t *testing.T) {
 	f := newStrictFixture(t)
 	admin, so := role.SystemRoleID("acme", role.RoleNameAdmin), role.SystemRoleID("acme", role.RoleNameSO)
 	deleter := authtest.CustomRole(t, f.roles, "acme", "group-deleter", permission.GroupsRead, permission.GroupsDelete)
-	asAdmin, asSO := acmeCaller(0, admin, deleter), acmeCaller(0, admin, so, deleter)
+	asAdmin, asSO := acmeCaller(0, admin, deleter), acmeCaller(0, so, deleter)
 	g, err := f.groups.CreateGroup(asSO, &group.CreateGroupRequest{TenantID: "acme", Name: "signers", RoleIDs: []string{so}})
 	if err != nil {
 		t.Fatalf("create group: %v", err)
@@ -382,7 +382,7 @@ func TestGroupService_DeleteRetriesAfterAnInterruptedDelete(t *testing.T) {
 	if err := f.svc.Delete(asSO, g.ID); err == nil {
 		t.Fatal("delete succeeded with an interrupted revoke")
 	}
-	var refused *middleware.SORoleRequiredError
+	var refused *auth.SORoleRequiredError
 	if err := f.svc.Delete(asAdmin, g.ID); !errors.As(err, &refused) {
 		t.Fatalf("admin retry of an SO group delete: %v, want *SORoleRequiredError", err)
 	}
@@ -409,7 +409,7 @@ func TestGroupService_JoinRacingARoleAddIsNotASelfGrant(t *testing.T) {
 	admin, so := role.SystemRoleID("acme", role.RoleNameAdmin), role.SystemRoleID("acme", role.RoleNameSO)
 	userRole := role.SystemRoleID("acme", role.RoleNameUser)
 	keeper := authtest.CustomRole(t, f.roles, "acme", "group-keeper", permission.GroupsRead, permission.GroupsUpdate)
-	asSO := acmeCaller(0, admin, so)
+	asSO := acmeCaller(0, so)
 	g, err := f.groups.CreateGroup(asSO, &group.CreateGroupRequest{TenantID: "acme", Name: "crypto"})
 	if err != nil {
 		t.Fatalf("create group: %v", err)
@@ -454,7 +454,7 @@ func TestGroupService_JoinAfterALapsedClaimIsUndone(t *testing.T) {
 	f := newStrictFixture(t)
 	admin, so := role.SystemRoleID("acme", role.RoleNameAdmin), role.SystemRoleID("acme", role.RoleNameSO)
 	keeper := authtest.CustomRole(t, f.roles, "acme", "group-keeper", permission.GroupsRead, permission.GroupsUpdate)
-	asSO := acmeCaller(0, admin, so)
+	asSO := acmeCaller(0, so)
 	g, err := f.groups.CreateGroup(asSO, &group.CreateGroupRequest{TenantID: "acme", Name: "crypto"})
 	if err != nil {
 		t.Fatalf("create group: %v", err)
@@ -521,7 +521,7 @@ func lapsedRemovalFixture(t *testing.T, during func(f *strictFixture, asSO conte
 	f := newStrictFixture(t)
 	admin, so := role.SystemRoleID("acme", role.RoleNameAdmin), role.SystemRoleID("acme", role.RoleNameSO)
 	keeper := authtest.CustomRole(t, f.roles, "acme", "group-keeper", permission.GroupsRead, permission.GroupsUpdate)
-	asSO := acmeCaller(0, admin, so)
+	asSO := acmeCaller(0, so)
 	g, err := f.groups.CreateGroup(asSO, &group.CreateGroupRequest{TenantID: "acme", Name: "crypto"})
 	if err != nil {
 		t.Fatalf("create group: %v", err)
@@ -879,7 +879,7 @@ func TestGroupService_UpdateJudgedAgainstCommittedRecord(t *testing.T) {
 			t.Fatalf("racing SO add: %v", err)
 		}
 	}
-	var refused *middleware.SORoleRequiredError
+	var refused *auth.SORoleRequiredError
 	var conflict *group.GroupConflictError
 	_, err = svc.Update(asAdmin, &group.UpdateGroupRequest{ID: g.ID, RoleIDs: []string{}})
 	if !errors.As(err, &refused) && !errors.As(err, &conflict) {

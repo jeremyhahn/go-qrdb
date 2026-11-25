@@ -143,8 +143,8 @@ func TestAuthorizeGroupRoleRemoval_SOGate(t *testing.T) {
 		removed []string
 		check   func(t *testing.T, err error)
 	}{
-		{"admin removes so", f.caller(f.admin), []string{f.so}, wantErrorAs[*SORoleRequiredError]},
-		{"admin deletes a group carrying so", f.caller(f.admin), carrying.RoleIDs, wantErrorAs[*SORoleRequiredError]},
+		{"admin removes so", f.caller(f.admin), []string{f.so}, wantErrorAs[*auth.SORoleRequiredError]},
+		{"admin deletes a group carrying so", f.caller(f.admin), carrying.RoleIDs, wantErrorAs[*auth.SORoleRequiredError]},
 		{"SO removes so", f.caller(f.so), []string{f.so}, wantNoError},
 		{"admin removes a non-so role", f.caller(f.admin), []string{f.userRole}, wantNoError},
 		{"nothing removed", f.caller(f.admin), nil, wantNoError},
@@ -333,7 +333,7 @@ func TestAuthorizeGroupMemberRemoval_Guard(t *testing.T) {
 		}
 	})
 	t.Run("non-SO caller and a group carrying so", func(t *testing.T) {
-		wantErrorAs[*SORoleRequiredError](t, remover.AuthorizeGroupMemberRemoval(f.caller(f.admin), member, 7, carrying))
+		wantErrorAs[*auth.SORoleRequiredError](t, remover.AuthorizeGroupMemberRemoval(f.caller(f.admin), member, 7, carrying))
 	})
 	t.Run("SO caller and a group carrying so", func(t *testing.T) {
 		wantNoError(t, remover.AuthorizeGroupMemberRemoval(f.caller(f.so), member, 7, carrying))
@@ -359,7 +359,7 @@ func TestAuthorizeGroupMembership_SOAndSelf(t *testing.T) {
 	})
 	t.Run("non-SO caller adds to a group carrying so", func(t *testing.T) {
 		member := &userTenantFixture{u: &user.User{ID: 7, TenantID: "acme"}}
-		wantErrorAs[*SORoleRequiredError](t, adder.AuthorizeGroupMembership(f.caller(f.admin), member, f.roles, 7, carrying))
+		wantErrorAs[*auth.SORoleRequiredError](t, adder.AuthorizeGroupMembership(f.caller(f.admin), member, f.roles, 7, carrying))
 	})
 	t.Run("self-join is judged as self-assignment", func(t *testing.T) {
 		builtIn, _, roles := grantRuleFixture()
@@ -435,7 +435,7 @@ func TestAuthorizeGroupRoles_NoRolesNoop(t *testing.T) {
 func TestAuthorizeGroupRoles_SOGate(t *testing.T) {
 	f := newSORoleFixture(t)
 	mw := groupGuardMW(f, permission.GroupsUpdate)
-	wantErrorAs[*SORoleRequiredError](t, mw.AuthorizeGroupRoles(f.caller(f.admin), nil, f.roles, "acme", "g-1", []string{f.so}))
+	wantErrorAs[*auth.SORoleRequiredError](t, mw.AuthorizeGroupRoles(f.caller(f.admin), nil, f.roles, "acme", "g-1", []string{f.so}))
 }
 
 func TestAuthorizeGroupRoleRemoval_RoleLookupFailsClosed(t *testing.T) {
