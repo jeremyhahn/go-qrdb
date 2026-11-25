@@ -506,8 +506,8 @@ func HostMembership(h ShardMembershipReader) MembershipSource
   candidate's announced releases with every committed member's live or
   recorded release (`__sys:cluster/features/releases/`), read afresh from the
   stores, not the caches. A candidate with no live advertisement is refused
-  (`UnannouncedCandidateError`); one whose live record predates announcement
-  is judged by features alone. The returned `ConfigBinding` (`ConfigChangeID`,
+  (`UnannouncedCandidateError`); a candidate or member whose live record
+  carries no release is refused with the release gap (`*release.GapError`). The returned `ConfigBinding` (`ConfigChangeID`,
   `Required`, `Candidate`, `ReleaseDigest`) is passed by
   `AdminService.AddMember`/`AddObserverMember` as the add's
   `configChangeIndex` and run through `Gate.ProposeBound`, which holds one

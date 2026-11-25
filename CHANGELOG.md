@@ -15,8 +15,6 @@ are not reconstructed here — their history is in the git log.
 
 ### Added
 
-- **Pending-user-TTL capability bit (#1628).** The server advertises `pendingUserTTL` in the capabilities response on every transport (proto field 21) and `qrdb admin capabilities` shows it; every Go SDK transport refuses a pending-TTL user create with `*CapabilityUnsupportedError` before sending it to a server without the bit (rolling-upgrades Q5 (b)).
-
 - **Replica forwarding negotiates the release (#1628).** A forwarded request carries the forwarder's release in its signed on-behalf assertion, and a node refuses a forward across a release gap with `release.GapError` (REST and MCP 409 with the gap as the JSON error body, gRPC/QUIC `FAILED_PRECONDITION`) instead of serving it; MCP never admits such a forward as an anonymous public call.
 
 - **Rolling-upgrade matrix, mixed clusters (#1628).** CLI e2e tests over every transport: clusters of two N and one N+1, and one N and two N+1, serve every node and forward writes in both directions across a leadership transfer; the probe's gated put takes the N path until activation; after activation the N binary refuses to start with `UnsupportedFeatureError` and the node rejoins on N+1; raft-tenant barrier keys reach every node with the leader on either release.
