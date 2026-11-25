@@ -163,6 +163,10 @@ go version -m qrdbd-<v>-linux-arm64 # build settings: GOARCH=arm64, CGO_ENABLED=
 ./qrdbd-<v>-linux-arm64 version     # version and commit match the release tag
 ```
 
+In a checkout, `make release-smoke PLATFORM=<host platform>` runs the same
+`version` check over every artifact of that platform in `dist/`, the FIPS
+ones under `GODEBUG=fips140=only`.
+
 `go version -m` on a `-fips` binary also lists `GOFIPS140`. A FIPS binary
 selects the module at build time; the enforcement level is still the
 operator's, `GODEBUG=fips140=only` at run time, as
