@@ -570,6 +570,57 @@ func TestTenantShardReconciler_SystemTenantStartsWithoutATenantBarrier(t *testin
 	}
 }
 
+// groupBarrierLifecycle answers GroupBarrierReady from a fixed table.
+type groupBarrierLifecycle struct {
+	*fakeShardLifecycle
+	ready map[string]bool
+	err   map[string]error
+}
+
+func (g *groupBarrierLifecycle) GroupBarrierReady(_ context.Context, tenantID string) (bool, error) {
+	if err := g.err[tenantID]; err != nil {
+		return false, err
+	}
+	return g.ready[tenantID], nil
+}
+
+func TestTenantShardReconciler_StartsPrefixTenantReplicaWithoutTenantBarrier(t *testing.T) {
+	cases := []struct {
+		name       string
+		ready      bool
+		err        error
+		wantAttach int
+		wantShells int
+	}{
+		{name: "prefix tenant under an unsealed node barrier starts", ready: true, wantAttach: 1},
+		{name: "barrier tenant without its barrier defers", err: seal.ErrTenantNotFound, wantShells: 1},
+		{name: "prefix tenant under a sealed node barrier defers"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			factory := &groupBarrierLifecycle{
+				fakeShardLifecycle: newFakeShardLifecycle(),
+				ready:              map[string]bool{"pt": tc.ready},
+				err:                map[string]error{"pt": tc.err},
+			}
+			barriers := newFakeBarrierReadiness()
+			barriers.markMissing("pt")
+			r, _ := newTestReconciler(t, factory, barriers, placement1("pt", "app", 1001))
+			shells := &recordingShellRegistrar{}
+			r.SetShellRegistrar(shells)
+
+			r.ReconcileOnce(context.Background())
+
+			if got := factory.attachCount(); got != tc.wantAttach {
+				t.Fatalf("Attach called %d times, want %d", got, tc.wantAttach)
+			}
+			if got := shells.registered(); len(got) != tc.wantShells {
+				t.Fatalf("shells registered = %v, want %d", got, tc.wantShells)
+			}
+		})
+	}
+}
+
 // deferralSignal is a slog.Handler that reports, on deferred, each time the
 // reconciler logs that it deferred a shard for its barrier: the record is
 // written after the barrier was found sealed, so a test acting on it knows

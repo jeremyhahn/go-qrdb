@@ -430,6 +430,16 @@ func (f *RaftBackendFactory) groupBarrier(ctx context.Context, tenantID string) 
 	return seal.WrapTenantBarrier(tenantID, sys), true, nil
 }
 
+// GroupBarrierReady reports whether the barrier tenantID's groups run under is
+// present and unsealed; a prefix tenant resolves to the node barrier.
+func (f *RaftBackendFactory) GroupBarrierReady(ctx context.Context, tenantID string) (bool, error) {
+	tb, _, err := f.groupBarrier(ctx, tenantID)
+	if err != nil {
+		return false, err
+	}
+	return tb != nil && !tb.IsSealed(), nil
+}
+
 // HostsShard reports whether this factory has started the (tenant, db) group.
 func (f *RaftBackendFactory) HostsShard(tenantID, db string) bool {
 	f.mu.Lock()

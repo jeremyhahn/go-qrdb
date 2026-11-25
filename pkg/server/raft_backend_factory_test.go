@@ -1635,3 +1635,26 @@ func TestRaftBackendFactory_ShardsAnswerTheFeatureGate(t *testing.T) {
 		t.Fatal("a transportless host needs no gate")
 	}
 }
+
+func TestRaftBackendFactory_GroupBarrierReady(t *testing.T) {
+	ctx := context.Background()
+	host, mux := newSharedTestHostWithMux(t)
+	reg := newVolumePooledRegistry(t)
+	f := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg, newFakeRaftInfoSource(), volTestLogger(),
+		WithMultiplexLogDB(mux),
+		WithTenantIsolation(isolationByTenant(map[string]tenant.IsolationType{
+			"pt": tenant.IsolationPrefix, "bt": tenant.IsolationBarrier,
+		})))
+	t.Cleanup(func() { _ = f.CloseAll() })
+
+	if ready, err := f.GroupBarrierReady(ctx, "pt"); err != nil || !ready {
+		t.Fatalf("prefix tenant: ready=%v err=%v, want ready under the node barrier", ready, err)
+	}
+	if ready, err := f.GroupBarrierReady(ctx, "bt"); !errors.Is(err, seal.ErrTenantNotFound) || ready {
+		t.Fatalf("barrier tenant without its barrier: ready=%v err=%v, want ErrTenantNotFound", ready, err)
+	}
+	registerVolumeTenant(t, reg, "bt")
+	if ready, err := f.GroupBarrierReady(ctx, "bt"); err != nil || !ready {
+		t.Fatalf("barrier tenant with its barrier: ready=%v err=%v, want ready", ready, err)
+	}
+}

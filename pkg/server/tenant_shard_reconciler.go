@@ -115,6 +115,13 @@ type BarrierReadiness interface {
 	GetTenant(tenantID string) (*seal.TenantBarrier, error)
 }
 
+// GroupBarrierReadiness is an optional ShardLifecycle extension that reports
+// whether the barrier a tenant's group runs under is present and unsealed; a
+// prefix tenant's group runs under the node barrier and has no tenant barrier.
+type GroupBarrierReadiness interface {
+	GroupBarrierReady(ctx context.Context, tenantID string) (bool, error)
+}
+
 // ShellRegistrar registers a tenant's barrier on this node as an
 // uninitialized, sealed shell when placement assigns the node to one of the
 // tenant's groups and BarrierReadiness reports no barrier for it. It is
@@ -639,7 +646,18 @@ func (r *TenantShardReconciler) ensureStarted(ctx context.Context, p *placement.
 	}
 	// The system tenant has no tenant barrier: its shards run under the
 	// host-wide barrier, so only a regular tenant waits for its own.
-	if r.barriers != nil && !tenantid.IsSystem(p.TenantID) {
+	if gb, ok := r.factory.(GroupBarrierReadiness); ok && !tenantid.IsSystem(p.TenantID) {
+		ready, err := gb.GroupBarrierReady(ctx, p.TenantID)
+		if errors.Is(err, seal.ErrTenantNotFound) {
+			r.registerShell(ctx, p.TenantID)
+		}
+		if err != nil || !ready {
+			r.logger.Debug("placement reconciler: group barrier not ready, deferring shard start",
+				slog.String("tenant", p.TenantID),
+				slog.String("database", p.Database))
+			return false
+		}
+	} else if r.barriers != nil && !tenantid.IsSystem(p.TenantID) {
 		tb, err := r.barriers.GetTenant(p.TenantID)
 		if err != nil || tb == nil {
 			r.registerShell(ctx, p.TenantID)
