@@ -164,7 +164,7 @@ func TestNewLocalStorage_OnDiskBackendsEncryptThroughTheEncryptor(t *testing.T) 
 	enc := atrest.New(newUnsealedBarrier(t))
 	key := []byte("localstore-at-rest-key")
 	value := []byte("localstore-at-rest-plaintext-value")
-	for _, backend := range []database.BackendType{database.BackendPebble, database.BackendFile} {
+	for _, backend := range []database.BackendType{database.BackendPebble, database.BackendFile, database.BackendObjstore} {
 		t.Run(string(backend), func(t *testing.T) {
 			dataDir := t.TempDir()
 			stg, _, err := lifecycle.NewLocalStorage(backend, dataDir, enc, qrdbconfig.StorageConfig{})
@@ -177,6 +177,11 @@ func TestNewLocalStorage_OnDiskBackendsEncryptThroughTheEncryptor(t *testing.T) 
 			got, err := stg.Get(key)
 			if err != nil || !bytes.Equal(got, value) {
 				t.Fatalf("Get = %q, %v; want %q", got, err, value)
+			}
+			if f, ok := stg.(interface{ Flush() error }); ok {
+				if err := f.Flush(); err != nil {
+					t.Fatalf("Flush: %v", err)
+				}
 			}
 			if err := stg.Close(); err != nil {
 				t.Fatalf("Close: %v", err)
