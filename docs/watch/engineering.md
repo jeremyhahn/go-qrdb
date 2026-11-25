@@ -228,9 +228,9 @@ nothing survives a restart, and a consumer reconnecting must re-establish and
   prefix and for an unrecognized reason.
 - **Error tests**: compacted revision, unsupported-replay store, permission
   denial, context cancellation.
-- **Integration**: watch parity across transports in the standalone stage;
-  multi-node delivery ordering belongs to the cluster stage, which CI does
-  not run.
+- **Integration**: watch parity across transports in `watch_cli_test.go`
+  (`make integration-test-watch`); multi-node delivery ordering belongs to
+  `make integration-test-cluster`, which CI does not run.
 - **Fault injection**: the store interface is injected, so a compaction racing a
   replay is provoked directly rather than timed.
 - **No `time.Sleep` in tests** — synchronization uses channels and waitgroups,
