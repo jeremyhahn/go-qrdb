@@ -849,8 +849,6 @@ func (t *Transport) Capabilities(ctx context.Context) (*transport.CapabilitiesRe
 		Etcd:        resp.GetEtcd(),
 		FTS:         resp.GetFts(),
 
-		PendingUserTTL: resp.GetPendingUserTtl(),
-
 		UnencryptedAtRest: resp.GetUnencryptedAtRest(),
 	}, nil
 }

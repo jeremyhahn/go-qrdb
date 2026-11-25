@@ -236,8 +236,6 @@ type mockAdminService struct {
 	stopShardErr    error
 	shardStateErr   error
 	topologyErr     error
-	// olderServer drops the pendingUserTTL capability bit.
-	olderServer bool
 }
 
 func newMockAdminService() *mockAdminService {
@@ -306,16 +304,13 @@ func (m *mockAdminService) Drain(_ context.Context) error {
 
 func (m *mockAdminService) Capabilities(_ context.Context) (*capabilities.Capabilities, error) {
 	return &capabilities.Capabilities{
-		// A current server honours the pending TTL; olderServer models a
-		// release before the pendingUserTTL bit (owner ruling 1243).
-		PendingUserTTL: !m.olderServer,
-		KV:             true,
-		MVCC:           true,
-		Transaction:    true,
-		Batch:          true,
-		Watch:          true,
-		Lease:          true,
-		Index:          true,
+		KV:          true,
+		MVCC:        true,
+		Transaction: true,
+		Batch:       true,
+		Watch:       true,
+		Lease:       true,
+		Index:       true,
 	}, nil
 }
 

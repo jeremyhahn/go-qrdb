@@ -127,18 +127,12 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 	if _, err := req.PendingTTLDuration(); err != nil {
 		return nil, &transport.RequestError{Method: "CreateUser", Err: err}
 	}
-	// Primary check (owner ruling 1243): send a TTL only to a server that
-	// advertises the pendingUserTTL capability bit.
-	if err := transport.RequirePendingUserTTL(ctx, req, t.Capabilities); err != nil {
-		return nil, err
-	}
 
 	var user transport.User
 	if err := t.postJSONDecode(ctx, "CreateUser", "/users", req, &user); err != nil {
 		return nil, err
 	}
-	// Post-create guard: a stale or mixed-cluster answer that still dropped
-	// pending_ttl has its immortal account undone.
+	// An older server ignores pending_ttl: undo its immortal account.
 	return transport.EnforcePendingTTL(ctx, req, &user, t.DeleteUser)
 }
 

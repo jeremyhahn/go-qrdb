@@ -34,8 +34,6 @@ type olderUserSvc struct {
 	liveMu sync.Mutex
 	nextID uint64
 	live   map[uint64]bool
-	// deletes counts the DeleteUser requests that reached the server.
-	deletes int
 }
 
 func (o *olderUserSvc) CreateUser(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
@@ -54,7 +52,6 @@ func (o *olderUserSvc) CreateUser(_ context.Context, req *user.CreateUserRequest
 func (o *olderUserSvc) DeleteUser(_ context.Context, id uint64) error {
 	o.liveMu.Lock()
 	defer o.liveMu.Unlock()
-	o.deletes++
 	delete(o.live, id)
 	return nil
 }
@@ -67,10 +64,7 @@ func TestTransport_CreateUser_OlderServerRefusesPendingTTL(t *testing.T) {
 	older := &olderUserSvc{mockUserSvc: newMockUserSvc(), live: map[uint64]bool{}}
 	roles := newMockRoleSvc()
 	roles.getResp.TenantID = "system"
-	// The older server's capabilities carry no pendingUserTTL bit.
-	admin := newMockAdminService()
-	admin.olderServer = true
-	tr, cleanup := connectAuthInProcessWithAdmin(t, admin, older, roles, nil)
+	tr, cleanup := connectAuthInProcess(t, older, roles, nil)
 	defer cleanup()
 
 	u, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{
@@ -82,13 +76,10 @@ func TestTransport_CreateUser_OlderServerRefusesPendingTTL(t *testing.T) {
 		t.Fatalf("CreateUser(pending_ttl=24h) on an older server = %+v, %v; want CapabilityUnsupportedError", u, err)
 	}
 	older.liveMu.Lock()
-	n, creates, deletes := len(older.live), older.nextID, older.deletes
+	n := len(older.live)
 	older.liveMu.Unlock()
 	if n != 0 {
 		t.Fatalf("%d pending account(s) survive with no expiry; want 0", n)
-	}
-	if creates != 0 || deletes != 0 {
-		t.Fatalf("older server saw %d CreateUser and %d DeleteUser request(s); want 0 and 0 (refused before sending)", creates, deletes)
 	}
 
 	if _, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{

@@ -1447,9 +1447,6 @@ func TestHandleCapabilities_Success(t *testing.T) {
 	if !resp.KV {
 		t.Fatal("expected KV = true")
 	}
-	if !resp.PendingUserTTL {
-		t.Fatal("expected PendingUserTTL = true: the request-feature bit must reach the wire (ruling 1243)")
-	}
 }
 
 func TestHandleCapabilities_ServiceError(t *testing.T) {

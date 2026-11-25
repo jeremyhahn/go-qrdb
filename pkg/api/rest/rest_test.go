@@ -284,14 +284,13 @@ func (m *mockAdminService) Capabilities(ctx context.Context) (*capabilities.Capa
 		return m.capabilitiesFn(ctx)
 	}
 	return &capabilities.Capabilities{
-		PendingUserTTL: true,
-		KV:             true,
-		MVCC:           true,
-		Transaction:    true,
-		Batch:          true,
-		Watch:          true,
-		Lease:          true,
-		Index:          true,
+		KV:          true,
+		MVCC:        true,
+		Transaction: true,
+		Batch:       true,
+		Watch:       true,
+		Lease:       true,
+		Index:       true,
 	}, nil
 }
 

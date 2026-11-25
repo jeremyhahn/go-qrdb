@@ -180,9 +180,6 @@ func TestEffectiveCapabilities_StandaloneProfile(t *testing.T) {
 	if !caps.KV || !caps.Batch || !caps.Index {
 		t.Error("core kv/batch/index must be true in every mode")
 	}
-	if !caps.PendingUserTTL {
-		t.Error("standalone profile: pendingUserTTL = false, want true (request-feature bit, ruling 1243)")
-	}
 	for name, v := range map[string]bool{
 		"cluster": caps.Cluster, "backup": caps.Backup,
 		"rebalance": caps.Rebalance, "etcd": caps.Etcd,
@@ -233,9 +230,6 @@ func TestEffectiveCapabilities_RaftProfileAndConfigNarrowing(t *testing.T) {
 	}
 	if !caps.MVCC {
 		t.Fatal("narrowing lease/watch must not affect mvcc")
-	}
-	if !caps.PendingUserTTL {
-		t.Fatal("raft profile: pendingUserTTL must stay true under config narrowing (ruling 1243)")
 	}
 }
 

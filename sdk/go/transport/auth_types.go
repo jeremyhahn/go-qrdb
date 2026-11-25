@@ -261,12 +261,6 @@ var pendingTTLCleanupTimeout = 30 * time.Second
 // answered with no PendingExpiresAt is undone: the account is deleted through
 // del and *CapabilityUnsupportedError returned, never success. Any other
 // create passes through unchanged.
-//
-// Under owner ruling 1243 the primary check is RequirePendingUserTTL, before
-// the request is sent: a server without the pendingUserTTL capability bit
-// never sees the TTL. This is the post-create guard behind it, so a stale or
-// mixed-cluster answer (the bit read from one node, the create served by an
-// older one) still never reports success.
 func EnforcePendingTTL(ctx context.Context, req *CreateUserRequest, u *User, del func(context.Context, uint64) error) (*User, error) {
 	if req == nil || u == nil || u.PendingExpiresAt != "" {
 		return u, nil
@@ -293,32 +287,6 @@ func EnforcePendingTTL(ctx context.Context, req *CreateUserRequest, u *User, del
 			fmt.Errorf("delete of the unexpiring pending user %d: %w", u.ID, delErr))
 	}
 	return nil, refusal
-}
-
-// RequirePendingUserTTL is the pre-send check of a TTL-bearing create (owner
-// ruling 1243, rolling-upgrades clause (5): the SDK never sends a field the
-// server drops). A request with no positive TTL passes without reading the
-// capabilities. Otherwise caps is read and, unless the server advertises the
-// pendingUserTTL request-feature bit, *CapabilityUnsupportedError is
-// returned: nothing is sent, so no user exists. A server that predates the
-// bit never sends it and reads as false. A capabilities read that fails is
-// returned as *RequestError{Method: "CreateUser"} wrapping it: the field is
-// never sent blind. A malformed or negative TTL also passes here; the
-// transports refuse it through PendingTTLDuration.
-func RequirePendingUserTTL(ctx context.Context, req *CreateUserRequest, caps func(context.Context) (*CapabilitiesResponse, error)) error {
-	if d, err := req.PendingTTLDuration(); err != nil || d <= 0 {
-		return nil
-	}
-	c, err := caps(ctx)
-	if err != nil {
-		return &RequestError{Method: "CreateUser", Err: err}
-	}
-	if c == nil || !c.PendingUserTTL {
-		return &CapabilityUnsupportedError{
-			Message: "server does not advertise pendingUserTTL: it would drop pending_ttl; upgrade the server",
-		}
-	}
-	return nil
 }
 
 // UpdateUserRequest holds parameters for updating a user.

@@ -491,7 +491,6 @@ func newAdminCapabilitiesCmd() *cobra.Command {
 					{"postgresql", strconv.FormatBool(resp.PostgreSQL)},
 					{"etcd", strconv.FormatBool(resp.Etcd)},
 					{"fts", strconv.FormatBool(resp.FTS)},
-					{"pendingUserTTL", strconv.FormatBool(resp.PendingUserTTL)},
 				}
 				for _, gap := range resp.UnencryptedAtRest {
 					rows = append(rows, []string{"unencryptedAtRest", gap})

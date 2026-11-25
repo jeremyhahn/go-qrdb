@@ -512,13 +512,6 @@ func (m *mockCertEnrollmentServicer) IssueDelegation(_ context.Context, req *ser
 
 func connectAuthInProcess(t *testing.T, uSvc user.UserServicer, rSvc role.RoleServicer, cProv cert.CertProvider, extraOpts ...mcpapi.ServerOption) (*Transport, func()) {
 	t.Helper()
-	return connectAuthInProcessWithAdmin(t, newMockAdminService(), uSvc, rSvc, cProv, extraOpts...)
-}
-
-// connectAuthInProcessWithAdmin is connectAuthInProcess with the given admin
-// service, so a test can stand up an older server's capabilities.
-func connectAuthInProcessWithAdmin(t *testing.T, admin *mockAdminService, uSvc user.UserServicer, rSvc role.RoleServicer, cProv cert.CertProvider, extraOpts ...mcpapi.ServerOption) (*Transport, func()) {
-	t.Helper()
 
 	opts := []mcpapi.ServerOption{}
 	if uSvc != nil {
@@ -534,7 +527,7 @@ func connectAuthInProcessWithAdmin(t *testing.T, admin *mockAdminService, uSvc u
 
 	srv := mcpapi.NewServer(
 		newMockKVService(),
-		admin,
+		newMockAdminService(),
 		":0",
 		opts...,
 	)

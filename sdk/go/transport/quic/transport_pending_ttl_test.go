@@ -21,7 +21,6 @@ import (
 	"sync"
 	"testing"
 
-	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -37,11 +36,6 @@ func TestE2E_CreateUser_OlderServerRefusesPendingTTL(t *testing.T) {
 	var mu sync.Mutex
 	live := map[uint64]bool{}
 	var nextID uint64
-	var deletes int
-	// The older server's capabilities carry no pendingUserTTL bit.
-	srv.SetResponder("admin.Capabilities", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, mustMarshal(&pb.CapabilitiesResponse{Mode: "standalone", Kv: true})
-	})
 	srv.SetResponder("user.Create", func(payload []byte) (uint16, []byte) {
 		var req struct {
 			Username string `json:"username"`
@@ -63,7 +57,6 @@ func TestE2E_CreateUser_OlderServerRefusesPendingTTL(t *testing.T) {
 		_ = json.Unmarshal(payload, &req)
 		mu.Lock()
 		defer mu.Unlock()
-		deletes++
 		delete(live, req.ID)
 		return wire.StatusOK, nil
 	})
@@ -76,13 +69,10 @@ func TestE2E_CreateUser_OlderServerRefusesPendingTTL(t *testing.T) {
 		t.Fatalf("CreateUser(pending_ttl=24h) on an older server = %+v, %v; want CapabilityUnsupportedError", u, err)
 	}
 	mu.Lock()
-	n, creates, dels := len(live), nextID, deletes
+	n := len(live)
 	mu.Unlock()
 	if n != 0 {
 		t.Fatalf("%d pending account(s) survive with no expiry; want 0", n)
-	}
-	if creates != 0 || dels != 0 {
-		t.Fatalf("older server saw %d user.Create and %d user.Delete request(s); want 0 and 0 (refused before sending)", creates, dels)
 	}
 
 	if _, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{

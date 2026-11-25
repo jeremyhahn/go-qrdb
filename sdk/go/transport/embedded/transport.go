@@ -1252,8 +1252,6 @@ func (t *Transport) Capabilities(ctx context.Context) (*transport.CapabilitiesRe
 		Etcd:        caps.Etcd,
 		FTS:         caps.FTS,
 
-		PendingUserTTL: caps.PendingUserTTL,
-
 		UnencryptedAtRest: caps.UnencryptedAtRest,
 	}, nil
 }

@@ -68,15 +68,6 @@ type Capabilities struct {
 	Etcd        bool   `json:"etcd"`
 	FTS         bool   `json:"fts"`
 
-	// PendingUserTTL is a request-feature bit (rolling-upgrades clause (5),
-	// owner ruling 1243): true when this server honours CreateUser's pending
-	// TTL and never drops it. A server that does not send the bit (every
-	// release before it) reads as false, and the Go SDK refuses a TTL-bearing
-	// create before sending it. It says only that the binary understands the
-	// field; whether the cluster accepts it is the pending-user-ttl feature
-	// gate's answer.
-	PendingUserTTL bool `json:"pendingUserTTL"`
-
 	// UnencryptedAtRest lists, when seal is enabled, where this node keeps
 	// data on disk outside the barrier's at-rest encryption -- a state
 	// machine or a local storage backend that does not route its files

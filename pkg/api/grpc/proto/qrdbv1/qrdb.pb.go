@@ -7501,13 +7501,8 @@ type CapabilitiesResponse struct {
 	// unencrypted_at_rest lists, when seal is enabled, where the node keeps
 	// data on disk outside the barrier's at-rest encryption. Empty otherwise.
 	UnencryptedAtRest []string `protobuf:"bytes,20,rep,name=unencrypted_at_rest,json=unencryptedAtRest,proto3" json:"unencrypted_at_rest,omitempty"`
-	// pending_user_ttl is a request-feature bit (owner ruling 1243): true
-	// when the server honours CreateUserRequest.pending_ttl and never drops
-	// it. A server that does not send it reads as false, and the Go SDK
-	// refuses a TTL-bearing create before sending it.
-	PendingUserTtl bool `protobuf:"varint,21,opt,name=pending_user_ttl,json=pendingUserTtl,proto3" json:"pending_user_ttl,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *CapabilitiesResponse) Reset() {
@@ -7678,13 +7673,6 @@ func (x *CapabilitiesResponse) GetUnencryptedAtRest() []string {
 		return x.UnencryptedAtRest
 	}
 	return nil
-}
-
-func (x *CapabilitiesResponse) GetPendingUserTtl() bool {
-	if x != nil {
-		return x.PendingUserTtl
-	}
-	return false
 }
 
 // StartShardRequest is the request payload for StartShard.
@@ -36806,7 +36794,7 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x19RetireJoinIdentityRequest\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\"\x15\n" +
-	"\x13CapabilitiesRequest\"\xad\x04\n" +
+	"\x13CapabilitiesRequest\"\x83\x04\n" +
 	"\x14CapabilitiesResponse\x12\x0e\n" +
 	"\x02kv\x18\x01 \x01(\bR\x02kv\x12\x12\n" +
 	"\x04mvcc\x18\x02 \x01(\bR\x04mvcc\x12 \n" +
@@ -36831,8 +36819,7 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"postgresql\x12\x12\n" +
 	"\x04etcd\x18\x12 \x01(\bR\x04etcd\x12\x10\n" +
 	"\x03fts\x18\x13 \x01(\bR\x03fts\x12.\n" +
-	"\x13unencrypted_at_rest\x18\x14 \x03(\tR\x11unencryptedAtRest\x12(\n" +
-	"\x10pending_user_ttl\x18\x15 \x01(\bR\x0ependingUserTtl\"\xe0\x01\n" +
+	"\x13unencrypted_at_rest\x18\x14 \x03(\tR\x11unencryptedAtRest\"\xe0\x01\n" +
 	"\x11StartShardRequest\x12\x19\n" +
 	"\bshard_id\x18\x01 \x01(\x04R\ashardId\x12\x1d\n" +
 	"\n" +

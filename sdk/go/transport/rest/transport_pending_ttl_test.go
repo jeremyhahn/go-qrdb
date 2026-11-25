@@ -19,9 +19,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -34,7 +34,36 @@ import (
 // *CapabilityUnsupportedError and leave no immortal pending account; a create
 // without a TTL still succeeds.
 func TestRESTCreateUser_OlderServerRefusesPendingTTL(t *testing.T) {
-	rt, _, creates, deletes := newPendingTTLFake(t, false)
+	rt, rs, _ := newExtTransport(t)
+	var mu sync.Mutex
+	live := map[uint64]bool{}
+	var nextID uint64
+	rs.handle(exactPath(http.MethodPost, "/users"), func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Username string `json:"username"`
+			Pending  bool   `json:"pending"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		mu.Lock()
+		nextID++
+		id := nextID
+		live[id] = true
+		mu.Unlock()
+		lc := "active"
+		if req.Pending {
+			lc = "pending"
+		}
+		writeJSON(w, &transport.User{ID: id, Username: req.Username, Lifecycle: lc})
+	})
+	rs.handle(func(r *http.Request) bool {
+		return r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/users/")
+	}, func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.ParseUint(strings.TrimPrefix(r.URL.Path, "/users/"), 10, 64)
+		mu.Lock()
+		delete(live, id)
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
 
 	u, err := rt.CreateUser(context.Background(), &transport.CreateUserRequest{
 		WithoutEmailLoginKey: true, Username: "ttl", Pending: true, PendingTTL: "24h",
@@ -43,8 +72,11 @@ func TestRESTCreateUser_OlderServerRefusesPendingTTL(t *testing.T) {
 	if !errors.As(err, &unsupported) {
 		t.Fatalf("CreateUser(pending_ttl=24h) on an older server = %+v, %v; want CapabilityUnsupportedError", u, err)
 	}
-	if c, d := creates.Load(), deletes.Load(); c != 0 || d != 0 {
-		t.Fatalf("older server saw %d CreateUser and %d DeleteUser request(s); want 0 and 0 (refused before sending)", c, d)
+	mu.Lock()
+	n := len(live)
+	mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d pending account(s) survive with no expiry; want 0", n)
 	}
 
 	if _, err := rt.CreateUser(context.Background(), &transport.CreateUserRequest{
@@ -52,61 +84,6 @@ func TestRESTCreateUser_OlderServerRefusesPendingTTL(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreateUser without a TTL on an older server: %v", err)
 	}
-	if c := creates.Load(); c != 1 {
-		t.Fatalf("CreateUser without a TTL sent %d request(s); want 1", c)
-	}
-}
-
-// TestRESTCreateUser_StaleBitStillUndoesTheImmortalAccount keeps the
-// post-create guard: a server that advertises pendingUserTTL yet answers
-// without an expiry (a stale or mixed-cluster answer) still never reports
-// success, and the account it made is deleted.
-func TestRESTCreateUser_StaleBitStillUndoesTheImmortalAccount(t *testing.T) {
-	rt, _, creates, deletes := newPendingTTLFake(t, true)
-
-	u, err := rt.CreateUser(context.Background(), &transport.CreateUserRequest{
-		WithoutEmailLoginKey: true, Username: "ttl", Pending: true, PendingTTL: "24h",
-	})
-	var unsupported *transport.CapabilityUnsupportedError
-	if !errors.As(err, &unsupported) {
-		t.Fatalf("CreateUser on a server that dropped the TTL = %+v, %v; want CapabilityUnsupportedError", u, err)
-	}
-	if c, d := creates.Load(), deletes.Load(); c != 1 || d != 1 {
-		t.Fatalf("saw %d CreateUser and %d DeleteUser request(s); want 1 and 1 (created, then undone)", c, d)
-	}
-}
-
-// newPendingTTLFake serves a server that drops pending_ttl: its
-// capabilities carry pendingUserTTL only when advertise is set, and it
-// counts the CreateUser and DeleteUser requests that reach it.
-func newPendingTTLFake(t *testing.T, advertise bool) (*Transport, *routerServer, *atomic.Int64, *atomic.Int64) {
-	t.Helper()
-	rt, rs, _ := newExtTransport(t)
-	var creates, deletes atomic.Int64
-	var nextID atomic.Uint64
-	rs.handle(exactPath(http.MethodGet, "/capabilities"), func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, map[string]any{"mode": "standalone", "kv": true, "pendingUserTTL": advertise})
-	})
-	rs.handle(exactPath(http.MethodPost, "/users"), func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			Username string `json:"username"`
-			Pending  bool   `json:"pending"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&req)
-		creates.Add(1)
-		lc := "active"
-		if req.Pending {
-			lc = "pending"
-		}
-		writeJSON(w, &transport.User{ID: nextID.Add(1), Username: req.Username, Lifecycle: lc})
-	})
-	rs.handle(func(r *http.Request) bool {
-		return r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/users/")
-	}, func(w http.ResponseWriter, _ *http.Request) {
-		deletes.Add(1)
-		w.WriteHeader(http.StatusNoContent)
-	})
-	return rt, rs, &creates, &deletes
 }
 
 // A negative or malformed TTL is refused before the request leaves the

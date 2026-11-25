@@ -331,11 +331,6 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 	if _, err := req.PendingTTLDuration(); err != nil {
 		return nil, &transport.RequestError{Method: "CreateUser", Err: err}
 	}
-	// Primary check (owner ruling 1243): send a TTL only to a server that
-	// advertises the pendingUserTTL capability bit.
-	if err := transport.RequirePendingUserTTL(ctx, req, t.Capabilities); err != nil {
-		return nil, err
-	}
 
 	payload, err := json.Marshal(createUserWireRequest{
 		Username:             req.Username,
