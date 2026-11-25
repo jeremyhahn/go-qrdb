@@ -275,7 +275,15 @@ Reaching zero is a package split, one feature at a time. The splits so far:
 - **No partial consensus.** A feature that needs the log is composed only in
   raft mode; there is no half-implementation over `LocalBackend`.
 - **No runtime mode switching.** The mode is fixed at composition; changing it
-  is a restart.
+  is a restart. The first start records the mode in `<data_dir>/.qrdb-run-mode`
+  and a later start in the other mode is refused before any store opens, with
+  an error naming both modes
+  ([`run_mode.go`](../../pkg/server/lifecycle/run_mode.go), called by qrdbd,
+  the SDK node constructors and the qrdb embedded binding). The two modes keep
+  separate stores and no migration exists, so the remedy is to start with the
+  recorded mode or use a fresh data directory. A data directory from before
+  the marker is judged by its store directories (`pebble/`, `file/`,
+  `objstore/` vs `wal/`, `nodehost/`) and is refused when it holds both.
 
 ## Companion documents
 
