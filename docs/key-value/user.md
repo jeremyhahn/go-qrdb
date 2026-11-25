@@ -182,7 +182,7 @@ It is not a fault and not something to retry on the same node. In code, test
 for it rather than reading the message:
 
 ```go
-if err := kv.Put(ctx, key, value); err != nil && sdk.IsStorageClosed(err) {
+if err := kv.Put(ctx, key, value); err != nil && qrdb.IsStorageClosed(err) {
 	return nil // conclude cleanly; a restart resumes from the last record
 }
 ```
