@@ -1,22 +1,5 @@
 #!/usr/bin/env bash
-# CUSTOMIZE (go-qrdb, #1596): deletes CI Go cache trees whose files belong to
-# the stages' non-root uid (10001, scripts/in-toolchain-image.sh), which the
-# runner's own user cannot delete.
-#
-#   ci-cache-clean.sh PATH...
-#
-# Each PATH that exists is deleted. A directory's contents are deleted as
-# root in a --rm container of the toolchain image (CI_CACHE_CLEAN_IMAGE,
-# default TOOLCHAIN_IMAGE, the image the stages ran in): no network, every
-# capability dropped but DAC_OVERRIDE and FOWNER, no new privileges, the
-# directory alone mounted at /c, `find /c -mindepth 1 -delete`. The emptied
-# directory itself, whose parent belongs to the runner, then goes with a
-# plain rm. Only when docker or the image is absent is the whole PATH a
-# plain rm -rf.
-#
-# Cleanup never fails a job: a PATH that survives is a ::warning:: on stderr
-# (the next job retries), and the exit status is 0. scripts/ci-cache-dir.sh
-# and ci.yml's "Remove the temp Go caches" steps call it.
+# CUSTOMIZE: deletes CI Go cache trees owned by the stages' non-root uid.
 set -uo pipefail
 
 image=${CI_CACHE_CLEAN_IMAGE:-${TOOLCHAIN_IMAGE:-}}

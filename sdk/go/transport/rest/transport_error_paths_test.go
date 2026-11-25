@@ -230,7 +230,7 @@ func TestRESTTenant_AllMethods_ServerError(t *testing.T) {
 	if _, err := rt.GetTenant(ctx, "t1"); err == nil {
 		t.Fatal("GetTenant: expected error")
 	}
-	if _, err := rt.ListTenants(ctx); err == nil {
+	if _, err := rt.ListTenants(ctx, nil); err == nil {
 		t.Fatal("ListTenants: expected error")
 	}
 	if err := rt.DeleteTenant(ctx, "t1"); err == nil {
@@ -254,7 +254,7 @@ func TestRESTTenant_AllMethods_BadJSON(t *testing.T) {
 	if _, err := rt.GetTenant(ctx, "t1"); err == nil {
 		t.Fatal("GetTenant: expected error")
 	}
-	if _, err := rt.ListTenants(ctx); err == nil {
+	if _, err := rt.ListTenants(ctx, nil); err == nil {
 		t.Fatal("ListTenants: expected error")
 	}
 	if _, err := rt.UpdateTenant(ctx, &transport.UpdateTenantRequest{}); err == nil {
@@ -744,7 +744,7 @@ func TestRESTAllMethods_NetworkError(t *testing.T) {
 	if _, err := rt.GetTenant(ctx, "t1"); err == nil {
 		t.Fatal("GetTenant: expected error")
 	}
-	if _, err := rt.ListTenants(ctx); err == nil {
+	if _, err := rt.ListTenants(ctx, nil); err == nil {
 		t.Fatal("ListTenants: expected error")
 	}
 	if err := rt.DeleteTenant(ctx, "t1"); err == nil {

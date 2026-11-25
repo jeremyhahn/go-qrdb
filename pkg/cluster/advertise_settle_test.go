@@ -17,6 +17,7 @@ package cluster
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -34,6 +35,22 @@ type electingStore struct {
 	electing int64
 	refusal  error
 	calls    atomic.Int64
+	dels     atomic.Int64
+}
+
+func (s *electingStore) DeleteMember(ctx context.Context, nodeID uint64) error {
+	n := s.dels.Add(1)
+	if s.electing < 0 || n <= s.electing {
+		return errElecting
+	}
+	return s.fakeStore.DeleteMember(ctx, nodeID)
+}
+
+// deleted reports whether the store recorded the withdrawal of nodeID.
+func (s *electingStore) deleted(nodeID uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Contains(s.deletes, nodeID)
 }
 
 func (s *electingStore) PutMember(ctx context.Context, nodeID uint64, data []byte, ttl time.Duration) error {
@@ -182,6 +199,55 @@ func TestMembershipManager_StartWaitsOutElection(t *testing.T) {
 	}
 	if got := store.calls.Load(); got != 3 {
 		t.Fatalf("PutMember calls = %d, want 2 elections and the write", got)
+	}
+}
+
+func TestAdvertiserDeregister_WaitsOutElection(t *testing.T) {
+	store := &electingStore{fakeStore: newFakeStore(), electing: 3}
+	adv := newSettleAdvertiser(t, store, WithAdvertiseSettler(electionSettler(10)))
+
+	if err := adv.Start(context.Background()); err != nil {
+		t.Fatalf("Start through an election = %v, want nil", err)
+	}
+	if err := adv.Close(); err != nil {
+		t.Fatalf("Close through an election = %v, want nil", err)
+	}
+	if got := store.dels.Load(); got != 4 {
+		t.Fatalf("DeleteMember calls = %d, want 3 elections and the delete", got)
+	}
+	if !store.deleted(selfMember().NodeID) {
+		t.Fatal("store did not record this node's withdrawal")
+	}
+}
+
+func TestAdvertiserDeregister_WithoutSettlerOneAttempt(t *testing.T) {
+	store := &electingStore{fakeStore: newFakeStore(), electing: 1}
+	adv := newSettleAdvertiser(t, store)
+
+	if err := adv.Deregister(); !errors.Is(err, errElecting) {
+		t.Fatalf("Deregister = %v, want %v", err, errElecting)
+	}
+	if got := store.dels.Load(); got != 1 {
+		t.Fatalf("DeleteMember calls = %d, want one attempt", got)
+	}
+}
+
+func TestMembershipManager_CloseWaitsOutElection(t *testing.T) {
+	store := &electingStore{fakeStore: newFakeStore(), electing: 2}
+	m, err := NewMembershipManager(store, selfMember(), 100,
+		MembershipConfig{LeaseTTL: time.Second, KeepAliveInterval: time.Hour},
+		WithMembershipSettler(electionSettler(10)))
+	if err != nil {
+		t.Fatalf("NewMembershipManager: %v", err)
+	}
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start through an election = %v, want nil", err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close through an election = %v, want nil", err)
+	}
+	if !store.deleted(selfMember().NodeID) {
+		t.Fatal("store did not record this node's withdrawal")
 	}
 }
 

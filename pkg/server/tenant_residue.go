@@ -29,6 +29,10 @@ import (
 type tenantRuntimeCloser struct {
 	hosts *TenantHostRegistry
 	raft  *RaftBackendFactory
+	// next is a closer the composition wired before this one (the log
+	// service's tenant eviction, wired as the services are built); it runs
+	// after the runtimes close. nil runs none.
+	next tenant.TenantRuntimeCloser
 }
 
 // Compile-time check.
@@ -42,7 +46,7 @@ func NewTenantRuntimeCloser(hosts *TenantHostRegistry, raft *RaftBackendFactory)
 
 // CloseTenantRuntime closes the tenant's host and every dedicated shard it has
 // started here. A tenant with nothing running is the success case.
-func (c *tenantRuntimeCloser) CloseTenantRuntime(_ context.Context, tenantID string) error {
+func (c *tenantRuntimeCloser) CloseTenantRuntime(ctx context.Context, tenantID string) error {
 	if c.hosts != nil {
 		if err := c.hosts.Close(tenantID); err != nil {
 			return err
@@ -58,6 +62,9 @@ func (c *tenantRuntimeCloser) CloseTenantRuntime(_ context.Context, tenantID str
 			}
 		}
 	}
+	if c.next != nil {
+		return c.next.CloseTenantRuntime(ctx, tenantID)
+	}
 	return nil
 }
 
@@ -67,9 +74,24 @@ func (c *tenantRuntimeCloser) CloseTenantRuntime(_ context.Context, tenantID str
 // alone. A composition that rebuilds its tenant service in place calls it
 // again for each new service.
 func WireTenantRuntimeCloser(svc tenant.TenantServicer, hosts *TenantHostRegistry, raft *RaftBackendFactory) {
-	if w, ok := svc.(tenant.ResidueWiring); ok {
-		w.SetTenantRuntimeCloser(NewTenantRuntimeCloser(hosts, raft))
+	w, ok := svc.(tenant.ResidueWiring)
+	if !ok {
+		return
 	}
+	c := &tenantRuntimeCloser{hosts: hosts, raft: raft}
+	// A closer wired before this one (the log service's eviction) keeps
+	// running after the runtimes close; a runtime closer wired before is
+	// replaced, not stacked.
+	if g, ok := svc.(interface {
+		TenantRuntimeCloser() tenant.TenantRuntimeCloser
+	}); ok {
+		prior := g.TenantRuntimeCloser()
+		if rc, ok := prior.(*tenantRuntimeCloser); ok {
+			prior = rc.next
+		}
+		c.next = prior
+	}
+	w.SetTenantRuntimeCloser(c)
 }
 
 // reconcileDeletedTenantsAtBoot is the boot-time half of the deleted-tenant

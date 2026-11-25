@@ -71,6 +71,29 @@ check "hosted: \$RUNNER_TEMP/ci-cache" '[ $rc = 0 ] && [ "$out" = "CI_CACHE_DIR=
 run RUNNER_ENVIRONMENT=github-hosted -- bash "$SH"
 check "hosted: no RUNNER_TEMP exits 2" '[ $rc = 2 ]'
 
+# --- self-hosted runner, no CI_CACHE_ROOT --------------------------------------
+# A pool runner is a container that shares only the Docker daemon: its
+# $RUNNER_TEMP is private to it, while scripts/in-toolchain-image.sh would
+# bind-mount the same path on the daemon's host. So with CI_CACHE_ROOT unset
+# or empty the caches are the stage's named volumes, whatever RUNNER_TEMP is,
+# and nothing is created under $RUNNER_TEMP.
+mkdir -p "$tmp/rt0"
+run GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=self-hosted RUNNER_TEMP="$tmp/rt0" -- bash "$SH"
+check "self-hosted, RUNNER_TEMP set, CI_CACHE_ROOT unset: named volumes" \
+  '[ $rc = 0 ] && [ "$out" = "CI_CACHE_DIR=" ]'
+check "self-hosted, CI_CACHE_ROOT unset: nothing created under \$RUNNER_TEMP" \
+  '[ ! -e "$tmp/rt0/ci-cache" ] && [ -z "$(ls -A "$tmp/rt0")" ]'
+check "self-hosted, CI_CACHE_ROOT unset: the notice names the cause" \
+  'case $err in *"no CI_CACHE_ROOT"*) true ;; *) false ;; esac'
+run GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=self-hosted RUNNER_TEMP="$tmp/rt0" CI_CACHE_ROOT= -- bash "$SH"
+check "self-hosted, RUNNER_TEMP set, CI_CACHE_ROOT empty: named volumes" \
+  '[ $rc = 0 ] && [ "$out" = "CI_CACHE_DIR=" ]'
+check "self-hosted, CI_CACHE_ROOT empty: nothing created under \$RUNNER_TEMP" \
+  '[ ! -e "$tmp/rt0/ci-cache" ] && [ -z "$(ls -A "$tmp/rt0")" ]'
+run GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=self-hosted -- bash "$SH"
+check "self-hosted, neither CI_CACHE_ROOT nor RUNNER_TEMP: named volumes" \
+  '[ $rc = 0 ] && [ "$out" = "CI_CACHE_DIR=" ]'
+
 # --- argument checks ---------------------------------------------------------
 run CI_CACHE_ROOT="$tmp" CI_CACHE_MAX_GB=x -- bash "$SH"
 check "bad CI_CACHE_MAX_GB exits 2" '[ $rc = 2 ]'
@@ -156,8 +179,10 @@ check "du fails, prints nothing: warns, a new generation is current" \
 mkdir -p "$b4/$h2/gobuild"
 run CI_CACHE_ROOT="$r4" CI_CACHE_MAX_GB=5 FAKE_DU_GB=9 PATH="$fakedu:$PATH" -- bash "$SH"
 h3=$(cat "$b4/current" 2>/dev/null)
+# Every generation has gobuild and golangci, so the fake du's 9 GB is read
+# for each: 18 GB in all.
 check "du fails, prints a size over the cap: a new generation is current" \
-  '[ $rc = 0 ] && [ "$h3" != "$h2" ] && [ "$out" = "CI_CACHE_DIR=$b4/$h3" ] && [[ $err == *"9 GB, over the 5 GB cap"* ]]'
+  '[ $rc = 0 ] && [ "$h3" != "$h2" ] && [ "$out" = "CI_CACHE_DIR=$b4/$h3" ] && [[ $err == *"18 GB, over the 5 GB cap"* ]]'
 mkdir -p "$b4/$h3/gobuild"
 run CI_CACHE_ROOT="$r4" CI_CACHE_MAX_GB=5 FAKE_DU_GB=2 PATH="$fakedu:$PATH" -- bash "$SH"
 check "du fails, prints a size under the cap: the same generation" \

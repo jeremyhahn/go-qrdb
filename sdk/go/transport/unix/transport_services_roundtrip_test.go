@@ -190,7 +190,7 @@ func TestUnixRT_ListTenants(t *testing.T) {
 	tr, cleanup := startAuthServer(t, unixserver.WithTenantService(svc))
 	defer cleanup()
 
-	resp, err := tr.ListTenants(context.Background())
+	resp, err := tr.ListTenants(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("ListTenants: %v", err)
 	}

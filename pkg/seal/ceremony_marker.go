@@ -54,6 +54,50 @@ func (b *StorageBarrier) CeremonyOperational(ctx context.Context) (bool, error) 
 	return len(blob) > 0, nil
 }
 
+// systemSOIntentSuffix names, under the barrier's root-key path, the record
+// that a single-admin initialization ceremony asked for a system SO whose
+// record the barrier does not hold yet.
+const systemSOIntentSuffix = ".system-so-intent"
+
+func (b *StorageBarrier) systemSOIntentPath() string {
+	return b.config.RootKeyPath + systemSOIntentSuffix
+}
+
+// MarkSystemSOIntent records, in the barrier's plaintext base store, that the
+// ceremony is about to initialize this barrier with a system SO requested.
+// It is the write-ahead marker for the SO record the ceremony then writes
+// inside the barrier: written before the barrier is initialized, so a crash
+// or a failed record write in between leaves it standing, and a boot that
+// would otherwise auto-unseal the barrier (the none strategy) can tell that
+// the SO handoff never completed. The record holds only the time it was
+// written, never any SO material. Writing it again is harmless.
+func (b *StorageBarrier) MarkSystemSOIntent(ctx context.Context) error {
+	return b.base.Put(ctx, b.systemSOIntentPath(), []byte(time.Now().UTC().Format(time.RFC3339Nano)))
+}
+
+// SystemSOIntent reports whether MarkSystemSOIntent's record stands. An
+// absent record is false with no error; any other read failure is returned,
+// and a caller gating on the answer must treat it as standing.
+func (b *StorageBarrier) SystemSOIntent(ctx context.Context) (bool, error) {
+	blob, err := b.base.Get(ctx, b.systemSOIntentPath())
+	if err != nil {
+		if isSecretNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return len(blob) > 0, nil
+}
+
+// ClearSystemSOIntent removes MarkSystemSOIntent's record once the SO record
+// it guards is durable. Removing an absent record is not an error.
+func (b *StorageBarrier) ClearSystemSOIntent(ctx context.Context) error {
+	if err := b.base.Delete(ctx, b.systemSOIntentPath()); err != nil && !isSecretNotFound(err) {
+		return err
+	}
+	return nil
+}
+
 // Initialized reports whether the barrier has been initialized, reading the
 // persisted metadata when this process has not initialized it itself, so it
 // answers correctly on a sealed barrier after a restart. Unlike Status, which

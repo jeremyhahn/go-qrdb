@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
+	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -94,9 +95,9 @@ func TestOnboardTenant_SO_PartialSetIsRefused(t *testing.T) {
 		{SOChainPEM: []byte("chain")},
 	} {
 		req.ID, req.AdminUsername, req.AdminCSRPEM = "acme", "admin", onboardingCSR(t)
-		var incomplete *bootstrap.IncompleteTenantSOError
+		var incomplete *firstboot.IncompleteSOError
 		if _, err := svc.OnboardTenant(context.Background(), req); !errors.As(err, &incomplete) {
-			t.Fatalf("OnboardTenant(%+v) = %v, want *bootstrap.IncompleteTenantSOError", req, err)
+			t.Fatalf("OnboardTenant(%+v) = %v, want *firstboot.IncompleteSOError", req, err)
 		}
 	}
 }
@@ -129,12 +130,12 @@ func TestOnboardTenant_SO_MatchingTheAdminIsRefused(t *testing.T) {
 	deps.SeparationOfDuties = true
 	svc := NewTenantOnboardingService(deps)
 	csr := onboardingCSR(t)
-	var match *bootstrap.SOMatchesAdminError
+	var match *firstboot.SOMatchesAdminError
 	_, err := svc.OnboardTenant(context.Background(), &OnboardTenantRequest{
 		ID: "acme", AdminUsername: "admin", AdminCSRPEM: csr, SOUsername: "officer", SOCSRPEM: csr, SOPIN: []byte("pin"),
 	})
 	if !errors.As(err, &match) || match.Field != "key" {
-		t.Fatalf("OnboardTenant(SO key = admin key) = %v, want *bootstrap.SOMatchesAdminError{key}", err)
+		t.Fatalf("OnboardTenant(SO key = admin key) = %v, want *firstboot.SOMatchesAdminError{key}", err)
 	}
 	if _, err := deps.Tenants.GetTenant(context.Background(), "acme"); err == nil {
 		t.Fatal("tenant acme exists after a refused create")

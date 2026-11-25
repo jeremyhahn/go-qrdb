@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -120,6 +121,106 @@ func TestStorageBarrier_VerifyCredentials(t *testing.T) {
 				t.Fatalf("VerifyCredentials = %v, want %v", err, tc.want)
 			}
 		})
+	}
+}
+
+// unsealFaultStrategy is the barrier's own software strategy with its
+// UnsealRootKey answer replaced once armed: fail returns the error an
+// enclave-open failure surfaces (a wrapped cause, not a refusal), and other
+// returns a well-formed key that is not the barrier's.
+type unsealFaultStrategy struct {
+	SealingStrategy
+	fail  error
+	other bool
+}
+
+func (s *unsealFaultStrategy) UnsealRootKey(ctx context.Context, sealed *SealedRootKey, creds Credentials) ([]byte, error) {
+	if s.fail != nil {
+		return nil, s.fail
+	}
+	key, err := s.SealingStrategy.UnsealRootKey(ctx, sealed, creds)
+	if err != nil || !s.other {
+		return key, err
+	}
+	for i := range key {
+		key[i] ^= 0xff
+	}
+	return key, nil
+}
+
+func TestStorageBarrier_VerifyCredentials_UnsealFailureIsNotMismatch(t *testing.T) {
+	const pass = "verify-unseal-pass"
+	errEnclave := errors.New("enclave: open sealed buffer failed")
+	ctx := context.Background()
+
+	newBarrier := func(t *testing.T) (*StorageBarrier, *unsealFaultStrategy) {
+		t.Helper()
+		strategy := &unsealFaultStrategy{SealingStrategy: NewDeferredSoftwareStrategy()}
+		b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(),
+			BarrierConfig{RootKeyPath: "verify/unseal-root-key"}, strategy)
+		if err != nil {
+			t.Fatalf("NewStorageBarrier: %v", err)
+		}
+		if err := b.Initialize(ctx, MustCredentials(ctx, []byte(pass))); err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+		return b, strategy
+	}
+	verify := func(t *testing.T, b *StorageBarrier, secret string) error {
+		t.Helper()
+		creds := MustCredentials(ctx, []byte(secret))
+		defer DestroyCredentials(creds)
+		return b.VerifyCredentials(ctx, creds)
+	}
+
+	t.Run("wrong passphrase is a mismatch", func(t *testing.T) {
+		b, _ := newBarrier(t)
+		err := verify(t, b, "not-the-pass")
+		if !errors.Is(err, ErrCredentialMismatch) || errors.Is(err, ErrUnsealFailed) {
+			t.Fatalf("VerifyCredentials = %v, want ErrCredentialMismatch and not ErrUnsealFailed", err)
+		}
+	})
+
+	t.Run("strategy unseal failure is ErrUnsealFailed", func(t *testing.T) {
+		b, strategy := newBarrier(t)
+		strategy.fail = fmt.Errorf("software strategy: %w", errEnclave)
+		err := verify(t, b, pass)
+		if !errors.Is(err, ErrUnsealFailed) {
+			t.Fatalf("VerifyCredentials = %v, want ErrUnsealFailed", err)
+		}
+		if errors.Is(err, ErrCredentialMismatch) {
+			t.Fatalf("VerifyCredentials = %v, must not be ErrCredentialMismatch", err)
+		}
+		var ue *UnsealError
+		if !errors.As(err, &ue) {
+			t.Fatalf("VerifyCredentials = %T, want *UnsealError", err)
+		}
+		if ue.Strategy != string(strategy.ID()) {
+			t.Fatalf("UnsealError.Strategy = %q, want %q", ue.Strategy, strategy.ID())
+		}
+		if !errors.Is(err, errEnclave) {
+			t.Fatalf("VerifyCredentials = %v, want it to wrap the enclave cause", err)
+		}
+	})
+
+	t.Run("credential opening to a different key is a mismatch", func(t *testing.T) {
+		b, strategy := newBarrier(t)
+		strategy.other = true
+		err := verify(t, b, pass)
+		if !errors.Is(err, ErrCredentialMismatch) || errors.Is(err, ErrUnsealFailed) {
+			t.Fatalf("VerifyCredentials = %v, want ErrCredentialMismatch and not ErrUnsealFailed", err)
+		}
+	})
+}
+
+// An empty credential is a wrong credential: the software strategy refuses
+// it with go-quicraft's ErrEmptyCredentials, which VerifyCredentials reports
+// as a mismatch, not as a failure to run the unseal.
+func TestStorageBarrier_VerifyCredentials_EmptyCredentialIsMismatch(t *testing.T) {
+	b := newVerifyBarrier(t, newFailingBackend(), "verify-credentials-pass")
+	err := b.VerifyCredentials(context.Background(), Credentials{})
+	if !errors.Is(err, ErrCredentialMismatch) || errors.Is(err, ErrUnsealFailed) {
+		t.Fatalf("VerifyCredentials(empty) = %v, want ErrCredentialMismatch and not ErrUnsealFailed", err)
 	}
 }
 

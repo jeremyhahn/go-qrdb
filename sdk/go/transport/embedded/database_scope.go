@@ -152,7 +152,10 @@ func scopedIfServed[T any](served, scoped T) T {
 
 // cloneShared returns a new Transport sharing every service and setting of t.
 // Its lazily built SQL service and its closed flag are its own; the closed
-// flag starts as t's, like a network transport's scoped clone. Every field of
+// flag starts as t's, like a network transport's scoped clone. It shares t's
+// lifecycle, so closing the transport New built refuses every clone and drains
+// the seal-store calls admitted through them; the clone is marked scopedClone,
+// so its own Close closes only itself. Every field of
 // Transport is listed here or in the sync-state list of
 // TestCloneShared_CoversEveryField, so a field added to Transport fails that
 // test until it is decided here.
@@ -171,6 +174,7 @@ func (t *Transport) cloneShared() *Transport {
 		vectorSvc:                    t.vectorSvc,
 		userSvc:                      t.userSvc,
 		roleSvc:                      t.roleSvc,
+		groupSvc:                     t.groupSvc,
 		certProv:                     t.certProv,
 		certEnroll:                   t.certEnroll,
 		invitations:                  t.invitations,
@@ -200,6 +204,7 @@ func (t *Transport) cloneShared() *Transport {
 		replicatedAudit:              t.replicatedAudit,
 		encMigrator:                  t.encMigrator,
 		sealProbe:                    t.sealProbe,
+		life:                         t.life,
 		awaitingAdminCredentialProbe: t.awaitingAdminCredentialProbe,
 		sealStreams:                  t.sealStreams,
 		registry:                     t.registry,
@@ -225,6 +230,7 @@ func (t *Transport) cloneShared() *Transport {
 	}
 	t.factorVerifierMu.RUnlock()
 	c.closed.Store(t.closed.Load())
+	c.scopedClone = true
 	return c
 }
 

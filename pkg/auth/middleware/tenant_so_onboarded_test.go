@@ -32,6 +32,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
+	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
@@ -118,7 +119,7 @@ func newOnboardedSOFixture(t *testing.T) *onboardedSOFixture {
 		TenantID:    onboardedSOTenant,
 		Isolation:   tenant.IsolationPrefix,
 		AdminCSRPEM: newCSRPEM(t, "admin"),
-		SO:          &bootstrap.TenantSOConfig{Username: "officer", CSRPEM: newCSRPEM(t, "officer"), PIN: sealedSOPIN(t)},
+		SO:          &firstboot.SOConfig{Username: "officer", CSRPEM: newCSRPEM(t, "officer"), PIN: sealedSOPIN(t)},
 	}, bootstrap.Dependencies{
 		Tenants:     onboardedTenants{},
 		Users:       f.users,
@@ -188,8 +189,8 @@ func TestOnboardedSO_GrantsTheSORoleAndTheAdminCannot(t *testing.T) {
 	if err := m.authorizeSORoleChange(f.caller(t, f.result.SOUserID), onboardedSOTenant, nil, grant); err != nil {
 		t.Fatalf("SO granting so = %v, want admitted", err)
 	}
-	var refused *SORoleRequiredError
+	var refused *auth.SORoleRequiredError
 	if err := m.authorizeSORoleChange(f.caller(t, f.result.AdminUserID), onboardedSOTenant, nil, grant); !errors.As(err, &refused) {
-		t.Fatalf("admin granting so = %v, want *SORoleRequiredError", err)
+		t.Fatalf("admin granting so = %v, want *auth.SORoleRequiredError", err)
 	}
 }

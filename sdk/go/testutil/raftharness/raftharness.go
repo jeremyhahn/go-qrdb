@@ -173,6 +173,8 @@ func (c *Cluster) CreateFn() sm.CreateFunc { return c.createFn }
 func (c *Cluster) WaitReadable(t testing.TB, shardID uint64, hosts ...*quicraft.Host) {
 	t.Helper()
 	deadline := time.Now().Add(Bound)
+	poll := time.NewTicker(10 * time.Millisecond)
+	defer poll.Stop()
 	for _, host := range hosts {
 		for {
 			ctx, cancel := context.WithTimeout(context.Background(), pollAttempt)
@@ -184,7 +186,7 @@ func (c *Cluster) WaitReadable(t testing.TB, shardID uint64, hosts ...*quicraft.
 			if time.Now().After(deadline) {
 				t.Fatalf("raftharness: shard %d membership never became readable: %v", shardID, err)
 			}
-			time.Sleep(10 * time.Millisecond)
+			<-poll.C
 		}
 	}
 }

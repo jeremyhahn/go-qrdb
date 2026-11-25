@@ -28,6 +28,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/test/clusterproof/nemesis"
@@ -401,7 +402,7 @@ func TestMainRunsAndReports(t *testing.T) {
 	kv := newFakeKV()
 	bundle := filepath.Join(t.TempDir(), "bundle")
 	var stdout, stderr bytes.Buffer
-	code := Main(context.Background(), Env{
+	env := Env{
 		Getenv: envOf(map[string]string{
 			EnvSeal: "shamir", EnvNodes: "n1=a1", EnvNemesis: "none", EnvDuration: "200ms", EnvBundle: bundle, EnvSeed: "5",
 		}),
@@ -413,6 +414,13 @@ func TestMainRunsAndReports(t *testing.T) {
 			o.Checkers = append(o.Checkers, passChecker{})
 			return nil
 		},
+	}
+	// Main runs inside a synctest bubble, so the fake store's opDelay and
+	// the 200ms run elapse on the fake clock; the bundle is under the
+	// outer t.TempDir and outlives the bubble.
+	var code int
+	synctest.Test(t, func(*testing.T) {
+		code = Main(context.Background(), env)
 	})
 	if code != ExitInvalid {
 		t.Fatalf("a none run = %d, want %d; stdout %q stderr %q", code, ExitInvalid, stdout.String(), stderr.String())

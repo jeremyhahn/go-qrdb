@@ -24,6 +24,7 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
 	"github.com/jeremyhahn/go-quicraft/pkg/logdb/waldb"
+	"github.com/stretchr/testify/require"
 
 	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -130,17 +131,12 @@ func startFsyncStallCluster(t *testing.T) *fsyncStallCluster {
 // polling until all hosts agree on one.
 func (sc *fsyncStallCluster) leader(t *testing.T) (id, term uint64) {
 	t.Helper()
-	deadline := time.Now().Add(raftharness.Bound)
-	for {
+	require.Eventuallyf(t, func() bool {
 		id, term = sc.agreedLeader()
-		if id != 0 {
-			return id, term
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("hosts never agreed on a leader of shard %d", fsyncStallShardID)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return id != 0
+	}, raftharness.Bound, 10*time.Millisecond,
+		"hosts never agreed on a leader of shard %d", fsyncStallShardID)
+	return id, term
 }
 
 // agreedLeader returns the leader and term every host reports, or zero when a

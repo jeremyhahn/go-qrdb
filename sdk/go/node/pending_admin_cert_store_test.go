@@ -19,6 +19,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -38,5 +39,39 @@ func TestPendingAdminCertStore_DeleteRemovesTheRecord(t *testing.T) {
 	var notFound *service.KeyNotFoundError
 	if got, err := store.Get(ctx, "admin"); !errors.As(err, &notFound) {
 		t.Fatalf("Get after Delete = %q, %v; want *service.KeyNotFoundError", got, err)
+	}
+}
+
+// TestPendingAdminCertStore_SystemSORecordIsHardConfined pins the raw keys
+// the store composes for the two first-boot handoff records to the literals
+// pkg/service hard-confines on the embedded transport: a drift between them
+// would leave a record forgeable through embedded KV (PR #1579 review round
+// 2, P0). The store itself, on the raw KV, still reads the record back.
+func TestPendingAdminCertStore_SystemSORecordIsHardConfined(t *testing.T) {
+	n := newBareStandaloneNode(t)
+	store := PendingAdminCertStore(n.Services().KV)
+	ctx := context.Background()
+	for name, raw := range map[string]string{
+		firstboot.PendingSystemSOKey:  "system/pending-system-so",
+		firstboot.PendingAdminCertKey: "system/pending-admin-cert",
+	} {
+		rec := []byte(`{"username":"so"}`)
+		if err := store.Put(ctx, name, rec); err != nil {
+			t.Fatalf("Put(%q): %v", name, err)
+		}
+		if got, err := n.Services().KV.Get(ctx, raw); err != nil || string(got) != string(rec) {
+			t.Fatalf("raw Get(%q) = %q, %v; want the record the store wrote", raw, got, err)
+		}
+		confined := service.NewHardConfinedKV(n.Services().KV)
+		var confErr *service.HardConfinedKeyError
+		if _, err := confined.Get(ctx, raw); !errors.As(err, &confErr) {
+			t.Fatalf("hard-confined Get(%q) = %v; want *service.HardConfinedKeyError", raw, err)
+		}
+		if err := confined.Put(ctx, raw, []byte("forged")); !errors.As(err, &confErr) {
+			t.Fatalf("hard-confined Put(%q) = %v; want *service.HardConfinedKeyError", raw, err)
+		}
+		if got, err := store.Get(ctx, name); err != nil || string(got) != string(rec) {
+			t.Fatalf("store Get(%q) = %q, %v; want the record", name, got, err)
+		}
 	}
 }

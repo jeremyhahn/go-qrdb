@@ -246,9 +246,10 @@ func WithAdvertiseLogger(l *slog.Logger) AdvertiseOption {
 
 // Settler runs attempt until it answers with anything but its shard electing
 // a leader or moving it, ctx ends, or the settler's own window passes, and
-// returns the last answer. A registration at boot lands on a system shard a
-// restarting peer may just have taken the leader from, and the election's
-// errors say nothing about the registration itself. The composer supplies
+// returns the last answer. A registration at boot, or a withdrawal at
+// shutdown, lands on a system shard a restarting or closing peer may just
+// have taken the leader from, and the election's errors say nothing about the
+// write itself. The composer supplies
 // one built on service.SettleLeadership, whose classification
 // (service.LeadershipTransient) this package cannot import: pkg/service
 // imports it. Each attempt runs on the context the settler hands it, which
@@ -262,7 +263,7 @@ func settleOnce(ctx context.Context, attempt func(context.Context) error) error 
 	return attempt(ctx)
 }
 
-// WithAdvertiseSettler has Register wait out an election through s. A nil s
+// WithAdvertiseSettler has Register and Deregister wait out an election through s. A nil s
 // is ignored, leaving one attempt.
 func WithAdvertiseSettler(s Settler) AdvertiseOption {
 	return func(a *Advertiser) {
@@ -431,14 +432,19 @@ func (a *Advertiser) sealed() bool {
 }
 
 // Deregister removes the local node's descriptor. It runs on a fresh context so
-// shutdown still deregisters after the caller's context is cancelled.
+// shutdown still deregisters after the caller's context is cancelled, and the
+// delete waits out its shard electing a leader through the Settler as
+// Register does: removing the one key of this node's ID twice removes nothing
+// more.
 func (a *Advertiser) Deregister() error {
 	if a.sealed() {
 		return &NodeSealedError{Op: "deregister"}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), reconfigTimeout)
 	defer cancel()
-	return a.store.DeleteMember(ctx, a.self.NodeID)
+	return a.settle(ctx, func(attemptCtx context.Context) error {
+		return a.store.DeleteMember(attemptCtx, a.self.NodeID)
+	})
 }
 
 // refresh periodically renews the registration so its lease does not expire

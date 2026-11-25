@@ -143,12 +143,16 @@ func (t *Transport) GetTenant(ctx context.Context, tenantID string) (*transport.
 }
 
 // ListTenants returns all tenants via the QUIC tenant.List handler.
-func (t *Transport) ListTenants(ctx context.Context) (*transport.ListTenantsResponse, error) {
+func (t *Transport) ListTenants(ctx context.Context, req *transport.ListTenantsRequest) (*transport.ListTenantsResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 
-	respBytes, err := t.call(ctx, "tenant.List", nil)
+	payload, err := proto.Marshal(&pb.TenantListRequest{Status: string(req.GetStatus())})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ListTenants", Err: err}
+	}
+	respBytes, err := t.call(ctx, "tenant.List", payload)
 	if err != nil {
 		return nil, &transport.RequestError{Method: "ListTenants", Err: err}
 	}
@@ -163,7 +167,7 @@ func (t *Transport) ListTenants(ctx context.Context) (*transport.ListTenantsResp
 		tenants[i] = quicProtoToTenantInfo(pt)
 	}
 
-	return &transport.ListTenantsResponse{Tenants: tenants}, nil
+	return transport.EnforceStatusFilter(req, &transport.ListTenantsResponse{Tenants: tenants})
 }
 
 // ListDeletedTenants returns one page of retired tenant ids via the QUIC

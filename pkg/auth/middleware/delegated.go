@@ -151,6 +151,7 @@ func (m *AuthMiddleware) finalizeDelegated(ctx context.Context, identity *auth.I
 		return ctx, nil, err
 	}
 	identity.Roles = nil
+	identity.Groups = nil
 	identity.RoleBindings = nil
 	identity.Attributes = nil
 	// TenantOwner has one source on this path too, decideTenantOwner: the

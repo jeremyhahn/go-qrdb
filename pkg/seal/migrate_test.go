@@ -270,6 +270,70 @@ func TestReopenKeyed_Shamir_HoldersCanUnseal(t *testing.T) {
 	}
 }
 
+// TestMintKeyedShamirSibling_WrappedBlobValidAtCanonicalPath proves what a
+// migration roll-forward relies on: the staged Shamir envelope and wrapped
+// root key, copied byte for byte to the canonical paths (what
+// database.RecoverInterruptedMigration does when the crash struck before
+// AdoptMigratedRootKey), open as a canonical Shamir barrier that the holder
+// quorum unseals. The wrapped blob's AAD names the canonical path, so no
+// re-wrap is needed.
+func TestMintKeyedShamirSibling_WrappedBlobValidAtCanonicalPath(t *testing.T) {
+	ctx := context.Background()
+	src, backend := newNoneBarrier(t)
+	dist := newCaptureDistributor("h1", "h2", "h3")
+	verifier := newTestVerifier()
+	src.SetCeremonyDistributor(dist)
+	src.SetHolderVerifier(verifier)
+
+	sib, _, err := src.MintKeyedShamirSibling(ctx, ".migrating", 2, 3)
+	if err != nil {
+		t.Fatalf("MintKeyedShamirSibling: %v", err)
+	}
+	defer func() { _ = sib.Close() }()
+
+	// The recovery's copy: wrapped key first, then the envelope.
+	for _, p := range [][2]string{
+		{WrappedRootKeyPath(sib.RootKeyPath()), WrappedRootKeyPath(src.RootKeyPath())},
+		{sib.RootKeyPath(), src.RootKeyPath()},
+	} {
+		blob, gerr := backend.Get(ctx, p[0])
+		if gerr != nil || len(blob) == 0 {
+			t.Fatalf("staged %s: %d bytes, err %v", p[0], len(blob), gerr)
+		}
+		if perr := backend.Put(ctx, p[1], blob); perr != nil {
+			t.Fatalf("copy %s to %s: %v", p[0], p[1], perr)
+		}
+	}
+
+	shamirStrat, err := NewShamirStrategy(2, 3)
+	if err != nil {
+		t.Fatalf("NewShamirStrategy: %v", err)
+	}
+	keyed, err := src.ReopenKeyed(ctx, shamirStrat, Credentials{})
+	if err != nil {
+		t.Fatalf("ReopenKeyed: %v", err)
+	}
+	defer func() { _ = keyed.Close() }()
+	_, digest, err := keyed.HolderRoster(ctx, DomainUnseal)
+	if err != nil {
+		t.Fatalf("HolderRoster: %v", err)
+	}
+	var out *QuorumOutcome
+	for _, h := range []string{"h1", "h2"} {
+		out, err = keyed.SubmitHolderShare(ctx, &HolderSubmission{
+			Domain: DomainUnseal, Op: OpUnseal, Holder: h,
+			Proof: verifier.issue(DomainUnseal, OpUnseal, h, digest),
+			Share: []byte(dist.share(DomainUnseal, h)),
+		})
+		if err != nil {
+			t.Fatalf("SubmitHolderShare(%s) on the canonical barrier: %v", h, err)
+		}
+	}
+	if !out.Complete || keyed.IsSealed() {
+		t.Fatalf("canonical barrier not unsealed by a 2-of-3 quorum: %+v", out)
+	}
+}
+
 // TestReopenKeyed_Passphrase_Unseals proves the pre-existing (non-Shamir)
 // behavior is unchanged: ReopenKeyed still unseals a passphrase target with
 // the supplied credential.

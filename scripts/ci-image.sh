@@ -1,68 +1,5 @@
 #!/usr/bin/env bash
-# ci-image.sh hands the CI images from the docker-build job to every job that
-# runs a stage in them, on GitHub-hosted runners (docs/release/engineering.md,
-# "The CI image").
-#
-# A hosted runner is an ephemeral VM, exclusive to one job: nothing a job
-# builds survives into another job, and no image is on its daemon at the
-# start. So docker-build builds each image once, at the commit under test,
-# saves it to a tar file and uploads it as a workflow artifact, and every
-# consumer downloads that artifact and loads it. A consumer never rebuilds:
-# the integration stage upgrades its Alpine packages at build time, so a
-# rebuild of the same commit can differ, and the stages must run the image
-# docker-build built.
-#
-# The artifact path serves every event the same way, a pull request from a
-# fork included: an artifact needs no registry credential, and a fork's run
-# holds a read-only token that cannot write a package. On a push to main,
-# docker-build ALSO pushes both images to GHCR by digest with the run's own
-# GITHUB_TOKEN, which publishes main's toolchain image for developers
-# (`make docker-run`) and for the release workflow; consumers inside the run
-# still take the artifact, so one code path is exercised on every event.
-#
-#   ci-image.sh save <image> <dir>                 writes <dir>/image.tar and <dir>/image.id
-#   ci-image.sh load <dir> <image> <id>            loads <dir>/image.tar, checks it is <id>, tags <image>, prints <id>
-#   ci-image.sh push <local-image> <name> <id>     prints ghcr.io/<owner>/<name>@sha256:<hex>
-#   ci-image.sh untag <image>...                   removes save's per-run tags
-#   ci-image.sh prune [hours]                      self-hosted retention of the CI images
-#   ci-image.sh check-ref <ref>...                 validates digest references
-#   ci-image.sh lock-file                          prints the image lock file prune and the producers share
-#   ci-image.sh registry-pull <image>              pulls <image> from CI_IMAGE_REGISTRY by the digest recorded in CI_IMAGE_DIGEST_DIR (status 1 on a miss)
-#   ci-image.sh registry-push <image>              pushes a build to CI_IMAGE_REGISTRY and records its digest (never fails)
-#   ci-image.sh registry-push --unrecorded <image> the same for a held image, only when CI_IMAGE_DIGEST_DIR has no usable record of it
-#
-# registry-pull and registry-push are the pull-or-build path through the CI
-# image registry the runner's environment names in CI_IMAGE_REGISTRY (#1609,
-# scripts/image-registry.sh): make docker-build-toolchain and docker-build-it
-# pull before they build and push what they built. Unset, both make no docker
-# call; a failed or hung pull or push never fails the job.
-#
-# save resolves the content-hash tag to its image ID once and archives that
-# ID under a per-run tag (<image>-run-<run id>-<attempt>) created from it, so
-# another run that moves the shared tag on a shared daemon between the
-# resolve and the save cannot change what is archived; it prints the ID only
-# after checking the per-run tag still names it. load fails unless the
-# archive's per-run tag names the ID docker-build recorded, so a truncated or
-# substituted artifact is refused rather than run.
-# load prints the ID: the consumer launches its stages by that ID, never by
-# the tag. The tag names the build's inputs, and self-hosted runs share a
-# daemon, so another run's load, pull or tag can move it between the check
-# and a stage's start.
-#
-# push logs in to GHCR with CI_REGISTRY_USER and CI_REGISTRY_TOKEN, which the
-# workflow step supplies from the run's actor and GITHUB_TOKEN (packages:
-# write). The login lives in a private DOCKER_CONFIG deleted on exit, and no
-# credential value is ever printed: an empty name fails naming the variable.
-# push takes the ID save recorded, never the shared tag: it pushes a per-run
-# tag, <content-hash>-main-<run id>-<attempt>, created from that ID, and checks
-# the pushed tag still names it before printing the digest.
-# A refused push is tried again, up to CI_REGISTRY_ATTEMPTS times in all
-# (default 3), waiting CI_REGISTRY_BACKOFF seconds (default 10) times the
-# number of the failed attempt, so one registry 5xx on one blob upload does
-# not fail the job; a push refused every time does. The login is not retried.
-#
-# prune runs in the always() teardown of every self-hosted job that builds or
-# loads a CI image (a pool daemon outlives the job): see prune below.
+# ci-image.sh hands the CI images from the docker-build job to every job that runs a stage in them.
 set -euo pipefail
 
 readonly registry=ghcr.io
@@ -316,7 +253,8 @@ epoch() {
 # CI_IMAGE_LOCK names it. Otherwise, on a self-hosted pool runner it is on the
 # host's data array, the one directory the pool's runner containers share
 # (scripts/ci-cache-dir.sh: $CI_CACHE_ROOT/gh-runner-cache, else
-# $CI_CACHE_ROOT): each runner container has its own temp dir and shares only
+# $CI_CACHE_ROOT; CI_CACHE_ROOT is set in the runner host's env file, and
+# with it unset there is no shared directory, never $RUNNER_TEMP): each runner container has its own temp dir and shares only
 # the Docker daemon, so a temp-dir lock there would let prune remove an image
 # another runner holds (#1597 Codex round 2). A pool runner with neither has no
 # shared lock: lock_file prints nothing, and prune keeps every image. A hosted
@@ -326,7 +264,8 @@ lock_file() {
 	if [ -n "${CI_IMAGE_LOCK:-}" ]; then
 		printf '%s\n' "$CI_IMAGE_LOCK"
 	elif [ "${GITHUB_ACTIONS:-}" = true ] && [ "${RUNNER_ENVIRONMENT:-}" != github-hosted ]; then
-		local root=${CI_CACHE_ROOT:-/mnt/raid0} d
+		local root=${CI_CACHE_ROOT:-} d
+		[ -n "$root" ] || return 0
 		for d in "$root/gh-runner-cache" "$root"; do
 			if [ -d "$d" ] && [ -w "$d" ]; then
 				printf '%s\n' "$d/qrdb-ci-image.lock"

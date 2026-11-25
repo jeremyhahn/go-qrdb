@@ -34,14 +34,6 @@ import (
 // transport's. The end-to-end delegation against a real node, on every engine
 // and mode, is the go-qrdb#121 conformance matrix.
 
-func TestUnixGuarded_ImplementsGuardedKVClient(t *testing.T) {
-	tr, cleanup := startServer(t, newMockKVService())
-	defer cleanup()
-	if _, ok := interface{}(tr).(transport.GuardedKVClient); !ok {
-		t.Fatal("unix transport does not implement transport.GuardedKVClient")
-	}
-}
-
 // guardedBinaryValue is deliberately not valid UTF-8, so a transport that
 // round-tripped values through a string somewhere would corrupt it and the
 // guard would be comparing a different value than the caller passed.

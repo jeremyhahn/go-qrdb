@@ -39,18 +39,9 @@ func TestLogFeatureNotActiveError_NamesKeyFeature(t *testing.T) {
 	}
 }
 
-func TestBarrierTenantLogNotSupportedError_NamesTenantAndBarrier(t *testing.T) {
-	msg := (&BarrierTenantLogNotSupportedError{TenantID: "vault"}).Error()
-	for _, want := range []string{`"vault"`, "barrier-isolated", "tenant's barrier"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("Error() = %q, missing %q", msg, want)
-		}
-	}
-}
-
-func TestBarrierDatabaseLogNotSupportedError_NamesDatabaseAndBarrier(t *testing.T) {
-	msg := (&BarrierDatabaseLogNotSupportedError{TenantID: "acme", Database: "secure"}).Error()
-	for _, want := range []string{`"acme"`, `"secure"`, "barrier-enabled database", "database's barrier"} {
+func TestBarrierStoreUnavailableError_NamesTheStore(t *testing.T) {
+	msg := (&BarrierStoreUnavailableError{TenantID: "vault"}).Error()
+	for _, want := range []string{`"vault"`, "barrier tenant", "not reachable"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("Error() = %q, missing %q", msg, want)
 		}

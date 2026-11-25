@@ -224,6 +224,58 @@ func TestInitCmd_ShamirWithOfficers_Success(t *testing.T) {
 	}
 }
 
+// --so-cert is verified against --admin-cert-pool, so the pool is accepted
+// and sent whenever the SO's certificate needs it, whichever way the admin
+// is credentialed: a CSR or a generated admin with an externally issued SO.
+func TestInitCmd_SOCertPoolWithoutAdminCert(t *testing.T) {
+	csrPath := writeOfficerTempFile(t, "admin.csr", []byte("ADMIN-CSR-PEM"))
+	soPath := writeOfficerTempFile(t, "so.pem", []byte("SO-CERT-PEM"))
+	poolPath := writeOfficerTempFile(t, "roots.pem", []byte("SO-POOL-PEM"))
+	for name, admin := range map[string][]string{
+		"csr admin":       {"--admin-csr", csrPath},
+		"generated admin": {"--admin-generate"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			svc := &capturingCeremonyService{}
+			root := newTestRootCmdInitOfficers(svc)
+			args := append([]string{"init", "--so-pin", "sopin", "--user-pin", "userpin", "--passphrase", "test-passphrase"}, admin...)
+			args = append(args, "--so-username", "officer", "--so-cert", soPath, "--admin-cert-pool", poolPath)
+			out, err := executeCommand(root, args...)
+			if err != nil {
+				t.Fatalf("init %v: %v\noutput: %s", admin, err, out)
+			}
+			if svc.gotOpts == nil {
+				t.Fatal("CeremonyInitialize was not called")
+			}
+			if svc.gotOpts.AdminCertPoolPEM != "SO-POOL-PEM" {
+				t.Errorf("AdminCertPoolPEM = %q, want the --admin-cert-pool contents", svc.gotOpts.AdminCertPoolPEM)
+			}
+			if svc.gotOpts.SOUsername != "officer" || svc.gotOpts.SOCertPEM != "SO-CERT-PEM" {
+				t.Errorf("SO not forwarded: %q %q", svc.gotOpts.SOUsername, svc.gotOpts.SOCertPEM)
+			}
+		})
+	}
+}
+
+// A pool neither presented certificate is verified against is still
+// refused: without --admin-cert or --so-cert nothing would use it.
+func TestInitCmd_AdminCertPoolWithoutPresentedCertRefused(t *testing.T) {
+	csrPath := writeOfficerTempFile(t, "admin.csr", []byte("ADMIN-CSR-PEM"))
+	soCSRPath := writeOfficerTempFile(t, "so.csr", []byte("SO-CSR-PEM"))
+	poolPath := writeOfficerTempFile(t, "roots.pem", []byte("SO-POOL-PEM"))
+	svc := &capturingCeremonyService{}
+	root := newTestRootCmdInitOfficers(svc)
+	_, err := executeCommand(root, "init", "--so-pin", "sopin", "--user-pin", "userpin", "--passphrase", "test-passphrase",
+		"--admin-csr", csrPath, "--so-username", "officer", "--so-csr", soCSRPath, "--admin-cert-pool", poolPath)
+	var invalid *InvalidArgError
+	if !errors.As(err, &invalid) || invalid.Arg != "--admin-cert-pool" {
+		t.Fatalf("err = %v, want an --admin-cert-pool InvalidArgError", err)
+	}
+	if svc.gotOpts != nil {
+		t.Error("CeremonyInitialize was called for a refused flag set")
+	}
+}
+
 // TestInitCmd_CustodiansFlagMalformed_LocalError proves a malformed
 // --custodians entry fails before any call, like a malformed --officers one.
 func TestInitCmd_CustodiansFlagMalformed_LocalError(t *testing.T) {

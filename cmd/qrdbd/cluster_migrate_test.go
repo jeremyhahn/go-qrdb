@@ -23,6 +23,7 @@ import (
 	"time"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -495,14 +496,11 @@ func TestRunClusterMigReconciler_Tick(t *testing.T) {
 	go runClusterMigReconciler(ctx, rec, coord, store)
 
 	// The loop should recycle (ack PhaseComplete) then reap the completed record.
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if m, _ := store.GetMigration(ctx, "acme", ""); m == nil {
-			return // reaped → success
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatal("reconciler loop did not recycle + reap the migration within timeout")
+	require.Eventuallyf(t, func() bool {
+		m, _ := store.GetMigration(ctx, "acme", "")
+		return m == nil // reaped → success
+	}, 5*time.Second, 20*time.Millisecond,
+		"reconciler loop did not recycle + reap the migration within timeout")
 }
 
 func validMigOpts() seal.MigrationOptions {

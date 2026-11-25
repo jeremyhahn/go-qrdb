@@ -17,6 +17,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"sort"
@@ -857,7 +858,10 @@ type DatabaseService struct {
 	dataRootResolver   TenantDataRootResolver
 	localNodeID        string
 	raftHost           RaftHost
-	logger             *slog.Logger
+	// logReclaimer deletes a dropped database's verifiable logs; nil
+	// without the verifiable-log service.
+	logReclaimer LogReclaimer
+	logger       *slog.Logger
 
 	// scaleLeaderWaitTimeout/scaleLeaderWaitInterval bound
 	// waitForShardLeaderKnown, called by scaleUp/scaleDown before issuing a
@@ -930,6 +934,97 @@ func (s *DatabaseService) SetDistributor(d KeyDistributor, lookup TenantBarrierL
 // tenant database creation requests are served.
 func (s *DatabaseService) SetRaftHost(h RaftHost) { s.raftHost = h }
 
+// LogReclaimer deletes every verifiable log a dropped database held, so a
+// database later created under the same name starts with no logs.
+type LogReclaimer interface {
+	database.DatabaseLogReclaimer
+	// CheckDropDatabaseLogs refuses, before anything is fenced, a drop
+	// whose logs DropDatabaseLogs could not reclaim.
+	CheckDropDatabaseLogs(ctx context.Context, tenantID, database string) error
+	// CheckCreateDatabaseLogs refuses a barrier-enabled create over a name
+	// that already holds logs created before the database existed.
+	CheckCreateDatabaseLogs(ctx context.Context, tenantID, database string) error
+}
+
+// SetLogReclaimer wires the verifiable-log service that reclaims a dropped
+// database's logs. The manager runs it inside the drop's fenced teardown,
+// before the catalog record is deleted and the name released
+// (database.Manager.SetLogReclaimer), so a failure leaves the database
+// fenced and a retried drop reclaims again (the reclaim is idempotent). Drop
+// and DropForTenant check it first, so a drop it would refuse is refused
+// before anything is fenced.
+func (s *DatabaseService) SetLogReclaimer(r LogReclaimer) {
+	s.logReclaimer = r
+	if r == nil {
+		s.manager.SetLogReclaimer(nil)
+		return
+	}
+	s.manager.SetLogReclaimer(r)
+}
+
+// checkLogs refuses a drop whose verifiable logs the wired reclaimer could
+// not reclaim. A drop with no reclaimer has no logs to reclaim; a database
+// with no tenant is checked too, its logs being the system tenant's.
+func (s *DatabaseService) checkLogs(ctx context.Context, tenantID, name string) error {
+	if s.logReclaimer == nil {
+		return nil
+	}
+	if err := s.logReclaimer.CheckDropDatabaseLogs(ctx, tenantID, name); err != nil {
+		return fmt.Errorf("reclaim the verifiable logs of database %q: %w", name, err)
+	}
+	return nil
+}
+
+// checkAdoptsNoLogs refuses a barrier-enabled create in createWithCredentials
+// (the system tenant's create) over a name whose group already holds
+// verifiable logs: they are plaintext with no incarnation, and the barrier
+// database would wrap them in its sealed store. A database without a barrier
+// adopts them as before.
+// A tenant's barrier create is refused by the manager before any store is written.
+func (s *DatabaseService) checkAdoptsNoLogs(ctx context.Context, tenantID string, cfg database.DatabaseConfig) error {
+	if cfg.Barrier == nil || !cfg.Barrier.Enabled || s.logReclaimer == nil {
+		return nil
+	}
+	return s.logReclaimer.CheckCreateDatabaseLogs(ctx, tenantID, cfg.Name)
+}
+
+// checkCreatedAdoptsNoLogs checks again in createWithCredentials (the system
+// tenant's create), once the manager has created db and
+// marked its incarnation live in the drop-fence marker that guards the name's
+// log writes, that the name holds no log: a log write admitted while the name
+// was unheld is refused by its guard from then on, so a log this check does
+// not see can no longer land. A log that landed before is left in place and
+// db is rolled back, its rollback drop reclaiming no log of the name.
+// A tenant's barrier create is refused by the manager before any store is written.
+func (s *DatabaseService) checkCreatedAdoptsNoLogs(ctx context.Context, tenantID string, cfg database.DatabaseConfig, db *database.Database) error {
+	err := s.checkAdoptsNoLogs(ctx, tenantID, cfg)
+	if err == nil {
+		return nil
+	}
+	rbCtx, cancel := database.DropRollbackContext(withRetainedDatabaseLogs(ctx))
+	defer cancel()
+	s.rollBackCreate(rbCtx, db, err)
+	return err
+}
+
+// retainDatabaseLogsKey marks a drop context whose reclamation leaves the
+// name's logs in place.
+type retainDatabaseLogsKey struct{}
+
+// withRetainedDatabaseLogs returns ctx marked so a database drop under it
+// reclaims none of the name's logs: the rollback of a create that found logs
+// it must not adopt, which a drop of the new incarnation would otherwise take
+// with it when they recorded no incarnation.
+func withRetainedDatabaseLogs(ctx context.Context) context.Context {
+	return context.WithValue(ctx, retainDatabaseLogsKey{}, true)
+}
+
+// retainsDatabaseLogs reports whether ctx was marked by withRetainedDatabaseLogs.
+func retainsDatabaseLogs(ctx context.Context) bool {
+	retain, _ := ctx.Value(retainDatabaseLogsKey{}).(bool)
+	return retain
+}
+
 // Create creates a new database with the given configuration and returns
 // its runtime information. Equivalent to CreateWithCredentials with an empty
 // seal.Credentials -- barrier initialization with an empty secret only
@@ -994,8 +1089,14 @@ func (s *DatabaseService) createWithCredentials(ctx context.Context, cfg databas
 	if err := s.validateRaftTopology(cfg.Name, &requested, &cfg); err != nil {
 		return nil, err
 	}
+	if err := s.checkAdoptsNoLogs(ctx, "", cfg); err != nil {
+		return nil, err
+	}
 	db, err := s.manager.CreateWithCredentials(ctx, cfg, creds)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.checkCreatedAdoptsNoLogs(ctx, "", cfg, db); err != nil {
 		return nil, err
 	}
 	if err := s.clearPredecessorSeal(ctx, db); err != nil {
@@ -1058,6 +1159,10 @@ func (s *DatabaseService) Drop(ctx context.Context, name string) error {
 		if errors.As(err, &dropping) {
 			tenantID = dropping.TenantID
 		}
+	}
+
+	if err := s.checkLogs(ctx, tenantID, name); err != nil {
+		return err
 	}
 
 	var hadPlacement, owned bool
@@ -2168,6 +2273,10 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 		// scheduler): there is no replicated signal to consult, so a
 		// missing local record is unconditionally a genuine failure.
 		return dbErr
+	}
+
+	if err := s.checkLogs(ctx, tenantID, name); err != nil {
+		return err
 	}
 
 	hadPlacement, owned, err := s.dropRaftPlacement(ctx, tenantID, name)

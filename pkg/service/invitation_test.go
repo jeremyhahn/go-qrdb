@@ -26,6 +26,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
@@ -452,18 +453,42 @@ func TestRedeemInvitation_ATokenForOneTenantCannotEnrolIntoAnother(t *testing.T)
 }
 
 func TestRedeemInvitation_RefusesAnExpiredToken(t *testing.T) {
-	f := newInvitationFixture(t)
-	svc := f.service(time.Nanosecond)
-	inv, err := svc.InviteUser(f.admin("acme"), &InviteUserRequest{TenantID: "acme", Username: "alice"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(time.Millisecond)
-	_, err = svc.RedeemInvitation(context.Background(), &RedeemInvitationRequest{TenantID: "acme", Token: inv.Token, CSRPEM: newOwnCSR(t)})
-	assertInvalidInvitation(t, err, "expired")
-	if acct := f.account(t, "acme", inv.UserID); acct.Lifecycle != user.LifecyclePending {
-		t.Fatalf("an expired token activated the account: %s", acct.Lifecycle)
-	}
+	// Each subtest runs in its own synctest bubble: the one-minute TTL is
+	// reached by the fake clock, not by a 1ns TTL and a real-time sleep,
+	// so the boundary on both sides of the expiry can be asserted.
+	t.Run("past the TTL", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			f := newInvitationFixture(t)
+			svc := f.service(time.Minute)
+			inv, err := svc.InviteUser(f.admin("acme"), &InviteUserRequest{TenantID: "acme", Username: "alice"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(time.Minute + time.Second) // fake clock: past the TTL
+			_, err = svc.RedeemInvitation(context.Background(), &RedeemInvitationRequest{TenantID: "acme", Token: inv.Token, CSRPEM: newOwnCSR(t)})
+			assertInvalidInvitation(t, err, "expired")
+			if acct := f.account(t, "acme", inv.UserID); acct.Lifecycle != user.LifecyclePending {
+				t.Fatalf("an expired token activated the account: %s", acct.Lifecycle)
+			}
+		})
+	})
+	t.Run("just before the TTL", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			f := newInvitationFixture(t)
+			svc := f.service(time.Minute)
+			inv, err := svc.InviteUser(f.admin("acme"), &InviteUserRequest{TenantID: "acme", Username: "alice"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(time.Minute - time.Second) // fake clock: one second left
+			if _, err := svc.RedeemInvitation(context.Background(), &RedeemInvitationRequest{TenantID: "acme", Token: inv.Token, CSRPEM: newOwnCSR(t)}); err != nil {
+				t.Fatalf("a token one second before its expiry was refused: %v", err)
+			}
+			if acct := f.account(t, "acme", inv.UserID); acct.Lifecycle == user.LifecyclePending {
+				t.Fatal("a redeemed token left the account pending")
+			}
+		})
+	})
 }
 
 // Two invitations for the same account are two tokens for ONE activation:

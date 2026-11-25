@@ -14,53 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# vet-modules.sh — run `go vet` over EVERY Go module in the tree, each with its
-# own build-tag sets. Called by `make vet-tags`.
-#
-#   vet-modules.sh --list                 print the discovered modules, one per line
-#   vet-modules.sh --tags-for <module>    print that module's tag sets, one per line
-#   vet-modules.sh --vet <TAG_SETS> <GORM_TAGS>    run the sweep
-#
-# TAG_SETS IS DATA THIS SCRIPT DOES NOT AUTHOR. The supported build-tag
-# combinations are declared once, in the Makefile's SUPPORTED_TAG_SETS
-# (go-qrdb#263), and arrive here as a space-separated list of comma-joined
-# sets. Adding a combination here instead of there would put the declaration in
-# two places, which is the defect #263 closed — the sweep's job is to exercise
-# the declared set exactly, not to have opinions about what it contains.
-#
-# EVERY LINE THIS SCRIPT PRINTS CARRIES ITS TAG SET, and results from different
-# sets are never merged into one list. A symbol declared only under a tag is
-# ABSENT from a build without it, so a union of runs reports silence where the
-# extra combinations were added to produce a finding (#271).
-#
-# WHY THIS IS A SCRIPT AND NOT A MAKEFILE RECIPE
-#
-# It began as an inline recipe and was wrong SIX times, every time in the same
-# direction — narrower than its own claim, and silent about it:
-#
-#   1. never vetted sdk/go at all (a planted fmt.Printf produced no output)
-#   2. after that was fixed, still missed sdk/go/gorm/conformance
-#   3. `find -printf` is GNU-only: on BSD/macOS the list came back empty and the
-#      target reported "clean across all 0 modules"
-#   4. the guard added for (3) used `grep -qw '\.'`, which MATCHES the dot in
-#      "./sdk/go" — so it accepted a rootless list while claiming to reject one
-#   5. the success message claimed repository-wide coverage for modules pinned
-#      to released dependencies
-#   6. the discovery pipeline's exit status is `sort`'s, so `find` could fail
-#      part-way through, emit a partial list, pass the root check, and sweep a
-#      subset while reporting success
-#
-# A guard fails by STAYING SILENT, and silence is what success looks like. None
-# of those six was visible without deliberately breaking something, and an
-# inline recipe cannot be broken deliberately — there is nowhere to put the
-# test. So the logic lives here, where vet-modules_test.sh can drive every
-# rejecting branch, exactly as require-tool.sh does for its version comparison.
-#
-# The mapping is deliberately EXHAUSTIVE-OR-FAIL. Five of the eight modules
-# match no packages without their own tags, so a wrong tag set prints
-# "matched no packages" and looks identical to clean. Guessing is therefore
-# worse than refusing, and adding a module forces a decision here rather than
-# leaving a blind spot nobody sees until a gate is armed over it.
+# vet-modules.sh: run go vet over every Go module in the tree with its own tag sets.
 set -eu
 
 ROOT="${VET_MODULES_ROOT:-.}"

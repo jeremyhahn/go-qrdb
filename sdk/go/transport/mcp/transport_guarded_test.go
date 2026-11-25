@@ -43,18 +43,6 @@ import (
 // The capability assertion
 // ---------------------------------------------------------------------------
 
-// TestMCP_ImplementsGuardedKVClient is the consumer's own detection, run as a
-// test. The compile-time assertion in transport_guarded.go proves the method
-// set; this proves the type assertion a consumer actually writes resolves.
-func TestMCP_ImplementsGuardedKVClient(t *testing.T) {
-	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	if _, ok := interface{}(tr).(transport.GuardedKVClient); !ok {
-		t.Fatal("MCP transport does not implement transport.GuardedKVClient")
-	}
-}
-
 // TestMCP_GuardedClientIsAlsoAKVClient pins that the capability is a SUPERSET
 // rather than a replacement: a consumer that detects the guarded surface must
 // still be able to read back what it claimed.

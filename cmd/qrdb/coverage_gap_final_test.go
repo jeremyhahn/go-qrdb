@@ -149,6 +149,72 @@ func TestResolveAndValidateInitFlags_ValidPassphrase(t *testing.T) {
 	}
 }
 
+// The system SO flags (go-qrdb#1128): none, or a username with exactly one
+// credential, and a chain only beside a presented certificate.
+func TestResolveAndValidateInitFlags_SystemSO(t *testing.T) {
+	cases := map[string]struct {
+		username, csr, cert, chain string
+		wantArg                    string
+	}{
+		"none":               {},
+		"csr":                {username: "secofficer", csr: "so.csr"},
+		"cert and chain":     {username: "secofficer", cert: "so.pem", chain: "chain.pem"},
+		"both credentials":   {username: "secofficer", csr: "so.csr", cert: "so.pem", wantArg: "--so-csr/--so-cert"},
+		"chain without cert": {username: "secofficer", csr: "so.csr", chain: "chain.pem", wantArg: "--so-chain"},
+		"no username":        {csr: "so.csr", wantArg: "--so-username (required with --so-csr/--so-cert)"},
+		"no credential":      {username: "secofficer", wantArg: "--so-csr or --so-cert (required with --so-username)"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := &initFlags{soPin: "s", userPin: "u", barrierStrategy: "none", adminGenerate: true,
+				soUsername: tc.username, soCSR: tc.csr, soCert: tc.cert, soChain: tc.chain}
+			err := resolveAndValidateInitFlags(newInitCmd(), f, "QRDB_TEST_NOOP")
+			if tc.wantArg == "" {
+				if err != nil {
+					t.Fatalf("valid SO flags rejected: %v", err)
+				}
+				return
+			}
+			var invalid *InvalidArgError
+			var missing *MissingArgError
+			switch {
+			case errors.As(err, &invalid):
+				if invalid.Arg != tc.wantArg {
+					t.Errorf("Arg = %q, want %q", invalid.Arg, tc.wantArg)
+				}
+			case errors.As(err, &missing):
+				if missing.Arg != tc.wantArg {
+					t.Errorf("Arg = %q, want %q", missing.Arg, tc.wantArg)
+				}
+			default:
+				t.Fatalf("err = %v, want a typed argument error", err)
+			}
+		})
+	}
+}
+
+// readSOFlags reads every SO file and reports the one it cannot read.
+func TestReadSOFlags(t *testing.T) {
+	dir := t.TempDir()
+	csr := filepath.Join(dir, "so.csr")
+	if err := os.WriteFile(csr, []byte("csr-pem"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	req := &transport.CeremonyInitializeRequest{}
+	if err := readSOFlags(&initFlags{soUsername: "secofficer", soCSR: csr}, req); err != nil {
+		t.Fatalf("readSOFlags: %v", err)
+	}
+	if req.SOUsername != "secofficer" || req.SOCSRPEM != "csr-pem" || req.SOCertPEM != "" || req.SOChainPEM != "" {
+		t.Errorf("req = %+v", req)
+	}
+	missing := filepath.Join(dir, "absent.pem")
+	err := readSOFlags(&initFlags{soUsername: "secofficer", soCert: missing}, &transport.CeremonyInitializeRequest{})
+	var readErr *FileReadError
+	if !errors.As(err, &readErr) || readErr.Path != missing {
+		t.Fatalf("err = %v, want FileReadError for %s", err, missing)
+	}
+}
+
 func TestResolveAndValidateInitFlags_ValidShamir(t *testing.T) {
 	cmd := newInitCmd()
 	f := &initFlags{

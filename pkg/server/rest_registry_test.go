@@ -61,13 +61,6 @@ func newFilledServices(name string) *DatabaseServices {
 // NewRESTServiceRegistry – construction
 // ---------------------------------------------------------------------------
 
-func TestNewRESTServiceRegistry_ReturnsNonNil(t *testing.T) {
-	reg := NewRESTServiceRegistry(NewDatabaseServiceRegistry("default"), nil, "system")
-	if reg == nil {
-		t.Fatal("expected non-nil ServiceRegistry")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Database resolution
 // ---------------------------------------------------------------------------
