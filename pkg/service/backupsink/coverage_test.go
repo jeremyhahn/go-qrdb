@@ -420,3 +420,40 @@ func TestSink_Delete_UnknownIDIsNotFound(t *testing.T) {
 	require.ErrorAs(t, err, &nf, "Delete of an unknown ID must report BackupNotFoundError")
 	require.Equal(t, "never-written", nf.ID)
 }
+
+func TestSink_Delete_RetryAfterPartialFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		failAt int
+	}{
+		{name: "envelope", failAt: 2},
+		{name: "data", failAt: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			inner, fail := newFailStore(t)
+			sink := backupsink.New(fail)
+			envelope := &service.BackupEnvelope{FormatVersion: 1, ProviderID: "software", KeyRef: "k", WrappedDEK: []byte("x")}
+			require.NoError(t, sink.Write(ctx, service.BackupInfo{ID: "someid"}, map[uint64][]byte{1: []byte("x")}, envelope))
+
+			fail.deleteErr = errors.New("delete failure")
+			fail.deleteFailAt = tc.failAt
+			require.ErrorIs(t, sink.Delete(ctx, "someid"), fail.deleteErr)
+
+			fail.deleteErr = nil
+			require.NoError(t, sink.Delete(ctx, "someid"), "a retry must remove the remaining objects")
+
+			_, err := sink.ReadShards(ctx, "someid")
+			var nf *service.BackupNotFoundError
+			require.ErrorAs(t, err, &nf)
+			for _, key := range []string{"envelope/someid", "data/someid"} {
+				ok, err := inner.Exists([]byte(key))
+				require.NoError(t, err)
+				require.False(t, ok, "%s must be gone after the retry", key)
+			}
+
+			err = sink.Delete(ctx, "someid")
+			require.ErrorAs(t, err, &nf, "a delete after full cleanup must report BackupNotFoundError")
+		})
+	}
+}
