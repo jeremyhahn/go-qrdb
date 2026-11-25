@@ -316,6 +316,15 @@ func WithDEKProvider(p dek.Provider) NodeOption {
 	return func(o *nodeOptions) { o.dekProvider = p }
 }
 
+// WithCredentialRotationValueSource supplies the source the credential
+// core draws new values from when a rotation policy falls due. go-qrdb
+// generates no credential values: without this option every due rotation
+// reports credentials.ErrNoRotationValueSource. The source runs with the
+// owning tenant bound on its context (tenant.FromContext).
+func WithCredentialRotationValueSource(src credentials.RotationValueSource) NodeOption {
+	return func(o *nodeOptions) { o.credentialRotation = src }
+}
+
 // WithHeadSignerProvider replaces the software head-signing key of every
 // verifiable log with a composer's vlog.HeadSignerProvider, typically one
 // that keeps the key on a device or in a KMS and never exports it.
@@ -462,6 +471,7 @@ type nodeOptions struct {
 	storageFactory          server.StorageFactory
 	replicaStorageFactory   ReplicaStorageFactory
 	dekProvider             dek.Provider
+	credentialRotation      credentials.RotationValueSource
 	headSignerProvider      vlog.HeadSignerProvider
 	invitationRedeemLimiter ratelimit.Limiter
 	holderActLimiter        ratelimit.Limiter
@@ -1587,10 +1597,7 @@ func (n *Node) Client() *sdk.Client { return n.client.Load() }
 func (n *Node) Services() *lifecycle.Node { return n.svcNode.Load() }
 
 // BarrierRegistry returns the per-tenant barrier registry built during the
-// seal subsystem phase. Embedders use this to construct tenant-scoped
-// credential resolvers via the sdk/go/secret subpackage's
-// NewTenantScopedCredentialRetrieve so that
-// credential:// lookups route to the correct per-tenant barrier store.
+// seal subsystem phase. Embedders use it to reach a tenant's barrier.
 // Returns nil when cfg.Seal.Enabled is false (no seal subsystem) or when
 // the node is in the sealed state before Unseal has been called.
 func (n *Node) BarrierRegistry() *seal.BarrierRegistry { return n.barrierRegistry.Load() }
@@ -2450,6 +2457,10 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		NoRevisionHistory: !clusteredKeepsRevisionHistory(pending.cfg),
 		WatchHub:          watchHub,
 		DataDir:           pending.cfg.Raft.DataDir,
+		// The clustered data plane is Raft: naming it lets an encrypted
+		// node put its credential records there, replicated to its peers,
+		// rather than in the node-local seal barrier.
+		Backend:           database.BackendRaft,
 		ReplicaID:         pending.cfg.Raft.ReplicaID,
 		Index:             pending.cfg.Index,
 		TimeSeries:        pending.cfg.TimeSeries,
@@ -3684,8 +3695,21 @@ func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir
 	if credStrategy == "" {
 		credStrategy = credentials.StrategyBarrier
 	}
+	// No store yet: lifecycle.BuildServices binds the system shard's
+	// replicated KV once it exists, so every node keeps the same records
+	// (docs/credentials/architecture.md, "Storage"); until then it fails
+	// closed.
+	credOpts := []credentials.Option{credentials.WithLegacyStore(barrier)}
+	// The core takes the logger at construction, before binding and the
+	// boot migration, so both record on the node's compliance trail.
+	if trail != nil {
+		credOpts = append(credOpts, credentials.WithAuditLogger(trail))
+	}
+	if nOpts != nil && nOpts.credentialRotation != nil {
+		credOpts = append(credOpts, credentials.WithRotationValueSource(nOpts.credentialRotation))
+	}
 	credCoreSvc, credErr := credentials.NewCredentialService(
-		&credentials.Config{Strategy: credStrategy}, barrier, log)
+		&credentials.Config{Strategy: credStrategy}, nil, log, credOpts...)
 	if credErr != nil {
 		_ = sealStore.Close()
 		return nil, &StorageCreateError{Backend: "seal-credentials", Err: credErr}
@@ -4329,6 +4353,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		Authorizer:          n.authorizer,
 		RoleService:         svcNode.Role,
 		UserService:         svcNode.User,
+		GroupResolver:       svcNode.Group,
 		StrictSeparation:    strictSoD,
 		ClusterTrustDomain:  cfg.Auth.EffectiveClusterTrustDomain(),
 		Tenants:             svcNode.Tenant,
@@ -4360,6 +4385,9 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		RateLimiter:         n.rateLimiter,
 		// A principal of a suspended or disabled tenant is refused.
 		TenantStatusReader: svcNode.Tenant,
+		// unix.peer_credentials: a Unix-socket caller's SO_PEERCRED uid/gid
+		// bound to a store account, whose roles decide (go-qrdb#1651).
+		PeerCredentials: cfg.Unix.PeerCredentialMappings(),
 	})
 	if err != nil {
 		return &AuthMiddlewareWiringError{Err: err}
@@ -4703,6 +4731,9 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, ceremonySvc service.Ce
 	if svcNode.User != nil {
 		opts = append(opts, embedded.WithUserService(svcNode.User))
 	}
+	if svcNode.Group != nil {
+		opts = append(opts, embedded.WithGroupService(svcNode.Group))
+	}
 	if svcNode.Role != nil {
 		// Construct the qrdb RBAC authorizer the SAME way the standalone
 		// daemon does (cmd/qrdbd/start.go bootstrapAuthEnforcement):
@@ -5031,6 +5062,9 @@ func buildServerOpts(svcNode *lifecycle.Node, ceremonySvc service.CeremonyServic
 	}
 	if svcNode.Role != nil {
 		opts = append(opts, server.WithRoleService(svcNode.Role))
+	}
+	if svcNode.Group != nil {
+		opts = append(opts, server.WithGroupService(svcNode.Group))
 	}
 	if svcNode.Barrier != nil {
 		opts = append(opts, server.WithBarrierService(svcNode.Barrier))

@@ -15,6 +15,7 @@
 package errclass_test
 
 import (
+	"errors"
 	"net/http"
 	"testing"
 
@@ -32,6 +33,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
+	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -226,6 +228,25 @@ func TestRaftTimeoutIsUnavailableOnEveryTransport(t *testing.T) {
 	} {
 		if got := answer(wrapped{err}); got != want {
 			t.Errorf("%s: answered %+v, want %+v", name, got, want)
+		}
+	}
+}
+
+// TestGroupLapsedClaimConflictIsAbortedOnEveryTransport pins that a conflict joined with its undo result answers like a bare conflict.
+func TestGroupLapsedClaimConflictIsAbortedOnEveryTransport(t *testing.T) {
+	want := answer(&group.GroupConflictError{ID: "g1"})
+	if want.grpc != codes.Aborted {
+		t.Fatalf("bare conflict answered gRPC %v, want %v", want.grpc, codes.Aborted)
+	}
+	for name, err := range map[string]error{
+		"undo ok":     errors.Join(&group.GroupConflictError{ID: "g1"}, nil),
+		"undo failed": errors.Join(&group.GroupConflictError{ID: "g1"}, errors.New("undo failed")),
+	} {
+		if got := answer(err); got != want {
+			t.Errorf("%s: answered %+v, want %+v", name, got, want)
+		}
+		if got := answer(wrapped{err}); got != want {
+			t.Errorf("wrapped %s: answered %+v, want %+v", name, got, want)
 		}
 	}
 }

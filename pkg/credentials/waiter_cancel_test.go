@@ -20,6 +20,8 @@ import (
 	"log/slog"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestRetrieveManual_CancelDeregistersWaiter verifies that a manual-credential
@@ -43,13 +45,11 @@ func TestRetrieveManual_CancelDeregistersWaiter(t *testing.T) {
 	}()
 
 	// Wait until the slow-path waiter is registered.
-	if !waitUntil(func() bool {
+	require.Eventually(t, func() bool {
 		svc.waitersMu.Lock()
 		defer svc.waitersMu.Unlock()
 		return len(svc.waiters["db"]) == 1
-	}) {
-		t.Fatal("waiter was never registered")
-	}
+	}, 2*time.Second, time.Millisecond, "waiter was never registered")
 
 	cancel()
 	if e := <-done; e == nil {
@@ -75,16 +75,4 @@ func TestRetrieveManual_CancelDeregistersWaiter(t *testing.T) {
 	if string(got) != "secret" {
 		t.Errorf("retrieved %q, want %q", got, "secret")
 	}
-}
-
-// waitUntil polls cond up to ~2s, returning true once it holds.
-func waitUntil(cond func() bool) bool {
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return true
-		}
-		time.Sleep(time.Millisecond)
-	}
-	return cond()
 }

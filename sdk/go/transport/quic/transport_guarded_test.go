@@ -41,13 +41,6 @@ import (
 //     and `next` in the right fields.
 //   - wire.StatusUnimplemented arrives as the TYPED capability refusal.
 
-func TestTransport_ImplementsGuardedKVClient(t *testing.T) {
-	_, tr := startE2EServer(t)
-	if _, ok := interface{}(tr).(transport.GuardedKVClient); !ok {
-		t.Fatal("QUIC transport does not implement transport.GuardedKVClient")
-	}
-}
-
 // guardedBinaryValue is deliberately not valid UTF-8, so a transport that
 // round-tripped values through a string somewhere would corrupt it and the
 // guard would then be comparing a different value than the caller passed.

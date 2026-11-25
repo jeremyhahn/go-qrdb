@@ -56,6 +56,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
+	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/joinadvertise"
 	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -205,6 +206,9 @@ type Server struct {
 	// retention_scheduler.go); nil when none is running.
 	retentionCancel context.CancelFunc
 
+	// credentialRotationCancel stops the credential rotation scheduler
+	// (see credential_rotation_scheduler.go); nil when none is running.
+	credentialRotationCancel context.CancelFunc
 	// pendingReaperCancel stops the pending-user reaper (see
 	// pending_user_reaper.go); nil when none is running.
 	pendingReaperCancel context.CancelFunc
@@ -255,6 +259,7 @@ type serverOptions struct {
 	mcpServerOpts      []mcpapi.ServerOption
 	userSvc            user.UserServicer
 	roleSvc            role.RoleServicer
+	groupSvc           group.GroupServicer
 	certProv           cert.CertProvider
 	certEnroll         service.CertEnrollmentServicer
 	invitations        service.InvitationServicer
@@ -308,6 +313,10 @@ type serverOptions struct {
 	// time-series metrics for expired points; zero keeps
 	// DefaultRetentionInterval. See WithRetentionInterval.
 	retentionInterval time.Duration
+	// credentialRotationPeriod is how often the credential rotation
+	// scheduler runs the due rotation policies; zero keeps
+	// credentials.DefaultRotationCheckPeriod.
+	credentialRotationPeriod time.Duration
 
 	// Pending-user reaper (WithPendingUserReaper). A negative interval
 	// disables it; ticks/now are test hooks.
@@ -683,6 +692,11 @@ func WithUserService(svc user.UserServicer) ServerOption {
 // servers that support it.
 func WithRoleService(svc role.RoleServicer) ServerOption {
 	return func(o *serverOptions) { o.roleSvc = svc }
+}
+
+// WithGroupService configures the IAM group store for every protocol server.
+func WithGroupService(svc group.GroupServicer) ServerOption {
+	return func(o *serverOptions) { o.groupSvc = svc }
 }
 
 // WithCertProvider configures the certificate provider for all protocol
@@ -2034,6 +2048,8 @@ func (s *Server) start() error {
 	// implicitly.
 	s.startRetentionScheduler()
 
+	// Named credentials whose rotation policy is due are rotated on it.
+	s.startCredentialRotationScheduler()
 	// Pending users past their TTL are deleted by the leader.
 	s.startPendingUserReaper()
 
@@ -2111,6 +2127,7 @@ func (s *Server) stopModules() {
 func (s *Server) Stop() {
 	s.stopCompactionScheduler()
 	s.stopRetentionScheduler()
+	s.stopCredentialRotationScheduler()
 	s.stopPendingUserReaper()
 	s.stopCollectionSweeper()
 	s.stopAllEtcd()
@@ -2249,6 +2266,9 @@ func (s *Server) startREST() error {
 	}
 	if s.opts.roleSvc != nil {
 		restOpts = append(restOpts, rest.WithRoleService(s.opts.roleSvc))
+	}
+	if s.opts.groupSvc != nil {
+		restOpts = append(restOpts, rest.WithGroupService(s.opts.groupSvc))
 	}
 	if s.opts.certProv != nil {
 		restOpts = append(restOpts, rest.WithCertProvider(s.opts.certProv))
@@ -2571,6 +2591,9 @@ func (s *Server) startGRPC() error {
 	if s.opts.roleSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithRoleService(s.opts.roleSvc))
 	}
+	if s.opts.groupSvc != nil {
+		grpcOpts = append(grpcOpts, grpcapi.WithGroupService(s.opts.groupSvc))
+	}
 	if gate, err := s.soGate(); err != nil {
 		return err
 	} else if gate != nil {
@@ -2746,6 +2769,9 @@ func (s *Server) startQUIC() error {
 	if s.opts.roleSvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithRoleService(s.opts.roleSvc))
 	}
+	if s.opts.groupSvc != nil {
+		quicOpts = append(quicOpts, quicapi.WithGroupService(s.opts.groupSvc))
+	}
 	if gate, err := s.soGate(); err != nil {
 		return err
 	} else if gate != nil {
@@ -2912,6 +2938,9 @@ func (s *Server) startUnix() error {
 	}
 	if s.opts.roleSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithRoleService(s.opts.roleSvc))
+	}
+	if s.opts.groupSvc != nil {
+		unixOpts = append(unixOpts, unixapi.WithGroupService(s.opts.groupSvc))
 	}
 	if gate, err := s.soGate(); err != nil {
 		return err
@@ -3106,6 +3135,9 @@ func (s *Server) startMCP() error {
 	}
 	if s.opts.roleSvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithRoleService(s.opts.roleSvc))
+	}
+	if s.opts.groupSvc != nil {
+		mcpOpts = append(mcpOpts, mcpapi.WithGroupService(s.opts.groupSvc))
 	}
 	if gate, err := s.soGate(); err != nil {
 		return err

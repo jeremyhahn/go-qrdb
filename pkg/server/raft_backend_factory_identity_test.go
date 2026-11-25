@@ -24,6 +24,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
 
@@ -168,22 +171,15 @@ func TestRaftBackendFactory_FoundsThreeReplicaDedicatedShard(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), raftharness.Bound)
 	defer cancel()
-	deadline := time.Now().Add(raftharness.Bound)
-	for {
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
 		var lastErr error
 		for _, s := range svcs {
 			if lastErr = s.KV.Put(ctx, "k", []byte("v")); lastErr == nil {
-				break
+				return
 			}
 		}
-		if lastErr == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no founder accepted a write: %v", lastErr)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		assert.NoError(c, lastErr, "no founder accepted a write")
+	}, raftharness.Bound, 20*time.Millisecond)
 }
 
 // TestRaftBackendFactory_FounderWithUnknownPeerRefused pins the typed refusal

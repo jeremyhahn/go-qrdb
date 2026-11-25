@@ -210,6 +210,8 @@ func mustReadCAPEM(t *testing.T, ca *qrdbdharness.CA) []byte {
 func awaitAgreedLeader(t *testing.T, nodes []*Node) uint64 {
 	t.Helper()
 	deadline := time.Now().Add(clusterFormationBudget)
+	poll := time.NewTicker(clusterPollInterval)
+	defer poll.Stop()
 	for {
 		if leader, agreed := agreedLeader(t, nodes); agreed {
 			return leader
@@ -217,7 +219,7 @@ func awaitAgreedLeader(t *testing.T, nodes []*Node) uint64 {
 		if time.Now().After(deadline) {
 			t.Fatalf("replicas did not agree on a leader within %s", clusterFormationBudget)
 		}
-		time.Sleep(clusterPollInterval)
+		<-poll.C
 	}
 }
 
@@ -600,6 +602,8 @@ func TestRunningCluster_AddReplica_Identity(t *testing.T) {
 		return ""
 	}
 	deadline := time.Now().Add(clusterFormationBudget)
+	poll := time.NewTicker(clusterPollInterval)
+	defer poll.Stop()
 	for {
 		pending := unsettled()
 		if pending == "" {
@@ -608,7 +612,7 @@ func TestRunningCluster_AddReplica_Identity(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the leader's gate never settled on the founders' advertisements: %s", pending)
 		}
-		time.Sleep(clusterPollInterval)
+		<-poll.C
 	}
 
 	t.Run("node without any advertisement is refused", func(t *testing.T) {
@@ -678,6 +682,8 @@ func TestRunningCluster_AddReplica_Identity(t *testing.T) {
 		}
 		// The joiner serves the write once it has caught up from the leader.
 		deadline := time.Now().Add(clusterFormationBudget)
+		poll := time.NewTicker(clusterPollInterval)
+		defer poll.Stop()
 		for {
 			got, err := joiner.Client().KV().Get(ctx, "formation/fourth")
 			if err == nil && string(got) == "joined" {
@@ -686,7 +692,7 @@ func TestRunningCluster_AddReplica_Identity(t *testing.T) {
 			if time.Now().After(deadline) {
 				t.Fatalf("the fourth replica never served the write (last: %q, %v)", got, err)
 			}
-			time.Sleep(clusterPollInterval)
+			<-poll.C
 		}
 
 		m, err := nodes[leader-1].host.(*quicraft.Host).SyncGetShardMembership(ctx, shard.ShardKV)
@@ -716,6 +722,8 @@ func advertiseJoiner(ctx context.Context, t *testing.T, leader *Node, replicaID 
 		t.Fatalf("AdvertiseJoiner(%d, %s): %v", replicaID, addr, err)
 	}
 	deadline := time.Now().Add(clusterFormationBudget)
+	poll := time.NewTicker(clusterPollInterval)
+	defer poll.Stop()
 	for {
 		err := leader.featureGate.AdmitReplica(shard.ShardKV, addr)
 		if err == nil {
@@ -724,7 +732,7 @@ func advertiseJoiner(ctx context.Context, t *testing.T, leader *Node, replicaID 
 		if time.Now().After(deadline) {
 			t.Fatalf("the leader's gate never admitted %s after its advertisement: %v", addr, err)
 		}
-		time.Sleep(clusterPollInterval)
+		<-poll.C
 	}
 }
 
@@ -1233,6 +1241,8 @@ func TestClusteredNode_UnsealRetriesAfterACancelledBoot_DataPlaneAccessorsCleare
 		t.Fatalf("PutWithLease: %v", perr)
 	}
 	deadline := time.Now().Add(10 * time.Second)
+	poll := time.NewTicker(100 * time.Millisecond)
+	defer poll.Stop()
 	for {
 		if _, gerr := client.KV().Get(ctx, probeKey); gerr != nil {
 			var notFound *transport.KeyNotFoundError
@@ -1244,6 +1254,6 @@ func TestClusteredNode_UnsealRetriesAfterACancelledBoot_DataPlaneAccessorsCleare
 		if time.Now().After(deadline) {
 			t.Fatal("the lease-expiry sweeper never reaped an expired lease's key after the retried boot -- go-qrdb#174 regressed")
 		}
-		time.Sleep(100 * time.Millisecond)
+		<-poll.C
 	}
 }

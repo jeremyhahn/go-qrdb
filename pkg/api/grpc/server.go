@@ -47,6 +47,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/clientlimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
+	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
@@ -129,6 +130,7 @@ type Server struct {
 	volumeSvc         volume.Service
 	userSvc           user.UserServicer
 	roleSvc           role.RoleServicer
+	groupSvc          group.GroupServicer
 	certProv          cert.CertProvider
 	certEnroll        service.CertEnrollmentServicer
 	invitationSvc     service.InvitationServicer
@@ -486,6 +488,11 @@ func WithRoleService(svc role.RoleServicer) ServerOption {
 	return func(s *Server) { s.roleSvc = svc }
 }
 
+// WithGroupService sets the IAM group store.
+func WithGroupService(svc group.GroupServicer) ServerOption {
+	return func(s *Server) { s.groupSvc = svc }
+}
+
 // WithSOGate installs the SO dual-factor gate (authmw.SOGate) on every RPC
 // whose permission is in authmw.SOPermissions, after authentication: the
 // caller must hold the SO role and present the SO PIN in the "x-qrdb-so-pin" metadata
@@ -818,6 +825,7 @@ func (s *Server) Start() error {
 		userSvc:           s.userSvc,
 		userAuthFactorSvc: s.userAuthFactorSvc,
 		roleSvc:           s.roleSvc,
+		groupSvc:          s.groupSvc,
 		certProv:          s.certProv,
 		certEnroll:        s.certEnroll,
 		invitationSvc:     s.invitationSvc,

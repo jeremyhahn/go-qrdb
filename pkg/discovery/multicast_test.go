@@ -28,7 +28,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // fakeTransport simulates multicast I/O for testing without real UDP.
@@ -43,21 +46,43 @@ type fakeTransport struct {
 	// announce, when set, encodes a live peer's next announcement; see
 	// AnnounceAs.
 	announce func() []byte
+	// arrival is poked (non-blocking) by Enqueue, AnnounceAs and Close, so a
+	// read waiting for the next datagram returns as soon as one arrives.
+	arrival chan struct{}
+	// pace is the fake's read cadence: a read with nothing to deliver returns
+	// on the next tick, as a socket read returns at its deadline.
+	pace *time.Ticker
+	// reads counts ReadFrom calls, so a test can wait for the listener to
+	// have attempted reads.
+	reads atomic.Int64
 }
 
 func newFakeTransport() *fakeTransport {
-	return &fakeTransport{}
+	return &fakeTransport{
+		arrival: make(chan struct{}, 1),
+		pace:    time.NewTicker(10 * time.Millisecond),
+	}
+}
+
+// poke signals arrival without blocking; one pending signal is enough.
+func (f *fakeTransport) poke() {
+	select {
+	case f.arrival <- struct{}{}:
+	default:
+	}
 }
 
 func (f *fakeTransport) Enqueue(data []byte) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	cp := make([]byte, len(data))
 	copy(cp, data)
 	f.inbox = append(f.inbox, cp)
+	f.mu.Unlock()
+	f.poke()
 }
 
 func (f *fakeTransport) ReadFrom(buf []byte) (int, error) {
+	f.reads.Add(1)
 	if f.closed.Load() {
 		return 0, io.EOF
 	}
@@ -76,8 +101,12 @@ func (f *fakeTransport) ReadFrom(buf []byte) (int, error) {
 	announce := f.announce
 	f.mu.Unlock()
 
-	// Simulate blocking briefly, as a socket read waits for the next datagram.
-	<-time.After(10 * time.Millisecond)
+	// Wait for the next datagram, as a socket read does: an arrival returns
+	// at once, otherwise the read returns at the next pacing tick.
+	select {
+	case <-f.arrival:
+	case <-f.pace.C:
+	}
 	if announce != nil {
 		// Encoded at delivery, as the peer stamps each datagram at send time.
 		return copy(buf, announce()), nil
@@ -103,11 +132,12 @@ func (f *fakeTransport) AnnounceAs(deploymentID, nodeID uint64, addr string, sec
 		return err
 	}
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.announce = func() []byte {
 		msg, _ := EncodeMulticastMessage(deploymentID, nodeID, addr, secret)
 		return msg
 	}
+	f.mu.Unlock()
+	f.poke()
 	return nil
 }
 
@@ -128,6 +158,8 @@ func (f *fakeTransport) WriteTo(data []byte) error {
 
 func (f *fakeTransport) Close() error {
 	f.closed.Store(true)
+	f.pace.Stop()
+	f.poke()
 	return nil
 }
 
@@ -664,14 +696,29 @@ func TestMulticastDiscovery_MinPeersWaitsForEnough(t *testing.T) {
 	msg1, _ := EncodeMulticastMessage(100, 2, "10.0.0.2:5000", secret)
 	ft.Enqueue(msg1)
 
-	// After a delay, enqueue the second peer.
+	type result struct {
+		peers []Peer
+		err   error
+	}
+	done := make(chan result, 1)
 	go func() {
-		<-time.After(200 * time.Millisecond)
-		msg2, _ := EncodeMulticastMessage(100, 3, "10.0.0.3:5000", secret)
-		ft.Enqueue(msg2)
+		peers, err := md.Discover(context.Background())
+		done <- result{peers: peers, err: err}
 	}()
 
-	peers, err := md.Discover(context.Background())
+	// Discover must keep waiting with one peer seen; only then does the
+	// second peer arrive.
+	waitForPeerCount(t, md, 1, 2*time.Second)
+	select {
+	case r := <-done:
+		t.Fatalf("Discover returned with 1 of MinPeers=2 peers: %d peers, err %v", len(r.peers), r.err)
+	default:
+	}
+	msg2, _ := EncodeMulticastMessage(100, 3, "10.0.0.3:5000", secret)
+	ft.Enqueue(msg2)
+
+	r := <-done
+	peers, err := r.peers, r.err
 	if err != nil {
 		t.Fatalf("Discover error: %v", err)
 	}
@@ -793,24 +840,30 @@ func TestMulticastDiscovery_Snapshot(t *testing.T) {
 }
 
 func TestMulticastDiscovery_DiscoverStoppedDuringSleep(t *testing.T) {
-	secret := []byte("test-secret-fips16")
-	ft := newFakeTransport()
+	synctest.Test(t, func(t *testing.T) {
+		secret := []byte("test-secret-fips16")
+		ft := newFakeTransport()
 
-	md, err := newTestMulticast(1, 100, "10.0.0.1:5000", secret, ft)
-	if err != nil {
-		t.Fatalf("NewMulticastDiscovery error: %v", err)
-	}
+		md, err := newTestMulticast(1, 100, "10.0.0.1:5000", secret, ft)
+		if err != nil {
+			t.Fatalf("NewMulticastDiscovery error: %v", err)
+		}
 
-	// Stop after a short delay to trigger the stopCh path in Discover.
-	go func() {
-		<-time.After(100 * time.Millisecond)
+		done := make(chan error, 1)
+		go func() {
+			_, err := md.Discover(context.Background())
+			done <- err
+		}()
+
+		// Discover is durably blocked between polls; Stop takes the
+		// stopCh path.
+		synctest.Wait()
 		_ = md.Stop()
-	}()
 
-	_, err = md.Discover(context.Background())
-	if err == nil {
-		t.Fatal("expected error when stopped during Discover")
-	}
+		if err := <-done; err == nil {
+			t.Fatal("expected error when stopped during Discover")
+		}
+	})
 }
 
 func TestMulticastDiscovery_ListenHandlesReadError(t *testing.T) {
@@ -823,8 +876,10 @@ func TestMulticastDiscovery_ListenHandlesReadError(t *testing.T) {
 		t.Fatalf("NewMulticastDiscovery error: %v", err)
 	}
 
-	// Give the listener time to attempt reads (negative test: verify 0 peers).
-	<-time.After(50 * time.Millisecond)
+	// Wait until the listener has attempted reads (negative test: verify 0
+	// peers).
+	require.Eventually(t, func() bool { return ft.reads.Load() >= 2 },
+		2*time.Second, time.Millisecond, "listener never retried after a read error")
 	_ = md.Stop()
 
 	// No peers should have been discovered.
@@ -1347,11 +1402,13 @@ func discoverVerdict(err error, readsWhenCleared, readsNow int64, budget time.Du
 // happened, so a slow host waits longer and still gets a correct answer.
 func awaitCounter(counter *atomic.Int64, from int64, within time.Duration) bool {
 	deadline := time.Now().Add(within)
+	poll := time.NewTicker(time.Millisecond)
+	defer poll.Stop()
 	for time.Now().Before(deadline) {
 		if counter.Load() > from {
 			return true
 		}
-		<-time.After(time.Millisecond)
+		<-poll.C
 	}
 	return counter.Load() > from
 }
@@ -1534,8 +1591,8 @@ func TestMulticastDiscovery_StopWaitsForGoroutines(t *testing.T) {
 	}
 	md.Start()
 
-	// Give goroutines time to start.
-	<-time.After(50 * time.Millisecond)
+	// Wait until the announcer is running (it has written once).
+	waitForWritten(t, ft, 1, 2*time.Second)
 
 	// Stop should block until both listen and announceLoop exit.
 	done := make(chan struct{})
@@ -1598,29 +1655,35 @@ func TestNewMulticastDiscovery_EncodeError(t *testing.T) {
 // TestMulticastDiscovery_AnnounceLoopStopsOnSignal verifies that the
 // announceLoop exits cleanly when stopCh is closed.
 func TestMulticastDiscovery_AnnounceLoopStopsOnSignal(t *testing.T) {
-	secret := []byte("announce-stop-secret")
-	ft := newFakeTransport()
+	synctest.Test(t, func(t *testing.T) {
+		secret := []byte("announce-stop-secret")
+		ft := newFakeTransport()
 
-	md, err := newTestMulticast(1, 100, "10.0.0.1:5000", secret, ft)
-	if err != nil {
-		t.Fatalf("NewMulticastDiscovery error: %v", err)
-	}
-	md.Start()
+		md, err := newTestMulticast(1, 100, "10.0.0.1:5000", secret, ft)
+		if err != nil {
+			t.Fatalf("NewMulticastDiscovery error: %v", err)
+		}
+		md.Start()
 
-	// Give the announcer time to start and fire at least once.
-	waitForWritten(t, ft, 1, 2*time.Second)
+		// Wait for the announcer to start and fire at least once (the
+		// poll advances the bubble's fake clock).
+		require.Eventually(t, func() bool { return len(ft.Written()) >= 1 },
+			2*time.Second, time.Millisecond, "announcer never wrote")
 
-	// Close stopCh to signal goroutines to exit.
-	_ = md.Stop()
+		// Close stopCh to signal goroutines to exit.
+		_ = md.Stop()
 
-	// Verify the announcer stopped by checking no new writes occurred.
-	writtenBefore := len(ft.Written())
-	<-time.After(200 * time.Millisecond)
-	writtenAfter := len(ft.Written())
+		// Verify the announcer stopped by checking no new writes occurred
+		// over several announce intervals of fake time.
+		writtenBefore := len(ft.Written())
+		time.Sleep(200 * time.Millisecond)
+		synctest.Wait()
+		writtenAfter := len(ft.Written())
 
-	if writtenAfter > writtenBefore {
-		t.Error("announcer did not stop after Stop() signal")
-	}
+		if writtenAfter > writtenBefore {
+			t.Error("announcer did not stop after Stop() signal")
+		}
+	})
 }
 
 // TestMulticastDiscovery_MultipleDiscoverCalls verifies that concurrent
@@ -1871,45 +1934,48 @@ func TestMulticastDiscovery_UpdatePeerAddressOnDuplicate(t *testing.T) {
 // sendAnnouncement call encodes a fresh timestamp rather than reusing a
 // stale one from construction time.
 func TestMulticastDiscovery_AnnouncementTimestampIsFresh(t *testing.T) {
-	secret := []byte("fresh-timestamp-secret")
-	ft := newFakeTransport()
+	synctest.Test(t, func(t *testing.T) {
+		secret := []byte("fresh-timestamp-secret")
+		ft := newFakeTransport()
 
-	md, err := newTestMulticast(1, 100, "10.0.0.1:5000", secret, ft)
-	if err != nil {
-		t.Fatalf("NewMulticastDiscovery: %v", err)
-	}
-	defer func() {
-		if stopErr := md.Stop(); stopErr != nil {
-			t.Logf("Stop: %v", stopErr)
+		md, err := newTestMulticast(1, 100, "10.0.0.1:5000", secret, ft)
+		if err != nil {
+			t.Fatalf("NewMulticastDiscovery: %v", err)
 		}
-	}()
+		defer func() {
+			if stopErr := md.Stop(); stopErr != nil {
+				t.Logf("Stop: %v", stopErr)
+			}
+		}()
 
-	// Send two announcements with a short delay between them to ensure different timestamps.
-	md.sendAnnouncement()
-	<-time.After(5 * time.Millisecond)
-	md.sendAnnouncement()
+		// Send two announcements 5ms of fake time apart, so their
+		// timestamps differ.
+		md.sendAnnouncement()
+		time.Sleep(5 * time.Millisecond)
+		md.sendAnnouncement()
 
-	written := ft.Written()
-	if len(written) < 2 {
-		t.Fatalf("expected at least 2 written messages, got %d", len(written))
-	}
-
-	// Extract timestamps from the two most recent messages.
-	ts1 := binary.LittleEndian.Uint64(written[len(written)-2][16:24])
-	ts2 := binary.LittleEndian.Uint64(written[len(written)-1][16:24])
-
-	if ts2 <= ts1 {
-		t.Errorf("second announcement timestamp (%d) should be greater than first (%d)", ts2, ts1)
-	}
-
-	// Both messages must decode successfully.
-	maxAge := 2 * time.Second
-	for i, msg := range written[len(written)-2:] {
-		_, _, _, decErr := DecodeMulticastMessage(msg, secret, maxAge)
-		if decErr != nil {
-			t.Errorf("message %d failed to decode: %v", i, decErr)
+		written := ft.Written()
+		if len(written) < 2 {
+			t.Fatalf("expected at least 2 written messages, got %d", len(written))
 		}
-	}
+
+		// Extract timestamps from the two most recent messages.
+		ts1 := binary.LittleEndian.Uint64(written[len(written)-2][16:24])
+		ts2 := binary.LittleEndian.Uint64(written[len(written)-1][16:24])
+
+		if ts2 <= ts1 {
+			t.Errorf("second announcement timestamp (%d) should be greater than first (%d)", ts2, ts1)
+		}
+
+		// Both messages must decode successfully.
+		maxAge := 2 * time.Second
+		for i, msg := range written[len(written)-2:] {
+			_, _, _, decErr := DecodeMulticastMessage(msg, secret, maxAge)
+			if decErr != nil {
+				t.Errorf("message %d failed to decode: %v", i, decErr)
+			}
+		}
+	})
 }
 
 // TestMulticastDiscovery_AnnouncementsNotRejectedAsReplay verifies that
@@ -1918,53 +1984,54 @@ func TestMulticastDiscovery_AnnouncementTimestampIsFresh(t *testing.T) {
 // announce message was pre-encoded once at construction time, causing all
 // announcements after 2*AnnounceInterval to be rejected.
 func TestMulticastDiscovery_AnnouncementsNotRejectedAsReplay(t *testing.T) {
-	secret := []byte("replay-regression-secret")
-	ft := newFakeTransport()
+	synctest.Test(t, func(t *testing.T) {
+		secret := []byte("replay-regression-secret")
+		ft := newFakeTransport()
 
-	// Use a very short announce interval so 2*AnnounceInterval elapses quickly.
-	announceInterval := 20 * time.Millisecond
-	md, err := NewMulticastDiscovery(MulticastConfig{
-		NodeID:           1,
-		Address:          "10.0.0.1:5000",
-		DeploymentID:     100,
-		SharedSecret:     secret,
-		AnnounceInterval: announceInterval,
-		DiscoverTimeout:  500 * time.Millisecond,
-		transport:        ft,
+		announceInterval := 20 * time.Millisecond
+		md, err := NewMulticastDiscovery(MulticastConfig{
+			NodeID:           1,
+			Address:          "10.0.0.1:5000",
+			DeploymentID:     100,
+			SharedSecret:     secret,
+			AnnounceInterval: announceInterval,
+			DiscoverTimeout:  500 * time.Millisecond,
+			transport:        ft,
+		})
+		if err != nil {
+			t.Fatalf("NewMulticastDiscovery: %v", err)
+		}
+		defer func() {
+			if stopErr := md.Stop(); stopErr != nil {
+				t.Logf("Stop: %v", stopErr)
+			}
+		}()
+
+		// Advance the fake clock past 2*AnnounceInterval (the replay
+		// rejection window), then send a fresh announcement.
+		time.Sleep(3 * announceInterval)
+		md.sendAnnouncement()
+
+		written := ft.Written()
+		if len(written) == 0 {
+			t.Fatal("expected at least 1 written message")
+		}
+
+		// The most recent announcement must decode without a ReplayError.
+		latestMsg := written[len(written)-1]
+		maxAge := 2 * announceInterval
+		_, _, addr, decErr := DecodeMulticastMessage(latestMsg, secret, maxAge)
+		if decErr != nil {
+			var replayErr *ReplayError
+			if errors.As(decErr, &replayErr) {
+				t.Fatalf("announcement sent after 3*AnnounceInterval was rejected as replay: %v", decErr)
+			}
+			t.Fatalf("unexpected decode error: %v", decErr)
+		}
+		if addr != "10.0.0.1:5000" {
+			t.Errorf("decoded address = %q, want %q", addr, "10.0.0.1:5000")
+		}
 	})
-	if err != nil {
-		t.Fatalf("NewMulticastDiscovery: %v", err)
-	}
-	defer func() {
-		if stopErr := md.Stop(); stopErr != nil {
-			t.Logf("Stop: %v", stopErr)
-		}
-	}()
-
-	// Wait longer than 2*AnnounceInterval (the replay rejection window),
-	// then send a fresh announcement.
-	<-time.After(3 * announceInterval)
-	md.sendAnnouncement()
-
-	written := ft.Written()
-	if len(written) == 0 {
-		t.Fatal("expected at least 1 written message")
-	}
-
-	// The most recent announcement must decode without a ReplayError.
-	latestMsg := written[len(written)-1]
-	maxAge := 2 * announceInterval
-	_, _, addr, decErr := DecodeMulticastMessage(latestMsg, secret, maxAge)
-	if decErr != nil {
-		var replayErr *ReplayError
-		if errors.As(decErr, &replayErr) {
-			t.Fatalf("announcement sent after 3*AnnounceInterval was rejected as replay: %v", decErr)
-		}
-		t.Fatalf("unexpected decode error: %v", decErr)
-	}
-	if addr != "10.0.0.1:5000" {
-		t.Errorf("decoded address = %q, want %q", addr, "10.0.0.1:5000")
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -2079,9 +2146,12 @@ func TestMulticastDiscovery_DiscoverContextCanceled(t *testing.T) {
 type deadlineErrorTransport struct {
 	*fakeTransport
 	deadlineErr error
+	// deadlineCalls counts SetReadDeadline calls.
+	deadlineCalls atomic.Int64
 }
 
 func (d *deadlineErrorTransport) SetReadDeadline(_ time.Time) error {
+	d.deadlineCalls.Add(1)
 	return d.deadlineErr
 }
 
@@ -2107,8 +2177,9 @@ func TestMulticastDiscovery_ListenLoopSetReadDeadlineError(t *testing.T) {
 	}
 
 	md.Start()
-	// Give the listen loop time to hit SetReadDeadline error.
-	<-time.After(200 * time.Millisecond)
+	// Wait until the listen loop has hit the SetReadDeadline error.
+	require.Eventually(t, func() bool { return dt.deadlineCalls.Load() >= 1 },
+		2*time.Second, time.Millisecond, "listen loop never called SetReadDeadline")
 	_ = md.Stop()
 	// Test passes if no panic occurs — the error is only logged.
 }

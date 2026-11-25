@@ -273,8 +273,9 @@ func (t *Transport) GetTenant(ctx context.Context, tenantID string) (*transport.
 	}, nil
 }
 
-// ListTenants lists all tenants by delegating to the TenantServicer.
-func (t *Transport) ListTenants(ctx context.Context) (*transport.ListTenantsResponse, error) {
+// ListTenants lists the tenants the caller may list by delegating to the
+// TenantServicer, narrowed to req's status when it names one.
+func (t *Transport) ListTenants(ctx context.Context, req *transport.ListTenantsRequest) (*transport.ListTenantsResponse, error) {
 	ctx, err := t.admit(ctx, "ListTenants")
 	if err != nil {
 		return nil, err
@@ -297,6 +298,11 @@ func (t *Transport) ListTenants(ctx context.Context) (*transport.ListTenantsResp
 	// configuration (data_root included) to a principal with no authority
 	// over them.
 	if tenants, err = t.filterTenantList(ctx, tenants); err != nil {
+		return nil, err
+	}
+	// The status filter runs after the visibility narrowing, as on every
+	// network transport, so it never widens what the caller sees.
+	if tenants, err = tenant.FilterByStatus(tenants, tenant.Status(req.GetStatus())); err != nil {
 		return nil, err
 	}
 

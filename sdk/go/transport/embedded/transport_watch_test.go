@@ -90,6 +90,8 @@ const watchGoroutineSlack = 10
 // returns the last observation.
 func settledGoroutineCount() int {
 	deadline := time.Now().Add(5 * time.Second)
+	poll := time.NewTicker(10 * time.Millisecond)
+	defer poll.Stop()
 	prev, stable := -1, 0
 	for {
 		runtime.GC()
@@ -104,7 +106,7 @@ func settledGoroutineCount() int {
 		if time.Now().After(deadline) {
 			return got
 		}
-		time.Sleep(10 * time.Millisecond)
+		<-poll.C
 	}
 }
 
@@ -113,13 +115,15 @@ func settledGoroutineCount() int {
 // bound is met, so a healthy run costs one sample.
 func goroutinesAtMost(want int, timeout time.Duration) int {
 	deadline := time.Now().Add(timeout)
+	poll := time.NewTicker(10 * time.Millisecond)
+	defer poll.Stop()
 	for {
 		runtime.GC()
 		got := runtime.NumGoroutine()
 		if got <= want || time.Now().After(deadline) {
 			return got
 		}
-		time.Sleep(10 * time.Millisecond)
+		<-poll.C
 	}
 }
 
@@ -280,11 +284,13 @@ func drainWatch(t *testing.T, ch <-chan transport.WatchResponse) []transport.Wat
 func awaitEviction(t *testing.T, hub *watch.Hub) {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
+	poll := time.NewTicker(time.Millisecond)
+	defer poll.Stop()
 	for hub.WatchCount() > 0 {
 		if time.Now().After(deadline) {
 			t.Fatalf("hub still holds %d watchers; eviction never happened", hub.WatchCount())
 		}
-		time.Sleep(time.Millisecond)
+		<-poll.C
 	}
 }
 

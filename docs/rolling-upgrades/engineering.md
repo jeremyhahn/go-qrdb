@@ -167,6 +167,8 @@ Q5 (b). Q1 and Q2 are settled by convention. Q3 stays open.
    release-version comparison in the SDK and no server-side refusal path.
    The bit is separate from the `pending-user-ttl` feature gate: it says the
    binary honours the field, not that the feature is activated cluster-wide.
+   The tenant list `status` filter needs no bit: the SDK checks the returned
+   statuses (`transport.EnforceStatusFilter`).
 
 ## Test plan
 

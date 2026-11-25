@@ -613,15 +613,11 @@ func assertPerNodeTenantKeys(t *testing.T, client *http.Client, ports []int, ten
 		}
 		var body []byte
 		var code int
-		deadline := time.Now().Add(timeout)
-		for time.Now().Before(deadline) {
+		pollUntil(timeout, 250*time.Millisecond, func() bool {
 			body, code = iraftAPIGet(t, client, url)
-			if code == http.StatusOK && json.Unmarshal(body, &status) == nil &&
-				status.Initialized && !status.Sealed && status.KeyFingerprint != "" {
-				break
-			}
-			time.Sleep(250 * time.Millisecond)
-		}
+			return code == http.StatusOK && json.Unmarshal(body, &status) == nil &&
+				status.Initialized && !status.Sealed && status.KeyFingerprint != ""
+		})
 		if code != http.StatusOK || !status.Initialized || status.Sealed || status.KeyFingerprint == "" {
 			t.Fatalf("node %d: tenant %q barrier not serving with a key: status %d, body: %s",
 				i+1, tenantID, code, body)
@@ -658,14 +654,10 @@ func assertTenantUsersOnEveryNode(t *testing.T, admin, user *http.Client, ports 
 		for _, l := range lookups {
 			var body []byte
 			var code int
-			deadline := time.Now().Add(timeout)
-			for time.Now().Before(deadline) {
+			pollUntil(timeout, 250*time.Millisecond, func() bool {
 				body, code = iraftAPIGet(t, l.client, l.url)
-				if code == http.StatusOK {
-					break
-				}
-				time.Sleep(250 * time.Millisecond)
-			}
+				return code == http.StatusOK
+			})
 			if code != http.StatusOK || !strings.Contains(string(body), l.want) {
 				t.Fatalf("node %d: GET %s = %d, want 200 containing %q; body: %s", i+1, l.url, code, l.want, body)
 			}

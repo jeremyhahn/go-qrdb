@@ -78,7 +78,7 @@ func TestBootstrapAuthEnforcement_AdminWatchCancelBeforeWaitPreventsHang(t *test
 		context.Background(), mgmt, t.TempDir(), &mockRaftNode{},
 		audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{},
 		nil, nil, nil, nil, nil, "", "", "required",
-		firstboot.NewAwaitingAdminCredentialProbe(), neverDeliveringAdminWatchSvc{},
+		firstboot.NewAwaitingAdminCredentialProbe(), neverDeliveringAdminWatchSvc{}, nil,
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = authResult.auditLogger.Close() })

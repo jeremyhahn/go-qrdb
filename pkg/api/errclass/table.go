@@ -42,6 +42,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
+	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/initproof"
 	"github.com/jeremyhahn/go-qrdb/pkg/invite"
@@ -982,6 +983,13 @@ var identityRules = []rule{
 	// A grantor may grant only permissions it holds (go-qrdb#1278).
 	as(&role.GrantExceedsHolderError{}, PermissionDenied),
 	as(&role.ValidationError{}, InvalidArgument),
+	// IAM groups map like their role equivalents.
+	as(&group.GroupNotFoundError{}, NotFound),
+	as(&group.GroupNameTakenError{}, AlreadyExists),
+	as(&group.RoleNotInTenantError{}, InvalidArgument),
+	as(&group.ValidationError{}, InvalidArgument),
+	as(&group.GroupConflictError{}, Aborted),
+	as(&user.GroupMembershipUnsupportedError{}, Unimplemented),
 	as(&role.InvalidPermissionError{}, InvalidArgument),
 	as(&cert.CertNotFoundError{}, NotFound),
 	as(&cert.CertRevokedError{}, FailedPrecondition),
@@ -1176,6 +1184,15 @@ var credentialRules = []rule{
 	is(credentials.ErrEmptyCredentialName, InvalidArgument),
 	is(credentials.ErrEmptyCredentialValue, InvalidArgument),
 	is(credentials.ErrInvalidGracePeriod, InvalidArgument),
+	as(&credentials.InvalidRotationPolicyError{}, InvalidArgument),
+	is(credentials.ErrMigrationConflictNotFound, NotFound),
+	is(credentials.ErrInvalidMigrationResolution, InvalidArgument),
+	is(credentials.ErrRotationMetaContended, Aborted),
+	// An undecodable migration claim is a corrupt record a retry never repairs.
+	is(credentials.ErrCorruptMigrationClaim, DataLoss),
+	// The replicated credential store is bound once the node has unsealed
+	// and its system shard's KV has started; a call before then is retryable.
+	is(credentials.ErrStoreUnavailable, Unavailable),
 }
 
 // dekRules are the tenant DEK keyring's conditions. Every keyring error
@@ -1597,7 +1614,7 @@ var genericRules = []rule{
 	// The credential service validates its strategy at construction; meeting
 	// either at request time is a server fault, not the caller's.
 	is(credentials.ErrInvalidStrategy, Internal),
-	is(credentials.ErrNilBarrier, Internal),
+	is(credentials.ErrNilStore, Internal),
 }
 
 // memberIdentityClasses is the class of each member-identity refusal kind.

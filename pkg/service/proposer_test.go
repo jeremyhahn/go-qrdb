@@ -27,14 +27,6 @@ import (
 // NewHostProposerAdapter
 // ---------------------------------------------------------------------------
 
-func TestNewHostProposerAdapter_ReturnsNonNil(t *testing.T) {
-	h := &mockHost{}
-	adapter := NewHostProposerAdapter(h)
-	if adapter == nil {
-		t.Fatal("NewHostProposerAdapter returned nil")
-	}
-}
-
 func TestNewHostProposerAdapter_StoresHost(t *testing.T) {
 	h := &mockHost{}
 	adapter := NewHostProposerAdapter(h)

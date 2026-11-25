@@ -151,6 +151,28 @@ func TestTenantListCmd_Success(t *testing.T) {
 	}
 }
 
+func TestTenantList_StatusFlagIsSent(t *testing.T) {
+	svc := &mockTenantService{
+		listFn: func(context.Context) ([]tenant.TenantInfo, error) {
+			return []tenant.TenantInfo{
+				{ID: "tenant-active", Status: tenant.StatusActive},
+				{ID: "tenant-suspended", Status: tenant.StatusSuspended},
+			}, nil
+		},
+	}
+	out, err := executeTenantCmd(t, svc, "list", "--status", "suspended")
+	if err != nil {
+		t.Fatalf("tenant list --status suspended: %v", err)
+	}
+	if !strings.Contains(out, "tenant-suspended") || strings.Contains(out, "tenant-active") {
+		t.Fatalf("output = %s, want only tenant-suspended", out)
+	}
+
+	if _, err := executeTenantCmd(t, svc, "list", "--status", "deleted"); err == nil {
+		t.Fatal("tenant list --status deleted: want the unknown-status refusal")
+	}
+}
+
 func TestTenantListCmd_Empty(t *testing.T) {
 	svc := &mockTenantService{
 		listFn: func(_ context.Context) ([]tenant.TenantInfo, error) {

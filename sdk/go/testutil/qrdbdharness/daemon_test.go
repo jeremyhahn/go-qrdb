@@ -573,6 +573,8 @@ func withWaitDelay(d time.Duration) DaemonOption {
 func waitForTail(t *testing.T, d *Daemon, want string) string {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
+	poll := time.NewTicker(10 * time.Millisecond)
+	defer poll.Stop()
 	for {
 		tail := d.Tail()
 		if strings.Contains(tail, want) {
@@ -581,7 +583,7 @@ func waitForTail(t *testing.T, d *Daemon, want string) string {
 		if time.Now().After(deadline) {
 			t.Fatalf("daemon output %q never contained %q", tail, want)
 		}
-		time.Sleep(10 * time.Millisecond)
+		<-poll.C
 	}
 }
 

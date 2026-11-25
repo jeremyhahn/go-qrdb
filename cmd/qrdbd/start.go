@@ -64,6 +64,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
+	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
@@ -203,8 +204,13 @@ type startFlags struct {
 	// mtlsBindingPolicy is the auth.mtls_binding_policy string. Empty means
 	// the default, "enrolled". See qrdbconfig.AuthConfig.MTLSBindingPolicy.
 	mtlsBindingPolicy string
-	abacEnabled       bool
-	abacPolicyDir     string
+
+	// unixPeerCredentials is unix.peer_credentials: the SO_PEERCRED uid/gid
+	// to store-account mappings of the Unix socket. Empty installs no
+	// peer-credential authenticator.
+	unixPeerCredentials []auth.PeerCredentialMapping
+	abacEnabled         bool
+	abacPolicyDir       string
 	// clusterTrustDomain is the cluster-wide SPIFFE trust domain used for
 	// node identity. It is encoded into auto-generated node certificates as
 	// a URI SAN (spiffe://<clusterTrustDomain>/node/<raftAddress>) and must
@@ -913,6 +919,7 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	f.revocationCacheTTL = cfg.Auth.RevocationCacheTTL
 	f.auditFailurePolicy = cfg.Auth.AuditFailurePolicy
 	f.mtlsBindingPolicy = cfg.Auth.MTLSBindingPolicy
+	f.unixPeerCredentials = cfg.Unix.PeerCredentialMappings()
 	// ABAC decorator: config-only (no CLI flag).
 	f.abacEnabled = cfg.Auth.ABAC.Enabled
 	f.abacPolicyDir = cfg.Auth.ABAC.PolicyDir
@@ -2415,7 +2422,7 @@ func runStart(f *startFlags) (err error) {
 			// already initialized above and reused here.
 			var authResult *authBootstrapResult
 			if f.authEnabled {
-				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, f.dataDir, rnode, complianceAudit, strictSoD, f.clusterTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir}, svcNode.CertProv, bundle.TrustPool(), svcNode.PendingAdmins, firstAdminPins(svcNode.BarrierInit), svcNode.CertTargets, f.revocationCacheTTL, f.auditFailurePolicy, f.mtlsBindingPolicy, awaitingAdminCredentialProbe, svcNode.Watch)
+				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, f.dataDir, rnode, complianceAudit, strictSoD, f.clusterTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir}, svcNode.CertProv, bundle.TrustPool(), svcNode.PendingAdmins, firstAdminPins(svcNode.BarrierInit), svcNode.CertTargets, f.revocationCacheTTL, f.auditFailurePolicy, f.mtlsBindingPolicy, awaitingAdminCredentialProbe, svcNode.Watch, f.unixPeerCredentials)
 				if err != nil {
 					_ = shutdownNode(nodeCloser)
 					// Context cancellation from signal is a clean shutdown, not an error.
@@ -2838,6 +2845,7 @@ func runStart(f *startFlags) (err error) {
 			serverOpts = append(serverOpts,
 				server.WithUserService(mgmtResult.servedUserSvc),
 				server.WithRoleService(mgmtResult.servedRoleSvc),
+				server.WithGroupService(mgmtResult.servedGroupSvc),
 			)
 			// Compliance audit logger is always wired so the /v1/audit/events
 			// endpoint is available regardless of auth-enabled state.
@@ -2991,6 +2999,11 @@ func runStart(f *startFlags) (err error) {
 			}
 			if svcNode.Credential != nil {
 				serverOpts = append(serverOpts, server.WithCredentialService(svcNode.Credential))
+				period, perr := f.sealConfig.CredentialRotationCheckPeriodDuration()
+				if perr != nil {
+					return perr
+				}
+				serverOpts = append(serverOpts, server.WithCredentialRotationPeriod(period))
 			}
 			if svcNode.DEK != nil {
 				serverOpts = append(serverOpts, server.WithDEKService(svcNode.DEK))
@@ -4175,8 +4188,11 @@ type mgmtBootstrapResult struct {
 	roleSvc       role.RoleServicer
 	servedUserSvc user.UserServicer // resolver-routed service exposed on the API surface
 	servedRoleSvc role.RoleServicer // resolver-routed service exposed on the API surface
-	bootUserSvc   user.UserServicer // StaleRead-backed fallback for auth middleware
-	bootRoleSvc   role.RoleServicer // StaleRead-backed fallback for RBAC authorizer
+	// servedGroupSvc is the IAM group store, over the system tenant's
+	// confined runtime view (groups are keyed by tenant inside it).
+	servedGroupSvc group.GroupServicer
+	bootUserSvc    user.UserServicer // StaleRead-backed fallback for auth middleware
+	bootRoleSvc    role.RoleServicer // StaleRead-backed fallback for RBAC authorizer
 
 	// storeResolver maps a tenant to the store holding its IAM data. It is
 	// the same resolver servedUserSvc and servedRoleSvc route through, and it
@@ -4379,9 +4395,13 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "boot role holder revoker", Err: err}
 	}
+	bootGroupHolders, err := group.NewRoleRevoker(bootStore)
+	if err != nil {
+		return nil, &AuthBootstrapError{Step: "boot group role holder revoker", Err: err}
+	}
 	bootRoleSvc, err := role.NewStore(bootStore,
 		role.WithAuditLogger(auditLogger), role.WithIdentityIndex(bootIdentityIndex), role.WithAtomicIdentity(),
-		role.WithHolderRevoker(bootHolders))
+		role.WithHolderRevoker(role.HolderRevokers(bootHolders, bootGroupHolders)))
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "boot role store", Err: err}
 	}
@@ -4512,9 +4532,13 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "role holder revoker", Err: err}
 	}
+	groupHolders, err := group.NewRoleRevoker(systemStore)
+	if err != nil {
+		return nil, &AuthBootstrapError{Step: "group role holder revoker", Err: err}
+	}
 	roleSvc, err := role.NewStore(systemStore,
 		role.WithAuditLogger(auditLogger), role.WithIdentityIndex(systemIdentityIndex), role.WithAtomicIdentity(),
-		role.WithHolderRevoker(holders))
+		role.WithHolderRevoker(role.HolderRevokers(holders, groupHolders)))
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "role store", Err: err}
 	}
@@ -4557,7 +4581,12 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 		if rhErr != nil {
 			return nil, &AuthBootstrapError{Step: "routed role holder revoker", Err: rhErr}
 		}
-		routedRoles, rrErr := role.NewRoutingService(resolver, role.WithAuditLogger(auditLogger), role.WithHolderRevoker(routedHolders))
+		routedGroupHolders, rgErr := group.NewRoutingRoleRevoker(resolver)
+		if rgErr != nil {
+			return nil, &AuthBootstrapError{Step: "routed group role holder revoker", Err: rgErr}
+		}
+		routedRoles, rrErr := role.NewRoutingService(resolver, role.WithAuditLogger(auditLogger),
+			role.WithHolderRevoker(role.HolderRevokers(routedHolders, routedGroupHolders)))
 		if rrErr != nil {
 			return nil, &AuthBootstrapError{Step: "routed role store", Err: rrErr}
 		}
@@ -4566,13 +4595,36 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 		storeResolver = resolver
 	}
 
+	// IAM groups: routed per tenant like users and roles, so a
+	// dedicated-isolation tenant's groups live inside its barrier and a
+	// sealed tenant's groups fail closed; without a tenant service, one
+	// store over the system tenant's confined runtime view, keyed by tenant
+	// inside it. Deleting a group revokes it from every member through the
+	// served user store; a group's roles are looked up in the served role
+	// store, so a role of another tenant is refused.
+	groupMembers, err := user.NewGroupMembership(servedUserSvc)
+	if err != nil {
+		return nil, &AuthBootstrapError{Step: "group membership", Err: err}
+	}
+	groupOpts := []group.Option{group.WithRoleLookup(servedRoleSvc), group.WithMemberRevoker(groupMembers)}
+	var servedGroupSvc group.GroupServicer
+	if storeResolver != nil {
+		servedGroupSvc, err = group.NewRoutingService(storeResolver, groupOpts...)
+	} else {
+		servedGroupSvc, err = group.NewStore(systemStore, groupOpts...)
+	}
+	if err != nil {
+		return nil, &AuthBootstrapError{Step: "group store", Err: err}
+	}
+
 	return &mgmtBootstrapResult{
-		userSvc:       userSvc,
-		roleSvc:       roleSvc,
-		servedUserSvc: servedUserSvc,
-		servedRoleSvc: servedRoleSvc,
-		bootUserSvc:   bootUserSvc,
-		bootRoleSvc:   bootRoleSvc,
+		userSvc:        userSvc,
+		roleSvc:        roleSvc,
+		servedUserSvc:  servedUserSvc,
+		servedRoleSvc:  servedRoleSvc,
+		servedGroupSvc: servedGroupSvc,
+		bootUserSvc:    bootUserSvc,
+		bootRoleSvc:    bootRoleSvc,
 
 		storeResolver:     storeResolver,
 		tenantSvc:         tenantSvc,
@@ -4619,7 +4671,7 @@ func daemonPendingTTLGate(host service.Host) (func() error, user.Option) {
 // sdk/go/node.Node calls when wiring an embedded unified server — so a
 // daemon-run node and an embedded node (go-xkms xkmsd, go-quicbaas
 // quicbaasd) enforce authn/authz identically.
-func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, clusterTrustDomain string, abacCfg qrdbconfig.AuthABACConfig, certProv cert.CertProvider, issuerVerifier auth.IssuerVerifier, pendingAdmins middleware.PendingTenantAdmins, pins middleware.FirstAdminPins, certTargets middleware.CertTargetGuard, revocationCacheTTL string, auditFailurePolicy string, mtlsBindingPolicy string, awaitingAdminCredentialProbe *firstboot.AwaitingAdminCredentialProbe, watchSvc firstboot.AdminRecordWatcher) (*authBootstrapResult, error) {
+func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, clusterTrustDomain string, abacCfg qrdbconfig.AuthABACConfig, certProv cert.CertProvider, issuerVerifier auth.IssuerVerifier, pendingAdmins middleware.PendingTenantAdmins, pins middleware.FirstAdminPins, certTargets middleware.CertTargetGuard, revocationCacheTTL string, auditFailurePolicy string, mtlsBindingPolicy string, awaitingAdminCredentialProbe *firstboot.AwaitingAdminCredentialProbe, watchSvc firstboot.AdminRecordWatcher, peerCreds []auth.PeerCredentialMapping) (*authBootstrapResult, error) {
 	_ = node
 	var adminWatchWG sync.WaitGroup
 	// watchCtx is a child of ctx (sigCtx) with its OWN cancel
@@ -4787,6 +4839,7 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, da
 		Enabled:             true,
 		RoleService:         mgmt.servedRoleSvc,
 		RoleServiceFallback: mgmt.bootRoleSvc,
+		GroupResolver:       mgmt.servedGroupSvc,
 		UserService:         mgmt.servedUserSvc,
 		UserServiceFallback: mgmt.bootUserSvc,
 		StrictSeparation:    strictSoD,
@@ -4824,6 +4877,9 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, da
 		CertTargetGuard:    certTargets,
 		RevocationCacheTTL: revocationTTL,
 		MTLSBindingPolicy:  bindingPolicy,
+		// unix.peer_credentials: a Unix-socket caller's SO_PEERCRED uid/gid
+		// bound to a store account, whose roles decide (go-qrdb#1651).
+		PeerCredentials: peerCreds,
 	})
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "auth middleware", Err: err}
