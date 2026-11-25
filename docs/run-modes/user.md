@@ -127,4 +127,8 @@ wait to end. A wait that runs out of its budget stops the start with an error
 naming the step, and the node can simply be started again.
 
 **Switching modes.** The mode is fixed at composition. Changing it is a restart,
-not a runtime operation.
+not a runtime operation. The two modes keep their data in different
+subdirectories of the data directory (standalone: `pebble/`, `file/` or
+`objstore/`; raft: `wal/` and `nodehost/`), and nothing checks which mode wrote
+the files already there: after a switch the node starts without the keys
+written in the other mode, and reports no error about them.
