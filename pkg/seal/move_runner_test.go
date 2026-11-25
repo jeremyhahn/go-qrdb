@@ -819,9 +819,13 @@ type relocatingStores struct {
 	*fakeStores
 	moves [][2]string
 	err   error
+	// opensAt is len(opens) at each relocation: the stores must have
+	// reopened the tenant barrier before its records are rewritten.
+	opensAt []int
 }
 
 func (s *relocatingStores) RelocateTenantDataDirs(_ context.Context, tenantID, fromRoot, toRoot string) error {
+	s.opensAt = append(s.opensAt, len(s.opens))
 	if tenantID != moveTestTenant {
 		return errors.New("relocate of another tenant")
 	}
@@ -851,6 +855,9 @@ func TestMoveStepRunner_SettleRelocatesDataDirs(t *testing.T) {
 	if got := rs.moves[len(rs.moves)-1]; got != [2]string{fx.src, fx.dst()} {
 		t.Fatalf("copy settle relocated %v, want %s -> %s", got, fx.src, fx.dst())
 	}
+	if got := rs.opensAt[len(rs.opensAt)-1]; got != len(stores.opens) {
+		t.Fatalf("copy settle relocated after %d opens, want after its own open (%d)", got, len(stores.opens))
+	}
 	abort := runnerStep(volume.MoveStepPhaseAbort, true)
 	if err := r.RunMoveStep(ctx, abort); err != nil {
 		t.Fatalf("abort run: %v", err)
@@ -860,6 +867,9 @@ func TestMoveStepRunner_SettleRelocatesDataDirs(t *testing.T) {
 	}
 	if got := rs.moves[len(rs.moves)-1]; got != [2]string{fx.dst(), fx.src} {
 		t.Fatalf("abort settle relocated %v, want %s -> %s", got, fx.dst(), fx.src)
+	}
+	if got := rs.opensAt[len(rs.opensAt)-1]; got != len(stores.opens) {
+		t.Fatalf("abort settle relocated after %d opens, want after its own open (%d)", got, len(stores.opens))
 	}
 }
 

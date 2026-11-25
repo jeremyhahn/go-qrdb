@@ -140,20 +140,22 @@ func (m *MoveStepRunner) SettleMoveStep(ctx context.Context, step volume.MoveSte
 	case step.Phase == volume.MoveStepPhaseCopy:
 		// The journal now records this node copied, so the destination is
 		// authoritative here: open the stores from it.
+		// The database records live in the tenant's catalog store behind its
+		// barrier, so they are relocated only once the stores reopen it.
 		m.reg.moveOpenPools.Store(step.TenantID, step.ToPool)
-		if err := m.relocateDataDirs(ctx, step, false); err != nil {
+		if err := m.stores.OpenTenantStores(ctx, step.TenantID); err != nil {
 			return err
 		}
-		if err := m.stores.OpenTenantStores(ctx, step.TenantID); err != nil {
+		if err := m.relocateDataDirs(ctx, step, false); err != nil {
 			return err
 		}
 		return m.relocateSnapshots(ctx, step, false)
 	case step.Phase == volume.MoveStepPhaseAbort && step.Copied:
 		m.reg.moveOpenPools.Delete(step.TenantID)
-		if err := m.relocateDataDirs(ctx, step, true); err != nil {
+		if err := m.stores.OpenTenantStores(ctx, step.TenantID); err != nil {
 			return err
 		}
-		if err := m.stores.OpenTenantStores(ctx, step.TenantID); err != nil {
+		if err := m.relocateDataDirs(ctx, step, true); err != nil {
 			return err
 		}
 		if err := m.relocateSnapshots(ctx, step, true); err != nil {
