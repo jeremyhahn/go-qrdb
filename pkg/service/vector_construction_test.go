@@ -66,6 +66,7 @@ func newBasicVecSvc(t *testing.T) (VectorService, *vecMockStorage) {
 	logger := newVecTestLogger()
 	svc, err := NewVectorService(storage, logger)
 	require.NoError(t, err)
+	attachPrefixHomes(t, svc)
 	return svc, storage
 }
 

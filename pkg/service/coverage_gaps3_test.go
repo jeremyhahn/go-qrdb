@@ -465,6 +465,7 @@ func TestFilterNamespacesByTenant_WithMatchingTenant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewVectorService: %v", err)
 	}
+	attachPrefixHomes(t, svc)
 
 	// ListNamespaces with tenant filter should only return acme's namespaces.
 	ctx := tenant.WithTenantID(context.Background(), "acme")
