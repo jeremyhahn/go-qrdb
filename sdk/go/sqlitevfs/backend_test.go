@@ -443,6 +443,22 @@ func TestClientBackend_ErrorMapping(t *testing.T) {
 		})
 	}
 
+	t.Run("a binary guard key round-trips over the wire", func(t *testing.T) {
+		key := "\xff\x00sqlite/app.db/\xfe\x80"
+		md := (&service.WriteGuardRefusedError{Key: key}).Metadata()
+		for name, value := range md {
+			if !utf8.ValidString(value) {
+				t.Fatalf("metadata %q = %q is not UTF-8", name, value)
+			}
+		}
+		b := newBackend(t, &failingMVCC{MVCCClient: mvcc, moveErr: wire(409, service.ReasonWriteGuardRefused, md)}, txn)
+		_, err := b.Publish(t.Context(), []byte("sqlite/app.db/stage/x/"), []byte("sqlite/app.db/page/"), 1, nil, map[string][]byte{"k": []byte("v")}, nil)
+		guard, ok := errors.AsType[*service.WriteGuardRefusedError](err)
+		if !ok || guard.Key != key {
+			t.Fatalf("Publish error %v decodes guard %+v, want key %q", err, guard, key)
+		}
+	})
+
 	t.Run("a status without a reason is not a refusal", func(t *testing.T) {
 		b := newBackend(t, &failingMVCC{MVCCClient: mvcc, moveErr: wire(409, "", nil)}, txn)
 		_, err := b.Publish(t.Context(), []byte("src/"), []byte("dst/"), 1, nil, nil, nil)

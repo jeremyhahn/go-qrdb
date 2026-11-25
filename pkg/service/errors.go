@@ -15,6 +15,7 @@
 package service
 
 import (
+	"encoding/base64"
 	"errors"
 	"strconv"
 	"time"
@@ -217,18 +218,25 @@ const (
 
 // The metadata names of the write refusals.
 const (
-	metadataKey     = "key"
-	metadataMessage = "message"
+	// metadataKeyBase64 carries a guard key as standard base64, since a key
+	// is arbitrary bytes and wire metadata values must be UTF-8.
+	metadataKeyBase64 = "key_base64"
+	metadataMessage   = "message"
 )
 
 // Metadata encodes the refusal for the wire.
 func (e *WriteGuardRefusedError) Metadata() map[string]string {
-	return map[string]string{metadataKey: e.Key}
+	return map[string]string{metadataKeyBase64: base64.StdEncoding.EncodeToString([]byte(e.Key))}
 }
 
-// WriteGuardRefusedFromMetadata rebuilds the error Metadata encoded.
+// WriteGuardRefusedFromMetadata rebuilds the error Metadata encoded. A key
+// that is not valid base64 is left empty.
 func WriteGuardRefusedFromMetadata(md map[string]string) *WriteGuardRefusedError {
-	return &WriteGuardRefusedError{Key: md[metadataKey]}
+	key, err := base64.StdEncoding.DecodeString(md[metadataKeyBase64])
+	if err != nil {
+		return &WriteGuardRefusedError{}
+	}
+	return &WriteGuardRefusedError{Key: string(key)}
 }
 
 // Metadata encodes the refusal for the wire.
