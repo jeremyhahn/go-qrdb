@@ -85,6 +85,10 @@ func (s *sqliteRestoreMVCC) RestoreToRevision(ctx context.Context, req *service.
 	if req == nil || req.DryRun {
 		return s.MVCCKVServicer.RestoreToRevision(ctx, req)
 	}
+	observed, err := s.kv.CurrentRevision(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("sqlitevfs restore hook: current revision: %w", err)
+	}
 	planReq := *req
 	planReq.DryRun = true
 	plan, err := s.MVCCKVServicer.RestoreToRevision(ctx, &planReq)
@@ -126,8 +130,12 @@ func (s *sqliteRestoreMVCC) RestoreToRevision(ctx context.Context, req *service.
 	conflicted := make(map[string]bool)
 	for _, db := range dbs {
 		store, err := sqlitevfs.NewStore(backend, db)
-		if err == nil {
+		switch {
+		case err != nil:
+		case req.Force:
 			_, err = store.RestoreToRevision(ctx, req.Revision)
+		default:
+			_, err = store.RestoreToRevisionFrom(ctx, req.Revision, observed)
 		}
 		if err == nil {
 			continue

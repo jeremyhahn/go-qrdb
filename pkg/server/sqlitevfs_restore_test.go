@@ -23,8 +23,10 @@ package server
 // failed restore bump nothing.
 
 import (
+	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 
 	"modernc.org/sqlite"
@@ -291,6 +293,76 @@ func TestSQLiteVFSRestore_DatabaseRestoredInOneRevision(t *testing.T) {
 				t.Fatalf("generation at %d = 0, want bumped", after)
 			}
 			fresh.assertPages(t, 0x11, 0x22)
+		})
+	}
+}
+
+// planHookMVCC runs onPlan once, after the first dry-run restore it forwards.
+type planHookMVCC struct {
+	service.MVCCKVServicer
+	onPlan func()
+}
+
+func (p *planHookMVCC) RestoreToRevision(ctx context.Context, req *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error) {
+	res, err := p.MVCCKVServicer.RestoreToRevision(ctx, req)
+	if req != nil && req.DryRun && p.onPlan != nil {
+		hook := p.onPlan
+		p.onPlan = nil
+		hook()
+	}
+	return res, err
+}
+
+func TestSQLiteVFSRestore_CommitAfterPlanIsConflict(t *testing.T) {
+	for name, build := range lockScenes {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			reg := build(t).registry
+			r := newRestoreStore(t, reg, lockTenantA).restoreCommit(t, 0x11, 0x22)
+			newRestoreStore(t, reg, lockTenantA).restoreCommit(t, 0x33, 0x44)
+			mvccSvc, err := reg.MVCCService(lockTenantA, lockTestDB)
+			if err != nil {
+				t.Fatalf("MVCCService: %v", err)
+			}
+			txnSvc, err := reg.TransactionService(lockTenantA, lockTestDB)
+			if err != nil {
+				t.Fatalf("TransactionService: %v", err)
+			}
+			hook := &planHookMVCC{MVCCKVServicer: mvccSvc}
+			hook.onPlan = func() {
+				newRestoreStore(t, reg, lockTenantA).restoreCommit(t, 0x55, 0x66)
+			}
+			w := &sqliteRestoreMVCC{
+				MVCCKVServicer: hook,
+				kv:             mvccSvc.(sqlitevfs.ServiceKV),
+				txn:            txnSvc.(sqlitevfs.ServiceTxn),
+			}
+
+			res, err := w.RestoreToRevision(ctx, &service.RestoreRevisionRequest{Revision: r, Prefix: "sqlite/"})
+			if err != nil {
+				t.Fatalf("RestoreToRevision: %v", err)
+			}
+			if len(res.Conflicts) == 0 || res.Conflicted != len(res.Conflicts) {
+				t.Fatalf("conflicts = %d (Conflicted %d), want the database's keys", len(res.Conflicts), res.Conflicted)
+			}
+			for _, c := range res.Conflicts {
+				if !strings.HasPrefix(c.Key, "sqlite/") {
+					t.Fatalf("conflict on %q, want only the database's keys", c.Key)
+				}
+			}
+			if res.Applied != 0 {
+				t.Fatalf("applied = %d, want 0", res.Applied)
+			}
+			newRestoreStore(t, reg, lockTenantA).assertPages(t, 0x55, 0x66)
+
+			res, err = w.RestoreToRevision(ctx, &service.RestoreRevisionRequest{Revision: r, Prefix: "sqlite/", Force: true})
+			if err != nil {
+				t.Fatalf("forced RestoreToRevision: %v", err)
+			}
+			if res.Conflicted != 0 || res.Applied == 0 {
+				t.Fatalf("forced restore conflicted %d applied %d, want 0 and >0", res.Conflicted, res.Applied)
+			}
+			newRestoreStore(t, reg, lockTenantA).assertPages(t, 0x11, 0x22)
 		})
 	}
 }

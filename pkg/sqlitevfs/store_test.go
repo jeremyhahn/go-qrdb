@@ -1680,6 +1680,40 @@ func TestStoreWriterLockCommitRefusesUnlockedWriter(t *testing.T) {
 	}
 }
 
+func TestStoreRestoreToRevisionFromRefusesNewerCommit(t *testing.T) {
+	ctx := t.Context()
+	b := newTestBackend(t)
+	s := newTestStore(t, b, "app.db")
+	seed(t, s, 0x01)
+	target := revOf(t, b)
+	txn := begin(t, s)
+	writePages(t, txn, 0x02)
+	commit(t, txn)
+	observed := revOf(t, b)
+	txn = begin(t, s)
+	writePages(t, txn, 0x03)
+	commit(t, txn)
+	before := revOf(t, b)
+	if _, err := s.RestoreToRevisionFrom(ctx, target, observed); !errors.Is(err, ErrSnapshotChanged) {
+		t.Fatalf("RestoreToRevisionFrom past a newer commit = %v, want ErrSnapshotChanged", err)
+	}
+	if revOf(t, b) != before {
+		t.Fatal("a refused restore wrote a revision")
+	}
+	if got := readAll(t, begin(t, s)); !bytes.Equal(got, pageOf(0x03)) {
+		t.Fatal("the newer commit did not survive a refused restore")
+	}
+	if _, err := s.RestoreToRevisionFrom(ctx, target, revOf(t, b)); err != nil {
+		t.Fatalf("RestoreToRevisionFrom at the current revision: %v", err)
+	}
+	if _, err := s.Begin(ctx); !errors.Is(err, ErrSnapshotChanged) {
+		t.Fatalf("Begin after a restore = %v, want ErrSnapshotChanged", err)
+	}
+	if got := readAll(t, begin(t, s)); !bytes.Equal(got, pageOf(0x01)) {
+		t.Fatal("the restore from the current revision did not restore the image")
+	}
+}
+
 func TestMVCCBackendKeys(t *testing.T) {
 	b := newTestBackend(t)
 	if keys, err := b.Keys(t.Context(), []byte("p/"), 0); err != nil || keys != nil {

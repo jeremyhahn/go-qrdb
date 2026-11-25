@@ -335,7 +335,7 @@ func (s *Store) RestoreToRevision(ctx context.Context, rev int64) (int64, error)
 		return 0, fmt.Errorf("sqlitevfs: restore %q to negative revision %d", s.db, rev)
 	}
 	for range restoreBumpAttempts {
-		newRev, err := s.restoreOnce(ctx, rev)
+		newRev, err := s.restoreOnce(ctx, rev, -1)
 		if errors.Is(err, ErrSnapshotChanged) {
 			continue
 		}
@@ -347,13 +347,38 @@ func (s *Store) RestoreToRevision(ctx context.Context, rev int64) (int64, error)
 	return 0, fmt.Errorf("%w: %q moved on each of %d restore attempts", ErrSnapshotChanged, s.db, restoreBumpAttempts)
 }
 
-// restoreOnce is one attempt of RestoreToRevision.
-func (s *Store) restoreOnce(ctx context.Context, rev int64) (int64, error) {
+// RestoreToRevisionFrom is RestoreToRevision for a caller that observed the
+// database at revision observed and must not overwrite anything committed
+// since: its one attempt begins its transaction at observed, so a commit
+// after observed is ErrSnapshotChanged (on a Store with a writer lock, at
+// Reserve) and nothing is written. It never retries.
+func (s *Store) RestoreToRevisionFrom(ctx context.Context, rev, observed int64) (int64, error) {
+	if rev < 0 {
+		return 0, fmt.Errorf("sqlitevfs: restore %q to negative revision %d", s.db, rev)
+	}
+	if observed < 0 {
+		return 0, fmt.Errorf("sqlitevfs: restore %q observed at negative revision %d", s.db, observed)
+	}
+	newRev, err := s.restoreOnce(ctx, rev, observed)
+	if err != nil {
+		return 0, fmt.Errorf("sqlitevfs: restore %q to revision %d from revision %d: %w", s.db, rev, observed, err)
+	}
+	return newRev, nil
+}
+
+// restoreOnce is one attempt of RestoreToRevision. A non-negative observed
+// pins the transaction's snapshot there instead of at the current revision.
+func (s *Store) restoreOnce(ctx context.Context, rev, observed int64) (int64, error) {
 	target, targetFound, err := s.readMeta(ctx, rev)
 	if err != nil {
 		return 0, err
 	}
-	t, err := s.Begin(ctx)
+	var t *Txn
+	if observed >= 0 {
+		t, err = s.BeginAt(ctx, observed)
+	} else {
+		t, err = s.Begin(ctx)
+	}
 	if err != nil {
 		return 0, err
 	}
@@ -364,6 +389,9 @@ func (s *Store) restoreOnce(ctx context.Context, rev int64) (int64, error) {
 	if !targetFound {
 		if !t.baseFound {
 			_ = t.Rollback(ctx)
+			if observed >= 0 {
+				return s.unchangedSince(ctx, t.rev)
+			}
 			return t.rev, nil
 		}
 		t.remove = true
@@ -388,6 +416,21 @@ func (s *Store) restoreOnce(ctx context.Context, rev int64) (int64, error) {
 	}
 	t.restoreGen = max(t.base.Generation, target.Generation) + 1
 	return t.Commit(ctx)
+}
+
+// unchangedSince returns observed when the database still has no meta record
+// at the current revision, and ErrSnapshotChanged when one was created since.
+func (s *Store) unchangedSince(ctx context.Context, observed int64) (int64, error) {
+	now, err := s.backend.Revision(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if _, found, err := s.readMeta(ctx, now); err != nil {
+		return 0, err
+	} else if found {
+		return 0, fmt.Errorf("%w: %q was created after revision %d", ErrSnapshotChanged, s.db, observed)
+	}
+	return observed, nil
 }
 
 // restoreImage buffers the writes that turn the transaction's file into the
