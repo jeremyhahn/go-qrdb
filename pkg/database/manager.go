@@ -1242,6 +1242,12 @@ func (m *Manager) updateEtcd(db *Database, etcd *EtcdConfig) error {
 		if err := etcd.Validate(); err != nil {
 			return err
 		}
+		// The etcd revision counter needs a replicated log: enabling etcd on a
+		// non-raft database is refused here exactly as ResolveBinding refuses
+		// it at create.
+		if etcd.Enabled && db.BackendType() != BackendRaft {
+			return &EtcdRequiresRaftBackendError{Name: db.Name(), Backend: db.BackendType()}
+		}
 	}
 	db.UpdateEtcd(etcd)
 

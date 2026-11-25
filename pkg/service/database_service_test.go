@@ -51,6 +51,15 @@ func testDBConfig(name string) database.DatabaseConfig {
 	}
 }
 
+// testEtcdDBConfig returns a raft-backend database configuration: etcd needs
+// a replicated log, so only a raft-backend database may enable it.
+func testEtcdDBConfig(name string) database.DatabaseConfig {
+	return database.DatabaseConfig{
+		Name:    name,
+		Backend: database.BackendRaft,
+	}
+}
+
 func TestDatabaseService_Create(t *testing.T) {
 	svc := newTestDatabaseService(t)
 

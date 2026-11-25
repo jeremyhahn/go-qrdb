@@ -979,6 +979,55 @@ func TestManager_UpdateEtcd_InvalidConfig(t *testing.T) {
 	}
 }
 
+// The etcd revision counter needs a replicated log: an update enabling etcd
+// refuses every non-raft backend with the same typed error ResolveBinding
+// returns at create, leaves the record unchanged, and accepts a raft backend.
+// Disabling etcd is accepted on every backend.
+func TestManager_UpdateEtcd_RequiresRaftBackend(t *testing.T) {
+	tests := []struct {
+		backend BackendType
+		refused bool
+	}{
+		{BackendPebble, true},
+		{BackendMemory, true},
+		{BackendFile, true},
+		{BackendRaft, false},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.backend), func(t *testing.T) {
+			mgr := newTestManager(t)
+			defer func() { _ = mgr.Close() }()
+
+			name := "etcd-" + string(tt.backend) + "-db"
+			if _, err := mgr.Create(DatabaseConfig{Name: name, Backend: tt.backend}); err != nil {
+				t.Fatalf("Create(%s) error = %v", tt.backend, err)
+			}
+
+			err := mgr.UpdateEtcd(name, &EtcdConfig{Enabled: true, ListenAddr: "127.0.0.1:2379"})
+			if !tt.refused {
+				if err != nil {
+					t.Fatalf("UpdateEtcd() on %s = %v, want nil", tt.backend, err)
+				}
+				return
+			}
+			var raftErr *EtcdRequiresRaftBackendError
+			if !errors.As(err, &raftErr) || raftErr.Name != name || raftErr.Backend != tt.backend {
+				t.Fatalf("UpdateEtcd() on %s = %v, want *EtcdRequiresRaftBackendError{%s, %s}", tt.backend, err, name, tt.backend)
+			}
+			db, err := mgr.Get(name)
+			if err != nil {
+				t.Fatalf("Get() error = %v", err)
+			}
+			if e := db.Config().Protocol.Etcd; e != nil && e.Enabled {
+				t.Fatalf("refused UpdateEtcd() left etcd enabled on %s: %+v", tt.backend, e)
+			}
+			if err := mgr.UpdateEtcd(name, &EtcdConfig{Enabled: false}); err != nil {
+				t.Fatalf("UpdateEtcd(disabled) on %s = %v, want nil", tt.backend, err)
+			}
+		})
+	}
+}
+
 func TestManager_UpdateRaft_NotFound(t *testing.T) {
 	mgr := newTestManager(t)
 	defer func() { _ = mgr.Close() }()

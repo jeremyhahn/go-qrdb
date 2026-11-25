@@ -381,7 +381,9 @@ func TestManager_UpdateEtcdForTenant(t *testing.T) {
 	defer func() { _ = mgr.Close() }()
 
 	ctx := tenantContext("tenant-a")
+	// etcd needs a replicated log: only a raft-backend database may enable it.
 	cfg := validMemoryConfig("etcd-tenant-db")
+	cfg.Backend = BackendRaft
 	if _, err := mgr.CreateForTenant(ctx, cfg); err != nil {
 		t.Fatalf("CreateForTenant() error = %v", err)
 	}

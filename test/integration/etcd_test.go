@@ -106,8 +106,9 @@ func startSingleNodeWithEtcd(t *testing.T, extraArgs ...string) (adminPort, etcd
 	return adminPorts[0], etcdPorts[0], ca
 }
 
-// createDatabaseWithEtcd creates a database via the REST API and then
-// enables etcd protocol on it via the PATCH endpoint.
+// createDatabaseWithEtcd creates a raft-backend database via the REST API and
+// then enables the etcd protocol on it via the PATCH endpoint. etcd's revision
+// counter needs a replicated log, so only a raft-backend database may enable it.
 func createDatabaseWithEtcd(t *testing.T, ca *testCA, adminPort int, dbName string, etcdPort int) {
 	t.Helper()
 
@@ -116,7 +117,7 @@ func createDatabaseWithEtcd(t *testing.T, ca *testCA, adminPort int, dbName stri
 	// Step 1: Create the database.
 	createBody := map[string]interface{}{
 		"name":    dbName,
-		"backend": "pebble",
+		"backend": "raft",
 	}
 	createJSON, err := json.Marshal(createBody)
 	if err != nil {
