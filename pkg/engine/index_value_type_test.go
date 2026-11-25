@@ -15,6 +15,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"slices"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 )
 
@@ -142,6 +144,54 @@ func TestHandleIndexCreate_ValueTypeChangeRebuilds(t *testing.T) {
 				t.Fatalf("after a string re-create: n >= 2 matched %v, want %v", got, stringOrder)
 			}
 		})
+	}
+}
+
+// stagedRebuildEntries applies, over a string index by_n, one Update holding
+// a put of doc-x followed by a numeric re-create of by_n, and returns how
+// many stored by_n entries name doc-x.
+func stagedRebuildEntries(t *testing.T, rescope bool) int {
+	t.Helper()
+	stg := memory.NewStorage()
+	t.Cleanup(func() { _ = stg.Close() })
+	eng, err := NewMVCCEngine(stg)
+	if err != nil {
+		t.Fatalf("NewMVCCEngine: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close(context.Background()) })
+
+	applyIndexCreate(t, eng, 1, protocol.IndexCreateOptions{})
+	cmd := mustEncode(protocol.EncodeIndexCreateOpts("by_n", "n", protocol.IndexCreateOptions{Numeric: true, Rescope: rescope}))
+	if err := eng.Update(context.Background(), []sm.Entry{
+		mvccPutEntry(2, []byte("doc-x"), []byte(`{"n":7}`), 0),
+		{Index: 3, Cmd: cmd},
+	}, make([]sm.Result, 2)); err != nil {
+		t.Fatalf("put + re-create: %v", err)
+	}
+
+	prefix := []byte("idx:by_n:")
+	it := stg.NewIterator(&storage.IteratorOptions{LowerBound: prefix, UpperBound: []byte("idx:by_n;")})
+	defer func() { _ = it.Close() }()
+	n := 0
+	for ok := it.SeekToFirst(); ok; ok = it.Next() {
+		if bytes.Contains(it.Key(), []byte("doc-x")) || bytes.Contains(it.Value(), []byte("doc-x")) {
+			n++
+		}
+	}
+	return n
+}
+
+func TestHandleIndexCreate_UnflaggedRebuildAfterStagedWriteKeepsLegacyResult(t *testing.T) {
+	// A create without Rescope clears committed storage only, so the string
+	// term the put staged in the same batch commits beside the numeric one.
+	if got := stagedRebuildEntries(t, false); got != 2 {
+		t.Fatalf("by_n entries for doc-x = %d, want 2 (staged string term + numeric term)", got)
+	}
+}
+
+func TestHandleIndexCreate_RescopeRebuildAfterStagedWriteClearsStaged(t *testing.T) {
+	if got := stagedRebuildEntries(t, true); got != 1 {
+		t.Fatalf("by_n entries for doc-x = %d, want 1 (numeric term only)", got)
 	}
 }
 

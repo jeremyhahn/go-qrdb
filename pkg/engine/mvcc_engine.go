@@ -2577,27 +2577,27 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 	// creating an index on one database does not read every other database's
 	// keys on the way past.
 	//
-	// Entries already stored under the name are cleared first. They are
-	// what a create leaves behind when it is applied again over storage
-	// that outlived the in-memory index -- and they may be terms of an
-	// older encoding, which would sort among the new ones out of numeric
-	// order. Clearing and backfilling is the rebuild a stale definition
-	// gets.
-	//
-	// Both go through the apply batch: the clear is a range delete in the
-	// batch, so it also drops index entries that earlier entries of the same
-	// batch staged there (a clear committed straight to storage would leave
-	// them to commit afterwards under the new definition), and the backfill
-	// is queued into the batch with them. The result therefore does not
-	// depend on how the apply loop grouped the log.
-	if err := idx.ClearBatch(batch); err != nil {
-		return sm.Result{}, nil, err
-	}
+	// Entries already stored under the name are cleared first, then the scope
+	// is backfilled. A command carrying Rescope clears and backfills through
+	// the apply batch, dropping index entries earlier entries of the batch
+	// staged; a command without it clears committed storage and backfills
+	// directly, as every replica of the merge base does.
 	start, end := backfillRange(scope)
-	BackfillIndexInBatch(batch, func() ([]*service.KeyValue, error) {
+	scan := func() ([]*service.KeyValue, error) {
 		kvs, _, _, err := store.RangeInBatch(batch, start, end)
 		return kvs, err
-	}, idx, fieldName, scope)
+	}
+	if opts.Rescope {
+		if err := idx.ClearBatch(batch); err != nil {
+			return sm.Result{}, nil, err
+		}
+		BackfillIndexInBatch(batch, scan, idx, fieldName, scope)
+	} else {
+		if err := idx.Clear(); err != nil {
+			return sm.Result{}, nil, err
+		}
+		BackfillIndex(scan, idx, fieldName, scope)
+	}
 
 	e.indexMu.Lock()
 	e.indexes[name] = idx
