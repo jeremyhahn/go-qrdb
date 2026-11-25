@@ -45,8 +45,9 @@ func TestEtcdRequestAuthorizer_CompactIsTheOwningTenantsAlone(t *testing.T) {
 
 	authorize := func(id *auth.Identity, perm permission.Permission) error {
 		t.Helper()
+		fa := authtest.NewFixedAuthenticator(id)
 		a := &etcdRequestAuthorizer{
-			mw:    authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(authtest.NewFixedAuthenticator(id))),
+			mw:    authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(fa), authmw.WithUserService(fa.Users())),
 			reg:   f.srv.buildServiceRegistry(),
 			mgr:   f.mgr,
 			owner: "acme",

@@ -73,10 +73,38 @@ each plain and FIPS, named `<binary>-<VERSION>-<goos>-<goarch>[-fips]`.
 `publish` job runs. `release-cross` builds one platform, and is what CI's full tier runs
 for `linux/arm64`.
 
+Both end with `make check-release-artifacts`
+(`scripts/check-release-artifacts.sh`), which proves each artifact is what
+its name says before anything publishes: the file exists for every binary,
+platform and variant; the `GOOS`/`GOARCH` that `go version -m` reads out of
+it and the ELF header's machine (62 amd64, 183 arm64) match the name; it was
+built with `CGO_ENABLED=0`, `-trimpath` and every release build tag; the
+`-fips` variant records `GOFIPS140=latest` and the plain one no `GOFIPS140`.
+`release-artifacts` also requires `SHA256SUMS` to list exactly those
+artifacts and every checksum to verify; `release-cross` checks its one
+platform and no `SHA256SUMS`. A goarch with no known ELF machine is refused.
+Every finding prints one line naming the file; the target fails after
+reporting them all. `make test-check-release-artifacts` (a lint gate) pins
+the check against real fixture builds.
+
+`make release-smoke PLATFORM=<goos>/<goarch>` (`scripts/release-smoke.sh`)
+runs the artifacts of one platform natively from `dist/`: for each binary
+and variant the file must exist and be executable, and `<file> version` must
+exit 0 and print a `<name> v<VERSION>` version line whose last field is
+exactly `v<VERSION>`. The plain variant runs with `GODEBUG` unset,
+the `-fips` one under `GODEBUG=fips140=only`, so the FIPS module's
+self-test runs. `PLATFORM` must be the host's (exit 2 otherwise); neither
+`release-cross` nor `release-artifacts` calls it, since they cross-build.
+Every finding prints one line naming the file; the target fails after
+reporting them all. `make test-release-smoke` (a lint gate) pins it with a
+stub `GO` and shell-script artifacts, and builds nothing.
+
 | Variable | Default | Meaning |
 |---|---|---|
 | `RELEASE_PLATFORMS` | `linux/amd64 linux/arm64` | the platforms `release-artifacts` builds |
-| `PLATFORM` | *(required by `release-cross`)* | the one platform `release-cross` builds |
+| `PLATFORM` | *(required by `release-cross` and `release-smoke`)* | the one platform `release-cross` builds and `release-smoke` runs (the host's) |
+| `PLATFORMS` | `$(RELEASE_PLATFORMS)` | the platforms `check-release-artifacts` checks |
+| `CRA_SUMS` | `1` | `check-release-artifacts` also checks `SHA256SUMS` (`0` skips it) |
 
 ## `make test-cross PLATFORM=<goos>/<goarch>`
 

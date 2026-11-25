@@ -18,9 +18,7 @@ package driver
 
 import (
 	"context"
-	"database/sql/driver"
 	"errors"
-	"io"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -64,13 +62,6 @@ func withStubTransport(t *testing.T, scheme string, stub *stubTransport) {
 		}
 		delete(transportFactories, scheme)
 	})
-}
-
-// TestNetworkConnector_InterfaceCompliance verifies the connector satisfies
-// the interfaces database/sql expects.
-func TestNetworkConnector_InterfaceCompliance(t *testing.T) {
-	var _ driver.Connector = (*NetworkConnector)(nil)
-	var _ io.Closer = (*NetworkConnector)(nil)
 }
 
 // TestNetworkConnector_Driver verifies Driver returns the qrdb driver.

@@ -64,6 +64,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
+	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
@@ -202,8 +203,13 @@ type startFlags struct {
 	// mtlsBindingPolicy is the auth.mtls_binding_policy string. Empty means
 	// the default, "enrolled". See qrdbconfig.AuthConfig.MTLSBindingPolicy.
 	mtlsBindingPolicy string
-	abacEnabled       bool
-	abacPolicyDir     string
+
+	// unixPeerCredentials is unix.peer_credentials: the SO_PEERCRED uid/gid
+	// to store-account mappings of the Unix socket. Empty installs no
+	// peer-credential authenticator.
+	unixPeerCredentials []auth.PeerCredentialMapping
+	abacEnabled         bool
+	abacPolicyDir       string
 	// clusterTrustDomain is the cluster-wide SPIFFE trust domain used for
 	// node identity. It is encoded into auto-generated node certificates as
 	// a URI SAN (spiffe://<clusterTrustDomain>/node/<raftAddress>) and must
@@ -912,6 +918,7 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	f.revocationCacheTTL = cfg.Auth.RevocationCacheTTL
 	f.auditFailurePolicy = cfg.Auth.AuditFailurePolicy
 	f.mtlsBindingPolicy = cfg.Auth.MTLSBindingPolicy
+	f.unixPeerCredentials = cfg.Unix.PeerCredentialMappings()
 	// ABAC decorator: config-only (no CLI flag).
 	f.abacEnabled = cfg.Auth.ABAC.Enabled
 	f.abacPolicyDir = cfg.Auth.ABAC.PolicyDir
@@ -2380,7 +2387,7 @@ func runStart(f *startFlags) (err error) {
 			// node path; the reaper below waits on the same check.
 			pendingTTLGate, pendingTTLOpt := daemonPendingTTLGate(svcHost)
 			userOpts = append(userOpts, pendingTTLOpt)
-			mgmtResult, err := bootstrapUserRoleStores(sigCtx, bootKVSvc, authKVSvc, txSvc, rnode, leaderWaitBudget(f), shard.ShardKV, f.replicaID, tenantSvcInst, strictSoD, bootBarriers, bootStrategy, complianceAudit, mtlsBindingPolicy, ceremonyCoreSvc, ceremonyCA, bundle.CACertPEM, userOpts...)
+			mgmtResult, err := bootstrapUserRoleStores(sigCtx, bootKVSvc, authKVSvc, txSvc, rnode, leaderWaitBudget(f), shard.ShardKV, f.replicaID, tenantSvcInst, strictSoD, bootBarriers, bootStrategy, complianceAudit, mtlsBindingPolicy, ceremonyCoreSvc, ceremonyCA, bundle.CACertPEM, soTrustSeamsOf(svcNode), userOpts...)
 			if err != nil {
 				_ = shutdownNode(nodeCloser)
 				if sigCtx.Err() != nil {
@@ -2414,7 +2421,7 @@ func runStart(f *startFlags) (err error) {
 			// already initialized above and reused here.
 			var authResult *authBootstrapResult
 			if f.authEnabled {
-				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, f.dataDir, rnode, complianceAudit, strictSoD, f.clusterTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir}, svcNode.CertProv, bundle.TrustPool(), svcNode.PendingAdmins, firstAdminPins(svcNode.BarrierInit), svcNode.CertTargets, f.revocationCacheTTL, f.auditFailurePolicy, f.mtlsBindingPolicy, awaitingAdminCredentialProbe, svcNode.Watch)
+				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, f.dataDir, rnode, complianceAudit, strictSoD, f.clusterTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir}, svcNode.CertProv, bundle.TrustPool(), svcNode.PendingAdmins, firstAdminPins(svcNode.BarrierInit), svcNode.CertTargets, f.revocationCacheTTL, f.auditFailurePolicy, f.mtlsBindingPolicy, awaitingAdminCredentialProbe, svcNode.Watch, f.unixPeerCredentials)
 				if err != nil {
 					_ = shutdownNode(nodeCloser)
 					// Context cancellation from signal is a clean shutdown, not an error.
@@ -2837,6 +2844,7 @@ func runStart(f *startFlags) (err error) {
 			serverOpts = append(serverOpts,
 				server.WithUserService(mgmtResult.servedUserSvc),
 				server.WithRoleService(mgmtResult.servedRoleSvc),
+				server.WithGroupService(mgmtResult.servedGroupSvc),
 			)
 			// Compliance audit logger is always wired so the /v1/audit/events
 			// endpoint is available regardless of auth-enabled state.
@@ -2990,6 +2998,11 @@ func runStart(f *startFlags) (err error) {
 			}
 			if svcNode.Credential != nil {
 				serverOpts = append(serverOpts, server.WithCredentialService(svcNode.Credential))
+				period, perr := f.sealConfig.CredentialRotationCheckPeriodDuration()
+				if perr != nil {
+					return perr
+				}
+				serverOpts = append(serverOpts, server.WithCredentialRotationPeriod(period))
 			}
 			if svcNode.DEK != nil {
 				serverOpts = append(serverOpts, server.WithDEKService(svcNode.DEK))
@@ -4175,8 +4188,11 @@ type mgmtBootstrapResult struct {
 	roleSvc       role.RoleServicer
 	servedUserSvc user.UserServicer // resolver-routed service exposed on the API surface
 	servedRoleSvc role.RoleServicer // resolver-routed service exposed on the API surface
-	bootUserSvc   user.UserServicer // StaleRead-backed fallback for auth middleware
-	bootRoleSvc   role.RoleServicer // StaleRead-backed fallback for RBAC authorizer
+	// servedGroupSvc is the IAM group store, over the system tenant's
+	// confined runtime view (groups are keyed by tenant inside it).
+	servedGroupSvc group.GroupServicer
+	bootUserSvc    user.UserServicer // StaleRead-backed fallback for auth middleware
+	bootRoleSvc    role.RoleServicer // StaleRead-backed fallback for RBAC authorizer
 
 	// storeResolver maps a tenant to the store holding its IAM data. It is
 	// the same resolver servedUserSvc and servedRoleSvc route through, and it
@@ -4254,7 +4270,15 @@ type authBootstrapResult struct {
 // so no transport can make a change that leaves the bootstrap admin unable to
 // log in by certificate (delete, rename, disable or suspend it, drop mtls from
 // its methods, or withdraw its last live binding).
-func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc service.KVServicer, txSvc service.TransactionServicer, node raftNode, leaderWait time.Duration, shardID, replicaID uint64, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID, auditLogger audit.AuditLogger, mtlsBindingPolicy auth.MTLSBindingPolicy, ceremonyCoreSvc *ceremony.CeremonyService, ceremonyCA ceremony.CeremonyCA, clientCACertPEM []byte, userOpts ...user.Option) (*mgmtBootstrapResult, error) {
+// pendingSystemSOClearInterval and pendingSystemSOClearAttempts bound the
+// background retries that consume the pending system SO record once the SO
+// is enrolled (firstboot.ClearPendingSystemSOInBackground).
+const (
+	pendingSystemSOClearInterval = 5 * time.Second
+	pendingSystemSOClearAttempts = 60
+)
+
+func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc service.KVServicer, txSvc service.TransactionServicer, node raftNode, leaderWait time.Duration, shardID, replicaID uint64, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID, auditLogger audit.AuditLogger, mtlsBindingPolicy auth.MTLSBindingPolicy, ceremonyCoreSvc *ceremony.CeremonyService, ceremonyCA ceremony.CeremonyCA, clientCACertPEM []byte, soTrust soTrustSeams, userOpts ...user.Option) (*mgmtBootstrapResult, error) {
 	// User IDs are Snowflake-assigned by the user store; map the Raft
 	// ReplicaID onto the Snowflake node field (zero maps to node 1 per the
 	// standalone convention).
@@ -4371,9 +4395,13 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "boot role holder revoker", Err: err}
 	}
+	bootGroupHolders, err := group.NewRoleRevoker(bootStore)
+	if err != nil {
+		return nil, &AuthBootstrapError{Step: "boot group role holder revoker", Err: err}
+	}
 	bootRoleSvc, err := role.NewStore(bootStore,
 		role.WithAuditLogger(auditLogger), role.WithIdentityIndex(bootIdentityIndex), role.WithAtomicIdentity(),
-		role.WithHolderRevoker(bootHolders))
+		role.WithHolderRevoker(role.HolderRevokers(bootHolders, bootGroupHolders)))
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "boot role store", Err: err}
 	}
@@ -4400,23 +4428,16 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	// boot after an in-process recycle or unseal reaches here with the same
 	// core and its certificate (go-qrdb#662). A write that must run waits
 	// out an election (service.LeadershipTransient) rather than exiting.
+	//
+	// The system SO the ceremony issued (go-qrdb#1128) is recorded the same
+	// way, and FIRST: both records are on this one shard, so a replica that
+	// sees the admin's record -- which Phase 2.5 of runFirstBoot waits for
+	// -- sees the SO's too. The record carries the SO PIN only as its hash.
+	if err := firstboot.WriteIssuedSystemSOIfAny(ctx, ceremonyCoreSvc, pendingAdminStore, service.LeadershipTransient); err != nil {
+		return nil, &AuthBootstrapError{Step: "pending system SO", Err: err}
+	}
 	if err := firstboot.WriteIssuedAdminCertIfAny(ctx, ceremonyCoreSvc, pendingAdminStore, service.LeadershipTransient); err != nil {
 		return nil, &AuthBootstrapError{Step: "pending admin credential", Err: err}
-	}
-
-	// First-boot: create the system tenant, register built-in roles, and
-	// create the admin user with the canonical Admin@system grant. The
-	// system-tenant rule in pkg/auth/rbac promotes that single grant to
-	// cross-tenant authority. Idempotent across daemon restarts.
-	if err := runFirstBoot(ctx, node, leaderWait, shardID, bootUserSvc, bootRoleSvc, tenantSvc, strictSoD, barriers, sealStrategy, mtlsBindingPolicy, pendingAdminStore, ceremonyCA, clientCACertPEM); err != nil {
-		return nil, err
-	}
-
-	// The binding committed (or the admin already held one): the pending
-	// record, if any, has served its purpose. Best-effort -- the binding
-	// already succeeded, so a failure here is logged, not fatal.
-	if err := firstboot.ClearPendingAdminCert(ctx, pendingAdminStore); err != nil {
-		slog.Warn("first-boot: failed to clear the pending admin credential record", slog.Any("error", err))
 	}
 
 	// Create runtime stores backed by linearizable SyncRead for management
@@ -4440,10 +4461,55 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	// ran against bootStore above answers identically here — the state
 	// machine's transaction support is a property of the shard, not of
 	// which KVServicer consistency mode wraps it.
+	//
+	// Built before first boot because the system SO's PIN record is
+	// committed into it: it is the store the request-time SO authenticator
+	// (bootstrapAuthEnforcement) verifies SO PINs against.
 	runtimeStore, gerr := newGuardedKVServiceAdapter(runtimeKVSvc, txSvc, nil, nil)
 	if gerr != nil {
 		return nil, &AuthBootstrapError{Step: "runtime store adapter", Err: gerr}
 	}
+	// With no audit sink (only compositions that run no ceremony) there is
+	// no SO PIN seam either, and first boot refuses any SO it is handed
+	// with *firstboot.MissingSOSeamError.
+	var bootSOPINs firstboot.SOPINSetter
+	if auditLogger != nil {
+		soAuth, err := auth.NewSOAuthenticator(runtimeStore, auditLogger, slog.Default())
+		if err != nil {
+			return nil, &AuthBootstrapError{Step: "first-boot SO PIN store", Err: err}
+		}
+		bootSOPINs = soAuth
+	}
+
+	// First-boot: create the system tenant, register built-in roles, and
+	// create the admin user with the canonical Admin@system grant. The
+	// system-tenant rule in pkg/auth/rbac promotes that single grant to
+	// cross-tenant authority. Idempotent across daemon restarts.
+	if err := runFirstBoot(ctx, node, leaderWait, shardID, bootUserSvc, bootRoleSvc, tenantSvc, strictSoD, barriers, sealStrategy, mtlsBindingPolicy, pendingAdminStore, ceremonyCA, clientCACertPEM, bootSOPINs, soTrust); err != nil {
+		return nil, err
+	}
+
+	// The binding committed (or the admin already held one): the pending
+	// record, if any, has served its purpose. Best-effort -- the binding
+	// already succeeded, so a failure here is logged, not fatal.
+	if err := firstboot.ClearPendingAdminCert(ctx, pendingAdminStore); err != nil {
+		slog.Warn("first-boot: failed to clear the pending admin credential record", slog.Any("error", err))
+	}
+	// The system SO's only once it is enrolled: once consumed, a later
+	// strict first boot reads it as already enrolled
+	// (firstboot.SystemSOConsumed). The node whose first boot ran with the
+	// record already consumed it before serving
+	// (consumePendingSystemSOAfterFirstBoot), so no account mutation sees it
+	// pending; this check covers a node that only waited for the leader to
+	// replicate the admin and may have returned before the SO exists.
+	// Kept, the record makes the next start's first boot enrol the SO.
+	// The check reads the committed SO PIN linearizably, which blocks until
+	// the cluster has a quorum; a node booting before its peers would never
+	// serve, so the check runs off the boot path and is retried there.
+	soPINCheck, _ := bootSOPINs.(firstboot.SOPINChecker)
+	firstboot.ClearPendingSystemSOInBackground(ctx, pendingAdminStore, bootUserSvc, soPINCheck,
+		pendingSystemSOClearInterval, pendingSystemSOClearAttempts, slog.Default())
+
 	systemStore, err := kvstore.NewNamespacedKVStore(
 		runtimeStore, tenant.IdentityNamespace(tenantid.System))
 	if err != nil {
@@ -4466,9 +4532,13 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "role holder revoker", Err: err}
 	}
+	groupHolders, err := group.NewRoleRevoker(systemStore)
+	if err != nil {
+		return nil, &AuthBootstrapError{Step: "group role holder revoker", Err: err}
+	}
 	roleSvc, err := role.NewStore(systemStore,
 		role.WithAuditLogger(auditLogger), role.WithIdentityIndex(systemIdentityIndex), role.WithAtomicIdentity(),
-		role.WithHolderRevoker(holders))
+		role.WithHolderRevoker(role.HolderRevokers(holders, groupHolders)))
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "role store", Err: err}
 	}
@@ -4511,7 +4581,12 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 		if rhErr != nil {
 			return nil, &AuthBootstrapError{Step: "routed role holder revoker", Err: rhErr}
 		}
-		routedRoles, rrErr := role.NewRoutingService(resolver, role.WithAuditLogger(auditLogger), role.WithHolderRevoker(routedHolders))
+		routedGroupHolders, rgErr := group.NewRoutingRoleRevoker(resolver)
+		if rgErr != nil {
+			return nil, &AuthBootstrapError{Step: "routed group role holder revoker", Err: rgErr}
+		}
+		routedRoles, rrErr := role.NewRoutingService(resolver, role.WithAuditLogger(auditLogger),
+			role.WithHolderRevoker(role.HolderRevokers(routedHolders, routedGroupHolders)))
 		if rrErr != nil {
 			return nil, &AuthBootstrapError{Step: "routed role store", Err: rrErr}
 		}
@@ -4520,13 +4595,36 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 		storeResolver = resolver
 	}
 
+	// IAM groups: routed per tenant like users and roles, so a
+	// dedicated-isolation tenant's groups live inside its barrier and a
+	// sealed tenant's groups fail closed; without a tenant service, one
+	// store over the system tenant's confined runtime view, keyed by tenant
+	// inside it. Deleting a group revokes it from every member through the
+	// served user store; a group's roles are looked up in the served role
+	// store, so a role of another tenant is refused.
+	groupMembers, err := user.NewGroupMembership(servedUserSvc)
+	if err != nil {
+		return nil, &AuthBootstrapError{Step: "group membership", Err: err}
+	}
+	groupOpts := []group.Option{group.WithRoleLookup(servedRoleSvc), group.WithMemberRevoker(groupMembers)}
+	var servedGroupSvc group.GroupServicer
+	if storeResolver != nil {
+		servedGroupSvc, err = group.NewRoutingService(storeResolver, groupOpts...)
+	} else {
+		servedGroupSvc, err = group.NewStore(systemStore, groupOpts...)
+	}
+	if err != nil {
+		return nil, &AuthBootstrapError{Step: "group store", Err: err}
+	}
+
 	return &mgmtBootstrapResult{
-		userSvc:       userSvc,
-		roleSvc:       roleSvc,
-		servedUserSvc: servedUserSvc,
-		servedRoleSvc: servedRoleSvc,
-		bootUserSvc:   bootUserSvc,
-		bootRoleSvc:   bootRoleSvc,
+		userSvc:        userSvc,
+		roleSvc:        roleSvc,
+		servedUserSvc:  servedUserSvc,
+		servedRoleSvc:  servedRoleSvc,
+		servedGroupSvc: servedGroupSvc,
+		bootUserSvc:    bootUserSvc,
+		bootRoleSvc:    bootRoleSvc,
 
 		storeResolver:     storeResolver,
 		tenantSvc:         tenantSvc,
@@ -4573,7 +4671,7 @@ func daemonPendingTTLGate(host service.Host) (func() error, user.Option) {
 // sdk/go/node.Node calls when wiring an embedded unified server — so a
 // daemon-run node and an embedded node (go-xkms xkmsd, go-quicbaas
 // quicbaasd) enforce authn/authz identically.
-func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, clusterTrustDomain string, abacCfg qrdbconfig.AuthABACConfig, certProv cert.CertProvider, issuerVerifier auth.IssuerVerifier, pendingAdmins middleware.PendingTenantAdmins, pins middleware.FirstAdminPins, certTargets middleware.CertTargetGuard, revocationCacheTTL string, auditFailurePolicy string, mtlsBindingPolicy string, awaitingAdminCredentialProbe *firstboot.AwaitingAdminCredentialProbe, watchSvc firstboot.AdminRecordWatcher) (*authBootstrapResult, error) {
+func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, clusterTrustDomain string, abacCfg qrdbconfig.AuthABACConfig, certProv cert.CertProvider, issuerVerifier auth.IssuerVerifier, pendingAdmins middleware.PendingTenantAdmins, pins middleware.FirstAdminPins, certTargets middleware.CertTargetGuard, revocationCacheTTL string, auditFailurePolicy string, mtlsBindingPolicy string, awaitingAdminCredentialProbe *firstboot.AwaitingAdminCredentialProbe, watchSvc firstboot.AdminRecordWatcher, peerCreds []auth.PeerCredentialMapping) (*authBootstrapResult, error) {
 	_ = node
 	var adminWatchWG sync.WaitGroup
 	// watchCtx is a child of ctx (sigCtx) with its OWN cancel
@@ -4741,6 +4839,7 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, da
 		Enabled:             true,
 		RoleService:         mgmt.servedRoleSvc,
 		RoleServiceFallback: mgmt.bootRoleSvc,
+		GroupResolver:       mgmt.servedGroupSvc,
 		UserService:         mgmt.servedUserSvc,
 		UserServiceFallback: mgmt.bootUserSvc,
 		StrictSeparation:    strictSoD,
@@ -4778,6 +4877,9 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, da
 		CertTargetGuard:    certTargets,
 		RevocationCacheTTL: revocationTTL,
 		MTLSBindingPolicy:  bindingPolicy,
+		// unix.peer_credentials: a Unix-socket caller's SO_PEERCRED uid/gid
+		// bound to a store account, whose roles decide (go-qrdb#1651).
+		PeerCredentials: peerCreds,
 	})
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "auth middleware", Err: err}
@@ -4814,6 +4916,25 @@ func firstAdminPins(init *lifecycle.BarrierInit) middleware.FirstAdminPins {
 		return nil
 	}
 	return init
+}
+
+// soTrustSeams carries the node's trust-anchor registry and client-trust
+// refresh to first boot, which installs an adopted system SO's own trust
+// pool through them before it declares the SO enrolled
+// (firstboot.Dependencies.TrustAnchors). The zero value has neither, and
+// first boot then refuses an SO that brings a pool of its own.
+type soTrustSeams struct {
+	anchors firstboot.TrustAnchorAdder
+	refresh firstboot.ClientTrustRefresher
+}
+
+// soTrustSeamsOf returns the seams of a lifecycle node; a node without a
+// trust-anchor registry (no certificate provider) yields the zero value.
+func soTrustSeamsOf(n *lifecycle.Node) soTrustSeams {
+	if n == nil || n.TrustAnchors == nil {
+		return soTrustSeams{}
+	}
+	return soTrustSeams{anchors: n.TrustAnchors, refresh: firstboot.ClientTrustRefreshFunc(n.RefreshClientTrust)}
 }
 
 // adminBindingWait bounds the boot-time wait for the bootstrap admin's
@@ -4868,7 +4989,7 @@ func defaultAuthFactors() []authfactors.Factor {
 // reserved-id rejection on CreateTenant. Production startup always
 // supplies a non-nil tenant servicer; tests do the same via a small
 // in-memory tenant servicer.
-func runFirstBoot(ctx context.Context, node raftNode, leaderWait time.Duration, shardID uint64, userSvc user.UserServicer, roleSvc role.RoleServicer, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID, mtlsBindingPolicy auth.MTLSBindingPolicy, pendingAdminCertStore firstboot.PendingAdminCertStore, ceremonyCA ceremony.CeremonyCA, clientCACertPEM []byte) error {
+func runFirstBoot(ctx context.Context, node raftNode, leaderWait time.Duration, shardID uint64, userSvc user.UserServicer, roleSvc role.RoleServicer, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID, mtlsBindingPolicy auth.MTLSBindingPolicy, pendingAdminCertStore firstboot.PendingAdminCertStore, ceremonyCA ceremony.CeremonyCA, clientCACertPEM []byte, soPINs firstboot.SOPINSetter, soTrust soTrustSeams) error {
 	// Phase 1: Wait for leader election. All operations (reads on leader
 	// via SyncRead, writes via SyncPropose) require a leader.
 	if err := waitForLeaderElection(ctx, node, leaderWait, shardID); err != nil {
@@ -4907,8 +5028,26 @@ func runFirstBoot(ctx context.Context, node raftNode, leaderWait time.Duration, 
 	actx, cancelLookup := context.WithTimeout(ctx, server.StartupReadAttemptTimeout)
 	existingAdmin, ok := adminExists(actx, userSvc, tenantid.System)
 	cancelLookup()
+	// Strict separation refuses an account that holds SO and Admin together
+	// (SPEC row 124) before the fast path can return: standard mode may
+	// have named the admin as the system SO.
+	if ok && strictSoD {
+		if err := firstboot.CheckStrictSeparationHolders(ctx, userSvc, roleSvc); err != nil {
+			return err
+		}
+	}
+	// A system SO the ceremony recorded and no first boot has enrolled yet
+	// (go-qrdb#1128) keeps the fast path below from skipping Phase 3: the
+	// admin may be bound while the SO is not.
+	pendingSO, err := firstboot.PendingSystemSO(ctx, pendingAdminCertStore)
+	if err != nil {
+		return err
+	}
+	// The system SO is optional in both postures (SPEC row 124): only a
+	// pending SO still to enrol sends a bound admin back through Phase 3.
+	soSatisfied := pendingSO == nil
 	if ok {
-		if existingAdmin.System && user.AdminLoginBlocker(existingAdmin, time.Now().UTC()) == "" {
+		if existingAdmin.System && user.AdminLoginBlocker(existingAdmin, time.Now().UTC()) == "" && soSatisfied {
 			slog.Debug("first-boot: admin user exists, is already the System user, and holds a live certificate binding, skipping")
 			return nil
 		}
@@ -4950,8 +5089,15 @@ func runFirstBoot(ctx context.Context, node raftNode, leaderWait time.Duration, 
 			`continuing without one -- the node will boot into "awaiting admin credential"`,
 			slog.String("error", err.Error()))
 	}
+	// The admin's record is resolved; the SO's, written before it, has
+	// reached this replica too. Read it again: Phase 2.5 may have waited.
+	if pendingSO == nil {
+		if pendingSO, err = firstboot.PendingSystemSO(ctx, pendingAdminCertStore); err != nil {
+			return err
+		}
+	}
 	var adminCertPool *x509.CertPool
-	if len(adminCertPEM) > 0 {
+	if len(adminCertPEM) > 0 || pendingSO != nil {
 		switch {
 		case ceremonyCA != nil:
 			if caBundle, caErr := ceremonyCA.CABundle(); caErr == nil {
@@ -4992,14 +5138,18 @@ func runFirstBoot(ctx context.Context, node raftNode, leaderWait time.Duration, 
 				MTLSBindingPolicy:  mtlsBindingPolicy,
 				AdminCertPEM:       adminCertPEM,
 				AdminCertPool:      adminCertPool,
+				SO:                 pendingSO,
 			}, bootstrap.Dependencies{
-				Tenants:      tenantSvc,
-				Users:        userSvc,
-				Roles:        roleSvc,
-				RoleResolver: roleSvc,
-				Binder:       adminBinder,
-				Barriers:     barriers,
-				Logger:       slog.Default(),
+				Tenants:        tenantSvc,
+				Users:          userSvc,
+				Roles:          roleSvc,
+				RoleResolver:   roleSvc,
+				Binder:         adminBinder,
+				Barriers:       barriers,
+				SOPINs:         soPINs,
+				SOTrustAnchors: soTrust.anchors,
+				SOClientTrust:  soTrust.refresh,
+				Logger:         slog.Default(),
 			})
 			return bsErr
 		}
@@ -5017,6 +5167,10 @@ func runFirstBoot(ctx context.Context, node raftNode, leaderWait time.Duration, 
 			AdminCertPEM:       adminCertPEM,
 			AdminCertPool:      adminCertPool,
 			Binder:             adminBinder,
+			SO:                 pendingSO,
+			SOPINs:             soPINs,
+			TrustAnchors:       soTrust.anchors,
+			ClientTrust:        soTrust.refresh,
 		})
 		return fbErr
 	}
@@ -5033,7 +5187,7 @@ func runFirstBoot(ctx context.Context, node raftNode, leaderWait time.Duration, 
 	for {
 		initErr := runInit()
 		if initErr == nil {
-			return nil
+			return consumePendingSystemSOAfterFirstBoot(ctx, pendingAdminCertStore, pendingSO)
 		}
 		if errors.Is(initErr, quicraft.ErrReadIndexNotReady) && time.Now().Before(readyDeadline) {
 			select {
@@ -5073,6 +5227,27 @@ func runFirstBoot(ctx context.Context, node raftNode, leaderWait time.Duration, 
 		slog.Info("first-boot: waiting for leader to replicate admin",
 			slog.Any("reason", firstBootErr))
 		return waitForAdminReplication(ctx, userSvc, tenantid.System)
+	}
+	return nil
+}
+
+// consumePendingSystemSOAfterFirstBoot marks the pending system SO record
+// consumed once this node's first boot has run with it (and only if it still
+// names that SO): the SO is enrolled,
+// or was enrolled and deleted since (firstboot.Result.SORetired). It runs
+// before the node serves, so no account mutation can see the record still
+// pending; a failed write fails the boot. Nodes that only waited for the
+// leader keep the background check (firstboot.ClearPendingSystemSOInBackground).
+func consumePendingSystemSOAfterFirstBoot(ctx context.Context, store firstboot.PendingAdminCertStore, pendingSO *firstboot.SOConfig) error {
+	if pendingSO == nil {
+		return nil
+	}
+	// Only the exact record this first boot enrolled is consumed
+	// (firstboot.ConsumeEnrolledSystemSO, as the embedded node does): a
+	// record naming another SO stays pending for the next start, and an
+	// unreadable one fails the boot rather than being overwritten.
+	if _, err := firstboot.ConsumeEnrolledSystemSO(ctx, store, pendingSO); err != nil {
+		return &AuthBootstrapError{Step: "consume pending system SO", Err: err}
 	}
 	return nil
 }

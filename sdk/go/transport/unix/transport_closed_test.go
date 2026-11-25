@@ -431,7 +431,7 @@ func TestUnixTenant_AfterClose(t *testing.T) {
 	if _, err := tr.GetTenant(ctx, "t"); !errors.As(err, &ce) {
 		t.Errorf("GetTenant: %v", err)
 	}
-	if _, err := tr.ListTenants(ctx); !errors.As(err, &ce) {
+	if _, err := tr.ListTenants(ctx, nil); !errors.As(err, &ce) {
 		t.Errorf("ListTenants: %v", err)
 	}
 	if err := tr.DeleteTenant(ctx, "t"); !errors.As(err, &ce) {

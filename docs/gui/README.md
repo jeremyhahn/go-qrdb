@@ -99,7 +99,7 @@ The desktop build embeds the compiled frontend assets:
 var assets embed.FS
 ```
 
-The Wails application registers 33 Go binding objects, each wrapping a
+The Wails application registers 34 Go binding objects, each wrapping a
 domain of the Go SDK (the authoritative list is `guiBindings.bindList()`
 in `cmd/qrdb/gui_desktop_bindings.go`, pinned by
 `TestGUIBindings_AllBindingsPresent`):

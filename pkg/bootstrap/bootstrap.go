@@ -181,7 +181,14 @@ type Dependencies struct {
 
 	// SOPINs commits a tenant SO's PIN. Required by ProvisionTenant when the
 	// request has an SO.
-	SOPINs SOPINSetter
+	SOPINs firstboot.SOPINSetter
+
+	// SOTrustAnchors and SOClientTrust install a system SO's own trust pool
+	// as system trust anchors and refresh client trust from them; see
+	// firstboot.Dependencies.TrustAnchors. Required by BootstrapSystem when
+	// SystemConfig.SO presents a certificate with a pool of its own.
+	SOTrustAnchors firstboot.TrustAnchorAdder
+	SOClientTrust  firstboot.ClientTrustRefresher
 
 	// SeparationOfDuties is the strict separation-of-duties posture, as
 	// wiring.ResolveStrictSeparation resolves it. Under it a tenant SO must
@@ -284,6 +291,14 @@ type SystemConfig struct {
 	// (ceremony.CeremonyService.CACertPool()), since AdminCertPEM was issued
 	// by that same CA. Required whenever AdminCertPEM is set.
 	AdminCertPool *x509.CertPool
+
+	// SO is the system Security Officer, forwarded to first-boot with
+	// Dependencies.SOPINs. Optional in both postures. go-qrdb's
+	// own compositions pass the certificate the ceremony issued or adopted
+	// for it (SO.CertPEM, validated against AdminCertPool), as for the
+	// admin. See firstboot.Dependencies.SO. The caller keeps SO.PIN and
+	// destroys it.
+	SO *firstboot.SOConfig
 }
 
 // SystemResult reports what BootstrapSystem did: the system barrier strategy
@@ -404,6 +419,10 @@ func BootstrapSystem(ctx context.Context, cfg SystemConfig, deps Dependencies) (
 		Logger:             deps.Logger,
 		SeparationOfDuties: cfg.SeparationOfDuties,
 		MTLSBindingPolicy:  cfg.MTLSBindingPolicy,
+		SO:                 cfg.SO,
+		SOPINs:             deps.SOPINs,
+		TrustAnchors:       deps.SOTrustAnchors,
+		ClientTrust:        deps.SOClientTrust,
 	})
 	if fbErr != nil {
 		return nil, &FirstBootError{Cause: fbErr}
@@ -530,7 +549,7 @@ type TenantProvisionConfig struct {
 	// tenant's so role alone through the same seams as the admin, and
 	// refused when it is the admin by username or by key. Nil enrolls none.
 	// It needs AdminEnrollCert.
-	SO *TenantSOConfig
+	SO *firstboot.SOConfig
 }
 
 // TenantProvisionResult reports what ProvisionTenant created.

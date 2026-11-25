@@ -16,6 +16,7 @@ package embedded
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
@@ -38,9 +39,6 @@ func (t *Transport) CredentialSubmit(ctx context.Context, req *transport.Credent
 	if err := t.authorize(ctx, "CredentialSubmit"); err != nil {
 		return err
 	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	if t.credentialSvc == nil {
 		return &NilServiceError{Service: "CredentialServicer"}
 	}
@@ -56,9 +54,6 @@ func (t *Transport) CredentialStrategy(ctx context.Context) (*transport.Credenti
 	}
 	if err := t.authorize(ctx, "CredentialStrategy"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.credentialSvc == nil {
 		return nil, &NilServiceError{Service: "CredentialServicer"}
@@ -82,13 +77,10 @@ func (t *Transport) CredentialDelete(ctx context.Context, name string) error {
 	if err := t.authorize(ctx, "CredentialDelete"); err != nil {
 		return err
 	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	if t.credentialSvc == nil {
 		return &NilServiceError{Service: "CredentialServicer"}
 	}
-	return t.credentialSvc.CredentialDelete(ctx, name)
+	return credentialNotFound(name, t.credentialSvc.CredentialDelete(ctx, name))
 }
 
 // CredentialList returns the names of every stored credential by
@@ -101,9 +93,6 @@ func (t *Transport) CredentialList(ctx context.Context, _ *transport.CredentialL
 	}
 	if err := t.authorize(ctx, "CredentialList"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.credentialSvc == nil {
 		return nil, &NilServiceError{Service: "CredentialServicer"}
@@ -128,9 +117,6 @@ func (t *Transport) CredentialRotate(ctx context.Context, req *transport.Credent
 	if err := t.authorize(ctx, "CredentialRotate"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.credentialSvc == nil {
 		return nil, &NilServiceError{Service: "CredentialServicer"}
 	}
@@ -142,7 +128,7 @@ func (t *Transport) CredentialRotate(ctx context.Context, req *transport.Credent
 		GracePeriod: time.Duration(req.GracePeriodSeconds) * time.Second,
 	})
 	if err != nil {
-		return nil, err
+		return nil, credentialNotFound(req.Name, err)
 	}
 	resp := &transport.CredentialRotateResponse{
 		Name:            res.Name,
@@ -153,6 +139,127 @@ func (t *Transport) CredentialRotate(ctx context.Context, req *transport.Credent
 		resp.GraceUntilUnix = res.GraceUntil.Unix()
 	}
 	return resp, nil
+}
+
+// CredentialSetRotationPolicy sets, replaces or disables the scheduled
+// rotation policy of a named credential.
+func (t *Transport) CredentialSetRotationPolicy(ctx context.Context, req *transport.CredentialSetRotationPolicyRequest) error {
+	ctx, err := t.admit(ctx, "CredentialSetRotationPolicy")
+	if err != nil {
+		return err
+	}
+	if err := t.authorize(ctx, "CredentialSetRotationPolicy"); err != nil {
+		return err
+	}
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	if t.credentialSvc == nil {
+		return &NilServiceError{Service: "CredentialServicer"}
+	}
+	if req == nil {
+		return &NilRequestError{Method: "CredentialSetRotationPolicy"}
+	}
+	policy, err := service.CredentialRotationPolicyFromWire(req.Enabled, req.Interval, req.RetainVersions)
+	if err != nil {
+		return err
+	}
+	return credentialNotFound(req.Name, t.credentialSvc.CredentialSetRotationPolicy(ctx, req.Name, policy))
+}
+
+// CredentialRotationPolicy returns a named credential's scheduled rotation
+// policy and the time of its next scheduled rotation.
+func (t *Transport) CredentialRotationPolicy(ctx context.Context, name string) (*transport.CredentialRotationPolicyResponse, error) {
+	ctx, err := t.admit(ctx, "CredentialRotationPolicy")
+	if err != nil {
+		return nil, err
+	}
+	if err := t.authorize(ctx, "CredentialRotationPolicy"); err != nil {
+		return nil, err
+	}
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.credentialSvc == nil {
+		return nil, &NilServiceError{Service: "CredentialServicer"}
+	}
+	status, err := t.credentialSvc.CredentialRotationPolicy(ctx, name)
+	if err != nil {
+		return nil, credentialNotFound(name, err)
+	}
+	return &transport.CredentialRotationPolicyResponse{
+		Name:           name,
+		Enabled:        status.Policy.Enabled,
+		Interval:       status.WireInterval(),
+		RetainVersions: status.Policy.RetainVersions,
+		NextRotation:   status.WireNextRotation(),
+	}, nil
+}
+
+// CredentialMigrationConflicts lists the credentials whose node-local copy
+// in the old credentials/ layout differs from the replicated record.
+func (t *Transport) CredentialMigrationConflicts(ctx context.Context) (*transport.CredentialMigrationConflictsResponse, error) {
+	ctx, err := t.admit(ctx, "CredentialMigrationConflicts")
+	if err != nil {
+		return nil, err
+	}
+	if err := t.authorize(ctx, "CredentialMigrationConflicts"); err != nil {
+		return nil, err
+	}
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.credentialSvc == nil {
+		return nil, &NilServiceError{Service: "CredentialServicer"}
+	}
+	conflicts, err := t.credentialSvc.CredentialMigrationConflicts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	resp := &transport.CredentialMigrationConflictsResponse{
+		Conflicts: make([]transport.CredentialMigrationConflict, 0, len(conflicts)),
+	}
+	for _, c := range conflicts {
+		resp.Conflicts = append(resp.Conflicts, transport.CredentialMigrationConflict{
+			Name: c.Name, Value: c.Value, Versions: c.Versions, Policy: c.Policy,
+		})
+	}
+	return resp, nil
+}
+
+// CredentialResolveMigrationConflict settles one migration conflict by
+// import or discard.
+func (t *Transport) CredentialResolveMigrationConflict(ctx context.Context, req *transport.CredentialResolveMigrationConflictRequest) error {
+	ctx, err := t.admit(ctx, "CredentialResolveMigrationConflict")
+	if err != nil {
+		return err
+	}
+	if err := t.authorize(ctx, "CredentialResolveMigrationConflict"); err != nil {
+		return err
+	}
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	if t.credentialSvc == nil {
+		return &NilServiceError{Service: "CredentialServicer"}
+	}
+	if req == nil {
+		return &InvalidRequestError{Method: "CredentialResolveMigrationConflict"}
+	}
+	return credentialNotFound(req.Name, t.credentialSvc.CredentialResolveMigrationConflict(ctx, req.Name, credentials.MigrationResolution(req.Resolution)))
+}
+
+// credentialNotFound answers the credential service's not-found sentinels
+// for name with the *transport.KeyNotFoundError the gRPC, QUIC, Unix, MCP and
+// REST transports return for them; any other error passes through unchanged.
+func credentialNotFound(name string, err error) error {
+	if errors.Is(err, credentials.ErrCredentialNotFound) ||
+		errors.Is(err, credentials.ErrMigrationConflictNotFound) ||
+		errors.Is(err, credentials.ErrVersionNotFound) ||
+		errors.Is(err, credentials.ErrVersionExpired) {
+		return &transport.KeyNotFoundError{Key: name}
+	}
+	return err
 }
 
 // CredentialListVersions returns the version history (current + non-expired
@@ -166,9 +273,6 @@ func (t *Transport) CredentialListVersions(ctx context.Context, req *transport.C
 	if err := t.authorize(ctx, "CredentialListVersions"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.credentialSvc == nil {
 		return nil, &NilServiceError{Service: "CredentialServicer"}
 	}
@@ -177,7 +281,7 @@ func (t *Transport) CredentialListVersions(ctx context.Context, req *transport.C
 	}
 	versions, err := t.credentialSvc.CredentialListVersions(ctx, req.Name)
 	if err != nil {
-		return nil, err
+		return nil, credentialNotFound(req.Name, err)
 	}
 	out := make([]transport.CredentialVersionInfo, 0, len(versions))
 	for _, v := range versions {
@@ -209,9 +313,6 @@ func (t *Transport) CredentialGCExpired(ctx context.Context, req *transport.Cred
 	}
 	if err := t.authorize(ctx, "CredentialGCExpired"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.credentialSvc == nil {
 		return nil, &NilServiceError{Service: "CredentialServicer"}
@@ -289,6 +390,48 @@ func handleCredentialRotate(ctx context.Context, t *Transport, req, resp any) er
 	return nil
 }
 
+func handleCredentialSetRotationPolicy(ctx context.Context, t *Transport, req, _ any) error {
+	r, ok := req.(*transport.CredentialSetRotationPolicyRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "CredentialSetRotationPolicy"}
+	}
+	return t.CredentialSetRotationPolicy(ctx, r)
+}
+
+func handleCredentialRotationPolicy(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.CredentialRotationPolicyRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "CredentialRotationPolicy"}
+	}
+	result, err := t.CredentialRotationPolicy(ctx, r.Name)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.CredentialRotationPolicyResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleCredentialMigrationConflicts(ctx context.Context, t *Transport, _, resp any) error {
+	result, err := t.CredentialMigrationConflicts(ctx)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.CredentialMigrationConflictsResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleCredentialResolveMigrationConflict(ctx context.Context, t *Transport, req, _ any) error {
+	r, ok := req.(*transport.CredentialResolveMigrationConflictRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "CredentialResolveMigrationConflict"}
+	}
+	return t.CredentialResolveMigrationConflict(ctx, r)
+}
+
 func handleCredentialListVersions(ctx context.Context, t *Transport, req, resp any) error {
 	r, ok := req.(*transport.CredentialListVersionsRequest)
 	if !ok {
@@ -339,9 +482,6 @@ func (t *Transport) CredentialStore(ctx context.Context, name string, value []by
 	if err := t.authorize(ctx, "CredentialStore"); err != nil {
 		return err
 	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	if t.credentialSvc == nil {
 		return &NilServiceError{Service: "CredentialServicer"}
 	}
@@ -359,13 +499,15 @@ func (t *Transport) CredentialRetrieveBuffer(ctx context.Context, name string) (
 	if err := t.authorize(ctx, "CredentialRetrieveBuffer"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.credentialSvc == nil {
 		return nil, &NilServiceError{Service: "CredentialServicer"}
 	}
-	return t.credentialSvc.CredentialRetrieveBuffer(ctx, name)
+	buf, err := t.credentialSvc.CredentialRetrieveBuffer(ctx, name)
+	if err != nil {
+		buf.Destroy()
+		return nil, credentialNotFound(name, err)
+	}
+	return buf, nil
 }
 
 // CredentialRetrieveVersionBuffer returns the stored value for a specific
@@ -380,14 +522,16 @@ func (t *Transport) CredentialRetrieveVersionBuffer(ctx context.Context, req *tr
 	if err := t.authorize(ctx, "CredentialRetrieveVersionBuffer"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.credentialSvc == nil {
 		return nil, &NilServiceError{Service: "CredentialServicer"}
 	}
 	if req == nil {
 		return nil, &NilRequestError{Method: "CredentialRetrieveVersion"}
 	}
-	return t.credentialSvc.CredentialRetrieveVersionBuffer(ctx, req.Name, req.Version)
+	buf, err := t.credentialSvc.CredentialRetrieveVersionBuffer(ctx, req.Name, req.Version)
+	if err != nil {
+		buf.Destroy()
+		return nil, credentialNotFound(req.Name, err)
+	}
+	return buf, nil
 }

@@ -117,6 +117,7 @@
         { id: 'tenants',       label: 'Tenants',       icon: Building2 },
         { id: 'users',         label: 'Users',         icon: Users },
         { id: 'roles',         label: 'Roles',         icon: Shield },
+        { id: 'groups',        label: 'Groups',        icon: Users },
         { id: 'volume-pools',  label: 'Volume Pools',  icon: Layers },
         { id: 'certificates',  label: 'Certificates',  icon: FileText },
         { id: 'credentials' as AdminView, label: 'Credentials', icon: KeyRound },

@@ -86,6 +86,8 @@ func TestCompactionPolicy_OnEveryTransport(t *testing.T) {
 			// nothing about the policy, and taking it for compaction sends the
 			// test on to requireCompacted before the scheduler has run.
 			deadline := time.Now().Add(callTimeout)
+			poll := time.NewTicker(25 * time.Millisecond)
+			defer poll.Stop()
 			for {
 				h := c.as(t, "tenant-a")
 				_, err := h.mvcc.GetAtRevision(h.ctx, "k", revA)
@@ -95,7 +97,7 @@ func TestCompactionPolicy_OnEveryTransport(t *testing.T) {
 				if time.Now().After(deadline) {
 					t.Fatalf("%s: the configured policy never compacted tenant-a's database (last read: %v)", tk, err)
 				}
-				time.Sleep(25 * time.Millisecond)
+				<-poll.C
 			}
 			c.requireCompacted(t, "tenant-a", "k", revA)
 			// ... and nothing else: the passes that compacted tenant-a's

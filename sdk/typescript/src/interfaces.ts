@@ -127,6 +127,13 @@ import type {
     Invitation,
     RedeemInvitationRequest,
 
+    // Group
+    Group,
+    CreateGroupRequest,
+    UpdateGroupRequest,
+    ListGroupsRequest,
+    ListGroupsResponse,
+    GroupMember,
     // Role
     Role,
     CreateRoleRequest,
@@ -1229,6 +1236,42 @@ export interface InvitationClient {
 // ---------------------------------------------------------------------------
 // Role management operations
 // ---------------------------------------------------------------------------
+
+/**
+ * GroupClient provides IAM group management on every transport: RestClient
+ * and WailsClient (the desktop GroupBinding) both implement it. A group carries
+ * roles every member inherits. Removing the Security Officer role from a
+ * group, or deleting a group that carries it, is refused unless the caller
+ * is the tenant's Security Officer.
+ */
+export interface GroupClient {
+    /** Creates a group; the name must be unique within the tenant. */
+    create(req: CreateGroupRequest): Promise<Group>;
+
+    /** Retrieves a group by its globally unique ID. */
+    get(id: string): Promise<Group>;
+
+    /** Retrieves a tenant's group by name. */
+    getByName(name: string, tenantId?: string): Promise<Group>;
+
+    /** Applies a partial update to a group. */
+    update(req: UpdateGroupRequest): Promise<Group>;
+
+    /** Deletes a group and drops its memberships. */
+    delete(id: string): Promise<void>;
+
+    /** Returns a page of a tenant's groups. */
+    list(req?: ListGroupsRequest): Promise<ListGroupsResponse>;
+
+    /** Adds a user to a group. */
+    addMember(groupId: string, userId: string): Promise<void>;
+
+    /** Removes a user from a group. */
+    removeMember(groupId: string, userId: string): Promise<void>;
+
+    /** Lists a group's members. */
+    members(groupId: string): Promise<readonly GroupMember[]>;
+}
 
 /**
  * RoleClient provides role management operations. Roles aggregate
@@ -2715,6 +2758,9 @@ export interface Client {
 
     /** Role management. */
     readonly roles: RoleClient;
+
+    /** IAM group management. */
+    readonly groups: GroupClient;
 
     /** Certificate management. */
     readonly certs: CertClient;

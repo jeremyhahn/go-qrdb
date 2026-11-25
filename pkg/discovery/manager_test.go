@@ -402,10 +402,15 @@ func TestManager_DiscoverCancelledMidRetry(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// Cancel after a short delay, well before RetryInterval elapses.
+	// Cancel once m1 has been tried, so Discover is in its RetryInterval
+	// wait, well before that interval elapses.
 	go func() {
-		<-time.After(50 * time.Millisecond)
-		cancel()
+		defer cancel()
+		poll := time.NewTicker(time.Millisecond)
+		defer poll.Stop()
+		for m1.callCnt.Load() < 1 {
+			<-poll.C
+		}
 	}()
 
 	start := time.Now()

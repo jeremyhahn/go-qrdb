@@ -162,6 +162,11 @@ func (c *Client) Users() transport.UserClient {
 	return capability[transport.UserClient](c, "Users")
 }
 
+// Groups returns a GroupClient for IAM group management operations.
+func (c *Client) Groups() transport.GroupClient {
+	return capability[transport.GroupClient](c, "Groups")
+}
+
 // Roles returns a RoleClient for role management operations.
 func (c *Client) Roles() transport.RoleClient {
 	return capability[transport.RoleClient](c, "Roles")
@@ -230,8 +235,10 @@ func (c *Client) Collections() transport.CollectionClient {
 	return capability[transport.CollectionClient](c, "Collections")
 }
 
-// SealStore returns a SealStoreClient for managing platform-local
-// sealed credentials.
+// SealStore returns a SealStoreClient for the node's sealed named-secret
+// store. The verbs are embedded-only (ruling 1234): on every remote
+// transport each returns *transport.EmbeddedOnlyError
+// (transport.ErrEmbeddedOnly); seal and unseal stay on Barrier().
 func (c *Client) SealStore() transport.SealStoreClient {
 	return capability[transport.SealStoreClient](c, "SealStore")
 }

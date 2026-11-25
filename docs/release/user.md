@@ -40,6 +40,9 @@ It looks in this order:
 3. `$XDG_CONFIG_HOME/go-qrdb/public-release-patterns` (`~/.config/...` when
    `XDG_CONFIG_HOME` is unset).
 
+`make release-alpha` runs this gate before anything else, so a release cannot
+be cut without the pattern file or with a hit.
+
 The file is line-oriented. Blank lines and `#` lines are ignored; every other
 line is `<class>[/i] <ERE>`, where the class is `lab-address`, `lab-host` or
 `owner-path`, `/i` matches case-insensitively, and the ERE is POSIX extended.
@@ -162,6 +165,10 @@ file qrdbd-<v>-linux-arm64          # ELF 64-bit LSB executable, ARM aarch64, st
 go version -m qrdbd-<v>-linux-arm64 # build settings: GOARCH=arm64, CGO_ENABLED=0
 ./qrdbd-<v>-linux-arm64 version     # version and commit match the release tag
 ```
+
+In a checkout, `make release-smoke PLATFORM=<host platform>` runs the same
+`version` check over every artifact of that platform in `dist/`, the FIPS
+ones under `GODEBUG=fips140=only`.
 
 `go version -m` on a `-fips` binary also lists `GOFIPS140`. A FIPS binary
 selects the module at build time; the enforcement level is still the

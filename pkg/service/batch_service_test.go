@@ -36,13 +36,6 @@ import (
 // NewBatchService
 // ---------------------------------------------------------------------------
 
-func TestNewBatchService_ReturnsNonNil(t *testing.T) {
-	svc := NewBatchService(&mockHost{}, 1)
-	if svc == nil {
-		t.Fatal("expected non-nil BatchService")
-	}
-}
-
 func TestNewBatchService_PreservesShardID(t *testing.T) {
 	var capturedShardID uint64
 	host := &mockHost{

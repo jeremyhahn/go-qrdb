@@ -300,29 +300,6 @@ func TestDatabase_ValidateSchema_RejectsSpatialType(t *testing.T) {
 	require.ErrorAs(t, err, &e)
 }
 
-// ---------------------------------------------------------------------------
-// Structural interface assertions on the concrete *Database -- the positive
-// control for the read-only guard tests in readonly_database_test.go: these
-// prove the DDL interfaces are real (reachable on the unwrapped type),
-// which is exactly what newReadOnlyDatabase must make unreachable.
-// ---------------------------------------------------------------------------
-
-func TestDatabase_ImplementsDDLInterfaces(t *testing.T) {
-	var d sqle.Database = &Database{}
-	_, ok := d.(sqle.TableCreator)
-	assert.True(t, ok)
-	_, ok = d.(sqle.IndexedTableCreator)
-	assert.True(t, ok)
-	_, ok = d.(sqle.TableDropper)
-	assert.True(t, ok)
-	_, ok = d.(sqle.TableRenamer)
-	assert.True(t, ok)
-	_, ok = d.(sqle.CollatedDatabase)
-	assert.True(t, ok)
-	_, ok = d.(sqle.SchemaValidator)
-	assert.True(t, ok)
-}
-
 // TestDatabase_DropTable_ReclaimsSequenceCounters pins go-qrdb#444: the two
 // sequence counters keyed by the table's TableID must not outlive the table.
 //

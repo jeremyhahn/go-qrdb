@@ -77,7 +77,7 @@ func (b *TenantBinding) List() (*transport.ListTenantsResponse, error) {
 		b.logger.Error("List failed", "error", err)
 		return nil, err
 	}
-	resp, err := cl.Tenants().ListTenants(context.Background())
+	resp, err := cl.Tenants().ListTenants(context.Background(), &transport.ListTenantsRequest{})
 	if err != nil {
 		b.logger.Error("List failed", "error", err)
 		return nil, err

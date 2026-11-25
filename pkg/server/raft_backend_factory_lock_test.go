@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
@@ -221,19 +223,12 @@ func noQuorumPlacement(tenantID, db string, shardID uint64) *placement.Placement
 func awaitStarting(t *testing.T, f *RaftBackendFactory, tenantID, db string) {
 	t.Helper()
 	key := raftShardKey{tenantID: tenantID, database: db}
-	deadline := time.Now().Add(lockTestDeadline)
-	for {
+	require.Eventuallyf(t, func() bool {
 		f.mu.Lock()
+		defer f.mu.Unlock()
 		_, inFlight := f.starting[key]
-		f.mu.Unlock()
-		if inFlight {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the start of %s/%s never reached its wait for a leader", tenantID, db)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return inFlight
+	}, lockTestDeadline, 5*time.Millisecond, "the start of %s/%s never reached its wait for a leader", tenantID, db)
 }
 
 // requireAwaitLeader fails unless err is the start's wait for a leader
@@ -507,19 +502,12 @@ func TestRaftBackendFactory_BarrierSealStopsAStartInFlight(t *testing.T) {
 	go func() { sealed <- tb.Seal() }()
 
 	// The seal lists the barrier as sealing, then waits on the start.
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	require.Eventually(t, func() bool {
 		f.mu.Lock()
+		defer f.mu.Unlock()
 		_, sealing := f.sealing[tb.Barrier()]
-		f.mu.Unlock()
-		if sealing {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the seal never listed the tenant's barrier as sealing")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return sealing
+	}, 5*time.Second, 10*time.Millisecond, "the seal never listed the tenant's barrier as sealing")
 	select {
 	case err := <-sealed:
 		t.Fatalf("Seal = %v while the tenant's start was in flight, want it to wait", err)

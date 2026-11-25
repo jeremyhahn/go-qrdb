@@ -48,6 +48,9 @@ type abacPolicyCLIJSON struct {
 			When []struct {
 				Expression string `json:"expression"`
 			} `json:"when"`
+			Unless []struct {
+				Expression string `json:"expression"`
+			} `json:"unless"`
 		} `json:"rules"`
 	} `json:"spec"`
 }
@@ -191,5 +194,82 @@ func testABACPolicyLifecycleOverProtocol(t *testing.T, node *multiProtoNode, pro
 	}
 	if out, err = runCLIProto(t, node, proto, "abac", "policy", "get", name); err == nil {
 		t.Fatalf("[%s] abac policy get after delete should fail, got: %s", proto.name, out)
+	}
+}
+
+// abacObjectOwnerCLIDocument is a stored policy built on the object-owner
+// condition subject.owns_resource: an allow rule limited to the owner and a
+// deny rule for everyone else (#1651 item 5).
+func abacObjectOwnerCLIDocument(name string) string {
+	return `apiVersion: abac.qrdb.io/v1
+kind: Policy
+metadata:
+  name: ` + name + `
+  priority: 10
+spec:
+  enabled: true
+  subjects:
+    any: true
+  rules:
+    - name: owner-reads
+      effect: allow
+      actions: [read]
+      resources: ["/objects/**"]
+      when:
+        - expression: 'subject.owns_resource'
+    - name: deny-non-owner-delete
+      effect: deny
+      actions: [delete]
+      resources: ["/objects/**"]
+      unless:
+        - expression: 'subject.owns_resource'
+`
+}
+
+// TestABACPolicy_CLI_ObjectOwnerCondition_PerProtocol stores a policy using
+// the object-owner condition over every transport and reads both of its
+// expressions back exactly.
+func TestABACPolicy_CLI_ObjectOwnerCondition_PerProtocol(t *testing.T) {
+	t.Parallel()
+	node := startMultiProtocolNode(t)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			name := "owner-cli-" + proto.name
+			doc := filepath.Join(t.TempDir(), "owner.yaml")
+			if err := os.WriteFile(doc, []byte(abacObjectOwnerCLIDocument(name)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			out, err := runCLIProto(t, node, proto, "--output", "json", "abac", "policy", "create", "--file", doc)
+			if err != nil {
+				t.Fatalf("[%s] abac policy create: %v\noutput: %s", proto.name, err, out)
+			}
+			var created abacPolicyCLIJSON
+			if err := json.Unmarshal([]byte(out), &created); err != nil {
+				t.Fatalf("[%s] decode create JSON: %v\noutput: %s", proto.name, err, out)
+			}
+
+			out, err = runCLIProto(t, node, proto, "--output", "json", "abac", "policy", "get", name)
+			if err != nil {
+				t.Fatalf("[%s] abac policy get: %v\noutput: %s", proto.name, err, out)
+			}
+			var got abacPolicyCLIJSON
+			if err := json.Unmarshal([]byte(out), &got); err != nil {
+				t.Fatalf("[%s] decode get JSON: %v\noutput: %s", proto.name, err, out)
+			}
+			rules := got.Spec.Rules
+			if len(rules) != 2 ||
+				len(rules[0].When) != 1 || rules[0].When[0].Expression != "subject.owns_resource" ||
+				len(rules[1].Unless) != 1 || rules[1].Unless[0].Expression != "subject.owns_resource" {
+				t.Fatalf("[%s] get = %+v, want when and unless subject.owns_resource", proto.name, got.Spec)
+			}
+
+			out, err = runCLIProto(t, node, proto, "abac", "policy", "delete", "--tenant", created.Metadata.Tenant, name)
+			if err != nil || !strings.Contains(out, "Deleted policy "+name) {
+				t.Fatalf("[%s] abac policy delete: %v\noutput: %s", proto.name, err, out)
+			}
+		})
 	}
 }

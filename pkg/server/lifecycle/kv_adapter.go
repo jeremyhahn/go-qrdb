@@ -19,6 +19,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -47,6 +48,11 @@ type kvSealBackend struct {
 	kvstore.KVStore
 	tx service.TransactionServicer
 }
+
+// kvSealBackend is the credential service's replicated store
+// (buildSealServices binds it), so its conditional verbs must stay the
+// credentials.Store ones.
+var _ credentials.Store = kvSealBackend{}
 
 // Close is a no-op: the wrapped KV store is owned by the node lifecycle.
 func (kvSealBackend) Close() error { return nil }
@@ -172,6 +178,17 @@ func (b kvSealBackend) CompareAndSwap(ctx context.Context, key string, expected,
 		return false, err
 	}
 	return resp.Succeeded, nil
+}
+
+// PutAllIfAllUnchanged applies every write in one transaction, and only
+// while every guard's key still holds its expected value (a nil Guard.Value
+// means the key must be absent). See ExecuteGuardedBatch, which this
+// delegates to.
+func (b kvSealBackend) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	if b.tx == nil {
+		return false, ErrNoTransactionService
+	}
+	return ExecuteGuardedBatch(ctx, b.tx, guards, writes)
 }
 
 // Get adapts the kvstore.KVStore missing-key convention (nil, nil) to the

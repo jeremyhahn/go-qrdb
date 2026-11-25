@@ -274,9 +274,6 @@ func (c *loginClient) ResolveIdentity(ctx context.Context, sessionToken string) 
 	if err != nil {
 		return nil, err
 	}
-	if c.transport.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if c.transport.sessionIssuer == nil {
 		return nil, &MissingSessionIssuerError{}
 	}
@@ -295,9 +292,6 @@ func (c *loginClient) BeginLogin(ctx context.Context, req transport.BeginLoginRe
 	ctx, err := c.transport.admit(ctx, "LoginClient.BeginLogin")
 	if err != nil {
 		return nil, err
-	}
-	if c.transport.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -381,9 +375,6 @@ func (c *loginClient) FinishLogin(ctx context.Context, req transport.FinishLogin
 	ctx, err := c.transport.admit(ctx, "LoginClient.FinishLogin")
 	if err != nil {
 		return nil, err
-	}
-	if c.transport.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if c.transport.loginResolver == nil {
 		return nil, &MissingLoginResolverError{}
@@ -525,9 +516,6 @@ func (c *loginClient) Logout(ctx context.Context, sessionToken string) error {
 	ctx, err := c.transport.admit(ctx, "LoginClient.Logout")
 	if err != nil {
 		return err
-	}
-	if c.transport.closed.Load() {
-		return &transport.ClosedError{}
 	}
 	if c.transport.sessionIssuer == nil {
 		return &MissingSessionIssuerError{}

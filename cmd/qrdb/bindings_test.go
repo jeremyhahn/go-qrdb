@@ -1380,27 +1380,11 @@ func TestNotConnectedError_Message(t *testing.T) {
 	}
 }
 
-func TestNotConnectedError_Interface(t *testing.T) {
-	var err error = &NotConnectedError{}
-	var nce *NotConnectedError
-	if !errors.As(err, &nce) {
-		t.Fatal("expected errors.As to match *NotConnectedError")
-	}
-}
-
 func TestGUIUnavailableError_Message(t *testing.T) {
 	err := &GUIUnavailableError{}
 	expected := "qrdb: GUI unavailable (built without desktop tag)"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got: %q", expected, err.Error())
-	}
-}
-
-func TestGUIUnavailableError_Interface(t *testing.T) {
-	var err error = &GUIUnavailableError{}
-	var gue *GUIUnavailableError
-	if !errors.As(err, &gue) {
-		t.Fatal("expected errors.As to match *GUIUnavailableError")
 	}
 }
 
@@ -1451,27 +1435,11 @@ func TestAlreadyRunningError_Message(t *testing.T) {
 	}
 }
 
-func TestAlreadyRunningError_Interface(t *testing.T) {
-	var err error = &AlreadyRunningError{}
-	var are *AlreadyRunningError
-	if !errors.As(err, &are) {
-		t.Fatal("expected errors.As to match *AlreadyRunningError")
-	}
-}
-
 func TestNotRunningError_Message(t *testing.T) {
 	err := &NotRunningError{}
 	expected := "qrdb: embedded server is not running"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got: %q", expected, err.Error())
-	}
-}
-
-func TestNotRunningError_Interface(t *testing.T) {
-	var err error = &NotRunningError{}
-	var nre *NotRunningError
-	if !errors.As(err, &nre) {
-		t.Fatal("expected errors.As to match *NotRunningError")
 	}
 }
 

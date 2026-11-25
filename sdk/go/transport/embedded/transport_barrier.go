@@ -51,9 +51,6 @@ func (t *Transport) BarrierInitialize(ctx context.Context, req *transport.Barrie
 	// BarrierInitialize is a sealed-window verb (pkg/api/sealedwindow.VerbBarrierInitialize): public on every transport's boot-time sealed listener, because an
 	// embedded node has no IAM store to authenticate against while sealed.
 	// It is gated by secret (passphrase/Shamir share set) the strategy verifies, not an RBAC permission.
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	if t.barrierSvc == nil {
 		return &NilServiceError{Service: "BarrierServicer"}
 	}
@@ -73,9 +70,6 @@ func (t *Transport) BarrierUnseal(ctx context.Context, req *transport.BarrierUns
 	// BarrierUnseal is a sealed-window verb (pkg/api/sealedwindow.VerbBarrierUnseal): public on every transport's boot-time sealed listener, because an
 	// embedded node has no IAM store to authenticate against while sealed.
 	// It is gated by the unseal secret the barrier strategy verifies, not an RBAC permission.
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	if t.barrierSvc == nil {
 		return &NilServiceError{Service: "BarrierServicer"}
 	}
@@ -94,9 +88,6 @@ func (t *Transport) BarrierChangePassphrase(ctx context.Context, req *transport.
 	}
 	if err := t.authorize(ctx, "BarrierChangePassphrase"); err != nil {
 		return err
-	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
 	}
 	if t.barrierSvc == nil {
 		return &NilServiceError{Service: "BarrierServicer"}
@@ -123,9 +114,6 @@ func (t *Transport) BarrierSeal(ctx context.Context) error {
 	if err := t.authorize(ctx, "BarrierSeal"); err != nil {
 		return err
 	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	if t.barrierSvc == nil {
 		return &NilServiceError{Service: "BarrierServicer"}
 	}
@@ -141,9 +129,6 @@ func (t *Transport) BarrierClusterUnseal(ctx context.Context) (*transport.Cluste
 	}
 	if err := t.authorize(ctx, "BarrierClusterUnseal"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.barrierSvc == nil {
 		return nil, &NilServiceError{Service: "BarrierServicer"}
@@ -164,9 +149,6 @@ func (t *Transport) BarrierStatus(ctx context.Context) (*transport.BarrierStatus
 	}
 	if err := t.authorize(ctx, "BarrierStatus"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.barrierSvc == nil {
 		return nil, &NilServiceError{Service: "BarrierServicer"}
@@ -204,9 +186,6 @@ func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.
 	// BarrierInitializeShamir is a sealed-window verb (pkg/api/sealedwindow.VerbShamirInitialize): public on every transport's boot-time sealed listener, because an
 	// embedded node has no IAM store to authenticate against while sealed.
 	// It is gated by the SO/user PINs ProvisionInitializePINs verifies, not an RBAC permission.
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.barrierSvc == nil {
 		return nil, &NilServiceError{Service: "BarrierServicer"}
 	}
@@ -258,9 +237,6 @@ func (t *Transport) BarrierEnableEncryption(ctx context.Context, req *transport.
 	ctx, err := t.admit(ctx, "BarrierEnableEncryption")
 	if err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 
 	// The operation is identity-gated: which permission authorizes the call
@@ -378,9 +354,6 @@ func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transp
 	if err := t.authorize(ctx, "BarrierGenerateRecoveryKeys"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.barrierSvc == nil {
 		return nil, &NilServiceError{Service: "BarrierServicer"}
 	}
@@ -408,9 +381,6 @@ func (t *Transport) BarrierDeleteRecoveryKeys(ctx context.Context) error {
 	if err := t.authorize(ctx, "BarrierDeleteRecoveryKeys"); err != nil {
 		return err
 	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	if t.barrierSvc == nil {
 		return &NilServiceError{Service: "BarrierServicer"}
 	}
@@ -426,9 +396,6 @@ func (t *Transport) BarrierHasRecoveryKeys(ctx context.Context) (*transport.Barr
 	}
 	if err := t.authorize(ctx, "BarrierHasRecoveryKeys"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.barrierSvc == nil {
 		return nil, &NilServiceError{Service: "BarrierServicer"}

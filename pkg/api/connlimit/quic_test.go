@@ -25,6 +25,7 @@ import (
 	"errors"
 	"math/big"
 	"net"
+	"runtime"
 	"testing"
 	"time"
 
@@ -221,8 +222,9 @@ func TestQUICListenerReleasesSlotOnConnectionClose(t *testing.T) {
 
 	// First connection claims the (only) slot for this peer.
 	first := dialQUIC(t, udpConn.LocalAddr().String(), clientCfg, 1)[0]
+	var firstServer *quicgo.Conn
 	select {
-	case <-accepted:
+	case firstServer = <-accepted:
 	case <-time.After(3 * time.Second):
 		t.Fatal("first connection was not admitted")
 	}
@@ -245,10 +247,27 @@ func TestQUICListenerReleasesSlotOnConnectionClose(t *testing.T) {
 	// connection from the same peer is admitted.
 	_ = first.CloseWithError(0, "releasing slot")
 
-	// context.AfterFunc(conn.Context(), release) runs asynchronously; give
-	// it a moment to observe the connection's context ending before the
-	// next dial, which is what the slot release is racing against.
-	time.Sleep(200 * time.Millisecond)
+	// context.AfterFunc(conn.Context(), release) runs asynchronously once the
+	// server side sees the close: wait for the server conn's context to end,
+	// then for the release to empty the counter, before the next dial.
+	select {
+	case <-firstServer.Context().Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("server side of the first connection did not observe the close")
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		ln.counter.mu.Lock()
+		held := len(ln.counter.counts)
+		ln.counter.mu.Unlock()
+		if held == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the first connection's slot was not released after its close")
+		}
+		runtime.Gosched()
+	}
 
 	next := dialQUIC(t, udpConn.LocalAddr().String(), clientCfg, 1)[0]
 	defer func() { _ = next.CloseWithError(0, "test done") }()

@@ -379,6 +379,24 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 	if trail != nil {
 		opts = append(opts, embedded.WithAuditLogger(trail))
 	}
+	// The seal store (named secrets sealed under the embedded barrier) is
+	// embedded-only (ruling 1234): no network transport serves its data, so
+	// the desktop build's binding wires it here, as sdk/go/node does for its
+	// client. Without it every SealStoreClient verb on the desktop client
+	// answered "SealStore must not be nil".
+	if embeddedBarrier != nil {
+		sealStore, ssErr := seal.NewSealStore(embeddedBarrier, seal.SealStoreDefaultPrefix, slog.Default())
+		if ssErr != nil {
+			hub.Close()
+			_ = svcNode.Stop(context.Background())
+			if b.sealBarrier != nil {
+				_ = b.sealBarrier.Close()
+				b.sealBarrier = nil
+			}
+			return &EmbeddedServerError{Op: "start", Err: ssErr}
+		}
+		opts = append(opts, embedded.WithSealStore(sealStore))
+	}
 
 	// Hold a reference to the lifecycle node so StopEmbedded can call Stop.
 	b.svcNode = svcNode

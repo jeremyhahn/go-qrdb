@@ -38,6 +38,7 @@ export type AdminView =
     | 'tenants'
     | 'users'
     | 'roles'
+    | 'groups'
     | 'volume-pools'
     | 'certificates'
     | 'databases'
@@ -94,6 +95,7 @@ export const ADMIN_VIEW_LABELS: Readonly<Record<AdminView, string>> = {
     'tenants': 'Tenants',
     'users': 'Users',
     'roles': 'Roles',
+    'groups': 'Groups',
     'volume-pools': 'Volume Pools',
     'certificates': 'Certificates',
     'databases': 'Databases',

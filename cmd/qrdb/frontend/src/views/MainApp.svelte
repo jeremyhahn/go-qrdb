@@ -85,6 +85,7 @@
   import SealManager from "./admin/SealManager.svelte";
   import UserManager from "./admin/UserManager.svelte";
   import RoleManager from "./admin/RoleManager.svelte";
+  import GroupManager from "./admin/GroupManager.svelte";
   import VolumePoolManager from "./admin/VolumePoolManager.svelte";
   import CertManager from "./admin/CertManager.svelte";
   import AuditLog from "./admin/AuditLog.svelte";
@@ -569,6 +570,8 @@
             <UserManager {client} />
           {:else if navStore.context.view === 'roles'}
             <RoleManager {client} />
+          {:else if navStore.context.view === 'groups'}
+            <GroupManager {client} />
           {:else if navStore.context.view === 'volume-pools'}
             <VolumePoolManager {client} />
           {:else if navStore.context.view === 'certificates'}

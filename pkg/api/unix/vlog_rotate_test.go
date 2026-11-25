@@ -50,8 +50,9 @@ func vlogClientAs(t *testing.T, svc service.LogService, roleName string) (pb.QRD
 		TenantID: vlogRotateTenant,
 		Roles:    []string{role.SystemRoleID(vlogRotateTenant, roleName)},
 	}
+	fa := authtest.NewFixedAuthenticator(caller)
 	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles),
-		authmw.WithAuthenticator(authtest.NewFixedAuthenticator(caller)))
+		authmw.WithAuthenticator(fa), authmw.WithUserService(fa.Users()))
 	socketPath := tempSocketPath(t)
 	tlsCfg := selfSignedTLSConfig(t)
 	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath,

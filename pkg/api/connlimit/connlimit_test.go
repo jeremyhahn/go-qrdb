@@ -19,6 +19,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // dial opens n connections to ln's address and returns them still open;
@@ -125,43 +127,30 @@ func TestListenerReleasesSlotOnClose(t *testing.T) {
 	// Poll rather than sleep a fixed duration: release() runs on whichever
 	// goroutine calls Close, and this asserts only that it has happened by
 	// the time a second connection from the same peer is admitted.
-	deadline := time.Now().Add(2 * time.Second)
-	for {
+	require.Eventuallyf(t, func() bool {
 		second, err := net.DialTimeout("tcp", raw.Addr().String(), time.Second)
-		if err == nil {
-			_ = second.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
-			buf := make([]byte, 1)
-			_, readErr := second.Read(buf)
-			netErr, ok := readErr.(net.Error)
-			_ = second.Close()
-			if ok && netErr.Timeout() {
-				return // accepted and left open: the slot was released.
-			}
+		if err != nil {
+			return false
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("second connection from the same peer was never accepted after the first was closed")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		_ = second.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		buf := make([]byte, 1)
+		_, readErr := second.Read(buf)
+		netErr, ok := readErr.(net.Error)
+		_ = second.Close()
+		return ok && netErr.Timeout() // accepted and left open: the slot was released.
+	}, 2*time.Second, 20*time.Millisecond,
+		"second connection from the same peer was never accepted after the first was closed")
 }
 
 // waitForAccepted blocks until the server has accepted at least n
 // connections, or the test times out.
 func waitForAccepted(t *testing.T, a *acceptedConns, n int) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
+	require.Eventuallyf(t, func() bool {
 		a.mu.Lock()
-		got := len(a.conns)
-		a.mu.Unlock()
-		if got >= n {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("server accepted %d connections, want at least %d", got, n)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		defer a.mu.Unlock()
+		return len(a.conns) >= n
+	}, 2*time.Second, time.Millisecond, "server accepted fewer than %d connections", n)
 }
 
 func TestListenerUnlimitedWhenMaxNonPositive(t *testing.T) {

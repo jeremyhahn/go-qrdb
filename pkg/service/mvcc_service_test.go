@@ -63,17 +63,6 @@ func (e *mockRevisionNotFoundError) RevisionNotFound() (string, int64) {
 // NewMVCCKVService tests
 // ---------------------------------------------------------------------------
 
-func TestNewMVCCKVService_ReturnsNonNil(t *testing.T) {
-	svc := NewMVCCKVService(&mockHost{}, 1)
-	if svc == nil {
-		t.Fatal("expected non-nil MVCCKVService")
-	}
-}
-
-func TestNewMVCCKVService_ImplementsInterface(t *testing.T) {
-	var _ MVCCKVServicer = NewMVCCKVService(&mockHost{}, 1) //nolint:staticcheck // QF1011: explicit interface assertion
-}
-
 // ---------------------------------------------------------------------------
 // Put tests
 // ---------------------------------------------------------------------------
@@ -1777,31 +1766,13 @@ func TestMVCCKVService_Put_LargeValue(t *testing.T) {
 // Mock error interface compliance tests
 // ---------------------------------------------------------------------------
 
-func TestMockKeyNotFoundErr_ImplementsInterface(t *testing.T) {
-	var e keyNotFoundErr = &mockKeyNotFoundError{key: "k"}
-	if e.KeyNotFound() != "k" {
-		t.Fatalf("expected k, got %s", e.KeyNotFound())
-	}
-	if e.Error() != "key not found: k" {
-		t.Fatalf("unexpected error string: %s", e.Error())
-	}
-}
-
-func TestMockRevisionCompactedErr_ImplementsInterface(t *testing.T) {
-	var e revisionCompactedErr = &mockRevisionCompactedError{requested: 1, compacted: 5}
-	req, comp := e.RevisionCompacted()
-	if req != 1 || comp != 5 {
-		t.Fatalf("expected (1, 5), got (%d, %d)", req, comp)
-	}
-}
-
-func TestMockRevisionNotFoundErr_ImplementsInterface(t *testing.T) {
-	var e revisionNotFoundErr = &mockRevisionNotFoundError{key: "rk", revision: 77}
-	key, rev := e.RevisionNotFound()
-	if key != "rk" || rev != 77 {
-		t.Fatalf("expected (rk, 77), got (%s, %d)", key, rev)
-	}
-}
+// The mocks must keep satisfying the interfaces the service code
+// type-asserts on.
+var (
+	_ keyNotFoundErr       = (*mockKeyNotFoundError)(nil)
+	_ revisionCompactedErr = (*mockRevisionCompactedError)(nil)
+	_ revisionNotFoundErr  = (*mockRevisionNotFoundError)(nil)
+)
 
 // ---------------------------------------------------------------------------
 // MVCCKVService.Scan

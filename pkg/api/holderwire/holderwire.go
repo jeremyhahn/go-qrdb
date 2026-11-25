@@ -299,6 +299,10 @@ func CeremonyInitFrom(req *transport.CeremonyInitializeRequest) (*service.Ceremo
 		AdminCertPEM:           req.AdminCertPEM,
 		AdminCertPoolPEM:       req.AdminCertPoolPEM,
 		AdminGenerate:          req.AdminGenerate,
+		SOUsername:             req.SOUsername,
+		SOCSRPEM:               req.SOCSRPEM,
+		SOCertPEM:              req.SOCertPEM,
+		SOChainPEM:             req.SOChainPEM,
 		Secret:                 secretBuf,
 	}, nil
 }
@@ -331,5 +335,6 @@ func CeremonyInitTo(r *service.CeremonyInitResult) *transport.CeremonyInitialize
 		AdminCertPEM:          string(r.AdminCertPEM),
 		AdminKeyPEM:           bytes.Clone(r.AdminKeyPEM),
 		AdminCredentialSource: r.AdminCredentialSource,
+		SOCertPEM:             string(r.SOCertPEM),
 	}
 }

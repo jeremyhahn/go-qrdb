@@ -378,13 +378,30 @@ const auditInstanceYAML = `tenant:
 func TestAudit_CLI_AuditInstance_PerProtocol(t *testing.T) {
 	t.Parallel()
 	node := startMultiProtocolNodeWithConfig(t, "", auditInstanceYAML)
+	assertTenantAuditInstancePerProtocol(t, node, "auditlog-acme")
+}
 
-	// Onboarding the tenant files its tenant.onboard events, the instance's
-	// first leaves.
-	const tenantID = "auditlog-acme"
+// TestAudit_CLI_AuditInstance_Standalone_PerProtocol pins the same over every
+// CLI-selectable transport on a standalone node (pebble): its system shard
+// is a single-binary host that gates no features, and its replicated audit
+// trail is still the tenant's log instance <tenant>/system/audit, whose
+// head and inclusion proof verify while audit query and verify answer.
+func TestAudit_CLI_AuditInstance_Standalone_PerProtocol(t *testing.T) {
+	t.Parallel()
+	node := startStandaloneModeNodeWithConfig(t, "pebble", auditInstanceYAML)
+	assertTenantAuditInstancePerProtocol(t, node, "auditlog-solo")
+}
+
+// assertTenantAuditInstancePerProtocol onboards tenantID on node, whose
+// tenant.onboard events are the audit instance's first leaves, and checks
+// over every transport the instance's head, its newest leaf, an inclusion
+// proof of that leaf, the reserved-log refusal of a forged append, and that
+// `qrdb audit query --replicated` and `audit verify --replicated` answer.
+func assertTenantAuditInstancePerProtocol(t *testing.T, node *multiProtoNode, tenantID string) {
+	t.Helper()
 	createTenant(t, node, multiProtocols[0], tenantID, "Audit Log Tenant", "prefix", false)
 	certPath, keyPath := provisionTenantSOIdentity(t, node, tenantID, "audit-log-reader",
-		[]string{"vlog:head", "vlog:get", "vlog:proof", "vlog:append", "audit:verify_replicated", "admin:health"})
+		[]string{"vlog:head", "vlog:get", "vlog:proof", "vlog:append", "audit:query", "audit:verify_replicated", "admin:health"})
 
 	auditLog := []string{"--database", "system", "--log", "audit"}
 	for _, proto := range multiProtocols {
@@ -444,6 +461,15 @@ func TestAudit_CLI_AuditInstance_PerProtocol(t *testing.T) {
 			out, err := runQRDB(t, node.cli, conn, append([]string{"vlog", "append", "--entry", "forged"}, auditLog...)...)
 			if err == nil || !strings.Contains(out, "is the audit instance; only audit events append to it") {
 				t.Fatalf("[%s] vlog append to %s/system/audit = %v, want the reserved-log refusal\noutput: %s", proto.name, tenantID, err, out)
+			}
+
+			out, err = runQRDB(t, node.cli, conn, "--output", "json", "audit", "query", "--replicated")
+			if err != nil {
+				t.Fatalf("[%s] audit query --replicated: %v\noutput: %s", proto.name, err, out)
+			}
+			var page auditPageCLIJSON
+			if jerr := json.Unmarshal([]byte(out), &page); jerr != nil || len(page.Events) == 0 {
+				t.Fatalf("[%s] audit query --replicated = %+v, %v; want the instance's events\noutput: %s", proto.name, page, jerr, out)
 			}
 
 			out, err = runQRDB(t, node.cli, conn, "--output", "json", "audit", "verify", "--replicated")

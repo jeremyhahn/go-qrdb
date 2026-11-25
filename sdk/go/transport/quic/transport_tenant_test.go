@@ -140,7 +140,7 @@ func TestTransport_GetTenant_Closed(t *testing.T) {
 
 func TestTransport_ListTenants_Closed(t *testing.T) {
 	tr := newClosedTenantTransport(t)
-	_, err := tr.ListTenants(context.Background())
+	_, err := tr.ListTenants(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}

@@ -25,6 +25,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"io"
 	"log/slog"
 	"math/big"
@@ -35,10 +36,13 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
@@ -162,13 +166,13 @@ func TestNode_FirstBootWithCeremony_BoundAdminLogsInUnderRequired(t *testing.T) 
 	store := PendingAdminCertStore(n.Services().KV)
 	require.NoError(t, firstboot.WritePendingAdminCert(ctx, store, initResult.AdminCertPEM))
 
-	result, err := n.FirstBootWithCeremony(ctx, store, caCertPEM, 2*time.Second, firstboot.Dependencies{
+	result, err := n.FirstBootWithCeremony(ctx, store, caCertPEM, 2*time.Second, withSystemSO(t, firstboot.Dependencies{
 		Tenants:      n.Services().Tenant,
 		Users:        n.UserService(),
 		Roles:        n.Services().Role,
 		RoleResolver: n.Services().Role,
 		Logger:       ceremonyHandoffLogger(),
-	})
+	}))
 	require.NoError(t, err)
 	require.True(t, result.AdminCreated)
 
@@ -260,13 +264,13 @@ func TestNode_FirstBootWithCeremony_FreshUnboundNodeEntersAwaitingWithoutRestart
 	// node" case ResolveAdminCertForFirstBoot tolerates (NoPendingAdminCredentialError)
 	// by proceeding with no certificate to bind.
 	store := PendingAdminCertStore(n.Services().KV)
-	result, err := n.FirstBootWithCeremony(ctx, store, nil, 200*time.Millisecond, firstboot.Dependencies{
+	result, err := n.FirstBootWithCeremony(ctx, store, nil, 200*time.Millisecond, withSystemSO(t, firstboot.Dependencies{
 		Tenants:      n.Services().Tenant,
 		Users:        n.UserService(),
 		Roles:        n.Services().Role,
 		RoleResolver: n.Services().Role,
 		Logger:       ceremonyHandoffLogger(),
-	})
+	}))
 	require.NoError(t, err)
 	require.True(t, result.AdminCreated)
 
@@ -274,4 +278,115 @@ func TestNode_FirstBootWithCeremony_FreshUnboundNodeEntersAwaitingWithoutRestart
 	// the SAME call, with no restart in between.
 	require.True(t, n.awaitingAdminCredentialProbe.AwaitingAdminCredential(),
 		"a fresh node whose first boot just created an unbound admin must report awaiting without a restart")
+}
+
+// soHandoffFailingStore is the node's own pending store whose writes of the
+// system SO record fail, as a store that loses quorum after enrollment does.
+type soHandoffFailingStore struct {
+	firstboot.PendingAdminCertStore
+}
+
+func (s soHandoffFailingStore) Put(ctx context.Context, key string, value []byte) error {
+	if key == firstboot.PendingSystemSOKey {
+		return errors.New("store unavailable")
+	}
+	return s.PendingAdminCertStore.Put(ctx, key, value)
+}
+
+// soHandoffNode is a standalone node whose store holds the system SO record
+// a real ceremony issued (with the admin's), before first boot has run.
+func soHandoffNode(t *testing.T) (*Node, firstboot.PendingAdminCertStore, []byte, firstboot.Dependencies) {
+	t.Helper()
+	ctx := context.Background()
+	ca, caCertPEM := ceremonyHandoffCA(t)
+	svc, err := ceremony.NewCeremonyService(&ceremony.CeremonyConfig{}, ceremonyHandoffBarrier(t), ceremonyHandoffLogger())
+	require.NoError(t, err)
+	svc.SetPINBackend(pintest.NewBackend(t))
+	svc.SetTrustDomain(qrdbconfig.DefaultConfig().Auth.EffectiveClusterTrustDomain())
+	soKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	csrDER, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		Subject: pkix.Name{CommonName: "secofficer"},
+	}, soKey)
+	require.NoError(t, err)
+	initResult, err := svc.Initialize(ctx, ca, &ceremony.InitializeOptions{
+		SOPin: "test-so-pin", UserPin: "test-user-pin",
+		Hostname: "localhost", SANs: []string{"localhost"}, AdminGenerate: true,
+		SOUsername: "secofficer",
+		SOCSRPEM:   pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER}),
+	})
+	require.NoError(t, err)
+
+	nodeCfg := qrdbconfig.DefaultConfig()
+	nodeCfg.Raft.DataDir = t.TempDir()
+	nodeCfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
+	nodeCfg.Protocols.REST = false
+	nodeCfg.Protocols.GRPC = false
+	nodeCfg.Protocols.QUIC = false
+	nodeCfg.Protocols.Unix = false
+	nodeCfg.Protocols.MCP = false
+	n, err := NewStandaloneNode(ctx, nodeCfg, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = n.Close() })
+
+	store := PendingAdminCertStore(n.Services().KV)
+	require.NoError(t, firstboot.WritePendingAdminCert(ctx, store, initResult.AdminCertPEM))
+	require.NoError(t, firstboot.WriteIssuedSystemSOIfAny(ctx, svc, store, nil))
+	so, err := firstboot.PendingSystemSO(ctx, store)
+	require.NoError(t, err)
+	require.NotNil(t, so, "the ceremony must have issued a system SO")
+	pins, err := auth.NewSOAuthenticator(kvstore.NewMemoryKVStore(), audit.NewRingBuffer(64), ceremonyHandoffLogger())
+	require.NoError(t, err)
+	deps := firstboot.Dependencies{
+		Tenants:      n.Services().Tenant,
+		Users:        n.UserService(),
+		Roles:        n.Services().Role,
+		RoleResolver: n.Services().Role,
+		SOPINs:       pins,
+		Logger:       ceremonyHandoffLogger(),
+	}
+	return n, store, caCertPEM, deps
+}
+
+// TestNode_FirstBootWithCeremony_SOHandoffConsumeFaultFailsTheBoot: a first
+// boot that enrolled the recorded SO but cannot mark its record consumed
+// must not report the boot successful, as cmd/qrdbd/start.go does not.
+func TestNode_FirstBootWithCeremony_SOHandoffConsumeFaultFailsTheBoot(t *testing.T) {
+	ctx := context.Background()
+	n, store, caCertPEM, deps := soHandoffNode(t)
+
+	result, err := n.FirstBootWithCeremony(ctx, soHandoffFailingStore{store}, caCertPEM, 2*time.Second, deps)
+	var storeErr *firstboot.PendingAdminCertStoreError
+	require.ErrorAs(t, err, &storeErr)
+	require.Equal(t, "consume system SO", storeErr.Op)
+	require.Nil(t, result)
+	require.False(t, firstboot.SystemSOConsumed(ctx, store))
+}
+
+// TestNode_FirstBootWithCeremony_WithdrawnSOBindingIsNotReAdded: once a first
+// boot enrolled the recorded SO, its record is consumed, so a later first
+// boot never re-binds the certificate the SO's operator withdrew.
+func TestNode_FirstBootWithCeremony_WithdrawnSOBindingIsNotReAdded(t *testing.T) {
+	ctx := context.Background()
+	n, store, caCertPEM, deps := soHandoffNode(t)
+
+	result, err := n.FirstBootWithCeremony(ctx, store, caCertPEM, 2*time.Second, deps)
+	require.NoError(t, err)
+	require.NotZero(t, result.SOUserID)
+	require.True(t, firstboot.SystemSOConsumed(ctx, store))
+
+	users := n.UserService()
+	so, err := users.GetUser(ctx, result.SOUserID)
+	require.NoError(t, err)
+	require.NotEmpty(t, so.CertBindings)
+	for _, b := range so.CertBindings {
+		_, err := users.RemoveCertBinding(ctx, so.ID, b.Thumbprint)
+		require.NoError(t, err)
+	}
+
+	_, err = n.FirstBootWithCeremony(ctx, store, caCertPEM, 2*time.Second, deps)
+	require.NoError(t, err)
+	so, err = users.GetUser(ctx, result.SOUserID)
+	require.NoError(t, err)
+	require.Empty(t, so.CertBindings, "a second first boot re-bound the SO's withdrawn certificate")
 }
