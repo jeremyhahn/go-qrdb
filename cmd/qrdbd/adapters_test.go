@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -69,9 +70,16 @@ func TestAuthBootstrapError_ErrorsAs(t *testing.T) {
 
 // newMockKVStore creates a mockKVServicer backed by the provided store map,
 // with Put/Get/Delete/Scan/List all wired to the in-memory store.
+// mockStoreMu guards the maps newMockKVStore and mockTransactionServicer
+// share: like every real store they are used concurrently, e.g. by the
+// pending system SO clear boot leaves running in the background.
+var mockStoreMu sync.Mutex
+
 func newMockKVStore(store map[string][]byte) *mockKVServicer {
 	return &mockKVServicer{
 		putFn: func(_ context.Context, key string, value []byte) error {
+			mockStoreMu.Lock()
+			defer mockStoreMu.Unlock()
 			store[key] = value
 			return nil
 		},
@@ -81,6 +89,8 @@ func newMockKVStore(store map[string][]byte) *mockKVServicer {
 		// every by-id route then falls back to the caller's own tenant and a
 		// test over this mock cannot exercise routing at all.
 		putIfAbsentFn: func(_ context.Context, key string, value []byte) (bool, error) {
+			mockStoreMu.Lock()
+			defer mockStoreMu.Unlock()
 			if _, exists := store[key]; exists {
 				return false, nil
 			}
@@ -88,6 +98,8 @@ func newMockKVStore(store map[string][]byte) *mockKVServicer {
 			return true, nil
 		},
 		compareAndDeleteFn: func(_ context.Context, key string, expected []byte) (bool, error) {
+			mockStoreMu.Lock()
+			defer mockStoreMu.Unlock()
 			current, exists := store[key]
 			if !exists || !bytes.Equal(current, expected) {
 				return false, nil
@@ -99,6 +111,8 @@ func newMockKVStore(store map[string][]byte) *mockKVServicer {
 		// concurrent update: DeleteUser marks the record deleting by swapping
 		// it against the version it read.
 		compareAndSwapFn: func(_ context.Context, key string, expected, next []byte) (bool, error) {
+			mockStoreMu.Lock()
+			defer mockStoreMu.Unlock()
 			current, exists := store[key]
 			if !exists || !bytes.Equal(current, expected) {
 				return false, nil
@@ -107,16 +121,22 @@ func newMockKVStore(store map[string][]byte) *mockKVServicer {
 			return true, nil
 		},
 		getFn: func(_ context.Context, key string) ([]byte, error) {
+			mockStoreMu.Lock()
+			defer mockStoreMu.Unlock()
 			if v, ok := store[key]; ok {
 				return v, nil
 			}
 			return nil, &service.KeyNotFoundError{Key: key}
 		},
 		deleteFn: func(_ context.Context, key string) error {
+			mockStoreMu.Lock()
+			defer mockStoreMu.Unlock()
 			delete(store, key)
 			return nil
 		},
 		scanFn: func(_ context.Context, prefix string) (map[string][]byte, error) {
+			mockStoreMu.Lock()
+			defer mockStoreMu.Unlock()
 			result := make(map[string][]byte)
 			for k, v := range store {
 				if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
@@ -126,6 +146,8 @@ func newMockKVStore(store map[string][]byte) *mockKVServicer {
 			return result, nil
 		},
 		listFn: func(_ context.Context, prefix string) ([]string, error) {
+			mockStoreMu.Lock()
+			defer mockStoreMu.Unlock()
 			var keys []string
 			for k := range store {
 				if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
@@ -162,6 +184,8 @@ type mockTransactionServicer struct {
 // value compare (go-qrdb#555 review round 4) — are implemented; anything
 // else is unreachable through this package's tests.
 func (m *mockTransactionServicer) Execute(_ context.Context, compares []service.Compare, successOps, failureOps []service.Op) (*service.TransactionResponse, error) {
+	mockStoreMu.Lock()
+	defer mockStoreMu.Unlock()
 	ok := true
 	for _, c := range compares {
 		switch c.Target {

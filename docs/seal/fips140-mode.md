@@ -20,7 +20,8 @@ product; where the gate sits and why is in [Arming the gate](#arming-the-gate).
 ## The job
 
 ci.yml's `fips` job (`FIPS 140-3`) runs in the full tier — every push to
-`main`, every `workflow_dispatch`, and a pull request labelled `ci:full` — in
+`main`, every `workflow_dispatch` on `main`, and every non-draft pull request
+that is not docs-only — in
 the one toolchain image `docker-build` produces, and executes the full unit
 suite of **both modules**, `make test` and `make test-sdk`, as parallel matrix
 legs, one per name in the Makefile's `FIPS_LEGS` (#1230). Each leg runs:
@@ -603,8 +604,8 @@ against the FIPS module and reruns both unit suites under `-race`, so it costs
 what the unit-suite jobs cost again, on top of them. A pull request's
 pipeline is held to one hour and already runs those suites once without the
 FIPS module; a second pass does not fit. The full tier runs on every push to
-`main` and every `workflow_dispatch`, and a pull request labelled `ci:full`
-runs it before merge, so a FIPS regression is caught on the commit that
+`main` and every `workflow_dispatch` on `main`, and every non-draft pull
+request that is not docs-only runs it before merge, so a FIPS regression is caught on the commit that
 introduces it rather than whenever someone thinks to look.
 
 **What a red means.** A failed `fips` on `main` means some unit test of either

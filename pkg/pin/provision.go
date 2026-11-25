@@ -63,6 +63,36 @@ func Provision(ctx context.Context, backend PINBackend, soPIN, userPIN string) e
 	return backend.SetUserPIN(soPIN, userPIN)
 }
 
+// VerifyProvisioned authenticates soPIN and userPIN against the PINs the
+// backend already holds, and never sets one. It lets a caller refuse a wrong
+// or locked-out PIN before doing anything costly -- the initialization
+// ceremony runs it before any CA signing on a retry (go-qrdb#1129).
+//
+// A nil backend, or a backend with no PIN set, returns nil: there is nothing
+// to check yet and Provision does the setting. With the SO PIN set, an empty
+// soPIN is refused with ErrSOPINRequired and any other is compared by the
+// backend; with the User PIN set, a non-empty userPIN is compared too. The
+// SO PIN comparison counts against the lockout counter of the caller in ctx
+// (ForCaller).
+func VerifyProvisioned(ctx context.Context, backend PINBackend, soPIN, userPIN string) error {
+	if backend == nil {
+		return nil
+	}
+	backend = ForCaller(ctx, backend)
+	if backend.SOPINSet() {
+		if soPIN == "" {
+			return ErrSOPINRequired
+		}
+		if err := backend.VerifySOPIN(soPIN); err != nil {
+			return err
+		}
+	}
+	if backend.UserPINSet() && userPIN != "" {
+		return backend.VerifyUserPIN(userPIN)
+	}
+	return nil
+}
+
 // ProvisionRollback is an OPTIONAL capability a PINBackend may implement to
 // undo a Provision call whose caller failed LATER in the same logical
 // transaction (go-qrdb#560 review B3): ceremony Initialize provisions the

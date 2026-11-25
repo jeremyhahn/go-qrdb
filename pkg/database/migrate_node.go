@@ -17,6 +17,8 @@ package database
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 
@@ -91,6 +93,15 @@ type NodeStoreMigration struct {
 	StoreDirs     []string
 	FileStoreDirs []string
 	Logger        *slog.Logger
+
+	// Records are keyspaces kept in the barrier's own backend (the seal
+	// store's secrets) that the migration re-encrypts with the stores: staged
+	// under the keyed root key, verified, and committed past the point of no
+	// return, all journaled so recovery rolls them back or forward.
+	Records []seal.StagedRecords
+	// RetireRecords runs after the records commit to retire the plaintext
+	// history they leave behind; nil means nothing to retire.
+	RetireRecords func(context.Context) error
 
 	// journal optionally overrides where the crash-safe migration journal calls
 	// (Begin/Checkpoint/Finish/AdoptMigratedRootKey) are routed. When nil — the
@@ -211,6 +222,25 @@ func (m *NodeStoreMigration) Run(ctx context.Context, opts seal.MigrationOptions
 			return err
 		}
 	}
+	// Records kept in the barrier's own backend (the seal store's secrets)
+	// are staged under the keyed root key beside their live records, which
+	// stay readable until the commit. The journal names each keyspace BEFORE
+	// the first record is staged, so every later checkpoint carries it: a
+	// crash before the commit point rolls the staged set back at boot, a
+	// crash past it rolls the set forward (RecoverInterruptedMigration).
+	if len(m.Records) > 0 {
+		j.StagedRecords = append(j.StagedRecords, m.Records...)
+		if cerr := m.journalStore().CheckpointMigration(ctx, j); cerr != nil {
+			err = cerr
+			return err
+		}
+		for _, rec := range m.Records {
+			if _, serr := m.Source.StageMigratedRecords(ctx, m.Target, rec); serr != nil {
+				err = fmt.Errorf("re-encrypt records %q: %w", rec.Prefix, serr)
+				return err
+			}
+		}
+	}
 
 	// --- Verify phase: prove no data loss before the point of no return. --
 	j.Phase = seal.PhaseVerifying
@@ -220,6 +250,12 @@ func (m *NodeStoreMigration) Run(ctx context.Context, opts seal.MigrationOptions
 	for _, s := range stores {
 		if verr := s.verify(ctx, s.dir, src, s.dir+keyedSuffix, dst); verr != nil {
 			err = &MigrateStoreDirError{Dir: s.dir, Err: verr}
+			return err
+		}
+	}
+	for _, rec := range m.Records {
+		if verr := m.Source.VerifyMigratedRecords(ctx, m.Target, rec); verr != nil {
+			err = fmt.Errorf("verify re-encrypted records %q: %w", rec.Prefix, verr)
 			return err
 		}
 	}
@@ -243,6 +279,23 @@ func (m *NodeStoreMigration) Run(ctx context.Context, opts seal.MigrationOptions
 	// 3. Remove the pre-migration backups now that the commit is durable.
 	for _, dir := range j.StoreDirs {
 		_ = os.RemoveAll(dir + backupSuffix)
+	}
+	// 4. Copy each staged record over its live record, then retire the
+	// plaintext history the replaced records leave behind. A failure (or a
+	// crash) returns with the committed journal still in place, so the next
+	// boot's RecoverInterruptedMigration rolls the records forward. A record
+	// commit failure is ErrMigrationRecordsPending: the caller must complete
+	// it (FinishCommittedMigration) before it serves on the adopted root. A
+	// retirement failure after the records commit is ErrMigrationRetirePending.
+	if len(j.StagedRecords) > 0 {
+		if cerr := m.Source.CommitStagedRecords(ctx, j.StagedRecords); cerr != nil {
+			return fmt.Errorf("%w: commit re-encrypted records: %w", ErrMigrationRecordsPending, cerr)
+		}
+	}
+	if m.RetireRecords != nil {
+		if rerr := m.RetireRecords(ctx); rerr != nil {
+			return fmt.Errorf("%w: retire the replaced records' plaintext history: %w", ErrMigrationRetirePending, rerr)
+		}
 	}
 
 	// --- Done. -----------------------------------------------------------
@@ -308,6 +361,9 @@ func (m *NodeStoreMigration) rollback(ctx context.Context, j *MigrationJournalRe
 	for _, dir := range m.dirs() {
 		_ = os.RemoveAll(dir + keyedSuffix)
 	}
+	if len(m.Records) > 0 && m.Source != nil {
+		_ = m.Source.RollbackStagedRecords(ctx, m.Records)
+	}
 	j.Phase = seal.PhaseFailed
 	_ = m.journalStore().CheckpointMigration(ctx, j)
 }
@@ -315,6 +371,73 @@ func (m *NodeStoreMigration) rollback(ctx context.Context, j *MigrationJournalRe
 // MigrationJournalRef is a local alias so the rollback signature reads clearly;
 // the journal type itself is owned by pkg/seal.
 type MigrationJournalRef = seal.MigrationJournal
+
+// ErrMigrationStagingRootUnreadable reports that a committed migration's
+// keyed staging root key (or its Shamir wrapped key) could not be read on
+// roll-forward. RecoverInterruptedMigration returns it before touching any
+// directory, record, staging key or the journal, so a later boot retries.
+var ErrMigrationStagingRootUnreadable = errors.New("qrdb/database: migration staging root key unreadable; roll-forward refused, nothing changed")
+
+// ErrMigrationRecordsPending reports a migration past its commit point whose
+// staged barrier records (the seal store's secrets) are not all copied over
+// their live keys and deleted: the canonical root key is already the keyed
+// one, so a live record not yet replaced is unreadable, and a staged copy not
+// yet deleted would overwrite a newer write at the next roll-forward. The
+// journal is kept; the data plane must not serve until FinishCommittedMigration
+// or the boot's RecoverInterruptedMigration completes the commit.
+var ErrMigrationRecordsPending = errors.New("qrdb/database: committed migration's re-encrypted records not yet committed; the node must not serve until recovery completes them")
+
+// ErrMigrationRetirePending reports a migration whose staged records are
+// proven committed (copied over their live keys and the staged copies
+// deleted) but whose plaintext retirement or journal completion failed. The
+// data plane may serve on the adopted root; the kept journal makes the next
+// boot retry the retirement. It is the only Run or FinishCommittedMigration
+// failure after the commit point that permits serving.
+var ErrMigrationRetirePending = errors.New("qrdb/database: committed migration's records are committed; plaintext retirement or journal completion is not finished and the next boot retries it")
+
+// FinishCommittedMigration completes, over b's own backend, a migration that
+// passed its commit point but returned before its journal was finished (Run's
+// staged-record commit or plaintext retirement failed). It copies every
+// staged record over its live key and deletes the staged copy, runs retire
+// (when set), and only then marks the journal complete and removes it. A
+// failure to read the journal or to commit the records is
+// ErrMigrationRecordsPending (the commit is not proven, so the caller must
+// not serve), with the journal kept for the next attempt or the boot's
+// RecoverInterruptedMigration. A failure after the records are committed
+// (retire, or the journal's completion) is ErrMigrationRetirePending. No
+// journal, or one before the commit point, is left untouched.
+func FinishCommittedMigration(ctx context.Context, b *seal.StorageBarrier, retire func(context.Context) error) error {
+	j, err := b.LoadMigrationJournal(ctx)
+	if err != nil {
+		// The journal cannot be read, so nothing proves the staged records
+		// were committed: fail closed.
+		return fmt.Errorf("%w: load the migration journal: %w", ErrMigrationRecordsPending, err)
+	}
+	if j == nil || !j.Committed() {
+		return nil
+	}
+	if len(j.StagedRecords) > 0 {
+		if cerr := b.CommitStagedRecords(ctx, j.StagedRecords); cerr != nil {
+			return fmt.Errorf("%w: %w", ErrMigrationRecordsPending, cerr)
+		}
+	}
+	if retire != nil {
+		if rerr := retire(ctx); rerr != nil {
+			return fmt.Errorf("%w: retire the replaced records' plaintext history: %w", ErrMigrationRetirePending, rerr)
+		}
+	}
+	for _, dir := range j.StoreDirs {
+		_ = os.RemoveAll(dir + backupSuffix)
+	}
+	j.Phase = seal.PhaseComplete
+	if err := b.CheckpointMigration(ctx, j); err != nil {
+		return fmt.Errorf("%w: checkpoint the completed journal: %w", ErrMigrationRetirePending, err)
+	}
+	if err := b.FinishMigration(ctx); err != nil {
+		return fmt.Errorf("%w: finish the migration journal: %w", ErrMigrationRetirePending, err)
+	}
+	return nil
+}
 
 // RecoverInterruptedMigration reconciles a migration that was interrupted by a
 // crash, using the persisted journal, BEFORE the data stores are opened. It is
@@ -333,7 +456,20 @@ type MigrationJournalRef = seal.MigrationJournal
 //     canonical root key is the keyed one (adopting the staging blob if the
 //     crash struck between the swaps and the root-key update). This rescues
 //     the dangerous mid-commit window where the data dirs are keyed but the
-//     root key is still "none" (which would otherwise wedge the node).
+//     root key is still "none" (which would otherwise wedge the node). When
+//     the canonical key is still "none", the staging root key is read before
+//     anything is swapped, copied, deleted or cleared: a failed or empty read
+//     returns ErrMigrationStagingRootUnreadable and leaves the journal and
+//     staging intact, because committing the staged records without a key
+//     to adopt would leave every record unreadable. A Shamir target's
+//     staged wrapped root key is adopted before the envelope, in
+//     seal.AdoptMigratedRootKey's order. When the staging envelope's
+//     strategy or the journal's TargetStrategy names Shamir, the staged
+//     wrapped key must read back nonempty: a missing (not-found or nil)
+//     or empty one returns ErrMigrationStagingRootUnreadable with nothing
+//     touched, because a Shamir envelope without its wrapped key cannot
+//     recover the root key. For any other target a missing or empty
+//     wrapped key means there is nothing to adopt.
 //   - Not committed (pending/copying/verifying/failed): ROLL BACK — discard the
 //     keyed staging copies and staged snapshots, and restore any pre-migration
 //     backups.
@@ -350,6 +486,41 @@ func RecoverInterruptedMigration(ctx context.Context, backend seal.StorageBacken
 	dirs := unionDirs(storeDirs, j.StoreDirs)
 
 	if j.Committed() {
+		// Read the keyed staging root key (and, for a Shamir target, its
+		// unseal-domain wrapped key) BEFORE anything is swapped, copied or
+		// deleted: once the staged records overwrite the live ones, the
+		// staging key is the only key that reads them, so an unreadable one
+		// must stop the roll-forward with the journal and staging intact.
+		var stagingRoot, stagingWrapped []byte
+		adopt := false
+		if persisted := persistedStrategy(ctx, backend, canonicalRootKeyPath); (persisted == seal.StrategyNone || persisted == "") && j.StagingRootKeyPath != "" {
+			blob, gerr := backend.Get(ctx, j.StagingRootKeyPath)
+			if gerr != nil {
+				return fmt.Errorf("%w: %s: %w", ErrMigrationStagingRootUnreadable, j.StagingRootKeyPath, gerr)
+			}
+			if len(blob) == 0 {
+				return fmt.Errorf("%w: %s: empty", ErrMigrationStagingRootUnreadable, j.StagingRootKeyPath)
+			}
+			stagingRoot = blob
+			adopt = true
+			wrappedPath := seal.WrappedRootKeyPath(j.StagingRootKeyPath)
+			// A Shamir target (named by the staging envelope or the
+			// journal) cannot be recovered without its wrapped key: a
+			// missing or empty one refuses the roll-forward untouched.
+			shamir := strategyOf(blob) == seal.StrategyShamir || j.TargetStrategy == seal.StrategyShamir
+			wblob, werr := backend.Get(ctx, wrappedPath)
+			switch {
+			case werr == nil && len(wblob) > 0:
+				stagingWrapped = wblob
+			case werr == nil, errors.Is(werr, seal.ErrSecretNotFound):
+				if shamir {
+					return fmt.Errorf("%w: %s: missing or empty wrapped key for a Shamir target", ErrMigrationStagingRootUnreadable, wrappedPath)
+				}
+				// Not a Shamir target: no wrapped key to adopt.
+			default:
+				return fmt.Errorf("%w: %s: %w", ErrMigrationStagingRootUnreadable, wrappedPath, werr)
+			}
+		}
 		// Roll forward: ensure every store dir holds its keyed copy.
 		for _, dir := range dirs {
 			if serr := swapDir(dir); serr != nil {
@@ -367,21 +538,25 @@ func RecoverInterruptedMigration(ctx context.Context, backend seal.StorageBacken
 			return cerr
 		}
 		// Ensure the canonical root key is the keyed one. If the crash struck
-		// before the root-key update, the staging blob still holds it.
-		if persisted := persistedStrategy(ctx, backend, canonicalRootKeyPath); persisted == seal.StrategyNone || persisted == "" {
-			if j.StagingRootKeyPath != "" {
-				if blob, gerr := backend.Get(ctx, j.StagingRootKeyPath); gerr == nil && len(blob) > 0 {
-					if perr := backend.Put(ctx, canonicalRootKeyPath, blob); perr != nil {
-						return perr
-					}
+		// before the root-key update, the staging blobs still hold it: adopt
+		// the wrapped key first, then the envelope (AdoptMigratedRootKey's
+		// order), so a canonical Shamir envelope never lacks its wrapped key.
+		if adopt {
+			if stagingWrapped != nil {
+				if perr := backend.Put(ctx, seal.WrappedRootKeyPath(canonicalRootKeyPath), stagingWrapped); perr != nil {
+					return perr
 				}
 			}
+			if perr := backend.Put(ctx, canonicalRootKeyPath, stagingRoot); perr != nil {
+				return perr
+			}
 		}
-		// Cleanup: drop backups + staging blob + journal.
+		// Cleanup: drop backups + staging blobs + journal.
 		for _, dir := range dirs {
 			_ = os.RemoveAll(dir + backupSuffix)
 		}
 		if j.StagingRootKeyPath != "" {
+			_ = backend.Delete(ctx, seal.WrappedRootKeyPath(j.StagingRootKeyPath))
 			_ = backend.Delete(ctx, j.StagingRootKeyPath)
 		}
 		return seal.ClearMigrationJournalFrom(ctx, backend, canonicalRootKeyPath)
@@ -432,7 +607,16 @@ func unionDirs(a, b []string) []string {
 // blob, or "" when absent/undecodable.
 func persistedStrategy(ctx context.Context, backend seal.StorageBackend, rootKeyPath string) seal.StrategyID {
 	blob, err := backend.Get(ctx, rootKeyPath)
-	if err != nil || len(blob) == 0 {
+	if err != nil {
+		return ""
+	}
+	return strategyOf(blob)
+}
+
+// strategyOf decodes the "strategy" field of a sealed root-key envelope
+// blob. An empty or undecodable blob yields "".
+func strategyOf(blob []byte) seal.StrategyID {
+	if len(blob) == 0 {
 		return ""
 	}
 	var sealed struct {
