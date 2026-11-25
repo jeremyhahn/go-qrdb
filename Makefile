@@ -2249,12 +2249,15 @@ docker-build-it:
 		scripts/ci-image.sh registry-push '$(IT_IMAGE)'; \
 	fi
 
-# docker-down-it removes a run's compose project but keeps its image.
+# docker-down-it removes a run's compose project but keeps its image, then
+# sweeps the project's leftover volumes and the stale CI volumes of runs
+# whose runner died before their own teardown (scripts/ci-sweep-volumes.sh).
 .PHONY: docker-down-it
 docker-down-it:
 	@out=$$(QRDB_IT_IMAGE='$(IT_IMAGE)' docker compose -f $(DEVCONTAINER_COMPOSE) -p '$(IT_PROJECT)' \
 		down --volumes --remove-orphans 2>&1) \
 		|| { echo "docker-down-it: compose down of $(IT_PROJECT) failed:"; echo "$$out"; } || true
+	@IT_PROJECT='$(IT_PROJECT)' scripts/ci-sweep-volumes.sh --own
 
 toolchain-image:
 	@echo $(TOOLCHAIN_IMAGE)
