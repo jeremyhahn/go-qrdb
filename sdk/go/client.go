@@ -235,8 +235,10 @@ func (c *Client) Collections() transport.CollectionClient {
 	return capability[transport.CollectionClient](c, "Collections")
 }
 
-// SealStore returns a SealStoreClient for managing platform-local
-// sealed credentials.
+// SealStore returns a SealStoreClient for the node's sealed named-secret
+// store. The verbs are embedded-only (ruling 1234): on every remote
+// transport each returns *transport.EmbeddedOnlyError
+// (transport.ErrEmbeddedOnly); seal and unseal stay on Barrier().
 func (c *Client) SealStore() transport.SealStoreClient {
 	return capability[transport.SealStoreClient](c, "SealStore")
 }

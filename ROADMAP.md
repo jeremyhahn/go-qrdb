@@ -121,6 +121,7 @@ The cluster engine and database system for every project in the stack: embedded,
 - **separation-of-duties** — SO separation of duties is enforced in compliance mode only; the optional SO holds in both postures — [#1128](../../issues/1128), [#1042](../../issues/1042), [docs/identity-rbac/](docs/identity-rbac/) — in progress
 - **desktop-gui** — the Wails desktop application — [docs/desktop-gui/](docs/desktop-gui/) — in progress
 - **webtransport-session** — WebTransport sessions (draft-ietf-webtrans-http3-16) on the REST HTTP/3 listener behind an authenticated, tenant-bound CONNECT route — [#1244](../../issues/1244), [docs/api-server/](docs/api-server/) — in progress
+- **seal-store-transports** — seal store data and management verbs are embedded-only and every remote transport refuses them; seal and unseal stay on every transport; permissions on all six transports (owner ruling 1234) — [#1647](../../issues/1647), PR [#1687](../../pulls/1687), [docs/barrier-seal/](docs/barrier-seal/) — in progress
 - **credentials** — named credentials, versioned rotation; scheduled rotation policies, their transport and CLI verbs, whole-store moves; consumer go-quicbaas — [#1201](../../issues/1201), [#1185](../../issues/1185), [docs/credentials/](docs/credentials/) — in progress
 
 ## Next

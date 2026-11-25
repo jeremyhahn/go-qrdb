@@ -106,9 +106,6 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 	if err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.onboarding == nil {
 		return nil, &NilServiceError{Service: "TenantOnboardingServicer"}
 	}
@@ -259,9 +256,6 @@ func (t *Transport) GetTenant(ctx context.Context, tenantID string) (*transport.
 	if err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.tenantSvc == nil {
 		return nil, &NilServiceError{Service: "TenantServicer"}
 	}
@@ -285,9 +279,6 @@ func (t *Transport) ListTenants(ctx context.Context, req *transport.ListTenantsR
 	ctx, err := t.admit(ctx, "ListTenants")
 	if err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.tenantSvc == nil {
 		return nil, &NilServiceError{Service: "TenantServicer"}
@@ -332,9 +323,6 @@ func (t *Transport) ListDeletedTenants(ctx context.Context, req *transport.ListD
 	if err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.tenantSvc == nil {
 		return nil, &NilServiceError{Service: "TenantServicer"}
 	}
@@ -372,9 +360,6 @@ func (t *Transport) ReconcileDeletedTenants(ctx context.Context) (*transport.Rec
 	if err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.tenantSvc == nil {
 		return nil, &NilServiceError{Service: "TenantServicer"}
 	}
@@ -411,9 +396,6 @@ func (t *Transport) UpdateTenant(ctx context.Context, req *transport.UpdateTenan
 	ctx, err := t.admit(ctx, "UpdateTenant")
 	if err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.tenantSvc == nil {
 		return nil, &NilServiceError{Service: "TenantServicer"}
@@ -470,9 +452,6 @@ func (t *Transport) UpdateTenantQuotas(ctx context.Context, req *transport.Updat
 	if err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.tenantSvc == nil {
 		return nil, &NilServiceError{Service: "TenantServicer"}
 	}
@@ -519,9 +498,6 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 	if err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.tenantSvc == nil {
 		return nil, &NilServiceError{Service: "TenantServicer"}
 	}
@@ -558,9 +534,6 @@ func (t *Transport) DeleteTenant(ctx context.Context, tenantID string) error {
 	if err != nil {
 		return err
 	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	if t.tenantSvc == nil {
 		return &NilServiceError{Service: "TenantServicer"}
 	}
@@ -580,9 +553,6 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 	ctx, err := t.admit(ctx, "TenantBarrierInit")
 	if err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.tenantSvc == nil {
 		return nil, &NilServiceError{Service: "TenantServicer"}
@@ -630,9 +600,6 @@ func (t *Transport) TenantBarrierSignedInitBegin(ctx context.Context, req *trans
 	ctx, err := t.admit(ctx, "TenantBarrierSignedInitBegin")
 	if err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.tenantSvc == nil {
 		return nil, &NilServiceError{Service: "TenantServicer"}
@@ -682,9 +649,6 @@ func (t *Transport) TenantBarrierSignedInitComplete(ctx context.Context, req *tr
 	if err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.tenantSvc == nil {
 		return nil, &NilServiceError{Service: "TenantServicer"}
 	}
@@ -729,9 +693,6 @@ func (t *Transport) TenantBarrierUnseal(ctx context.Context, req *transport.Tena
 	ctx, err := t.admit(ctx, "TenantBarrierUnseal")
 	if err != nil {
 		return err
-	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
 	}
 	if t.tenantSvc == nil {
 		return &NilServiceError{Service: "TenantServicer"}

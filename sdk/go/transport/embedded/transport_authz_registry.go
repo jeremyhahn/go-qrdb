@@ -392,8 +392,8 @@ var operationPermissions = map[string]permission.Permission{
 	"PermissionClient.LookupScope": permission.PermissionsList,
 
 	// SealStore* (a generic secret-store abstraction over a seal strategy's
-	// own state, reached only through the embedded SDK -- no network route
-	// exists). seal:store_manage is ScopeCross like every other node-barrier
+	// own state, embedded-only: every remote transport refuses the verbs,
+	// ruling 1234, transport.EmbeddedOnlyOperations). seal:store_manage is ScopeCross like every other node-barrier
 	// permission, so SelfTarget here resolves to the caller's own tenant and
 	// the RBAC authorizer's ScopeCross rule admits only a system-tenant
 	// identity regardless, exactly like the "Node barrier" block above.

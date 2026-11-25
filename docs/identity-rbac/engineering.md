@@ -1289,8 +1289,12 @@ instead of a refusal on a misconfigured node. `authorize()` itself fails
 CLOSED on an unregistered method key (`UnregisteredOperationError`) rather than silently admitting one,
 making the declaration gates load-bearing rather than advisory.
 
-`SealStore*` has no `pkg/permission` entry of its own because no network
-route exposes it (REST, gRPC, QUIC, MCP). It is gated by
+`SealStore*` is embedded-only (ruling 1234, `transport.EmbeddedOnlyOperations`):
+no network route exposes it (REST, gRPC, unix, QUIC, MCP), and every remote
+SDK transport refuses each verb with `*transport.EmbeddedOnlyError` before any
+I/O. Its two consumers are in-process: the client of an `sdk/go/node` node and
+the desktop/GUI build's embedded binding; the shipped `qrdb` CLI has no
+seal-store group. On the embedded transport it is gated by
 `permission.SealStoreManage` (`seal:store_manage`, `ScopeCross`,
 SO-exclusive — not granted to the narrower Admin role), not by the bare
 `IdentityGated` floor.
