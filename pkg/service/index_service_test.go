@@ -29,13 +29,6 @@ import (
 // NewIndexService
 // ---------------------------------------------------------------------------
 
-func TestIndexService_NewIndexService_ReturnsNonNil(t *testing.T) {
-	svc := NewIndexService(&mockHost{}, 1)
-	if svc == nil {
-		t.Fatal("expected non-nil IndexService")
-	}
-}
-
 func TestIndexService_NewIndexService_PreservesShardID(t *testing.T) {
 	var capturedShardID uint64
 	host := &mockHost{

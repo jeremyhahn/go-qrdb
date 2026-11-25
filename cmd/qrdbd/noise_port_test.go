@@ -20,6 +20,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -113,6 +114,7 @@ type portHold struct {
 	stopped chan struct{} // closed once nothing is waiting to take the port
 	mu      sync.Mutex    // orders a late listen against release
 	ln      net.Listener
+	polls   atomic.Int32 // poll ticks whose listen found the port still taken
 }
 
 // holdPort holds port until the returned hold is released. It never blocks:
@@ -194,6 +196,7 @@ func (h *portHold) poll() {
 			if h.listen() {
 				return
 			}
+			h.polls.Add(1)
 		}
 	}
 }

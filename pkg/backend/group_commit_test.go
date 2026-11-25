@@ -33,7 +33,9 @@ import (
 // fsync a persistent engine's commit waits on. It records every group it was
 // handed and marks a command synced only when the Update carrying it is about
 // to return, so a proposer that sees its result before then was acknowledged
-// ahead of its fsync.
+// ahead of its fsync. Every caller runs inside a synctest.Test bubble, so
+// syncDelay is fake time: the Update sleep advances the bubble's clock and
+// never waits in real time.
 type slowSyncSM struct {
 	syncDelay time.Duration
 	// gate, when set, holds every Update until it is closed, so a test can
@@ -198,102 +200,123 @@ func TestLocalBackend_GroupCommit_ConcurrentProposalsShareOneSync(t *testing.T) 
 }
 
 func TestLocalBackend_GroupCommit_NoAckBeforeItsSync(t *testing.T) {
-	s := newSlowSyncSM(20 * time.Millisecond)
-	lb := NewLocalBackend(s)
-	defer func() { _ = lb.Close() }()
+	synctest.Test(t, func(t *testing.T) {
+		s := newSlowSyncSM(20 * time.Millisecond)
+		lb := NewLocalBackend(s)
+		defer func() { _ = lb.Close() }()
 
-	outcomes := proposeConcurrently(t, lb, s, 16)
-	for _, o := range outcomes {
-		if o.err != nil || o.panicked != nil {
-			t.Fatalf("proposal %s: err=%v panic=%v", o.cmd, o.err, o.panicked)
+		start := time.Now()
+		outcomes := proposeConcurrently(t, lb, s, 16)
+		elapsed := time.Since(start)
+		for _, o := range outcomes {
+			if o.err != nil || o.panicked != nil {
+				t.Fatalf("proposal %s: err=%v panic=%v", o.cmd, o.err, o.panicked)
+			}
+			if !o.syncedAtAck {
+				t.Fatalf("proposal %s was acknowledged before the Update covering it returned", o.cmd)
+			}
 		}
-		if !o.syncedAtAck {
-			t.Fatalf("proposal %s was acknowledged before the Update covering it returned", o.cmd)
+		// Updates run one after another, each taking one syncDelay of fake
+		// time, and the last ack waits for the last Update: the bubble's
+		// clock advanced by at least one syncDelay per group.
+		if want := time.Duration(s.groupCount()) * s.syncDelay; elapsed < want {
+			t.Fatalf("proposers returned after %v, want at least %v (%d Updates of %v): an ack did not wait for its sync", elapsed, want, s.groupCount(), s.syncDelay)
 		}
-	}
+	})
 }
 
 func TestLocalBackend_GroupCommit_LoneProposalIsAGroupOfOne(t *testing.T) {
-	s := newSlowSyncSM(0)
-	lb := NewLocalBackend(s)
-	defer func() { _ = lb.Close() }()
+	synctest.Test(t, func(t *testing.T) {
+		s := newSlowSyncSM(0)
+		lb := NewLocalBackend(s)
+		defer func() { _ = lb.Close() }()
 
-	for i := range 3 {
-		cmd := []byte("solo-" + strconv.Itoa(i))
-		res, err := lb.SyncPropose(context.Background(), 1, cmd)
-		if err != nil {
-			t.Fatalf("SyncPropose: %v", err)
+		for i := range 3 {
+			cmd := []byte("solo-" + strconv.Itoa(i))
+			res, err := lb.SyncPropose(context.Background(), 1, cmd)
+			if err != nil {
+				t.Fatalf("SyncPropose: %v", err)
+			}
+			if res.Value != uint64(i+1) || !bytes.Equal(res.Data, cmd) {
+				t.Fatalf("result = %+v, want index %d and %s", res, i+1, cmd)
+			}
 		}
-		if res.Value != uint64(i+1) || !bytes.Equal(res.Data, cmd) {
-			t.Fatalf("result = %+v, want index %d and %s", res, i+1, cmd)
+		if got := s.groupCount(); got != 3 {
+			t.Fatalf("3 sequential proposals made %d Updates, want 3", got)
 		}
-	}
-	if got := s.groupCount(); got != 3 {
-		t.Fatalf("3 sequential proposals made %d Updates, want 3", got)
-	}
+	})
 }
 
 func TestLocalBackend_GroupCommit_UpdateErrorFailsTheWholeGroup(t *testing.T) {
-	failure := stderrors.New("fsync: input/output error")
-	s := newSlowSyncSM(50 * time.Millisecond)
-	s.failWith = failure
-	lb := NewLocalBackend(s)
-	defer func() { _ = lb.Close() }()
+	synctest.Test(t, func(t *testing.T) {
+		failure := stderrors.New("fsync: input/output error")
+		s := newSlowSyncSM(50 * time.Millisecond)
+		s.failWith = failure
+		lb := NewLocalBackend(s)
+		defer func() { _ = lb.Close() }()
 
-	outcomes := proposeConcurrently(t, lb, s, 16)
-	for _, o := range outcomes {
-		if !stderrors.Is(o.err, failure) {
-			t.Fatalf("proposal %s: err = %v, want the failed commit's error", o.cmd, o.err)
+		outcomes := proposeConcurrently(t, lb, s, 16)
+		for _, o := range outcomes {
+			if !stderrors.Is(o.err, failure) {
+				t.Fatalf("proposal %s: err = %v, want the failed commit's error", o.cmd, o.err)
+			}
+			if o.syncedAtAck {
+				t.Fatalf("proposal %s was marked synced by a failed commit", o.cmd)
+			}
 		}
-		if o.syncedAtAck {
-			t.Fatalf("proposal %s was marked synced by a failed commit", o.cmd)
-		}
-	}
+	})
 }
 
 func TestLocalBackend_GroupCommit_PanicCompletesTheGroupAndReleasesTheToken(t *testing.T) {
-	s := newSlowSyncSM(50 * time.Millisecond)
-	s.setPanic("state machine bug")
-	lb := NewLocalBackend(s)
-	defer func() { _ = lb.Close() }()
+	synctest.Test(t, func(t *testing.T) {
+		s := newSlowSyncSM(50 * time.Millisecond)
+		s.setPanic("state machine bug")
+		lb := NewLocalBackend(s)
+		defer func() { _ = lb.Close() }()
 
-	outcomes := proposeConcurrently(t, lb, s, 16)
-	for _, o := range outcomes {
-		var aborted *ApplyAbortedError
-		if o.panicked == nil && !stderrors.As(o.err, &aborted) {
-			t.Fatalf("proposal %s neither applied the panicking group nor got ApplyAbortedError: err=%v", o.cmd, o.err)
+		outcomes := proposeConcurrently(t, lb, s, 16)
+		for _, o := range outcomes {
+			var aborted *ApplyAbortedError
+			if o.panicked == nil && !stderrors.As(o.err, &aborted) {
+				t.Fatalf("proposal %s neither applied the panicking group nor got ApplyAbortedError: err=%v", o.cmd, o.err)
+			}
 		}
-	}
 
-	s.setPanic(nil)
-	done := make(chan error, 1)
-	go func() {
-		_, err := lb.SyncPropose(context.Background(), 1, []byte("after"))
-		done <- err
-	}()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("SyncPropose after the panic: %v", err)
+		s.setPanic(nil)
+		done := make(chan error, 1)
+		go func() {
+			_, err := lb.SyncPropose(context.Background(), 1, []byte("after"))
+			done <- err
+		}()
+		// Fake-time guard: one Update takes 50ms of bubble time, so a
+		// released token answers long before 5s; a token still held leaves
+		// the proposer blocked and the bubble's clock reaches the guard.
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("SyncPropose after the panic: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("SyncPropose after a panicking Update never returned: the applier token was not released")
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("SyncPropose after a panicking Update never returned: the applier token was not released")
-	}
+	})
 }
 
 func TestLocalBackend_GroupCommit_CancelledProposerStillAppliesItsGroup(t *testing.T) {
-	s := newSlowSyncSM(0)
-	lb := NewLocalBackend(s)
-	defer func() { _ = lb.Close() }()
+	synctest.Test(t, func(t *testing.T) {
+		s := newSlowSyncSM(0)
+		lb := NewLocalBackend(s)
+		defer func() { _ = lb.Close() }()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if _, err := lb.SyncPropose(ctx, 1, []byte("cancelled")); err != nil {
-		t.Fatalf("SyncPropose with a cancelled context: %v; a group is applied whatever its token holder's context", err)
-	}
-	if !s.isSynced([]byte("cancelled")) {
-		t.Fatal("the proposal was acknowledged but never applied")
-	}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := lb.SyncPropose(ctx, 1, []byte("cancelled")); err != nil {
+			t.Fatalf("SyncPropose with a cancelled context: %v; a group is applied whatever its token holder's context", err)
+		}
+		if !s.isSynced([]byte("cancelled")) {
+			t.Fatal("the proposal was acknowledged but never applied")
+		}
+	})
 }
 
 func TestApplyAbortedError_Error(t *testing.T) {

@@ -70,14 +70,7 @@ func waiterCount(t *testing.T) float64 {
 // lease gone at enqueue starts over on a new one rather than losing.
 func waitWaiting(t *testing.T, n float64) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if waiterCount(t) == n {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("row_lock_waiters never reached %v: %v", n, waiterCount(t))
+	require.Eventuallyf(t, func() bool { return waiterCount(t) == n }, 5*time.Second, time.Millisecond, "row_lock_waiters never reached %v", n)
 }
 
 // A victim chosen because the lock table was too large to search is not a

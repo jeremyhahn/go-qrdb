@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
@@ -71,13 +73,8 @@ func notifyNamespacedPut(hub *watch.Hub, key string, rev int64) {
 // awaitHubEviction waits for the hub to drop every watcher.
 func awaitHubEviction(t *testing.T, hub *watch.Hub) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for hub.WatchCount() > 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("hub still holds %d watchers; eviction never happened", hub.WatchCount())
-		}
-		time.Sleep(time.Millisecond)
-	}
+	require.Eventually(t, func() bool { return hub.WatchCount() == 0 }, 30*time.Second, time.Millisecond,
+		"hub still holds watchers; eviction never happened")
 }
 
 // drainNamespacedEntityEvents reads ch to close and returns everything it

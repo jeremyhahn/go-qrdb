@@ -28,6 +28,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -234,16 +236,10 @@ func TestWireTrustAnchors_WiresPoolAndSubscribesInvalidation(t *testing.T) {
 	// so only a rebuild the subscription scheduled can satisfy it.
 	waitTrusted := func(cert *x509.Certificate, within time.Duration) {
 		t.Helper()
-		deadline := time.Now().Add(within)
-		for {
-			if _, err := pool.VerifyPeerChain(ctx, cert, nil); err == nil {
-				return
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("certificate not trusted within %v", within)
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
+		require.Eventuallyf(t, func() bool {
+			_, err := pool.VerifyPeerChain(ctx, cert, nil)
+			return err == nil
+		}, within, 5*time.Millisecond, "certificate not trusted within %v", within)
 	}
 	// Run's first build, without the second anchor yet.
 	waitTrusted(anchorCert, 5*time.Second)

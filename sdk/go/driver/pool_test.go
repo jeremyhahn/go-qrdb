@@ -441,6 +441,8 @@ func assertPoolDrained(t *testing.T, db *sql.DB) {
 	t.Helper()
 
 	deadline := time.Now().Add(poolSettleBudget)
+	poll := time.NewTicker(time.Millisecond)
+	defer poll.Stop()
 	for {
 		stats := db.Stats()
 		if stats.InUse == 0 {
@@ -450,7 +452,7 @@ func assertPoolDrained(t *testing.T, db *sql.DB) {
 			t.Fatalf("pool still has %d connection(s) checked out %s after the last caller finished: they were never returned (stats=%+v)",
 				stats.InUse, poolSettleBudget, stats)
 		}
-		time.Sleep(time.Millisecond)
+		<-poll.C
 	}
 }
 

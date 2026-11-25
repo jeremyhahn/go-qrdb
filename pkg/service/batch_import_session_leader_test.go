@@ -29,6 +29,7 @@ import (
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
+	"github.com/stretchr/testify/require"
 
 	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
@@ -85,18 +86,17 @@ func startImportLeaderClusterShard(t *testing.T, c *raftharness.Cluster, shardID
 // never from which host in the loop happened to answer.
 func waitForLeaderExcept(t *testing.T, hosts []*quicraft.Host, shardID uint64, exclude map[uint64]bool) (hostIdx int, replicaID uint64) {
 	t.Helper()
-	deadline := time.Now().Add(raftharness.Bound)
-	for {
+	require.Eventuallyf(t, func() bool {
 		for _, host := range hosts {
 			if id, known, err := host.LeaderID(shardID); err == nil && known && id != 0 && !exclude[id] {
-				return int(id - 1), id
+				hostIdx, replicaID = int(id-1), id
+				return true
 			}
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("waitForLeaderExcept: no qualifying leader for shard %d within %s", shardID, raftharness.Bound)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return false
+	}, raftharness.Bound, 20*time.Millisecond,
+		"waitForLeaderExcept: no qualifying leader for shard %d within %s", shardID, raftharness.Bound)
+	return hostIdx, replicaID
 }
 
 // TestImportSession_LeaderChangeDoesNotLoseStagedChunk proves a chunk

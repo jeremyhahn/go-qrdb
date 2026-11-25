@@ -32,6 +32,8 @@ import (
 func awaitFeatureActive(t *testing.T, nodes []*Node, feature feature.Feature) {
 	t.Helper()
 	deadline := time.Now().Add(clusterFormationBudget)
+	poll := time.NewTicker(clusterPollInterval)
+	defer poll.Stop()
 	for i, n := range nodes {
 		if n.featureGate == nil {
 			t.Fatalf("node %d gates no features", i)
@@ -40,7 +42,7 @@ func awaitFeatureActive(t *testing.T, nodes []*Node, feature feature.Feature) {
 			if time.Now().After(deadline) {
 				t.Fatalf("node %d: %s not active within %s", i, feature, clusterFormationBudget)
 			}
-			time.Sleep(clusterPollInterval)
+			<-poll.C
 		}
 	}
 }
@@ -87,6 +89,8 @@ func TestClusteredNode_FollowersAcknowledgeAnUndoWhileServing(t *testing.T) {
 	// Shorter than ctx, so a missing acknowledgement reports the pending
 	// nodes rather than a create cut off by the deadline.
 	deadline := time.Now().Add(clusterFormationBudget / 2)
+	poll := time.NewTicker(clusterPollInterval)
+	defer poll.Stop()
 	for {
 		_, err := tenants.CreateTenant(ctx, "acme", "Acme", tenant.IsolationPrefix)
 		if err == nil {
@@ -99,6 +103,6 @@ func TestClusteredNode_FollowersAcknowledgeAnUndoWhileServing(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatalf("id still awaits %v; the followers' watches never acknowledged", pending.Pending)
 		}
-		time.Sleep(clusterPollInterval)
+		<-poll.C
 	}
 }

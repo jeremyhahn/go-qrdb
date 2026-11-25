@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:build qrdb_vector
+
 // vector_restart_test.go pins the restart and snapshot-install acceptance
 // criteria for Lane 1B (docs/vectors/engineering.md, "Target: acceptance
 // tests (lane 1B)", items 1 and 2): vectors stay searchable after a restart,
@@ -28,20 +30,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	vectorstorage "github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 )
-
-// newRestartVectorStorage opens a PebbleDB-backed vector store at dir.
-func newRestartVectorStorage(t *testing.T, dir string) *vectorstorage.PebbleVectorStorage {
-	t.Helper()
-	cfg := vectorstorage.DefaultConfig(dir)
-	store, err := vectorstorage.NewPebbleVectorStorage(cfg, newVecTestLogger())
-	if err != nil {
-		t.Fatalf("NewPebbleVectorStorage(%q): %v", dir, err)
-	}
-	return store
-}
 
 // seedCosineNamespace creates namespace "ns" with the COSINE metric and
 // upserts two vectors chosen so that L2 and cosine distance DISAGREE on

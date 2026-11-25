@@ -1666,6 +1666,7 @@ vet-sdk:
 	cd $(SDK_DIR) && $(GOVET) $(TAG_FLAG) ./...
 
 # lint-gates is every repository gate CI's lint job runs beside `make lint`.
+# check-public-releasable is left out: it needs an untracked pattern file, and release-alpha runs it.
 LINT_GATES := test-require-tool check-bundled-gosec test-bundled-gosec \
 	check-tool-versions test-tool-versions test-deps-check test-trivy-db \
 	test-cluster-cpus test-ci-image test-in-toolchain-image \
@@ -2713,8 +2714,8 @@ release-alpha: override export REL_ORIGIN_REPO    := $(origin REPO_NAME)
 release-alpha: override export REL_ORIGIN_AGENT   := $(origin AGENT_GIT)
 release-alpha: override export REL_ORIGIN_SUBMOD  := $(origin SUBMODULE_TAGS)
 
-# check-tag-lockstep is the offline pre-check before the network.
-release-alpha: check-tag-lockstep
+# check-public-releasable and check-tag-lockstep are the offline pre-checks before the network.
+release-alpha: check-public-releasable check-tag-lockstep
 	@for o in "VERSION=$$REL_ORIGIN_VERSION" "RELEASE_REMOTE=$$REL_ORIGIN_REMOTE" "REPO_NAME=$$REL_ORIGIN_REPO" "AGENT_GIT=$$REL_ORIGIN_AGENT" "SUBMODULE_TAGS=$$REL_ORIGIN_SUBMOD"; do \
 	  case "$${o#*=}" in \
 	    environment|"environment override") echo "ERROR: $${o%%=*} is coming from the ENVIRONMENT, not from this Makefile or the command line. That happens under make -e, including an inherited MAKEFLAGS=-e that nobody typed, and it lets an exported value choose the version or the push destination for a release that cannot be retracted. Pass release inputs on the command line: make release-alpha VERSION=vX.Y.Z-alpha"; exit 1 ;; \

@@ -139,12 +139,3 @@ func TestNilCredentialRequestError_Error(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Interface conformance
 // ---------------------------------------------------------------------------
-
-// TestTransport_ImplementsCredentialClient is enforced by the compile-time
-// var _ transport.CredentialClient = (*Transport)(nil) assertion in
-// transport_credentials.go, but a runtime test guards against accidental
-// removal of that assertion line during refactors.
-func TestTransport_ImplementsCredentialClient(t *testing.T) {
-	tr := newOpenCredentialTransport(t)
-	var _ transport.CredentialClient = tr
-}

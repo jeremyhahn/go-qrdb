@@ -14,6 +14,9 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func newTestReporter(t *testing.T, nodeID string, opts ...ReporterOption) (*Reporter, *fakeMVCC, *fakeLeases) {
@@ -249,17 +252,11 @@ func TestReporter_StartRetriesAFailedInitialReport(t *testing.T) {
 	}
 
 	leases.setFailGrant(nil)
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
 		raw, err := mvcc.Get(context.Background(), NodeReportKey("node-1"))
-		if err == nil && raw != nil {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("refresh loop never published the report after the failure cleared: raw=%v err=%v", raw, err)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		assert.NoErrorf(c, err, "refresh loop never published the report after the failure cleared: raw=%v", raw)
+		assert.NotNilf(c, raw, "refresh loop never published the report after the failure cleared: err=%v", err)
+	}, 5*time.Second, 5*time.Millisecond)
 }
 
 func TestReporter_WithReporterLogger(t *testing.T) {
