@@ -89,6 +89,7 @@ func TestVectorMetrics_NoNamespaceNameInLabels(t *testing.T) {
 
 	svc, err := NewVectorService(newMockVectorStorage(), newMockLogger())
 	require.NoError(t, err)
+	attachPrefixHomes(t, svc)
 
 	ctx := tenant.WithTenantID(context.Background(), "acme")
 	names := []string{"embeddings", "secret-project"}
@@ -131,6 +132,7 @@ func TestVectorCountMetric_AggregatesPerTenant(t *testing.T) {
 
 	svc, err := NewVectorService(newMockVectorStorage(), newMockLogger())
 	require.NoError(t, err)
+	attachPrefixHomes(t, svc)
 
 	ctx := tenant.WithTenantID(context.Background(), "tenant-x")
 	for i, name := range []string{"vecs-a", "vecs-b"} {
@@ -182,6 +184,7 @@ func TestIndexSizeBytesMetric_SumsTenantNamespaces(t *testing.T) {
 
 	svc, err := NewVectorService(newMockVectorStorage(), newMockLogger())
 	require.NoError(t, err)
+	attachPrefixHomes(t, svc)
 
 	ctx := tenant.WithTenantID(context.Background(), "tenant-x")
 	names := []string{"size-a", "size-b"}
@@ -256,6 +259,7 @@ func TestVectorCountMetric_NamespaceDeleteSubtractsItsVectors(t *testing.T) {
 			}
 			svc, err := NewVectorService(storage, newMockLogger())
 			require.NoError(t, err)
+			attachPrefixHomes(t, svc)
 
 			ctx := tenant.WithTenantID(context.Background(), "tenant-d")
 			counts := map[string]int{"del-a": 3, "del-b": 2}
@@ -290,6 +294,7 @@ func TestVectorCountMetric_CountsStoredVectorsExactly(t *testing.T) {
 	storage := newMockVectorStorage()
 	svc, err := NewVectorService(storage, newMockLogger())
 	require.NoError(t, err)
+	attachPrefixHomes(t, svc)
 
 	ctx := tenant.WithTenantID(context.Background(), "tenant-r")
 	_, err = svc.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: "reup", Dimension: 2})
@@ -346,6 +351,7 @@ func TestVectorCountMetric_RestartSeedsTheStoredCount(t *testing.T) {
 	store1 := newRestartVectorStorage(t, dir)
 	svc1, err := NewVectorService(store1, newMockLogger())
 	require.NoError(t, err)
+	attachPrefixHomes(t, svc1)
 	_, err = svc1.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: "seed", Dimension: 2})
 	require.NoError(t, err)
 	for i := 0; i < 2; i++ {
@@ -389,6 +395,7 @@ func TestVectorCountMetric_CloseReopenSameRegistry(t *testing.T) {
 
 	svc, err := NewVectorService(store, newMockLogger())
 	require.NoError(t, err)
+	attachPrefixHomes(t, svc)
 	_, err = svc.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: "reopen", Dimension: 2})
 	require.NoError(t, err)
 	const n = 5
@@ -412,6 +419,7 @@ func TestVectorCountMetric_CloseReopenSameRegistry(t *testing.T) {
 
 		svc, err = NewVectorService(store, newMockLogger())
 		require.NoError(t, err)
+		attachPrefixHomes(t, svc)
 		assert.Equal(t, wantCount, tenantGauge(t, reg, "qrdb_vector_vector_count", tenantID),
 			"round %d: a reopened service counts each stored vector once", round)
 		assert.Equal(t, wantBytes, tenantGauge(t, reg, "qrdb_vector_index_size_bytes", tenantID),

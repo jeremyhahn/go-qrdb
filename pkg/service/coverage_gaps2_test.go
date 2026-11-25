@@ -686,6 +686,7 @@ func newVecSvc(t *testing.T) VectorService {
 	if err != nil {
 		t.Fatalf("NewVectorService: %v", err)
 	}
+	attachPrefixHomes(t, svc)
 	return svc
 }
 

@@ -62,6 +62,7 @@ func vectorCountServices(t *testing.T) map[string]func(t *testing.T) (VectorServ
 			}
 			svc, err := NewVectorService(storage, newMockLogger(), opts...)
 			require.NoError(t, err)
+			attachPrefixHomes(t, svc)
 			_, err = svc.CreateNamespace(concurrencyCtx(), &CreateNamespaceRequest{Namespace: "conc", Dimension: 2})
 			require.NoError(t, err)
 			return svc, storage
@@ -213,6 +214,7 @@ func TestVectorCountMetric_LocalSingleIDWritesCountOnceUnderAWideRace(t *testing
 	}
 	svc, err := NewVectorService(storage, newMockLogger())
 	require.NoError(t, err)
+	attachPrefixHomes(t, svc)
 	_, err = svc.CreateNamespace(concurrencyCtx(), &CreateNamespaceRequest{Namespace: "conc", Dimension: 2})
 	require.NoError(t, err)
 

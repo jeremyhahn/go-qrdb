@@ -95,6 +95,7 @@ func newVecSvcPreloaded(t *testing.T, nsName string, dim uint32) (VectorService,
 	if err != nil {
 		t.Fatalf("NewVectorService: %v", err)
 	}
+	attachPrefixHomes(t, svc)
 	return svc, store
 }
 

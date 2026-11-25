@@ -77,6 +77,7 @@ func newVecSvcWithNamespace(t *testing.T, namespace string, dimension uint32) (V
 
 	svc, err := NewVectorService(storage, logger)
 	require.NoError(t, err)
+	attachPrefixHomes(t, svc)
 	return svc, storage
 }
 

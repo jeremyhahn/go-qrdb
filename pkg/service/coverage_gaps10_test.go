@@ -411,6 +411,7 @@ func TestVectorService_ListNamespaces_TenantFiltered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewVectorService: %v", err)
 	}
+	attachPrefixHomes(t, svc)
 
 	ctx := tenant.WithTenantID(context.Background(), "acme")
 	resp, listErr := svc.ListNamespaces(ctx, &ListNamespacesRequest{})

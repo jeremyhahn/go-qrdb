@@ -15,6 +15,7 @@
 package service
 
 import (
+	"fmt"
 	"strconv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
@@ -207,6 +208,26 @@ func (e *VectorOperationError) Unwrap() error {
 
 // TenantRequiredError is returned when strict tenant isolation is enabled and
 // an operation is attempted without a tenant ID in the request context.
+// TenantVectorHomeError is returned when a non-system tenant's vector store
+// cannot be established: no home resolver is attached, the tenant's placement
+// cannot be read, or its isolated home store cannot be reached. The request
+// never falls back to the node-wide vector store.
+type TenantVectorHomeError struct {
+	// TenantID is the tenant whose vector store could not be reached.
+	TenantID string
+	// Err is the cause; nil when no home resolver is attached.
+	Err error
+}
+
+func (e *TenantVectorHomeError) Error() string {
+	if e.Err == nil {
+		return fmt.Sprintf("vector store of tenant %q unavailable: no tenant home resolver attached", e.TenantID)
+	}
+	return fmt.Sprintf("vector store of tenant %q unavailable: %v", e.TenantID, e.Err)
+}
+
+func (e *TenantVectorHomeError) Unwrap() error { return e.Err }
+
 type TenantRequiredError struct {
 	// Op is the service operation that was rejected.
 	Op string
