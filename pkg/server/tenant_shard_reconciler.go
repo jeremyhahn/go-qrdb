@@ -342,6 +342,9 @@ func (r *TenantShardReconciler) ReconcileOnce(ctx context.Context) {
 				// gone: the database was dropped and this node missed the
 				// delete event (or it arrived before the shard was cached).
 				// Close and purge it, as the delete event would have.
+				if !r.placementGone(ctx, s.TenantID, s.Database) {
+					continue
+				}
 				r.logger.Info("placement reconciler: purging a shard whose placement is gone",
 					slog.String("tenant", s.TenantID),
 					slog.String("database", s.Database))
@@ -387,6 +390,26 @@ func (r *TenantShardReconciler) closeDemoted(tenantID, db string) error {
 		return r.factory.CloseAndPurge(tenantID, db)
 	}
 	return r.factory.Close(tenantID, db)
+}
+
+// placementGone re-reads the placement of a placed shard absent from the
+// pass's snapshot: a foreground resolution may have placed and started it
+// after the List. It reports true only when the entry is still absent; a
+// read failure keeps the shard. A start in flight that read the entry
+// before it went is sent back to read it again by CloseAndPurge.
+func (r *TenantShardReconciler) placementGone(ctx context.Context, tenantID, db string) bool {
+	p, err := r.placement.Get(ctx, tenantID, db)
+	if err == nil {
+		return p == nil
+	}
+	if errors.Is(err, placement.ErrPlacementNotFound) {
+		return true
+	}
+	r.logger.Warn("placement reconciler: placement re-read before purge failed; keeping the shard",
+		slog.String("tenant", tenantID),
+		slog.String("database", db),
+		slog.Any("error", err))
+	return false
 }
 
 // maybeRestartPromotedLocal restarts the LOCAL replica of p as a full

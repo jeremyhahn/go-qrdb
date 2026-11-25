@@ -1343,6 +1343,54 @@ func TestTenantShardReconciler_ReconcileOncePurgesAStartedShardWithoutPlacement(
 	}
 }
 
+// listHookLifecycle runs beforeList ahead of each ListStarted, as a
+// foreground resolution that places and starts a shard after the
+// reconciler's placement List.
+type listHookLifecycle struct {
+	*fakeShardLifecycle
+	beforeList func()
+}
+
+func (l *listHookLifecycle) ListStarted() []StartedShard {
+	if l.beforeList != nil {
+		hook := l.beforeList
+		l.beforeList = nil
+		hook()
+	}
+	return l.fakeShardLifecycle.ListStarted()
+}
+
+func TestTenantShardReconciler_DoesNotPurgeGroupPlacedAfterSnapshot(t *testing.T) {
+	ctx := context.Background()
+	fake := newFakeShardLifecycle()
+	factory := &listHookLifecycle{fakeShardLifecycle: fake}
+	gone := raftShardKey{tenantID: "acme", database: "dropped"}
+	fake.mu.Lock()
+	fake.started[gone] = true
+	fake.placed[gone] = true
+	fake.mu.Unlock()
+	r, store := newTestReconciler(t, factory, nil)
+	factory.beforeList = func() {
+		if err := store.Put(ctx, placement1("acme", "fresh", 7)); err != nil {
+			t.Fatalf("store.Put: %v", err)
+		}
+		fresh := raftShardKey{tenantID: "acme", database: "fresh"}
+		fake.mu.Lock()
+		fake.started[fresh] = true
+		fake.placed[fresh] = true
+		fake.mu.Unlock()
+	}
+
+	r.ReconcileOnce(ctx)
+
+	if fake.isPurged("acme", "fresh") || !fake.isStarted("acme", "fresh") {
+		t.Fatal("a shard placed after the reconciler's placement snapshot was purged")
+	}
+	if !fake.isPurged("acme", "dropped") {
+		t.Fatal("a placed shard whose placement is really gone must still be purged")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // JoinObserver / Observer→ObserverReady→Active promotion tests
 // ---------------------------------------------------------------------------
