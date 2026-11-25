@@ -118,9 +118,12 @@ selects the storage backend under the storage-generic SMs (`disk`/`fast`):
 ### Store engine — `pkg/engine` (internal)
 
 The protocol-dispatch/data-operation layer the state machines wrap:
-**`KVEngine`** (plain KV) and **`MVCCEngine`** (revisioned KV with history,
-watch, transactions). Not directly user-configurable; chosen by `sm_type`.
-A standalone node always composes `MVCCEngine`, over every storage backend.
+**`KVEngine`** (KV without revisions) and **`MVCCEngine`** (revisioned KV
+with history, watch, transactions). The MVCC state machine
+(`pkg/store/mvcc.go`) and every standalone node compose `MVCCEngine`, over
+every storage backend; `KVEngine` is composed only by the `qrdb` desktop
+binary's local server when its `storeEngine` is `kv`
+(`cmd/qrdb/bindings_server.go`).
 
 A database has no engine setting. Time series, vector and SQL are
 build-tag-gated surfaces over the same keyspace; SQL goes through the
