@@ -42,10 +42,6 @@ type PeerParseError = cluster.PeerParseError
 // other run mode; the canonical type lives in pkg/server/lifecycle.
 type RunModeMismatchError = lifecycle.RunModeMismatchError
 
-// RunModeAmbiguousError is returned when a data directory without a run-mode
-// marker holds the stores of both modes.
-type RunModeAmbiguousError = lifecycle.RunModeAmbiguousError
-
 // RunModeMarkerError is returned when the run-mode marker cannot be read or
 // written, or records no known mode.
 type RunModeMarkerError = lifecycle.RunModeMarkerError

@@ -132,7 +132,4 @@ started in. The first start records the mode in `<data_dir>/.qrdb-run-mode`. A
 later start in the other mode is refused before any store opens, with an error
 naming both modes. The two modes keep separate stores and no migration exists
 between them, so the remedy is to start with the recorded mode or use a fresh
-data directory. A data directory from before the marker is judged by its store
-directories (`pebble/`, `file/`, `objstore/` for standalone; `wal/`,
-`nodehost/` for raft) and is refused when it holds both
-([`run_mode.go`](../../pkg/server/lifecycle/run_mode.go)).
+data directory ([`run_mode.go`](../../pkg/server/lifecycle/run_mode.go)).

@@ -281,9 +281,8 @@ Reaching zero is a package split, one feature at a time. The splits so far:
   ([`run_mode.go`](../../pkg/server/lifecycle/run_mode.go), called by qrdbd,
   the SDK node constructors and the qrdb embedded binding). The two modes keep
   separate stores and no migration exists, so the remedy is to start with the
-  recorded mode or use a fresh data directory. A data directory from before
-  the marker is judged by its store directories (`pebble/`, `file/`,
-  `objstore/` vs `wal/`, `nodehost/`) and is refused when it holds both.
+  recorded mode or use a fresh data directory. A data directory without the
+  marker is fresh and records the starting mode.
 
 ## Companion documents
 

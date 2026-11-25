@@ -28,14 +28,6 @@ import (
 // the directory was first started in.
 const runModeMarker = ".qrdb-run-mode"
 
-// standaloneStoreDirs and raftStoreDirs are the data-directory entries each
-// mode's stores live in; they identify the mode of a directory written
-// before the marker existed.
-var (
-	standaloneStoreDirs = []string{"pebble", "file", "objstore"}
-	raftStoreDirs       = []string{"wal", "nodehost"}
-)
-
 // ClaimRunMode records mode in dataDir, or refuses when dataDir belongs to
 // the other mode. The standalone and raft modes keep separate stores in the
 // same data directory and no migration exists between them, so a node
@@ -44,10 +36,8 @@ var (
 //
 // A present marker must name mode (*RunModeMismatchError otherwise, or
 // *RunModeMarkerError when it is unreadable or names no known mode). A
-// directory without a marker is judged by its store directories: none means
-// fresh, one mode's means that mode, both refuse with
-// *RunModeAmbiguousError. The marker is written only when the claim
-// succeeds. An empty mode is raft, the configuration default.
+// directory without a marker is fresh: the marker records mode. An empty
+// mode is raft, the configuration default.
 func ClaimRunMode(dataDir, mode string) error {
 	if mode == "" {
 		mode = capabilities.ModeRaft
@@ -67,41 +57,7 @@ func ClaimRunMode(dataDir, mode string) error {
 	case !errors.Is(err, os.ErrNotExist):
 		return &RunModeMarkerError{Path: marker, Err: err}
 	}
-
-	standalone, err := presentDirs(dataDir, standaloneStoreDirs)
-	if err != nil {
-		return &RunModeMarkerError{Path: dataDir, Err: err}
-	}
-	raft, err := presentDirs(dataDir, raftStoreDirs)
-	if err != nil {
-		return &RunModeMarkerError{Path: dataDir, Err: err}
-	}
-	switch {
-	case len(standalone) > 0 && len(raft) > 0:
-		return &RunModeAmbiguousError{DataDir: dataDir, Standalone: standalone, Raft: raft}
-	case len(standalone) > 0 && mode != capabilities.ModeStandalone:
-		return &RunModeMismatchError{DataDir: dataDir, Recorded: capabilities.ModeStandalone, Configured: mode, Inferred: true, Found: standalone}
-	case len(raft) > 0 && mode != capabilities.ModeRaft:
-		return &RunModeMismatchError{DataDir: dataDir, Recorded: capabilities.ModeRaft, Configured: mode, Inferred: true, Found: raft}
-	}
 	return writeRunMode(dataDir, marker, mode)
-}
-
-// presentDirs returns the names in names that are directories in dir.
-func presentDirs(dir string, names []string) ([]string, error) {
-	var found []string
-	for _, name := range names {
-		fi, err := os.Stat(filepath.Join(dir, name))
-		switch {
-		case err == nil:
-			if fi.IsDir() {
-				found = append(found, name)
-			}
-		case !errors.Is(err, os.ErrNotExist):
-			return nil, err
-		}
-	}
-	return found, nil
 }
 
 // writeRunMode writes mode to marker atomically: a synced temporary file

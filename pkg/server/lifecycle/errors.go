@@ -16,7 +16,6 @@ package lifecycle
 
 import (
 	"strconv"
-	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 )
@@ -483,39 +482,18 @@ func (e *ObjstoreBarrierSealedError) Error() string {
 }
 
 // RunModeMismatchError is returned when a data directory belongs to the
-// other run mode: its marker records that mode, or (Inferred) it has no
-// marker and holds that mode's store directories (Found).
+// other run mode: its marker records that mode.
 type RunModeMismatchError struct {
 	DataDir    string
 	Recorded   string
 	Configured string
-	Inferred   bool
-	Found      []string
 }
 
 func (e *RunModeMismatchError) Error() string {
-	what := "was initialized in mode: " + e.Recorded
-	if e.Inferred {
-		what = "holds " + e.Recorded + " stores (" + strings.Join(e.Found, ", ") + ")"
-	}
-	return "lifecycle: data directory " + e.DataDir + " " + what +
+	return "lifecycle: data directory " + e.DataDir + " was initialized in mode: " + e.Recorded +
 		" but this node is configured for mode: " + e.Configured +
 		"; the two modes keep separate stores and no migration exists: start with mode: " +
 		e.Recorded + ", or use a fresh data directory"
-}
-
-// RunModeAmbiguousError is returned when a data directory without a run-mode
-// marker holds the store directories of both modes.
-type RunModeAmbiguousError struct {
-	DataDir    string
-	Standalone []string
-	Raft       []string
-}
-
-func (e *RunModeAmbiguousError) Error() string {
-	return "lifecycle: data directory " + e.DataDir + " holds both mode: standalone stores (" +
-		strings.Join(e.Standalone, ", ") + ") and mode: raft stores (" + strings.Join(e.Raft, ", ") +
-		"); move the unused mode's directories out of the data directory, or use a fresh data directory"
 }
 
 // RunModeMarkerError is returned when the run-mode marker cannot be read or

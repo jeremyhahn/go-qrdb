@@ -119,9 +119,8 @@ mode: raft   # "standalone" | "raft"; absent = raft
   `<data_dir>/.qrdb-run-mode`; a start in the other mode is refused before any
   store opens, naming both modes, because the modes keep separate stores and
   no migration exists: start with the recorded mode or use a fresh data
-  directory. A pre-marker directory is judged by its store directories
-  (`pebble/`, `file/`, `objstore/` vs `wal/`, `nodehost/`) and refused when it
-  holds both ([`run_mode.go`](../pkg/server/lifecycle/run_mode.go)).
+  directory. A directory without the marker is fresh and records the starting
+  mode ([`run_mode.go`](../pkg/server/lifecycle/run_mode.go)).
 - Enabling a wire protocol whose build tag is absent → boot-time error
   naming the tag (`Config.ValidateCapabilities`, called by composition
   roots — a separate gate so pure-config validation stays
