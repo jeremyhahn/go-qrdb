@@ -28,9 +28,7 @@ import (
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/sqlitevfs"
-	"github.com/jeremyhahn/go-qrdb/pkg/sqlitevfs/moderncvfs"
-	sdksqlitevfs "github.com/jeremyhahn/go-qrdb/sdk/go/sqlitevfs"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/sqlitevfs"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -56,7 +54,7 @@ var sqliteBackend = func() (sqlitevfs.Backend, error) {
 	if err := sqliteTransportAllowed(); err != nil {
 		return nil, err
 	}
-	return sdksqlitevfs.NewBackend(client.MVCC(), client.Transaction())
+	return sqlitevfs.NewBackend(client.MVCC(), client.Transaction())
 }
 
 // clientTransport is the transport type the connected client was built for.
@@ -75,7 +73,7 @@ func sqliteTransportAllowed() error {
 // that opens each database in the connected server's page store.
 func registerSQLiteVFS() error {
 	sqliteRegisterOnce.Do(func() {
-		errSQLiteRegister = moderncvfs.Register(openSQLiteStore)
+		errSQLiteRegister = sqlitevfs.Register(openSQLiteStore)
 	})
 	return errSQLiteRegister
 }
@@ -88,11 +86,11 @@ func openSQLiteStore(_ context.Context, name string, params url.Values) (*sqlite
 		return nil, err
 	}
 	var opts []sqlitevfs.Option
-	switch mode := params.Get(moderncvfs.ConcurrencyParam); mode {
+	switch mode := params.Get(sqlitevfs.ConcurrencyParam); mode {
 	case sqliteConcurrencyOptimistic:
 		opts = append(opts, sqlitevfs.WithOptimistic())
 	case "", sqliteConcurrencyLock:
-		w, err := sdksqlitevfs.NewWriterLock(client.Lock(), sqliteHolderID(), 0)
+		w, err := sqlitevfs.NewWriterLock(client.Lock(), sqliteHolderID(), 0)
 		if err != nil {
 			return nil, err
 		}
@@ -150,12 +148,12 @@ func (f *sqliteOpenFlags) open(db string) (*sql.DB, error) {
 		return nil, err
 	}
 	q := url.Values{}
-	q.Set("vfs", moderncvfs.VFSName)
-	q.Set(moderncvfs.ConcurrencyParam, f.concurrency)
+	q.Set("vfs", sqlitevfs.VFSName)
+	q.Set(sqlitevfs.ConcurrencyParam, f.concurrency)
 	if f.stageThreshold > 0 {
 		q.Set(sqliteStageThresholdParam, strconv.Itoa(f.stageThreshold))
 	}
-	conn, err := sql.Open(moderncvfs.DriverName, "file:"+url.PathEscape(db)+"?"+q.Encode())
+	conn, err := sql.Open(sqlitevfs.DriverName, "file:"+url.PathEscape(db)+"?"+q.Encode())
 	if err != nil {
 		return nil, err
 	}
