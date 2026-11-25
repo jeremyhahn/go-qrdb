@@ -23,10 +23,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/stretchr/testify/require"
 )
 
 // azureBlobStub is an in-process Azure Blob service holding one container's block blobs in memory.
