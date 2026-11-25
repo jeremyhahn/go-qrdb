@@ -497,7 +497,7 @@ func (r *restServiceRegistry) strictWriteGuard(tenantID string, recheck func(con
 		return nil, nil
 	}
 	keys := tenant.IsolationEpochKeys(tenantID)
-	guard := func(context.Context) (service.WriteGuard, error) {
+	guard := func(ctx context.Context) (service.WriteGuard, error) {
 		reader, ok := r.tenantSvc.(tenant.IsolationEpochReader)
 		if !ok {
 			return service.WriteGuard{}, errIsolationEpochUnreadable
@@ -506,6 +506,10 @@ func (r *restServiceRegistry) strictWriteGuard(tenantID string, recheck func(con
 		epochs, err := reader.IsolationEpochs(lookupCtx, tenantID)
 		cancel()
 		if err != nil {
+			return service.WriteGuard{}, err
+		}
+		// A tightening committed before this epoch read is refused here; one after it fails the guard.
+		if err := recheck(ctx); err != nil {
 			return service.WriteGuard{}, err
 		}
 		compares := make([]service.Compare, 0, len(keys))

@@ -222,9 +222,15 @@ func (h *holdFirstProposalHost) ProposeWithMode(ctx context.Context, shardID uin
 type epochTenantSvc struct {
 	*floorTenantSvc
 	system service.KVServicer
+	// beforeRead, when set, runs once before the next epoch read.
+	beforeRead func()
 }
 
 func (s *epochTenantSvc) IsolationEpochs(ctx context.Context, tenantID string) (map[string][]byte, error) {
+	if hook := s.beforeRead; hook != nil {
+		s.beforeRead = nil
+		hook()
+	}
 	out := map[string][]byte{}
 	for _, key := range tenant.IsolationEpochKeys(tenantID) {
 		value, err := s.system.Get(ctx, key)
@@ -310,6 +316,47 @@ func TestRestRegistry_WriteInFlightAcrossStrictTighteningIsRefused(t *testing.T)
 	}
 	if got, err := raw.KV.Get(ctx, "bt/system/twin"); err != nil || string(got) != "v" {
 		t.Fatalf("bt/system/twin = (%q, %v), want v", got, err)
+	}
+}
+
+// TestRestRegistry_WriteGuardRefusesTighteningBeforeEpochRead: a strict
+// tightening that commits after the write's policy check but before its
+// guard reads the isolation epoch refuses the write, and the shared store
+// stays untouched.
+func TestRestRegistry_WriteGuardRefusesTighteningBeforeEpochRead(t *testing.T) {
+	ctx := context.Background()
+	eng, err := engine.NewMVCCEngine(memory.NewStorage())
+	if err != nil {
+		t.Fatalf("NewMVCCEngine: %v", err)
+	}
+	lb := backend.NewLocalBackend(eng)
+	t.Cleanup(func() { _ = lb.Close() })
+	raw := rawServices(lb)
+
+	rr, _ := newStrictSharedRegistry(t, tenant.TenantIsolationPolicyInherit, tenant.ClusterIsolationPolicyOperatorAccess, nil)
+	rr.dbReg.Register("system", raw)
+	floor := rr.tenantSvc.(*floorTenantSvc)
+	epochs := &epochTenantSvc{floorTenantSvc: floor, system: raw.KV}
+	rr.tenantSvc = epochs
+	kv, err := rr.KVService("bt", "system")
+	if err != nil {
+		t.Fatalf("KVService(operator-access): %v", err)
+	}
+	floorEpoch := tenant.IsolationEpochKeys("bt")[1]
+
+	epochs.beforeRead = func() {
+		if err := raw.KV.Put(ctx, floorEpoch, []byte("epoch-1")); err != nil {
+			t.Fatalf("epoch write: %v", err)
+		}
+		floor.floor = tenant.ClusterIsolationPolicyStrict
+	}
+	err = kv.Put(ctx, "late", []byte("v"))
+	var strictErr *rest.StrictTenantSharedStoreError
+	if !errors.As(err, &strictErr) {
+		t.Fatalf("write across a tightening before the epoch read: err = %v, want *rest.StrictTenantSharedStoreError", err)
+	}
+	if _, err := raw.KV.Get(ctx, "bt/system/late"); err == nil {
+		t.Fatal("the write across the tightening reached the shared node-keyed store")
 	}
 }
 
