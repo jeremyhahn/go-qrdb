@@ -353,6 +353,53 @@ func TestManager_DataDirOverBindingRootsRefused(t *testing.T) {
 	})
 }
 
+// raftUnrootedFactory is a rootedFactory whose raft placeholder owns no root,
+// as a raft-mode node's is; RecordRoot still resolves the group's root.
+type raftUnrootedFactory struct{ rootedFactory }
+
+func (f *raftUnrootedFactory) Create(cfg DatabaseConfig, dataDir string) (Backend, error) {
+	if cfg.Backend == BackendRaft {
+		return f.EmbeddedBackendFactory.Create(cfg, dataDir)
+	}
+	return f.rootedFactory.Create(cfg, dataDir)
+}
+
+// TestManager_RaftRootCollidesWithLocalRoot: a raft database's resolved root is
+// checked against every record at create, in both orders.
+func TestManager_RaftRootCollidesWithLocalRoot(t *testing.T) {
+	raftCfg := DatabaseConfig{Name: "ledger", Backend: BackendRaft}
+	t.Run("local then raft", func(t *testing.T) {
+		dir := t.TempDir()
+		f := &raftUnrootedFactory{rootedFactory{node: dir, roots: map[string]*string{}}}
+		m := newCatalogManager(slog.Default(), dir, WithBackendFactory(f))
+		t.Cleanup(func() { _ = m.Close() })
+		m.SetShardIDClaimer(testShardClaimer(t))
+		if _, err := m.Create(DatabaseConfig{Name: "local", Backend: BackendMemory, DataDir: filepath.Join(dir, "tenants", "system", "databases", "ledger")}); err != nil {
+			t.Fatalf("Create local: %v", err)
+		}
+		_, err := m.Create(raftCfg)
+		var conflict *DataDirConflictError
+		if !errors.As(err, &conflict) || conflict.With != "local" {
+			t.Fatalf("Create ledger: err = %v, want *DataDirConflictError with local", err)
+		}
+		if _, err := m.Get("ledger"); err == nil {
+			t.Fatal("the refused raft database is registered")
+		}
+	})
+	t.Run("raft then local", func(t *testing.T) {
+		m, _, dir := newRootedManager(t)
+		m.SetShardIDClaimer(testShardClaimer(t))
+		if _, err := m.Create(raftCfg); err != nil {
+			t.Fatalf("Create ledger: %v", err)
+		}
+		_, err := m.Create(DatabaseConfig{Name: "local", Backend: BackendMemory, DataDir: filepath.Join(dir, "tenants", "system", "databases", "ledger")})
+		var conflict *DataDirConflictError
+		if !errors.As(err, &conflict) || conflict.With != "ledger" {
+			t.Fatalf("Create local: err = %v, want *DataDirConflictError with ledger", err)
+		}
+	})
+}
+
 // TestManager_DropNeverRemovesAnotherRoot proves Drop refuses, removing
 // nothing, a database whose store root contains another database's root.
 func TestManager_DropNeverRemovesAnotherRoot(t *testing.T) {

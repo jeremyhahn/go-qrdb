@@ -25,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1468,9 +1469,100 @@ func TestLocalBindingFactory_RaftModeLocalBackendMaterializes(t *testing.T) {
 	if rb, rerr := f.RecordBinding(raftCfg); rb != nil || rerr != nil {
 		t.Fatalf("RecordBinding(raft) in raft mode = %v, %v; want nil, nil", rb, rerr)
 	}
-	if rr, rerr := f.RecordRoot(raftCfg); rr != "" || rerr != nil {
-		t.Fatalf("RecordRoot(raft) in raft mode = %q, %v; want \"\", nil", rr, rerr)
+	want := filepath.Join(dir, "tenants", bindingTenant, "databases", "ledger")
+	if rr, rerr := f.RecordRoot(raftCfg); rr != want || rerr != nil {
+		t.Fatalf("RecordRoot(raft) in raft mode = %q, %v; want %q", rr, rerr, want)
 	}
+}
+
+// countingShardClaimer hands out increasing shard IDs.
+type countingShardClaimer struct {
+	mu   sync.Mutex
+	next uint64
+}
+
+func (c *countingShardClaimer) ClaimShardID(context.Context) (uint64, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.next++
+	return 1<<20 + c.next, nil
+}
+
+// TestLocalBindingFactory_RecordRootRaft: a raft database's group root takes
+// part in the manager's root checks, in both create orders and for a raft
+// record this node never opened; standalone keeps refusing raft records.
+func TestLocalBindingFactory_RecordRootRaft(t *testing.T) {
+	newManager := func(t *testing.T, dir string, raft bool, cat database.Catalog) *database.Manager {
+		t.Helper()
+		f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir, RaftMode: raft}, nil, qrdbconfig.StorageConfig{}, prefixTenants)
+		mgr := database.NewManager(slog.Default(), dir, database.WithBackendFactory(f))
+		mgr.SetCatalog(cat)
+		mgr.SetShardIDClaimer(&countingShardClaimer{})
+		t.Cleanup(func() { _ = mgr.Close(); _ = f.Close() })
+		return mgr
+	}
+	newCatalog := func(t *testing.T) database.Catalog {
+		t.Helper()
+		cat, err := database.NewKVCatalog(kvstore.NewMemoryKVStore(), nil)
+		if err != nil {
+			t.Fatalf("NewKVCatalog: %v", err)
+		}
+		return cat
+	}
+	raftCfg := database.DatabaseConfig{TenantID: bindingTenant, Name: "ledger", Backend: database.BackendRaft}
+	raftRoot := func(dir string) string { return filepath.Join(dir, "tenants", bindingTenant, "databases", "ledger") }
+	wantConflict := func(t *testing.T, err error, with string) {
+		t.Helper()
+		var conflict *database.DataDirConflictError
+		if !errors.As(err, &conflict) || conflict.With != with {
+			t.Fatalf("err = %v, want *database.DataDirConflictError with %s", err, with)
+		}
+	}
+
+	t.Run("raft then local", func(t *testing.T) {
+		dir := t.TempDir()
+		m := newManager(t, dir, true, newCatalog(t))
+		if _, err := m.Create(raftCfg); err != nil {
+			t.Fatalf("Create ledger: %v", err)
+		}
+		_, err := m.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "local", Backend: database.BackendPebble, DataDir: raftRoot(dir)})
+		wantConflict(t, err, "ledger")
+	})
+	t.Run("local then raft", func(t *testing.T) {
+		dir := t.TempDir()
+		m := newManager(t, dir, true, newCatalog(t))
+		if _, err := m.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "local", Backend: database.BackendPebble, DataDir: raftRoot(dir)}); err != nil {
+			t.Fatalf("Create local: %v", err)
+		}
+		_, err := m.Create(raftCfg)
+		wantConflict(t, err, "local")
+	})
+	t.Run("raft record never opened here", func(t *testing.T) {
+		dir := t.TempDir()
+		cat := newCatalog(t)
+		other := newManager(t, dir, true, cat)
+		if _, err := other.Create(raftCfg); err != nil {
+			t.Fatalf("Create ledger: %v", err)
+		}
+		m := newManager(t, dir, true, cat)
+		_, err := m.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "local", Backend: database.BackendPebble, DataDir: raftRoot(dir)})
+		wantConflict(t, err, "ledger")
+	})
+	t.Run("standalone", func(t *testing.T) {
+		dir := t.TempDir()
+		m := newManager(t, dir, false, newCatalog(t))
+		if _, err := m.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "a", Backend: database.BackendPebble}); err != nil {
+			t.Fatalf("Create a: %v", err)
+		}
+		aRoot := filepath.Join(dir, "tenants", bindingTenant, "databases", "a")
+		_, err := m.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "b", Backend: database.BackendPebble, DataDir: aRoot})
+		wantConflict(t, err, "a")
+		_, err = m.Create(raftCfg)
+		var unavailable *database.RaftBackendUnavailableError
+		if !errors.As(err, &unavailable) {
+			t.Fatalf("Create(raft) standalone = %v, want *database.RaftBackendUnavailableError", err)
+		}
+	})
 }
 
 // TestLocalBindingFactory_RaftModeDescribeBinding proves database info's

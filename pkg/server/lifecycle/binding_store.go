@@ -226,8 +226,16 @@ func (f *LocalBindingFactory) Create(cfg database.DatabaseConfig, dataDir string
 // record, opened on this node or not, before a create claims a root or a
 // drop removes one.
 func (f *LocalBindingFactory) RecordRoot(cfg database.DatabaseConfig) (string, error) {
-	if !f.node.RaftMode && cfg.Backend == database.BackendRaft {
-		return "", nil
+	if cfg.Backend == database.BackendRaft {
+		if !f.node.RaftMode || !f.ownsRoot(&cfg) {
+			return "", nil
+		}
+		// A raft database's group store lives at the root its binding resolves to.
+		b, err := f.DescribeBinding(cfg)
+		if err != nil {
+			return "", err
+		}
+		return b.DataRoot, nil
 	}
 	b, err := f.resolveLocal(&cfg)
 	if err != nil || b == nil {
@@ -311,17 +319,22 @@ func (f *LocalBindingFactory) Close() error {
 // on a standalone and a raft-mode node: a raft-mode node materializes a
 // memory, file, pebble or objstore database the way a standalone node does.
 func (f *LocalBindingFactory) mayQualify(cfg *database.DatabaseConfig) bool {
-	// The system database lives on the control-plane store.
-	if tenantid.IsSystem(cfg.TenantID) && cfg.Name == SystemDatabase {
-		return false
-	}
-	if database.IsTenantHome(cfg.Name) {
+	if !f.ownsRoot(cfg) {
 		return false
 	}
 	// A backend: raft database is not this factory's on a raft-mode node:
 	// the Manager keeps its raft path for it (standalone nodes refuse it
 	// before this check).
 	return cfg.Backend != database.BackendRaft
+}
+
+// ownsRoot reports whether cfg's database has a binding root of its own: the
+// system database and tenant homes live on the control-plane store.
+func (f *LocalBindingFactory) ownsRoot(cfg *database.DatabaseConfig) bool {
+	if tenantid.IsSystem(cfg.TenantID) && cfg.Name == SystemDatabase {
+		return false
+	}
+	return !database.IsTenantHome(cfg.Name)
 }
 
 func (f *LocalBindingFactory) tenant(tenantID string) (database.BindingTenant, error) {

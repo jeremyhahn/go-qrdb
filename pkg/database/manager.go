@@ -375,6 +375,18 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	if err := m.recordRootConflict(ctx, keyFor(cfg.TenantID, cfg.Name), cfg.Name, cfg.DataDir); err != nil {
 		return nil, err
 	}
+	// The root the factory resolves for this database, a raft group's included.
+	if resolver, ok := m.factory.(RecordRootResolver); ok {
+		root, rerr := resolver.RecordRoot(cfg)
+		if rerr != nil {
+			return nil, rerr
+		}
+		if root != cfg.DataDir {
+			if err := m.recordRootConflict(ctx, keyFor(cfg.TenantID, cfg.Name), cfg.Name, root); err != nil {
+				return nil, err
+			}
+		}
+	}
 	if cfg.Barrier != nil && cfg.Barrier.Enabled {
 		if err := barrierDataPathError(cfg); err != nil {
 			return nil, err
