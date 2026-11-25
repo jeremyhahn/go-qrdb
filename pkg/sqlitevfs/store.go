@@ -204,6 +204,11 @@ func (s *Store) DB() string {
 	return s.db
 }
 
+// Optimistic reports whether the Store is in optimistic writer mode.
+func (s *Store) Optimistic() bool {
+	return s.optimistic
+}
+
 // readMeta reads the meta record at revision rev. An absent meta record is
 // an empty database: found=false and a Meta with only FormatVersion set.
 func (s *Store) readMeta(ctx context.Context, rev int64) (Meta, bool, error) {

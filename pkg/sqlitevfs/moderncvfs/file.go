@@ -21,6 +21,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"sync/atomic"
 
 	sqlite3 "modernc.org/sqlite/lib"
 
@@ -45,7 +46,8 @@ type vfile interface {
 // the file change counter at offset 24 and the version-valid-for number
 // at offset 92. SQLite writes them on every write transaction; the
 // binding stores them as zeros and serves the snapshot's
-// Meta.ChangeCounter, so they never move page 1's key revision.
+// Meta.ChangeCounter (in optimistic mode a per-transaction value, see
+// nextServed), so they never move page 1's key revision.
 var counterFields = [...]int64{24, 92}
 
 // headerEnd is the end of the database header in page 1.
@@ -69,6 +71,32 @@ type dbFile struct {
 	reserved bool
 	dirty    bool
 	failed   bool
+	// served is the change counter page 1 shows in this transaction in
+	// optimistic mode; 0 serves the snapshot's change counter.
+	served uint32
+}
+
+// servedSeq numbers the counters served in optimistic mode.
+var servedSeq atomic.Uint32
+
+// nextServed returns a change counter no earlier transaction was served.
+// Served values are odd and SQLite writes the value it read plus one, so
+// a served value never equals a counter SQLite remembers from its own
+// commit: SQLite drops its page cache at every transaction start, since
+// an optimistic commit merges other writers' pages it never read.
+func nextServed() uint32 {
+	return servedSeq.Add(1)<<1 | 1
+}
+
+// counter is the change counter page 1 shows for reads from txn.
+func (f *dbFile) counter(txn *sqlitevfs.Txn) uint64 {
+	if f.store.Optimistic() {
+		if f.txn == txn && f.served != 0 {
+			return uint64(f.served)
+		}
+		return uint64(nextServed())
+	}
+	return txn.ChangeCounter()
 }
 
 // reader returns the Txn reads use and a func to call after the read.
@@ -83,6 +111,7 @@ func (f *dbFile) reader() (*sqlitevfs.Txn, func(), error) {
 	}
 	if f.level >= sqlite3.SQLITE_LOCK_SHARED {
 		f.txn = txn
+		f.served = nextServed()
 		return txn, func() {}, nil
 	}
 	return txn, func() { _ = txn.Rollback(context.Background()) }, nil
@@ -96,6 +125,7 @@ func (f *dbFile) writer() (*sqlitevfs.Txn, error) {
 			return nil, err
 		}
 		f.txn = txn
+		f.served = nextServed()
 	}
 	if !f.reserved {
 		if err := f.txn.Reserve(context.Background()); err != nil {
@@ -145,7 +175,7 @@ func (f *dbFile) read(p []byte, off int64) int32 {
 	}
 	defer done()
 	n, err := txn.ReadAt(p, off)
-	overlayCounter(p[:n], off, txn.ChangeCounter())
+	overlayCounter(p[:n], off, f.counter(txn))
 	if n < len(p) {
 		clear(p[n:])
 		if err != nil && !errors.Is(err, io.EOF) {
@@ -223,6 +253,7 @@ func (f *dbFile) lock(level int32) int32 {
 			return resultCode(err, sqlite3.SQLITE_IOERR_LOCK)
 		}
 		f.txn = txn
+		f.served = nextServed()
 	}
 	if level >= sqlite3.SQLITE_LOCK_RESERVED && !f.reserved {
 		if err := f.txn.Reserve(context.Background()); err != nil {
@@ -256,12 +287,18 @@ func (f *dbFile) unlock(level int32) int32 {
 // for every other op. This modernc.org/sqlite build is compiled without
 // SQLITE_ENABLE_BATCH_ATOMIC_WRITE, so SQLite never sends them; they
 // are answered as the design states. SQLITE_FCNTL_PRAGMA refuses
-// synchronous=OFF and leaves every other pragma to SQLite.
+// synchronous=OFF, and in optimistic mode locking_mode=EXCLUSIVE (SQLite
+// would keep its page cache across transactions), and leaves every
+// other pragma to SQLite.
 func (f *dbFile) control(op int32, arg uintptr) int32 {
 	switch op {
 	case sqlite3.SQLITE_FCNTL_PRAGMA:
 		name, value, ok := pragmaArg(arg)
 		if ok && strings.EqualFold(name, "synchronous") && synchronousOff(value) {
+			return sqlite3.SQLITE_ERROR
+		}
+		if ok && f.store.Optimistic() && strings.EqualFold(name, "locking_mode") &&
+			strings.EqualFold(strings.TrimSpace(value), "exclusive") {
 			return sqlite3.SQLITE_ERROR
 		}
 		return sqlite3.SQLITE_NOTFOUND

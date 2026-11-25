@@ -607,6 +607,119 @@ func TestVFS_OptimisticDisjointWriters(t *testing.T) {
 	}
 }
 
+// openOptimistic registers an optimistic Store for name and returns its DSN suffix.
+func openOptimistic(t *testing.T, name string) string {
+	t.Helper()
+	b := newBackend(t)
+	setup(t, name, func(url.Values) (*sqlitevfs.Store, error) {
+		return sqlitevfs.NewStore(b, name, sqlitevfs.WithOptimistic())
+	})
+	return "&" + ConcurrencyParam + "=optimistic"
+}
+
+func TestVFS_OptimisticCachedReadsSeeOtherCommits(t *testing.T) {
+	const name = "optimistic-cache.db"
+	dsn := openOptimistic(t, name)
+	a := openDB(t, name, dsn)
+	b := openDB(t, name, dsn)
+	mustExec(t, a, "create table t1(a)")
+	mustExec(t, a, "create table t2(a)")
+	mustExec(t, a, "insert into t1 values(0)")
+	mustExec(t, a, "insert into t2 values(0)")
+	if n1, n2 := count(t, a, "t1"), count(t, b, "t2"); n1 != 1 || n2 != 1 {
+		t.Fatalf("rows t1, t2 = %d, %d, want 1, 1", n1, n2)
+	}
+	mustExec(t, b, "insert into t1 values(1)")
+	if n := count(t, a, "t1"); n != 2 {
+		t.Fatalf("a reads t1 = %d rows after b's commit, want 2", n)
+	}
+	txA, err := a.Begin()
+	if err != nil {
+		t.Fatalf("begin a: %v", err)
+	}
+	txB, err := b.Begin()
+	if err != nil {
+		t.Fatalf("begin b: %v", err)
+	}
+	mustExec(t, txA, "insert into t1 values(2)")
+	mustExec(t, txB, "insert into t2 values(2)")
+	if err := txA.Commit(); err != nil {
+		t.Fatalf("commit a: %v", err)
+	}
+	if err := txB.Commit(); err != nil {
+		t.Fatalf("commit b: %v (code %d)", err, code(err))
+	}
+	if n := count(t, a, "t2"); n != 2 {
+		t.Fatalf("a reads t2 = %d rows after b's commit, want 2", n)
+	}
+	if n := count(t, b, "t1"); n != 3 {
+		t.Fatalf("b reads t1 = %d rows after a's commit, want 3", n)
+	}
+}
+
+func TestVFS_OptimisticCounterDiffersPerTransaction(t *testing.T) {
+	const name = "optimistic-counter.db"
+	b := newBackend(t)
+	setup(t, name, func(url.Values) (*sqlitevfs.Store, error) {
+		return sqlitevfs.NewStore(b, name, sqlitevfs.WithOptimistic())
+	})
+	mustExec(t, openDB(t, name, "&"+ConcurrencyParam+"=optimistic"), "create table t(a)")
+	s, err := sqlitevfs.NewStore(b, name, sqlitevfs.WithOptimistic())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	f := &dbFile{store: s}
+	header := func() []byte {
+		t.Helper()
+		if rc := f.lock(sqlite3.SQLITE_LOCK_SHARED); rc != sqlite3.SQLITE_OK {
+			t.Fatalf("lock: %d", rc)
+		}
+		defer f.unlock(sqlite3.SQLITE_LOCK_NONE)
+		p := make([]byte, headerEnd)
+		if rc := f.read(p, 0); rc != sqlite3.SQLITE_OK {
+			t.Fatalf("read: %d", rc)
+		}
+		q := make([]byte, headerEnd)
+		if rc := f.read(q, 0); rc != sqlite3.SQLITE_OK {
+			t.Fatalf("second read: %d", rc)
+		}
+		if !bytes.Equal(p, q) {
+			t.Fatal("header changed within one transaction")
+		}
+		if !bytes.Equal(p[24:28], p[92:96]) {
+			t.Fatalf("change counter %x and version-valid-for %x differ", p[24:28], p[92:96])
+		}
+		return p
+	}
+	first, second := header(), header()
+	if bytes.Equal(first[24:28], second[24:28]) {
+		t.Fatalf("change counter %x served to two transactions, want a new one each", first[24:28])
+	}
+}
+
+func TestVFS_OptimisticExclusiveLockingRefused(t *testing.T) {
+	const name = "optimistic-exclusive.db"
+	db := openDB(t, name, openOptimistic(t, name))
+	mustExec(t, db, "create table t(a)")
+	for _, v := range []string{"EXCLUSIVE", "exclusive"} {
+		_, err := db.Exec("pragma locking_mode=" + v)
+		if err == nil {
+			t.Fatalf("pragma locking_mode=%s succeeded in optimistic mode, want it refused", v)
+		}
+		if c := code(err); c != sqlite3.SQLITE_ERROR {
+			t.Fatalf("pragma locking_mode=%s: code %d, want SQLITE_ERROR", v, c)
+		}
+	}
+	var mode string
+	if err := db.QueryRow("pragma locking_mode").Scan(&mode); err != nil {
+		t.Fatalf("pragma locking_mode: %v", err)
+	}
+	if !strings.EqualFold(mode, "normal") {
+		t.Fatalf("locking_mode = %q after the refusal, want normal", mode)
+	}
+	mustExec(t, db, "pragma locking_mode=NORMAL")
+}
+
 func TestVFS_RegisterTwiceRefused(t *testing.T) {
 	setup(t, "twice.db", plainOpener(newBackend(t), "twice.db"))
 	err := Register(func(context.Context, string, url.Values) (*sqlitevfs.Store, error) {
