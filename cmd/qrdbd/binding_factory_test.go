@@ -29,12 +29,11 @@ func (prefixTenantService) GetTenant(_ context.Context, id string) (*tenant.Tena
 func TestInstallBindingFactory_RaftModeAndStandalone(t *testing.T) {
 	tenants := func() tenant.TenantServicer { return prefixTenantService{} }
 	barriers := func() *seal.BarrierRegistry { return nil }
-	noLegacy := func(string, string) (bool, error) { return false, nil }
 	for _, raftMode := range []bool{true, false} {
 		dir := t.TempDir()
 		m := database.NewManager(slog.Default(), dir)
 		bf, err := installBindingFactory(m, dir, database.Defaults{}, nil, qrdbconfig.StorageConfig{},
-			tenants, barriers, raftMode, noLegacy, noLegacy)
+			tenants, barriers, raftMode)
 		if err != nil || bf == nil {
 			t.Fatalf("installBindingFactory(raftMode=%v) = %v, %v; want a factory", raftMode, bf, err)
 		}
@@ -54,7 +53,7 @@ func TestInstallBindingFactory_RaftModeAndStandalone(t *testing.T) {
 		// A second install on the same manager replaces the factory
 		// while no database is open.
 		if _, err := installBindingFactory(m, dir, database.Defaults{}, nil, qrdbconfig.StorageConfig{},
-			tenants, barriers, raftMode, noLegacy, noLegacy); err != nil {
+			tenants, barriers, raftMode); err != nil {
 			t.Fatalf("second installBindingFactory(raftMode=%v): %v", raftMode, err)
 		}
 		_ = m.Close()

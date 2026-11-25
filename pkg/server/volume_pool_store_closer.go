@@ -19,8 +19,6 @@ import (
 	"errors"
 	"sync/atomic"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
@@ -59,32 +57,6 @@ func (h *TenantHostRegistryHolder) Load() *TenantHostRegistry {
 		return nil
 	}
 	return h.p.Load()
-}
-
-// HasLegacyKeyspace reports whether a volume tenant's shared volume shard
-// holds keys under tenant.ComposeNamespace(tenantID, db): the legacy route a
-// volume tenant's database was served from before it had its own store
-// (lifecycle.LocalBindingFactory.WithVolumeKeyspaceProbe). It stops at the
-// first key. With no registry stored yet the answer is unknown, so it fails
-// closed with an error rather than reading as "no data".
-func (h *TenantHostRegistryHolder) HasLegacyKeyspace(tenantID, db string) (bool, error) {
-	reg := h.Load()
-	if reg == nil {
-		return false, &rest.IsolationBackendUnavailableError{TenantID: tenantID, Isolation: string(tenant.IsolationVolume)}
-	}
-	ctx := context.Background()
-	svcs, err := reg.Services(ctx, tenantID)
-	if err != nil {
-		return false, err
-	}
-	if svcs == nil || svcs.KV == nil {
-		return false, &rest.IsolationBackendUnavailableError{TenantID: tenantID, Isolation: string(tenant.IsolationVolume)}
-	}
-	keys, err := svcs.KV.List(ctx, tenant.ComposeNamespace(tenantID, db))
-	if err != nil {
-		return false, err
-	}
-	return len(keys) > 0, nil
 }
 
 // CloseTenantStoresForPool closes every per-tenant store this node has

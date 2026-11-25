@@ -1948,6 +1948,7 @@ bindings.
 - C: refuse; the new version does not open pre-binding data, and operators
   export with the previous version and import into the new one.
 - **Chosen: A.**
+- **Superseded: C.** Alpha releases carry no backward compatibility: the new version does not open pre-binding data and there is no relocation path.
 
 **OD-11 — Migrating the node-local vector stores.** In a multi-node cluster each node's vector store
 holds only the writes that node served, so the stores disagree.

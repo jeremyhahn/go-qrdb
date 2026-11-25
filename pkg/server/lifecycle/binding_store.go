@@ -25,7 +25,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
@@ -37,7 +36,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
-	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -83,36 +81,7 @@ type LocalBindingFactory struct {
 	// database's vector service consults, as the shared vector service
 	// does; nil means no requirement.
 	policy tenant.ClusterIsolationPolicyReader
-	// sharedData reports whether the shared store holds keys under a
-	// database's namespace; nil means it is not probed (see
-	// WithSharedKeyspaceProbe).
-	sharedData SharedKeyspaceProbe
-	// volumeData is sharedData for a volume tenant's shared volume shard
-	// (see WithVolumeKeyspaceProbe).
-	volumeData SharedKeyspaceProbe
 }
-
-// SharedKeyspaceProbe reports whether the shared store holds any key under
-// tenantID's database db namespace (tenant.ComposeNamespace). An error means
-// the store could not be read.
-type SharedKeyspaceProbe func(tenantID, db string) (bool, error)
-
-// LegacySharedKeyspaceError is returned when a backend: memory database's
-// binding cannot be resolved because the shared store could not be probed for
-// the data it held before the binding change.
-type LegacySharedKeyspaceError struct {
-	TenantID string
-	Database string
-	Err      error
-}
-
-// Error returns a human-readable description.
-func (e *LegacySharedKeyspaceError) Error() string {
-	return "lifecycle: probe the shared store for database " + e.TenantID + "/" + e.Database + ": " + e.Err.Error()
-}
-
-// Unwrap returns the probe failure.
-func (e *LegacySharedKeyspaceError) Unwrap() error { return e.Err }
 
 // NewLocalBindingFactory returns a factory for node. enc is the node
 // encryptor every on-disk binding store writes through (nil or disabled
@@ -158,86 +127,12 @@ func (f *LocalBindingFactory) WithIsolationPolicy(r tenant.ClusterIsolationPolic
 	return f
 }
 
-// WithSharedKeyspaceProbe sets the probe that tells a backend: memory
-// database recorded before the binding change from a fresh one. Such a
-// database was served from its namespace of the shared store, which kept its
-// data across restarts; it has no binding root or data_dir on disk to
-// recognise it by. While the shared store holds keys under its namespace it
-// keeps that shared route rather than open as a new, empty memory store.
-// Moving it is a relocation (slice 3b.8), not done here.
-func (f *LocalBindingFactory) WithSharedKeyspaceProbe(p SharedKeyspaceProbe) *LocalBindingFactory {
-	f.sharedData = p
-	return f
-}
-
-// WithVolumeKeyspaceProbe sets the probe that reports whether a volume
-// tenant's shared volume shard holds a database's legacy keys. A volume
-// tenant's memory or pebble database with legacy data there keeps that
-// route (relocation is 3b.8) and no binding is recorded; a failing probe is
-// a *LegacySharedKeyspaceError. A nil probe leaves every volume tenant's
-// database materialized.
-func (f *LocalBindingFactory) WithVolumeKeyspaceProbe(p SharedKeyspaceProbe) *LocalBindingFactory {
-	f.volumeData = p
-	return f
-}
-
 // WithRaftMode marks the factory's node as a raft-mode node: a backend: raft
 // database is then left to the Manager's raft path (nil, nil) instead of
 // refused, and every other local kind is materialized as on a standalone node.
 func (f *LocalBindingFactory) WithRaftMode() *LocalBindingFactory {
 	f.node.RaftMode = true
 	return f
-}
-
-// SharedStoreKeyspaceProbe probes the shared engine a standalone node composes
-// (NewLocalEngine) for a database's legacy data. The shared route stores a
-// database's keys under tenant.ComposeNamespace(tenantID, db), so the probe
-// asks the engine for that prefix, as a read on the shared route would, and
-// stops at the first live key. A lookup error is returned, never read as "no
-// data".
-func SharedStoreKeyspaceProbe(eng backend.SMAdapter) SharedKeyspaceProbe {
-	return LookupKeyspaceProbe(eng.Lookup)
-}
-
-// LookupKeyspaceProbe is SharedStoreKeyspaceProbe over any read of the shared
-// store's state machine: a raft-mode node passes a local read of its system
-// shard, so a legacy memory database keeps its shared route there too.
-func LookupKeyspaceProbe(lookup func(ctx context.Context, query interface{}) (interface{}, error)) SharedKeyspaceProbe {
-	return func(tenantID, db string) (bool, error) {
-		ns := tenant.ComposeNamespace(tenantID, db)
-		res, err := lookup(context.Background(), &statemachine.PrefixQuery{
-			Prefix: []byte(ns),
-			Limit:  1,
-		})
-		if err != nil {
-			return false, err
-		}
-		keys, ok := res.(map[string][]byte)
-		if !ok {
-			return false, fmt.Errorf("shared keyspace probe: unexpected lookup result %T", res)
-		}
-		if len(keys) > 0 {
-			return true, nil
-		}
-		// A database whose only data is time series holds no MVCC
-		// metadata: its points, metric index and retention policy sit
-		// under raw keys whose namespace follows a fixed prefix.
-		res, err = lookup(context.Background(), &statemachine.RawPrefixExistsQuery{
-			Prefixes: [][]byte{
-				[]byte("ts:" + ns),
-				[]byte("idx:metric:" + ns),
-				[]byte("retention:" + ns),
-			},
-		})
-		if err != nil {
-			return false, err
-		}
-		found, ok := res.(bool)
-		if !ok {
-			return false, fmt.Errorf("shared keyspace probe: unexpected raw lookup result %T", res)
-		}
-		return found, nil
-	}
 }
 
 // ReservedRoots reports the paths the node's own stores occupy as storage
@@ -321,15 +216,6 @@ func (f *LocalBindingFactory) Create(cfg database.DatabaseConfig, dataDir string
 	if b == nil {
 		return f.fallback.Create(cfg, dataDir)
 	}
-	// A database recorded before the binding change keeps its data in the
-	// store it was created with, at dataDir: while its binding root does
-	// not exist and that store holds data, it opens there as before, not
-	// as a new, empty materialized store. Moving it to the binding root is
-	// a relocation (slice 3b.8), not done here. A fresh create has no data
-	// at dataDir and gets its materialized binding.
-	if preBindingData(b.Backend, b.DataRoot, dataDir) {
-		return f.fallback.Create(cfg, dataDir)
-	}
 	return f.open(b)
 }
 
@@ -408,76 +294,12 @@ func (f *LocalBindingFactory) resolveLocal(cfg *database.DatabaseConfig) (*datab
 	if b.Kind != database.BindingLocal || b.DatabaseBarrier {
 		return nil, nil
 	}
-	probe := f.sharedData
-	if t.Isolation == tenant.IsolationVolume {
-		// A volume tenant's memory and pebble databases both lived in its
-		// shared volume shard before they had their own store.
-		probe = nil
-		if b.Backend == database.BackendMemory || b.Backend == database.BackendPebble {
-			probe = f.volumeData
-		}
-	} else if b.Backend != database.BackendMemory {
-		probe = nil
-	}
-	if probe != nil {
-		// A probe that fails is an error, never "no data": opening an
-		// empty store would hide the database's shared data.
-		legacy, err := probe(b.TenantID, b.Database)
-		if err != nil {
-			return nil, &LegacySharedKeyspaceError{TenantID: b.TenantID, Database: b.Database, Err: err}
-		}
-		if legacy {
-			return nil, nil
-		}
-	}
 	if b.Backend == database.BackendObjstore {
 		if p := f.storageCfg.Objstore.Provider; p != "" && p != "local" {
 			return nil, &RemoteObjstoreBindingUnsupportedError{TenantID: b.TenantID, Database: b.Database, Provider: p}
 		}
 	}
 	return b, nil
-}
-
-// preBindingData reports a database whose data predates its binding: the
-// binding root does not exist, and the store at dataDir, where the database
-// was opened before, holds data. A memory store (no root) has nothing at
-// rest to keep.
-func preBindingData(backend database.BackendType, root, dataDir string) bool {
-	if strings.TrimSpace(root) == "" || strings.TrimSpace(dataDir) == "" {
-		return false
-	}
-	probe := root
-	if filepath.Clean(root) == filepath.Clean(dataDir) {
-		// An explicit data_dir is the binding root itself: the database
-		// wrote its store straight into data_dir before the binding
-		// change, and the binding opens its own store one level down
-		// (NewLocalStorage: <root>/pebble, <root>/file). Until that store
-		// exists, data in data_dir is the legacy placement and keeps its
-		// shared route; relocation is slice 3b.8.
-		probe = bindingStoreDir(backend, root)
-		if probe == "" {
-			return false
-		}
-	}
-	if _, err := os.Stat(probe); !errors.Is(err, fs.ErrNotExist) {
-		return false
-	}
-	entries, err := os.ReadDir(dataDir)
-	return err == nil && len(entries) > 0
-}
-
-// bindingStoreDir names the store directory NewLocalStorage opens under a
-// binding root, or "" for a backend whose store is not a subdirectory of
-// it.
-func bindingStoreDir(backend database.BackendType, root string) string {
-	switch backend {
-	case database.BackendPebble:
-		return filepath.Join(root, "pebble")
-	case database.BackendFile:
-		return filepath.Join(root, "file")
-	default:
-		return ""
-	}
 }
 
 // Close releases the embedded factory.

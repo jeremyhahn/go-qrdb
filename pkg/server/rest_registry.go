@@ -17,7 +17,6 @@ package server
 import (
 	"context"
 	"errors"
-	"sync"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
@@ -69,11 +68,6 @@ type restServiceRegistry struct {
 	catalog     DatabaseCatalog
 	tenantHosts *TenantHostRegistry
 	raftBackend *RaftBackendFactory
-
-	// raftGroupNotLegacy caches the (tenant, db) raft databases whose
-	// pre-OD-1 shard holds no keys under their prefix, so they are served
-	// from their own group (legacySharedRaftDatabase).
-	raftGroupNotLegacy sync.Map
 
 	accountant   *quota.Accountant
 	systemTenant string
@@ -224,15 +218,10 @@ func withTenantHostRegistry(reg *TenantHostRegistry) RESTRegistryOption {
 // When configured, every backend: raft database -- an IsolationRaft tenant's,
 // and a prefix, barrier or volume tenant's (OD-1 A) -- is routed to its own
 // dedicated Raft shard on the shared system Host instead of the shared system
-// service set or the tenant's volume shard. The registry installs its legacy
-// probe on the factory, so the drop fence (storeResolver.FenceTarget) routes
-// a raft database exactly as resolve does.
+// service set or the tenant's volume shard.
 func withRaftBackendFactory(f *RaftBackendFactory) RESTRegistryOption {
 	return func(r *restServiceRegistry) {
 		r.raftBackend = f
-		if f != nil {
-			f.SetLegacySharedProbe(r.legacySharedRaftDatabase)
-		}
 	}
 }
 
@@ -404,9 +393,7 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 	// OD-1 A: every backend: raft database runs its own Raft group, whatever
 	// the tenant's isolation -- a prefix tenant's under the node barrier, a
 	// barrier or volume tenant's under its tenant barrier -- with its keys at
-	// the root of the group's store. A legacy raft database whose keys still
-	// sit under its prefix in the shared or volume shard keeps that route
-	// until relocation (3b.8).
+	// the root of the group's store.
 	if isolation != tenant.IsolationRaft {
 		raftGroup, err := r.isRaftGroupDatabase(tenantID, db, isolation, managed)
 		if err != nil {
@@ -609,9 +596,7 @@ func (r *restServiceRegistry) resolveRaftGroup(tenantID, db string, info *tenant
 // isRaftGroupDatabase reports whether a non-raft tenant's database is a
 // backend: raft database served from its own group: the raft backend
 // factory knows its shard, the open database (when this node has it) says
-// backend raft without a database barrier (that layering is 3b.5), and it
-// is not a legacy database whose keys still sit under its prefix in the
-// shared or volume shard.
+// backend raft without a database barrier (that layering is 3b.5).
 func (r *restServiceRegistry) isRaftGroupDatabase(tenantID, db string, isolation tenant.IsolationType, managed managedRecord) (bool, error) {
 	if r.raftBackend == nil {
 		return false, nil
@@ -622,49 +607,7 @@ func (r *restServiceRegistry) isRaftGroupDatabase(tenantID, db string, isolation
 			return false, nil
 		}
 	}
-	return r.raftBackend.ServesOwnGroup(tenantID, db, isolation, r.legacySharedRaftDatabase)
-}
-
-// legacySharedRaftDatabase reports whether the shard that served a raft
-// database before OD-1 A (the shared system shard for a prefix or barrier
-// tenant, the tenant's volume shard for a volume tenant) still holds keys
-// under the database's namespace. Such a database keeps its shared route
-// until relocation (3b.8). Only the "not legacy" verdict is cached: new
-// writes go to the group, so no keys can appear under the prefix later.
-func (r *restServiceRegistry) legacySharedRaftDatabase(tenantID, db string, isolation tenant.IsolationType) (bool, error) {
-	cacheKey := tenantID + "\x00" + db
-	if _, ok := r.raftGroupNotLegacy.Load(cacheKey); ok {
-		return false, nil
-	}
-	ctx := context.Background()
-	var kv service.KVServicer
-	if isolation == tenant.IsolationVolume {
-		if r.tenantHosts == nil {
-			// No volume shard is served here, so none can hold legacy data.
-			r.raftGroupNotLegacy.Store(cacheKey, struct{}{})
-			return false, nil
-		}
-		base, err := r.tenantHosts.Services(ctx, tenantID)
-		if err != nil {
-			return false, err
-		}
-		kv = base.KV
-	} else if shared := r.dbReg.Default(); shared != nil {
-		kv = shared.KV
-	}
-	if kv == nil {
-		r.raftGroupNotLegacy.Store(cacheKey, struct{}{})
-		return false, nil
-	}
-	keys, err := kv.List(ctx, tenant.ComposeNamespace(tenantID, db))
-	if err != nil {
-		return false, err
-	}
-	if len(keys) > 0 {
-		return true, nil
-	}
-	r.raftGroupNotLegacy.Store(cacheKey, struct{}{})
-	return false, nil
+	return r.raftBackend.HostsDatabase(tenantID, db), nil
 }
 
 func (r *restServiceRegistry) resolveDedicatedDatabaseBarrier(tenantID, db string, info *tenant.TenantInfo) (*DatabaseServices, error) {

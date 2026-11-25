@@ -1487,11 +1487,7 @@ Each requirement lands with the tests named here.
   where its binding says and nowhere else, and the control-plane store holds
   none of them; SQL `CREATE DATABASE` produces the default backend; changing
   `--sm` changes no database's backend.
-- **Relocation.** Data written before bindings -- KV, SQL tables with sequences
-  and generation-scoped keys, collections, secondary indexes, time series with
-  tags and retention -- reads back identically after relocation; the source
-  keyspace is empty by exact-key probe; a write during relocation is refused
-  retryably and succeeds after; a crash injected at each step recovers.
+- **Pre-binding data.** Data written before bindings is not read: every database opens its own binding, whatever its old shared route or data_dir holds.
 - **Vector import.** A node-local fixture imports into the right databases with
   IDs and metadata preserved; each conflict policy behaves as specified; an
   unattributable namespace is reported and skipped.

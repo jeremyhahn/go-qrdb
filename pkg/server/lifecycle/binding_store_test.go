@@ -24,7 +24,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -33,7 +32,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
-	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -41,8 +39,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
-	"github.com/jeremyhahn/go-qrdb/pkg/storage"
-	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -107,133 +103,6 @@ func openBack(t *testing.T, b database.BackendType, root string, enc *atrest.Enc
 		_ = local.Close()
 		_ = stg.Close()
 	}, nil
-}
-
-// failingLookup is a shared engine whose every read fails.
-type failingLookup struct {
-	backend.SMAdapter
-	err error
-}
-
-func (f failingLookup) Lookup(context.Context, interface{}) (interface{}, error) { return nil, f.err }
-
-func TestSharedStoreKeyspaceProbe_ReportsOnlyItsNamespace(t *testing.T) {
-	ctx := context.Background()
-	stg, pdb, err := lifecycle.NewLocalStorage(database.BackendMemory, t.TempDir(), nil, qrdbconfig.StorageConfig{})
-	if err != nil {
-		t.Fatalf("NewLocalStorage: %v", err)
-	}
-	eng, err := lifecycle.NewLocalEngine(database.BackendMemory, stg, pdb, watch.NewHub(), lease.NewLessor())
-	if err != nil {
-		_ = stg.Close()
-		t.Fatalf("NewLocalEngine: %v", err)
-	}
-	host := backend.NewLocalBackend(eng)
-	t.Cleanup(func() {
-		_ = host.Close()
-		_ = stg.Close()
-	})
-	probe := lifecycle.SharedStoreKeyspaceProbe(eng)
-
-	if got, err := probe("acme", "orders"); err != nil || got {
-		t.Fatalf("empty store: probe = %v, %v; want false, nil", got, err)
-	}
-
-	key := tenant.ComposeNamespace("acme", "orders") + "k"
-	if err := service.NewKVService(host, shard.ShardKV).Put(ctx, key, []byte("v")); err != nil {
-		t.Fatalf("put %s: %v", key, err)
-	}
-	if got, err := probe("acme", "orders"); err != nil || !got {
-		t.Errorf("acme/orders: probe = %v, %v; want true, nil", got, err)
-	}
-	// "order" is a prefix of "orders" but a different database: the
-	// namespace's trailing separator keeps its probe off orders' keys.
-	for _, other := range [][2]string{{"acme", "order"}, {"acme", "orders2"}, {"acm", "orders"}, {"acme2", "orders"}} {
-		if got, err := probe(other[0], other[1]); err != nil || got {
-			t.Errorf("%s/%s: probe = %v, %v; want false, nil", other[0], other[1], got, err)
-		}
-	}
-
-	readErr := errors.New("shared store read failed")
-	if got, err := lifecycle.SharedStoreKeyspaceProbe(failingLookup{err: readErr})("acme", "orders"); !errors.Is(err, readErr) || got {
-		t.Errorf("failing store: probe = %v, %v; want false, %v", got, err, readErr)
-	}
-}
-
-// TestSharedStoreKeyspaceProbe_SeesTimeSeriesOnlyDatabase proves the legacy
-// probe finds a database whose only data is time series: its raw keys start
-// "ts:" + namespace, not the namespace, and hold no MVCC metadata.
-func TestSharedStoreKeyspaceProbe_SeesTimeSeriesOnlyDatabase(t *testing.T) {
-	ctx := context.Background()
-	stg, pdb, err := lifecycle.NewLocalStorage(database.BackendMemory, t.TempDir(), nil, qrdbconfig.StorageConfig{})
-	if err != nil {
-		t.Fatalf("NewLocalStorage: %v", err)
-	}
-	eng, err := lifecycle.NewLocalEngine(database.BackendMemory, stg, pdb, watch.NewHub(), lease.NewLessor())
-	if err != nil {
-		_ = stg.Close()
-		t.Fatalf("NewLocalEngine: %v", err)
-	}
-	host := backend.NewLocalBackend(eng)
-	t.Cleanup(func() {
-		_ = host.Close()
-		_ = stg.Close()
-	})
-	probe := lifecycle.SharedStoreKeyspaceProbe(eng)
-
-	ts := service.NewTimeSeriesService(host, shard.ShardKV)
-	if err := ts.Write(ctx, tenant.ComposeNamespace("acme", "orders")+"cpu", 1, time.Unix(1700000000, 0), nil); err != nil {
-		t.Fatalf("write point: %v", err)
-	}
-
-	found, err := probe("acme", "orders")
-	if err != nil || !found {
-		t.Fatalf("probe(acme, orders) = %v, %v; want true, nil", found, err)
-	}
-	found, err = probe("acme", "order")
-	if err != nil || found {
-		t.Fatalf("probe(acme, order) = %v, %v; want false, nil", found, err)
-	}
-}
-
-// probeReadFaultStorage fails every point read once armed: a KV key's value
-// read under the probe's prefix scan faults through the engine.
-type probeReadFaultStorage struct {
-	storage.Storage
-	err error
-}
-
-func (s *probeReadFaultStorage) Get(key []byte) ([]byte, error) {
-	if s.err != nil {
-		return nil, s.err
-	}
-	return s.Storage.Get(key)
-}
-
-// TestSharedStoreKeyspaceProbe_ReturnsAReadFault proves a read fault under
-// the namespace is the probe's error, never a "no legacy data" false.
-func TestSharedStoreKeyspaceProbe_ReturnsAReadFault(t *testing.T) {
-	ctx := context.Background()
-	stg := &probeReadFaultStorage{Storage: memory.NewStorage()}
-	eng, err := engine.NewMVCCEngine(stg)
-	if err != nil {
-		t.Fatalf("NewMVCCEngine: %v", err)
-	}
-	host := backend.NewLocalBackend(eng)
-	t.Cleanup(func() {
-		_ = host.Close()
-		_ = stg.Close()
-	})
-	key := tenant.ComposeNamespace("acme", "orders") + "k"
-	if err := service.NewKVService(host, shard.ShardKV).Put(ctx, key, []byte("v")); err != nil {
-		t.Fatalf("put %s: %v", key, err)
-	}
-
-	stg.err = errors.New("injected value read fault")
-	found, err := lifecycle.SharedStoreKeyspaceProbe(eng)("acme", "orders")
-	if !errors.Is(err, stg.err) || found {
-		t.Fatalf("probe = %v, %v; want false and the read fault", found, err)
-	}
 }
 
 func TestLocalBindingFactory_OwnStorePerBackend(t *testing.T) {
@@ -367,213 +236,80 @@ func TestLocalBindingFactory_NonQualifyingDelegates(t *testing.T) {
 // factory, opened on this node or not.
 var _ database.RecordRootResolver = (*lifecycle.LocalBindingFactory)(nil)
 
-// TestLocalBindingFactory_PreBindingDataKept proves a database recorded
-// before the binding change keeps reading the data in the store it was
-// created with: reopened through the binding factory, with no binding root
-// on disk, it opens that store, not a new empty one. A fresh create of
-// another database still gets its materialized binding, and RecordRoot names
-// the root Create opens.
-func TestLocalBindingFactory_PreBindingDataKept(t *testing.T) {
+// TestLocalBindingFactory_CreateMaterializesDespiteSharedKeys proves a database opens its own materialized binding whatever data sits on its old shared route or in its dataDir.
+func TestLocalBindingFactory_CreateMaterializesDespiteSharedKeys(t *testing.T) {
 	ctx := context.Background()
-	dir := t.TempDir()
-	legacy := database.DatabaseConfig{TenantID: bindingTenant, Name: "legacy", Backend: database.BackendPebble}
-	legacyDir := filepath.Join(dir, "legacy-data")
-
-	// Written the way the database was served before the binding change.
-	before, err := database.NewEmbeddedBackendFactory().Create(legacy, legacyDir)
-	if err != nil {
-		t.Fatalf("pre-binding Create: %v", err)
-	}
-	if err := before.Put(ctx, []byte("k"), []byte("v")); err != nil {
-		t.Fatalf("pre-binding Put: %v", err)
-	}
-	if err := before.Close(); err != nil {
-		t.Fatalf("pre-binding Close: %v", err)
-	}
-
-	f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, qrdbconfig.StorageConfig{}, prefixTenants)
-	be, err := f.Create(legacy, legacyDir)
-	if err != nil {
-		t.Fatalf("reopen legacy: %v", err)
-	}
-	if _, ok := be.(*lifecycle.MaterializedBinding); ok {
-		t.Fatal("a database with pre-binding data was reopened as a new materialized store")
-	}
-	got, err := be.Get(ctx, []byte("k"))
-	if err != nil || string(got) != "v" {
-		t.Fatalf("legacy Get(k) = %q, %v; want v", got, err)
-	}
-	if err := be.Close(); err != nil {
-		t.Fatalf("legacy Close: %v", err)
-	}
-
-	fresh := database.DatabaseConfig{TenantID: bindingTenant, Name: "fresh", Backend: database.BackendPebble}
-	fb, err := f.Create(fresh, filepath.Join(dir, "fresh-data"))
-	if err != nil {
-		t.Fatalf("Create fresh: %v", err)
-	}
-	defer func() { _ = fb.Close() }()
-	mb, ok := fb.(*lifecycle.MaterializedBinding)
-	if !ok {
-		t.Fatalf("fresh backend = %T, want *lifecycle.MaterializedBinding", fb)
-	}
-	root, err := f.RecordRoot(fresh)
-	if err != nil || root != mb.DataRoot() {
-		t.Fatalf("RecordRoot(fresh) = %q, %v; want %q", root, err, mb.DataRoot())
-	}
-}
-
-// TestLocalBindingFactory_LegacyMemoryDatabaseKeepsSharedRoute proves a
-// backend: memory database recorded before the binding change, whose data
-// lives under its namespace of the shared store, is not reopened as a new,
-// empty materialized memory store: it keeps the shared route, and no binding
-// is recorded for it. A probe that cannot read the shared store fails the
-// open rather than hide that data.
-func TestLocalBindingFactory_LegacyMemoryDatabaseKeepsSharedRoute(t *testing.T) {
-	dir := t.TempDir()
-	legacy := database.DatabaseConfig{TenantID: bindingTenant, Name: "legacy", Backend: database.BackendMemory}
-	var probed []string
-	f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, qrdbconfig.StorageConfig{}, prefixTenants).
-		WithSharedKeyspaceProbe(func(tenantID, db string) (bool, error) {
-			probed = append(probed, tenantID+"/"+db)
-			return db == "legacy", nil
-		})
-
-	be, err := f.Create(legacy, filepath.Join(dir, "legacy-data"))
-	if err != nil {
-		t.Fatalf("Create legacy: %v", err)
-	}
-	defer func() { _ = be.Close() }()
-	if _, ok := be.(*lifecycle.MaterializedBinding); ok {
-		t.Fatal("a memory database with shared data was opened as a new materialized store")
-	}
-	if want := []string{bindingTenant + "/legacy"}; !slices.Equal(probed, want) {
-		t.Fatalf("probed %q, want %q", probed, want)
-	}
-	if b, err := f.RecordBinding(legacy); err != nil || b != nil {
-		t.Fatalf("RecordBinding(legacy) = %v, %v; want no binding", b, err)
-	}
-	if root, err := f.RecordRoot(legacy); err != nil || root != "" {
-		t.Fatalf("RecordRoot(legacy) = %q, %v; want none", root, err)
-	}
-
-	boom := errors.New("shared store unreadable")
-	failing := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, qrdbconfig.StorageConfig{}, prefixTenants).
-		WithSharedKeyspaceProbe(func(string, string) (bool, error) { return false, boom })
-	got, err := failing.Create(legacy, filepath.Join(dir, "legacy-data"))
-	var probeErr *lifecycle.LegacySharedKeyspaceError
-	if !errors.As(err, &probeErr) || !errors.Is(err, boom) || probeErr.Error() == "" {
-		t.Fatalf("Create over an unreadable shared store = %T, %v; want *LegacySharedKeyspaceError", got, err)
-	}
-}
-
-// TestLocalBindingFactory_FreshMemoryDatabaseIsMaterialized proves a
-// backend: memory database with no data under its shared namespace -- a
-// fresh create, or one reopened after the binding change -- is materialized
-// in its own store, and only backend: memory consults the probe.
-func TestLocalBindingFactory_FreshMemoryDatabaseIsMaterialized(t *testing.T) {
-	ctx := context.Background()
-	dir := t.TempDir()
-	var probed []string
-	f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, qrdbconfig.StorageConfig{}, prefixTenants).
-		WithSharedKeyspaceProbe(func(tenantID, db string) (bool, error) {
-			probed = append(probed, tenantID+"/"+db)
-			return false, nil
-		})
-
-	fresh := database.DatabaseConfig{TenantID: bindingTenant, Name: "fresh", Backend: database.BackendMemory}
-	be, err := f.Create(fresh, filepath.Join(dir, "fresh-data"))
-	if err != nil {
-		t.Fatalf("Create fresh: %v", err)
-	}
-	defer func() { _ = be.Close() }()
-	mb, ok := be.(*lifecycle.MaterializedBinding)
-	if !ok {
-		t.Fatalf("fresh backend = %T, want *lifecycle.MaterializedBinding", be)
-	}
-	if err := mb.Put(ctx, []byte("k"), []byte("v")); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-	if b, err := f.RecordBinding(fresh); err != nil || b == nil {
-		t.Fatalf("RecordBinding(fresh) = %v, %v; want its binding", b, err)
-	}
-
-	pebble := database.DatabaseConfig{TenantID: bindingTenant, Name: "disk", Backend: database.BackendPebble}
-	pb, err := f.Create(pebble, filepath.Join(dir, "disk-data"))
-	if err != nil {
-		t.Fatalf("Create pebble: %v", err)
-	}
-	defer func() { _ = pb.Close() }()
-	for _, p := range probed {
-		if p != bindingTenant+"/fresh" {
-			t.Fatalf("probe consulted for %q; only backend: memory is probed", p)
-		}
-	}
-	if len(probed) == 0 {
-		t.Fatal("the probe was never consulted for the memory database")
-	}
-}
-
-// TestLocalBindingFactory_ExplicitDataDirLegacyKept proves a database with
-// an explicit data_dir, whose binding root is that data_dir, keeps the store
-// it wrote straight into data_dir before the binding change: reopened
-// through the factory, it is served from there, not from a new empty
-// <data_dir>/<backend> store. A fresh create under an empty explicit
-// data_dir is materialized, and stays materialized when reopened.
-func TestLocalBindingFactory_ExplicitDataDirLegacyKept(t *testing.T) {
-	ctx := context.Background()
-	for _, b := range []database.BackendType{database.BackendPebble, database.BackendFile} {
-		t.Run(string(b), func(t *testing.T) {
-			dir := t.TempDir()
-			legacyDir := filepath.Join(dir, "explicit-legacy")
-			legacy := database.DatabaseConfig{TenantID: bindingTenant, Name: "legacy", Backend: b, DataDir: legacyDir}
-
-			before, err := database.NewEmbeddedBackendFactory().Create(legacy, legacyDir)
-			if err != nil {
-				t.Fatalf("pre-binding Create: %v", err)
-			}
-			if err := before.Put(ctx, []byte("k"), []byte("v")); err != nil {
-				t.Fatalf("pre-binding Put: %v", err)
-			}
-			if err := before.Close(); err != nil {
-				t.Fatalf("pre-binding Close: %v", err)
-			}
-
-			f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, qrdbconfig.StorageConfig{}, prefixTenants)
-			be, err := f.Create(legacy, legacyDir)
-			if err != nil {
-				t.Fatalf("reopen legacy: %v", err)
-			}
-			if _, ok := be.(*lifecycle.MaterializedBinding); ok {
-				t.Fatal("a legacy explicit data_dir database was reopened as a new materialized store")
-			}
-			got, err := be.Get(ctx, []byte("k"))
-			if err != nil || string(got) != "v" {
-				t.Fatalf("legacy Get(k) = %q, %v; want v", got, err)
-			}
-			if err := be.Close(); err != nil {
-				t.Fatalf("legacy Close: %v", err)
-			}
-			if _, err := os.Stat(filepath.Join(legacyDir, string(b))); !os.IsNotExist(err) {
-				t.Fatalf("the reopen created a binding store under the legacy data_dir (%v)", err)
-			}
-
-			freshDir := filepath.Join(dir, "explicit-fresh")
-			fresh := database.DatabaseConfig{TenantID: bindingTenant, Name: "fresh", Backend: b, DataDir: freshDir}
-			for i := 0; i < 2; i++ {
-				fb, err := f.Create(fresh, freshDir)
+	tenantEnc := atrest.New(newUnsealedBarrier(t))
+	volumeSvc := &isolationTenantService{isolation: tenant.IsolationVolume}
+	for _, raftMode := range []bool{false, true} {
+		for _, tc := range []struct {
+			name    string
+			backend database.BackendType
+			volume  bool
+		}{
+			{"prefix-memory", database.BackendMemory, false},
+			{"prefix-pebble", database.BackendPebble, false},
+			{"volume-pebble", database.BackendPebble, true},
+		} {
+			t.Run(fmt.Sprintf("raft=%v/%s", raftMode, tc.name), func(t *testing.T) {
+				dir := t.TempDir()
+				volRoot := t.TempDir()
+				node := database.BindingNode{DataDir: dir, RaftMode: raftMode}
+				f := lifecycle.NewLocalBindingFactory(node, nil, qrdbconfig.StorageConfig{}, prefixTenants)
+				if tc.volume {
+					f = lifecycle.NewLocalBindingFactory(node, nil, qrdbconfig.StorageConfig{},
+						lifecycle.TenantServiceBindingLookup(
+							func() tenant.TenantServicer { return volumeSvc },
+							func() lifecycle.TenantDataRootResolver { return staticDataRoot(volRoot) },
+						)).
+						WithTenantEncryptors(func(string) (*atrest.Encryptor, error) { return tenantEnc, nil })
+				}
+				defer func() { _ = f.Close() }()
+				cfg := database.DatabaseConfig{TenantID: bindingTenant, Name: "app", Backend: tc.backend}
+				dataDir := filepath.Join(dir, "shared-data")
+				// The shared route's store at dataDir holds a key under the database's prefix.
+				shared, err := database.NewEmbeddedBackendFactory().Create(cfg, dataDir)
 				if err != nil {
-					t.Fatalf("Create fresh (open %d): %v", i, err)
+					t.Fatalf("shared Create: %v", err)
 				}
-				_, ok := fb.(*lifecycle.MaterializedBinding)
-				if err := fb.Close(); err != nil {
-					t.Fatalf("Close fresh (open %d): %v", i, err)
+				key := []byte(tenant.ComposeNamespace(bindingTenant, "app") + "k")
+				if err := shared.Put(ctx, key, []byte("v")); err != nil {
+					t.Fatalf("shared Put: %v", err)
 				}
+				if err := shared.Close(); err != nil {
+					t.Fatalf("shared Close: %v", err)
+				}
+				if tc.backend == database.BackendMemory {
+					if err := os.MkdirAll(dataDir, 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(dataDir, "stale"), []byte("x"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				be, err := f.Create(cfg, dataDir)
+				if err != nil {
+					t.Fatalf("Create: %v", err)
+				}
+				defer func() { _ = be.Close() }()
+				mb, ok := be.(*lifecycle.MaterializedBinding)
 				if !ok {
-					t.Fatalf("fresh explicit data_dir backend (open %d) = %T, want *lifecycle.MaterializedBinding", i, fb)
+					t.Fatalf("Create = %T, want *lifecycle.MaterializedBinding", be)
 				}
-			}
-		})
+				if got, _ := mb.Get(ctx, key); string(got) == "v" {
+					t.Fatal("the materialized binding served the shared route's data")
+				}
+				root, err := f.RecordRoot(cfg)
+				if err != nil || root != mb.DataRoot() {
+					t.Fatalf("RecordRoot = %q, %v; want %q", root, err, mb.DataRoot())
+				}
+				if tc.volume {
+					if rel, rerr := filepath.Rel(volRoot, mb.DataRoot()); rerr != nil || strings.HasPrefix(rel, "..") {
+						t.Fatalf("volume DataRoot = %q, want under %q", mb.DataRoot(), volRoot)
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -1001,64 +737,6 @@ func TestLocalBindingFactory_VolumeTenantDatabaseOwnStore(t *testing.T) {
 				t.Fatalf("Create %s = %v, want *BackendIsolationConflictError", b, err)
 			}
 		})
-	}
-}
-
-// TestLocalBindingFactory_VolumeTenantLegacyDatabaseKeepsSharedRoute checks a
-// volume tenant's database whose data already sits in the tenant's shared
-// volume store keeps that route instead of opening a new store.
-func TestLocalBindingFactory_VolumeTenantLegacyDatabaseKeepsSharedRoute(t *testing.T) {
-	dir := t.TempDir()
-	tenantEnc := atrest.New(newUnsealedBarrier(t))
-	svc := &isolationTenantService{isolation: tenant.IsolationVolume}
-	legacy := database.DatabaseConfig{TenantID: bindingTenant, Name: "legacy", Backend: database.BackendMemory}
-	var probed []string
-	f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, qrdbconfig.StorageConfig{},
-		lifecycle.TenantServiceBindingLookup(
-			func() tenant.TenantServicer { return svc },
-			func() lifecycle.TenantDataRootResolver { return staticDataRoot(t.TempDir()) },
-		)).
-		WithTenantEncryptors(func(string) (*atrest.Encryptor, error) { return tenantEnc, nil }).
-		WithSharedKeyspaceProbe(func(string, string) (bool, error) {
-			t.Fatal("a volume tenant's database was probed on the node's shared store")
-			return false, nil
-		}).
-		WithVolumeKeyspaceProbe(func(tenantID, db string) (bool, error) {
-			probed = append(probed, tenantID+"/"+db)
-			return db == "legacy", nil
-		})
-	for _, b := range []database.BackendType{database.BackendMemory, database.BackendPebble} {
-		cfg := legacy
-		cfg.Backend = b
-		be, err := f.Create(cfg, filepath.Join(dir, "legacy-data-"+string(b)))
-		if err != nil {
-			t.Fatalf("Create legacy %s: %v", b, err)
-		}
-		if _, ok := be.(*lifecycle.MaterializedBinding); ok {
-			t.Fatalf("a volume tenant's %s database with shared data was opened as a new materialized store", b)
-		}
-		_ = be.Close()
-		if rb, err := f.RecordBinding(cfg); err != nil || rb != nil {
-			t.Fatalf("RecordBinding(legacy %s) = %v, %v; want no binding", b, rb, err)
-		}
-	}
-	// Create and RecordBinding each probe once per backend.
-	if want := slices.Repeat([]string{bindingTenant + "/legacy"}, 4); !slices.Equal(probed, want) {
-		t.Fatalf("probed %q, want %q", probed, want)
-	}
-
-	boom := errors.New("volume shard unreadable")
-	failing := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, qrdbconfig.StorageConfig{},
-		lifecycle.TenantServiceBindingLookup(
-			func() tenant.TenantServicer { return svc },
-			func() lifecycle.TenantDataRootResolver { return staticDataRoot(t.TempDir()) },
-		)).
-		WithTenantEncryptors(func(string) (*atrest.Encryptor, error) { return tenantEnc, nil }).
-		WithVolumeKeyspaceProbe(func(string, string) (bool, error) { return false, boom })
-	got, err := failing.Create(legacy, filepath.Join(dir, "legacy-data"))
-	var probeErr *lifecycle.LegacySharedKeyspaceError
-	if !errors.As(err, &probeErr) || !errors.Is(err, boom) {
-		t.Fatalf("Create over an unreadable volume shard = %T, %v; want *LegacySharedKeyspaceError", got, err)
 	}
 }
 

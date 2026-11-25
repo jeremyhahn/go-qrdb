@@ -1986,8 +1986,7 @@ func (n *Node) startLeaseExpiryStandalone(lr *lease.Lessor, leaseSvc service.Lea
 func (n *Node) newStandaloneDatabaseManager(dataDir string, cfg *qrdbconfig.Config, enc *atrest.Encryptor, shared backend.SMAdapter) (*database.Manager, error) {
 	defaults := standaloneDatabaseDefaults(cfg)
 	dbManager := database.NewManager(n.logger, dataDir, database.WithDefaults(defaults))
-	if err := n.installBindingFactory(dbManager, dataDir, defaults, enc, cfg.Storage, false,
-		lifecycle.SharedStoreKeyspaceProbe(shared)); err != nil {
+	if err := n.installBindingFactory(dbManager, dataDir, defaults, enc, cfg.Storage, false); err != nil {
 		_ = dbManager.Close()
 		return nil, err
 	}
@@ -2001,10 +2000,9 @@ func (n *Node) newStandaloneDatabaseManager(dataDir string, cfg *qrdbconfig.Conf
 // materialized in its own store under its binding root, sealed under enc, with
 // its tenant and tenant barrier resolved live from the services built after
 // the manager. On a raft-mode node (raftMode) a backend: raft database stays
-// on the Manager's raft path. probe keeps a backend: memory database whose
-// data predates its own store on the shared route it lives in.
+// on the Manager's raft path.
 func (n *Node) installBindingFactory(dbManager *database.Manager, dataDir string, defaults database.Defaults,
-	enc *atrest.Encryptor, storageCfg qrdbconfig.StorageConfig, raftMode bool, probe lifecycle.SharedKeyspaceProbe) error {
+	enc *atrest.Encryptor, storageCfg qrdbconfig.StorageConfig, raftMode bool) error {
 	bf := lifecycle.NewNodeBindingFactory(dataDir, defaults, enc, storageCfg,
 		func() tenant.TenantServicer {
 			if svcNode := n.svcNode.Load(); svcNode != nil {
@@ -2012,20 +2010,11 @@ func (n *Node) installBindingFactory(dbManager *database.Manager, dataDir string
 			}
 			return nil
 		},
-		n.barrierRegistry.Load, n.watchHubOpts...).
-		WithSharedKeyspaceProbe(probe)
+		n.barrierRegistry.Load, n.watchHubOpts...)
 	if raftMode {
 		bf = bf.WithRaftMode()
 	}
 	return dbManager.SetBackendFactory(bf)
-}
-
-// systemShardKeyspaceProbe probes the legacy shared route of a raft-mode node
-// on this replica's system shard.
-func systemShardKeyspaceProbe(host *quicraft.Host) lifecycle.SharedKeyspaceProbe {
-	return lifecycle.LookupKeyspaceProbe(func(ctx context.Context, query interface{}) (interface{}, error) {
-		return host.StaleRead(ctx, shard.ShardKV, query)
-	})
 }
 
 // closeDatabaseManager closes the node's database catalog, if open.
@@ -2450,7 +2439,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	dbManager := database.NewManager(n.logger, pending.cfg.Raft.DataDir,
 		database.WithDefaults(clusteredDefaults))
 	if err := n.installBindingFactory(dbManager, pending.cfg.Raft.DataDir, clusteredDefaults, encryptor,
-		pending.cfg.Storage, true, systemShardKeyspaceProbe(host)); err != nil {
+		pending.cfg.Storage, true); err != nil {
 		_ = host.Close()
 		_ = dbManager.Close()
 		return &HostCreateError{Err: err}
@@ -3531,7 +3520,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 	dbManager := database.NewManager(n.logger, dataDir,
 		database.WithDefaults(clusteredDefaults))
 	if err := n.installBindingFactory(dbManager, dataDir, clusteredDefaults, nil,
-		cfg.Storage, true, systemShardKeyspaceProbe(host)); err != nil {
+		cfg.Storage, true); err != nil {
 		_ = host.Close()
 		_ = dbManager.Close()
 		return nil, err

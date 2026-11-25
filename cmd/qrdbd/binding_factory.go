@@ -16,16 +16,12 @@ import (
 // tenant, except its system database) is materialized in its own store under
 // its binding root, written through the binding's encryptor
 // (docs/databases/architecture.md). On a raft-mode node (raftMode) a
-// backend: raft database is left to the Manager's raft path. probe reports
-// whether a backend: memory database's data predates its own store, so it
-// keeps the shared route it lives in.
+// backend: raft database is left to the Manager's raft path.
 func installBindingFactory(dbManager *database.Manager, dataDir string, defaults database.Defaults,
 	enc *atrest.Encryptor, storageCfg qrdbconfig.StorageConfig, tenants func() tenant.TenantServicer,
-	barriers func() *seal.BarrierRegistry, raftMode bool, probe, volumeProbe lifecycle.SharedKeyspaceProbe,
+	barriers func() *seal.BarrierRegistry, raftMode bool,
 	hubOpts ...watch.HubOption) (*lifecycle.LocalBindingFactory, error) {
-	bf := lifecycle.NewNodeBindingFactory(dataDir, defaults, enc, storageCfg, tenants, barriers, hubOpts...).
-		WithSharedKeyspaceProbe(probe).
-		WithVolumeKeyspaceProbe(volumeProbe)
+	bf := lifecycle.NewNodeBindingFactory(dataDir, defaults, enc, storageCfg, tenants, barriers, hubOpts...)
 	if raftMode {
 		bf = bf.WithRaftMode()
 	}

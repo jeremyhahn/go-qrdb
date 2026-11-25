@@ -125,9 +125,8 @@ type homeFenceSource interface {
 // raftGroupSource is the raft fence source that also serves non-raft
 // tenants' raft databases from their own groups (*RaftBackendFactory).
 type raftGroupSource interface {
-	// ServesOwnGroup reports whether a non-raft tenant's database runs its
-	// own Raft group (OD-1 A), with nil selecting the installed legacy probe.
-	ServesOwnGroup(tenantID, db string, isolation tenant.IsolationType, probe LegacySharedProbe) (bool, error)
+	// HostsDatabase reports whether a non-raft tenant's database runs its own Raft group.
+	HostsDatabase(tenantID, db string) bool
 }
 
 // Compile-time check: the production source is the factory.
@@ -252,11 +251,7 @@ func (r *storeResolver) fenceTarget(ctx context.Context, tenantID, db, incarnati
 		// OD-1 A: a prefix, barrier or volume tenant's backend: raft database
 		// runs its own group, so its fence goes there -- the same rule the
 		// request path applies (restServiceRegistry.isRaftGroupDatabase).
-		own, err := groups.ServesOwnGroup(tenantID, db, isolation, nil)
-		if err != nil {
-			return service.FenceStore{}, true, err
-		}
-		group = own
+		group = groups.HostsDatabase(tenantID, db)
 	}
 	if group {
 		return r.raftFenceTarget(ctx, tenantID, db, incarnation, isolation)

@@ -271,9 +271,6 @@ type RaftBackendFactory struct {
 	// (which has no tenant barrier) runs under the node barrier. Nil means
 	// every tenant must have a tenant barrier.
 	isolation TenantIsolationLookup
-	// legacyProbe is the REST registry's legacy shared-route probe
-	// (ServesOwnGroup); guarded by mu.
-	legacyProbe LegacySharedProbe
 	// sealing records the watched barriers that have begun to seal and not
 	// been unsealed since: no shard of theirs starts while one is listed, so
 	// nothing opens a tenant's WAL between the seal's drain of its shards and
@@ -454,43 +451,6 @@ func (f *RaftBackendFactory) HostsDatabase(tenantID, db string) bool {
 	// A dropping database still routes here, so its fence refuses requests.
 	_, _, ok := f.dbInfo.databaseInfo(tenantID, db, true)
 	return ok
-}
-
-// LegacySharedProbe reports whether the shard that served a non-raft
-// tenant's raft database before OD-1 A still holds its keys, so it keeps
-// that route until relocation (3b.8).
-type LegacySharedProbe func(tenantID, db string, isolation tenant.IsolationType) (bool, error)
-
-// SetLegacySharedProbe installs the probe ServesOwnGroup uses when its
-// caller passes none (the drop fence's store resolver).
-func (f *RaftBackendFactory) SetLegacySharedProbe(probe LegacySharedProbe) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.legacyProbe = probe
-}
-
-// ServesOwnGroup reports whether a non-raft tenant's database is served from
-// its own Raft group (OD-1 A): this factory hosts its shard and the probe
-// (probe, else the installed one) finds no legacy keys under its prefix in
-// the shard that served it before. Request routing and the drop fence both
-// apply this one rule.
-func (f *RaftBackendFactory) ServesOwnGroup(tenantID, db string, isolation tenant.IsolationType, probe LegacySharedProbe) (bool, error) {
-	if !f.HostsDatabase(tenantID, db) {
-		return false, nil
-	}
-	if probe == nil {
-		f.mu.Lock()
-		probe = f.legacyProbe
-		f.mu.Unlock()
-	}
-	if probe == nil {
-		return true, nil
-	}
-	legacy, err := probe(tenantID, db, isolation)
-	if err != nil {
-		return false, err
-	}
-	return !legacy, nil
 }
 
 func WithFeatureGate(gate *featuregate.Gate) RaftBackendOption {

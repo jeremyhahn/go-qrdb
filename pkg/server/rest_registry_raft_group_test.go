@@ -11,6 +11,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
@@ -160,24 +161,29 @@ func TestRESTServiceRegistry_VolumeTenantRaftDatabaseUsesItsOwnGroup(t *testing.
 	assertGroupStoreUnder(t, dir)
 }
 
-func TestRESTServiceRegistry_LegacyPrefixRaftDatabaseKeepsSharedRoute(t *testing.T) {
+// TestRestRegistry_RaftDatabaseServesOwnGroupWithSharedPrefixKeys proves keys under the database's prefix in the shared shard do not keep it off its own group.
+func TestRestRegistry_RaftDatabaseServesOwnGroupWithSharedPrefixKeys(t *testing.T) {
 	rr, f, shared := raftGroupRegistry(t, "pfx", tenant.IsolationPrefix, "", false)
 	ctx := context.Background()
-	legacyKey := tenant.ComposeNamespace("pfx", "app") + "old"
-	if err := shared.Default().KV.Put(ctx, legacyKey, []byte("legacy")); err != nil {
-		t.Fatalf("seed legacy key: %v", err)
+	sharedKey := tenant.ComposeNamespace("pfx", "app") + "old"
+	if err := shared.Default().KV.Put(ctx, sharedKey, []byte("shared")); err != nil {
+		t.Fatalf("seed shared key: %v", err)
 	}
-	kv, err := rr.KVService("pfx", "app")
+	svcs, err := rr.resolve("pfx", "app")
 	if err != nil {
-		t.Fatalf("KVService: %v", err)
+		t.Fatalf("resolve: %v", err)
 	}
-	raw, err := kv.Get(ctx, "old")
-	if err != nil || string(raw) != "legacy" {
-		t.Fatalf("legacy database Get(old) = %q, %v; want legacy (shared route kept)", raw, err)
+	if svcs.Placement != service.StorePlacementShard {
+		t.Fatalf("Placement = %q, want %q", svcs.Placement, service.StorePlacementShard)
 	}
-	if f.HostsShard("pfx", "app") {
-		t.Errorf("a legacy raft database must not start its own group before relocation (3b.8)")
+	if !f.HostsShard("pfx", "app") {
+		t.Fatal("the raft database did not start its own group")
 	}
+	raw, err := svcs.KV.Get(ctx, "old")
+	if err == nil && string(raw) == "shared" {
+		t.Fatal("the raft database served the shared shard's keys")
+	}
+	assertWriteLandsInOwnGroup(t, rr, f, shared, "pfx")
 }
 
 // TestStoreResolver_FencesAPrefixTenantRaftDatabaseInItsGroup: the drop
@@ -194,11 +200,10 @@ func TestStoreResolver_FencesAPrefixTenantRaftDatabaseInItsGroup(t *testing.T) {
 		t.Fatalf("FenceTarget = %+v, %v, %v; want the group's per-database store", store, ok, err)
 	}
 
-	if err := shared.Default().KV.Put(ctx, tenant.ComposeNamespace("pfx", "app")+"old", []byte("legacy")); err != nil {
-		t.Fatalf("seed legacy key: %v", err)
+	if err := shared.Default().KV.Put(ctx, tenant.ComposeNamespace("pfx", "app")+"old", []byte("shared")); err != nil {
+		t.Fatalf("seed shared key: %v", err)
 	}
-	rr.raftGroupNotLegacy.Delete("pfx\x00app")
-	if store, ok, err := sr.FenceTarget(ctx, "pfx", "app", ""); err != nil || ok {
-		t.Fatalf("legacy FenceTarget = %+v, %v, %v; want the shared store (ok false)", store, ok, err)
+	if store, ok, err := sr.FenceTarget(ctx, "pfx", "app", ""); err != nil || !ok || !store.PerDatabase {
+		t.Fatalf("FenceTarget with shared prefix keys = %+v, %v, %v; want the group's per-database store", store, ok, err)
 	}
 }

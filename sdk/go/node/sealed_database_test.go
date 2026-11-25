@@ -211,47 +211,24 @@ func seedSharedStore(ctx context.Context, t *testing.T, cfg *qrdbconfig.Config, 
 	require.NoError(t, putErr)
 }
 
-// TestStandaloneNode_LegacyMemoryDatabaseKeepsSharedRoute pins the
-// standalone node's shared-keyspace probe (newStandaloneDatabaseManager's
-// lifecycle.WithSharedKeyspaceProbe): a backend: memory database whose
-// data predates its own store keeps reading the shared store, a fresh
-// memory database is materialized and sees none of it, and the legacy data
-// survives a restart, which a materialized memory store would not.
-func TestStandaloneNode_LegacyMemoryDatabaseKeepsSharedRoute(t *testing.T) {
+// TestStandaloneNode_MemoryDatabaseIgnoresSharedKeys proves a memory database opens its own empty store whatever the shared store holds under its prefix.
+func TestStandaloneNode_MemoryDatabaseIgnoresSharedKeys(t *testing.T) {
 	ctx := context.Background()
 	cfg := newTenantIsolationConfig(t)
-	// Seal off: the shared store is written without an at-rest encryptor
-	// (the strategy-none barrier still frames its files), so the test can
-	// seed it offline. The sealed boot path builds its database manager
-	// through the same newStandaloneDatabaseManager and probe.
+	// Seal off so the test can seed the shared store offline.
 	cfg.Seal.Enabled = false
 	n, err := NewStandaloneNode(ctx, cfg, nil)
 	require.NoError(t, err)
 	require.NoError(t, n.Close())
 
-	seedSharedStore(ctx, t, cfg, "legacy", "k", "shared-v")
-
-	n, err = NewStandaloneNode(ctx, cfg, nil)
-	require.NoError(t, err)
-	createDatabaseOn(ctx, t, n, "legacy", database.BackendMemory)
-	createDatabaseOn(ctx, t, n, "fresh", database.BackendMemory)
-	legacy, err := n.Client().DatabaseScoped("legacy")
-	require.NoError(t, err)
-	got, err := legacy.KV().Get(ctx, "k")
-	require.NoError(t, err, "the legacy memory database lost its shared route")
-	require.Equal(t, "shared-v", string(got))
-	fresh, err := n.Client().DatabaseScoped("fresh")
-	require.NoError(t, err)
-	_, err = fresh.KV().Get(ctx, "k")
-	require.Error(t, err, "a fresh memory database read another database's shared data")
-	require.NoError(t, n.Close())
+	seedSharedStore(ctx, t, cfg, "app", "k", "shared-v")
 
 	n, err = NewStandaloneNode(ctx, cfg, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = n.Close() })
-	legacy, err = n.Client().DatabaseScoped("legacy")
+	createDatabaseOn(ctx, t, n, "app", database.BackendMemory)
+	app, err := n.Client().DatabaseScoped("app")
 	require.NoError(t, err)
-	got, err = legacy.KV().Get(ctx, "k")
-	require.NoError(t, err, "the legacy key did not survive the restart")
-	require.Equal(t, "shared-v", string(got))
+	_, err = app.KV().Get(ctx, "k")
+	require.Error(t, err, "a memory database served the shared store's keys")
 }
