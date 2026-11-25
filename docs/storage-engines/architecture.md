@@ -265,7 +265,7 @@ moved record by record beside the WAL.
 |---|---|
 | `pebble` | every file through the encrypting file system |
 | `file` | every record and journal file through the encrypting file system |
-| `objstore` | no file system to encrypt: object names encode the keys; a standalone node store is unencrypted and the capabilities report names it (`unencryptedAtRest`) |
+| `objstore` | a standalone node store runs the Pebble engine: its WAL and manifest through the encrypting file system, every bucket object (SSTable) sealed by the encrypting remote with the same barrier |
 | `memory` | nothing persisted |
 
 ### The objstore engine: encoded object names
@@ -433,9 +433,12 @@ questions on what it still lacks are in
 
 ## Target design: object-storage LSM segment layout
 
-### Problem with the shipped `objstore` engine
+### Problem with the flat `objstore` engine
 
-`pkg/storage/objstore` stores one object per key, under a name encoded from
+A standalone `storage.backend: objstore` node now opens the Pebble engine
+with its SSTables in the bucket (see engineering.md, "Target design:
+`objstore` as Pebble remote storage"); the flat engine's package code still
+exists. The flat engine in `pkg/storage/objstore` stores one object per key, under a name encoded from
 the key (see "The objstore engine: encoded object names" above). The encoding
 makes every key up to the global cap storable on every provider, so the
 engine is correct for arbitrary bytes. What it cannot change is the cost of
@@ -447,9 +450,8 @@ the model itself:
 - **Listing cost scales with key count.** `List` and iteration list objects;
   a hashed name (a key longer than about 500 bytes) cannot narrow a listing,
   so every hashed record is read for its key.
-- **It is outside the barrier.** A standalone `objstore` store starts with
-  one WARN and an `unencryptedAtRest` capability entry naming the gap; the
-  barrier's encrypting file system does not reach a provider's objects.
+- **It is outside the barrier.** The barrier's encrypting file system does
+  not reach a provider's objects, so the flat engine's objects are plaintext.
 - **It is refused where a database needs it.** A per-database `objstore`
   backend is refused when the database opens
   (`database.InvalidBackendError`), and `objstore` is refused as a Raft hot
@@ -635,8 +637,8 @@ the bytes are durable, not how many copies of them must exist.
 interface; Pebble never routes a remote object through `FS` at all. **The
 existing barrier wiring does not reach remote SSTables, full stop; this is not
 covered by "engines store what they are given" today because the engine has
-no encrypting layer on this path yet.** The shipped engine has the same gap
-today: a standalone `objstore` store under the seal starts with one WARN and
+no encrypting layer on this path of its own.** The flat engine had the same
+gap: a standalone `objstore` store under the seal started with one WARN and
 an `unencryptedAtRest` capability entry.
 - A: go-objstore has its own `Encrypter`/`EncryptedStorage` (`pkg/common`).
   Rejected — a second, parallel crypto path with its own key material is

@@ -335,7 +335,7 @@ Cloud object-storage backends come from go-objstore and are build-tag gated:
 | Seal barrier enabled with `sm_type: disk`/`fast` over `pebble` `sm_storage` | opened on the barrier's encfs (`atrest.Encryptor.FS`): every sstable, WAL and manifest encrypted | — |
 | Seal barrier enabled with `sm_type: disk`/`fast` over `file` `sm_storage` | opened on the barrier's encfs (`file.WithEncryptor`): every record file and the commit journal encrypted | — |
 | Seal barrier enabled with standalone `storage.backend: pebble` or `file` | opened on the barrier's encfs: every file but the `file` engine's format marker encrypted | — |
-| Seal barrier enabled with standalone `storage.backend: objstore` | started; one WARN and an `unencryptedAtRest` capability entry name the gap | no |
+| Seal barrier enabled with standalone `storage.backend: objstore` | the Pebble engine's WAL and MANIFEST opened on the barrier's encfs, every bucket object sealed by the encrypting remote (`objstore.NewEncryptedRemote`); no `unencryptedAtRest` entry | — |
 | `file` store opened in the other at-rest posture (written plaintext, opened under the seal, or the reverse) | refused at open (`file.AtRestMismatchError`), nothing read | **yes** |
 | Read or write on an encrypted store while the barrier is sealed | `seal.ErrSealed` from the encrypting file system | **yes** |
 | Node encryption migration whose re-encrypted `file` store differs from its source | `ReencryptVerifyMismatchError`, wrapped in `MigrateStoreDirError` naming the directory; the migration rolls back before any swap and the store stays under the old key | **yes** |
@@ -472,23 +472,29 @@ the same status.
 > See [architecture.md](architecture.md#target-design-object-storage-lsm-segment-layout)
 > for the shape, the direction it sets, and the decisions (OS-1..OS-7)
 > this contract assumes. It is work in progress under the SPEC row
-> `object-storage-lsm`. Only the unwired Pebble `remote.Storage` adapter
-> over go-objstore (`pkg/storage/objstore/remote.go`) and its barrier-AEAD
-> encrypting wrapper (`pkg/storage/objstore/encremote.go`, OS-4 C), the
-> `pkg/storage/pebble/remotelsm` `WithRemote` option with its creator-ID marker file
-> (`pkg/storage/pebble/remotelsm/remotelsm.go`) and the store format marker
-> `objstore.EnsureLSMFormat` (`pkg/storage/objstore/lsmformat.go`, OS-5 A),
-> the store opener `objstore.OpenStore` (`pkg/storage/objstore/open.go`, with
-> `ArchiveTierUnsupportedError`), the local object cache
+> `object-storage-lsm`. Built and wired: a standalone node with
+> `storage.backend: objstore` has `NewLocalStorage` open the Pebble engine
+> through the composed opener in `pkg/server/lifecycle/objstore_lsm.go`: the
+> Pebble `remote.Storage` adapter over go-objstore
+> (`pkg/storage/objstore/remote.go`) under its barrier-AEAD encrypting wrapper
+> (`pkg/storage/objstore/encremote.go`, OS-4 C), the
+> `pkg/storage/pebble/remotelsm` `WithRemote` option with its creator-ID marker
+> file (`pkg/storage/pebble/remotelsm/remotelsm.go`), the store format marker
+> `objstore.EnsureLSMFormat` (`pkg/storage/objstore/lsmformat.go`, OS-5 A,
+> version 3; a store written by the flat layout is refused at open), the store
+> opener `objstore.OpenStore` (`pkg/storage/objstore/open.go`, with
+> `ArchiveTierUnsupportedError`) and the local object cache
 > `objstore.CachedRemote` (`pkg/storage/objstore/cacheremote.go`, OS-6 A
-> interim, local dir `objstore-lsm-cache`, with `InvalidObjectNameError`; a
-> write's remote commit and its cache publication run under the object's lock,
-> so a concurrent Delete cannot leave a cache entry for a deleted object) and the composed opener in
-> `pkg/server/lifecycle/objstore_lsm.go` (prefix "lsm", locator "qrdb", local
-> dir `objstore-lsm`, a sealed barrier refused with
-> `ObjstoreBarrierSealedError`) exist, all unwired; **nothing else below is
-> implemented**, no configuration key named below exists yet, and
-> `NewLocalStorage` still opens the flat engine.
+> interim, with `InvalidObjectNameError`; a write's remote commit and its cache
+> publication run under the object's lock, so a concurrent Delete cannot leave
+> a cache entry for a deleted object). SSTables go to the bucket under prefix
+> "lsm" (locator "qrdb"); the WAL and MANIFEST live under
+> `<dataDir>/objstore-lsm` and the read cache under
+> `<dataDir>/objstore-lsm-cache`, all encrypted under the seal barrier when seal
+> is on; a sealed barrier is refused with `ObjstoreBarrierSealedError`. Not
+> built: deleting the flat engine package (its code still exists), lifting the
+> per-database `backend: objstore` refusal (still refused, OS-7 open), and
+> OS-1/OS-3; no configuration key named below exists yet.
 
 ### Exported surface (target)
 

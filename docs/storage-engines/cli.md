@@ -72,16 +72,14 @@ state machine serves KV, batches, the guarded verbs and transactions; see
 ### At rest under the seal
 
 With `seal.enabled: true`, `pebble` and `file` are encrypted at rest and fail
-record reads and writes with the sealed error while sealed; `objstore` and
-`memory` are not encrypted. What each leaves on disk is in the table in
+record reads and writes with the sealed error while sealed; a standalone
+node's `objstore` is encrypted at rest too (its local files and every bucket
+object), and `memory` keeps nothing at rest. What each leaves on disk is in the table in
 [architecture.md](architecture.md#at-rest-encryption-one-mechanism-for-every-on-disk-backend).
 
-The warning for `objstore` is logged once at start and reported in the
-capability report's `unencryptedAtRest` list:
-
-```
-seal is enabled but data is stored unencrypted at rest  where="standalone backend \"objstore\" stores its data without the seal barrier's at-rest encryption; use backend \"pebble\" or \"file\""
-```
+The capability report's `unencryptedAtRest` list names each place a sealed
+node keeps data unencrypted at rest, and the node logs one warning per entry at
+start; no standalone backend currently reports a gap.
 
 A `file` data directory records whether it was written through the barrier. One
 written with `seal.enabled: false` is refused at start once the seal is on,
