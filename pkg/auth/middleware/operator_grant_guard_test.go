@@ -18,6 +18,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -64,7 +65,7 @@ func TestOperatorGrantGuard_AdmittedOperatorCreatesAndAssignsCustomRole(t *testi
 	if err := m.AuthorizeRoleAssignment(admitted, bare, f.roles, 7, custom.ID); err != nil {
 		t.Fatalf("admitted operator assigning the custom role = %v, want nil", err)
 	}
-	var soRequired *SORoleRequiredError
+	var soRequired *auth.SORoleRequiredError
 	if err := m.AuthorizeRoleAssignment(admitted, bare, f.roles, 7, f.so); !errors.As(err, &soRequired) {
 		t.Fatalf("admitted operator assigning the SO role = %v, want *SORoleRequiredError", err)
 	}

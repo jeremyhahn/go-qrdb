@@ -48,7 +48,7 @@ func TestOperatorRoleAssignment_AdmittedOperatorAssignsAndUnassigns(t *testing.T
 		if err := m.AuthorizeRoleUnassignment(admitted, holder, 7, f.userRole); err != nil {
 			t.Fatalf("%s: admitted operator unassign = %v, want nil", perm, err)
 		}
-		var soRequired *SORoleRequiredError
+		var soRequired *auth.SORoleRequiredError
 		if err := m.AuthorizeRoleAssignment(admitted, bare, f.roles, 7, f.so); !errors.As(err, &soRequired) {
 			t.Fatalf("%s: admitted operator assigning the SO role = %v, want *SORoleRequiredError", perm, err)
 		}
