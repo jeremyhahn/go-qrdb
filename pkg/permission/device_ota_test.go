@@ -26,6 +26,10 @@ var deviceOTAVocabulary = []struct {
 	action   string
 }{
 	{DevicesOnboard, "devices", "onboard"},
+	{DevicePair, "device", "pair"},
+	{DeviceRevoke, "device", "revoke"},
+	{DeviceShare, "device", "share"},
+	{DeviceSync, "device", "sync"},
 	{OTAActivate, "ota", "activate"},
 	{OTAConfirm, "ota", "confirm"},
 }
@@ -58,7 +62,7 @@ func TestDeviceOTAPermissions_Vocabulary(t *testing.T) {
 // whole and that no permission outside the declared verbs claims either
 // resource.
 func TestDeviceOTAPermissions_ByResource(t *testing.T) {
-	for _, resource := range []string{"devices", "ota"} {
+	for _, resource := range []string{"devices", "device", "ota"} {
 		declared := make(map[Permission]struct{})
 		for _, tc := range deviceOTAVocabulary {
 			if tc.resource == resource {
@@ -83,6 +87,7 @@ func TestDeviceOTAPermissions_ByResource(t *testing.T) {
 func TestDeviceOTAPermissions_UnknownActionNotRegistered(t *testing.T) {
 	for _, p := range []Permission{
 		"devices:enroll", "devices:onboard:cross", "devices:", "devices",
+		"device:onboard", "device:pair:cross", "device:unpair", "device:", "device",
 		"ota:rollback", "ota:stage", "ota:", "ota",
 	} {
 		if IsRegistered(p) {
@@ -140,8 +145,9 @@ func TestDeviceOTAPermissions_Categories(t *testing.T) {
 }
 
 // TestDeviceOTAPermissions_BuiltInRoleGrants pins which built-in roles carry
-// the three permissions. The tenant Admin does everything in its tenant
-// except key custody, so it holds all three; the User role is a crypto
+// the device, device-sharing and OTA permissions. The tenant Admin does
+// everything in its tenant except key custody, so it holds them all; the
+// Operator does not manage devices, the User role is a crypto
 // consumer and the Auditor is read-only, so neither holds any.
 func TestDeviceOTAPermissions_BuiltInRoleGrants(t *testing.T) {
 	for _, tc := range []struct {
@@ -149,6 +155,7 @@ func TestDeviceOTAPermissions_BuiltInRoleGrants(t *testing.T) {
 		want bool
 	}{
 		{RoleAdmin, true},
+		{RoleOperator, false},
 		{RoleUser, false},
 		{RoleAuditor, false},
 	} {

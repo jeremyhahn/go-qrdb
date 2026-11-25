@@ -126,7 +126,15 @@ func (b *StorageBarrier) wrappedKeyPath(domain QuorumDomain) string {
 	if domain == DomainRecovery {
 		return b.config.RootKeyPath + recoveryWrappedPathSuffix
 	}
-	return b.config.RootKeyPath + wrappedRootKeyPathSuffix
+	return WrappedRootKeyPath(b.config.RootKeyPath)
+}
+
+// WrappedRootKeyPath returns the storage key of the unseal-domain wrapped
+// root key that belongs beside the root-key envelope at rootKeyPath. A
+// migration roll-forward uses it to adopt a staged Shamir wrapped key at the
+// canonical path, in AdoptMigratedRootKey's order (wrapped key first).
+func WrappedRootKeyPath(rootKeyPath string) string {
+	return rootKeyPath + wrappedRootKeyPathSuffix
 }
 
 // wrappedKeyAAD returns the associated data binding a wrapped blob to this

@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-// http://www.apache.org/licenses/LICENSE-2.0
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -20,47 +20,38 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-// Compile-time interface assertion.
+// The seal-store verbs are embedded-only (ruling 1234,
+// transport.EmbeddedOnlyOperations): MCP refuses each with
+// *transport.EmbeddedOnlyError and no network I/O. Seal and unseal stay on
+// this transport (transport_barrier.go).
 var _ transport.SealStoreClient = (*Transport)(nil)
 
-// SealStorePut stores a secret in the seal store. This method is not
-// yet implemented for the MCP transport and requires corresponding MCP tool
-// definitions.
-func (t *Transport) SealStorePut(ctx context.Context, req *transport.SealStorePutRequest) error {
-	return &transport.NotImplementedError{Method: "SealStorePut"}
+// SealStorePut is embedded-only; it returns *transport.EmbeddedOnlyError.
+func (t *Transport) SealStorePut(context.Context, *transport.SealStorePutRequest) error {
+	return transport.RefuseEmbeddedOnly("mcp", transport.OpSealStorePut)
 }
 
-// SealStoreGet retrieves a secret from the seal store. This method is
-// not yet implemented for the MCP transport and requires corresponding MCP
-// tool definitions.
-func (t *Transport) SealStoreGet(ctx context.Context, req *transport.SealStoreGetRequest) (*transport.SealStoreGetResponse, error) {
-	return nil, &transport.NotImplementedError{Method: "SealStoreGet"}
+// SealStoreGet is embedded-only; it returns *transport.EmbeddedOnlyError.
+func (t *Transport) SealStoreGet(context.Context, *transport.SealStoreGetRequest) (*transport.SealStoreGetResponse, error) {
+	return nil, transport.RefuseEmbeddedOnly("mcp", transport.OpSealStoreGet)
 }
 
-// SealStoreDelete deletes a secret from the seal store. This method is
-// not yet implemented for the MCP transport and requires corresponding MCP
-// tool definitions.
-func (t *Transport) SealStoreDelete(ctx context.Context, req *transport.SealStoreDeleteRequest) error {
-	return &transport.NotImplementedError{Method: "SealStoreDelete"}
+// SealStoreDelete is embedded-only; it returns *transport.EmbeddedOnlyError.
+func (t *Transport) SealStoreDelete(context.Context, *transport.SealStoreDeleteRequest) error {
+	return transport.RefuseEmbeddedOnly("mcp", transport.OpSealStoreDelete)
 }
 
-// SealStoreList lists all stored secret names. This method is not yet
-// implemented for the MCP transport and requires corresponding MCP tool
-// definitions.
-func (t *Transport) SealStoreList(ctx context.Context) (*transport.SealStoreListResponse, error) {
-	return nil, &transport.NotImplementedError{Method: "SealStoreList"}
+// SealStoreList is embedded-only; it returns *transport.EmbeddedOnlyError.
+func (t *Transport) SealStoreList(context.Context) (*transport.SealStoreListResponse, error) {
+	return nil, transport.RefuseEmbeddedOnly("mcp", transport.OpSealStoreList)
 }
 
-// SealStoreReseal reseals a secret with the current sealing key. This
-// method is not yet implemented for the MCP transport and requires
-// corresponding MCP tool definitions.
-func (t *Transport) SealStoreReseal(ctx context.Context, req *transport.SealStoreResealRequest) error {
-	return &transport.NotImplementedError{Method: "SealStoreReseal"}
+// SealStoreReseal is embedded-only; it returns *transport.EmbeddedOnlyError.
+func (t *Transport) SealStoreReseal(context.Context, *transport.SealStoreResealRequest) error {
+	return transport.RefuseEmbeddedOnly("mcp", transport.OpSealStoreReseal)
 }
 
-// SealStoreStatus returns the seal store status. This method is not
-// yet implemented for the MCP transport and requires corresponding MCP tool
-// definitions.
-func (t *Transport) SealStoreStatus(ctx context.Context) (*transport.SealStoreStatusResponse, error) {
-	return nil, &transport.NotImplementedError{Method: "SealStoreStatus"}
+// SealStoreStatus is embedded-only; it returns *transport.EmbeddedOnlyError.
+func (t *Transport) SealStoreStatus(context.Context) (*transport.SealStoreStatusResponse, error) {
+	return nil, transport.RefuseEmbeddedOnly("mcp", transport.OpSealStoreStatus)
 }

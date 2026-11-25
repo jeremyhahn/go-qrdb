@@ -88,7 +88,7 @@ INTTEST_attested_caller     :=
 INTTEST_audit               := audit_cli_test.go audit_tenant_confinement_cli_test.go audit_replicated_cluster_test.go
 INTTEST_auth_factors        := auth_cli_test.go auth_factor_condition_cli_test.go
 INTTEST_backup_restore      := backup_cli_test.go backup_restore_test.go
-INTTEST_barrier_seal        := barrier_cli_test.go barrier_change_passphrase_cli_test.go barrier_permutations_cli_test.go cluster_seal_cli_test.go cluster_seal_test.go cluster_enable_encryption_test.go cluster_rolling_encryption_test.go enable_encryption_cli_test.go enable_encryption_test.go tenant_barrier_sealed_window_cli_test.go tenant_barrier_restart_cli_test.go fips_kdf_test.go seal_drain_cli_test.go
+INTTEST_barrier_seal        := barrier_cli_test.go barrier_change_passphrase_cli_test.go barrier_permutations_cli_test.go cluster_seal_cli_test.go cluster_seal_test.go cluster_enable_encryption_test.go cluster_rolling_encryption_test.go enable_encryption_cli_test.go enable_encryption_test.go tenant_barrier_sealed_window_cli_test.go tenant_barrier_restart_cli_test.go fips_kdf_test.go seal_drain_cli_test.go seal_store_sdk_test.go
 INTTEST_ceremony            := officer_ceremony_cli_test.go ceremony_forwarding_test.go ceremony_follower_forward_test.go
 INTTEST_certificate_authority := ca_cli_test.go ca_delegate_cli_test.go clusterca_test.go cluster_ca_anchor_spof_test.go
 INTTEST_capabilities        := cli_multiprotocol_test.go
@@ -103,7 +103,7 @@ INTTEST_configuration       :=
 # conformance coverage also lives in sdk/go/conformance/coordination_parity_test.go.
 INTTEST_coordination        := coordination_sdk_test.go
 INTTEST_credentials         := credential_cli_test.go
-INTTEST_databases           := database_barrier_cli_test.go database_barrier_holders_cli_test.go database_catalog_cli_test.go database_defaults_sql_cli_test.go database_lifecycle_cli_test.go database_owner_forwarding_test.go multidb_scope_test.go dao_cluster_test.go vlog_cli_test.go vlog_tenant_confinement_cli_test.go database_binding_cli_test.go database_binding_cluster_cli_test.go database_binding_pebble_seal_cli_test.go database_binding_vector_seal_cli_test.go database_remote_mode_removed_cli_test.go
+INTTEST_databases           := database_barrier_cli_test.go database_barrier_holders_cli_test.go database_catalog_cli_test.go database_defaults_sql_cli_test.go database_lifecycle_cli_test.go database_owner_forwarding_test.go multidb_scope_test.go dao_cluster_test.go vlog_barrier_tenant_cli_test.go vlog_cli_test.go vlog_tenant_confinement_cli_test.go database_binding_cli_test.go database_binding_cluster_cli_test.go database_binding_pebble_seal_cli_test.go database_binding_vector_seal_cli_test.go database_remote_mode_removed_cli_test.go
 INTTEST_deployment          :=
 INTTEST_desktop_gui         :=
 INTTEST_distributed_locks   := lock_cli_test.go
@@ -113,7 +113,7 @@ INTTEST_firstboot           := init_cli_test.go
 # full-text-search: no CLI surface; its assertions are pkg/fts unit tests (see the note above).
 INTTEST_full_text_search    :=
 INTTEST_guarded_swap        := feature_gate_cluster_test.go
-INTTEST_identity_rbac       := roles_cli_test.go roles_reconcile_all_cli_test.go roles_own_permissions_cli_test.go permission_catalog_cli_test.go role_grant_rule_cli_test.go users_cli_test.go users_pending_cli_test.go invitation_cli_test.go tenant_owner_test.go tenant_owner_cli_test.go identity_hydrator_test.go cert_tenant_agreement_cli_test.go abac_policy_cli_test.go separation_posture_cli_test.go public_health_cli_test.go ca_delegate_policy_cli_test.go
+INTTEST_identity_rbac       := roles_cli_test.go roles_reconcile_all_cli_test.go roles_own_permissions_cli_test.go permission_catalog_cli_test.go role_grant_rule_cli_test.go users_cli_test.go users_pending_cli_test.go invitation_cli_test.go tenant_owner_test.go tenant_owner_cli_test.go identity_hydrator_test.go cert_tenant_agreement_cli_test.go abac_policy_cli_test.go separation_posture_cli_test.go public_health_cli_test.go ca_delegate_policy_cli_test.go unix_peercred_cli_test.go
 INTTEST_key_value           := kv_cli_test.go kv_test.go kv_version_cli_test.go kv_read_permission_test.go kv_restore_cli_test.go kv_restore_default_sm_cli_test.go batch_cli_test.go batch_import_cli_test.go batch_import_session_test.go
 INTTEST_key_wrapping        := key_wrapping_cli_test.go
 INTTEST_leases              := lease_binding_test.go lease_cli_test.go lease_keepalive_test.go

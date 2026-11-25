@@ -361,6 +361,52 @@ Controls which API protocols are enabled.
 
 ---
 
+### unix
+
+The gRPC-over-Unix-socket service (`protocols.unix`).
+
+| Field | Type | Default | CLI Flag | Description |
+|---|---|---|---|---|
+| `socket_path` | string | `/var/run/qrdbd/qrdbd.sock` | `--unix-socket-path` | Path of the socket |
+| `peer_credentials` | list | none | — | Maps the connecting process's kernel-reported uid or gid (`SO_PEERCRED`, Linux only) to a go-qrdb account |
+| `peer_credentials[].uid` | uint32 | — | — | The uid to match. Set exactly one of `uid` and `gid` |
+| `peer_credentials[].gid` | uint32 | — | — | The primary gid to match |
+| `peer_credentials[].tenant` | string | `""` | — | The account's tenant |
+| `peer_credentials[].user` | string | — | — | The account's username. Required |
+
+```yaml
+unix:
+  socket_path: /var/run/qrdbd/qrdbd.sock
+  peer_credentials:
+    - uid: 1000
+      tenant: acme
+      user: deploy
+    - gid: 2000
+      tenant: acme
+      user: ops
+```
+
+**Notes:**
+
+- A mapping names an account, never a role. The account's roles decide what
+  the caller may do, through the same RBAC as every other identity. A mapping
+  whose account does not exist, or was deleted, is refused
+  (`peer_credential_account_missing`, `UNAUTHENTICATED`), so no policy, an
+  ABAC `subject.authenticated` allow included, can admit it. While the mapped
+  tenant's IAM is sealed the account cannot be checked, so the peer is refused
+  with the retryable sealed answer (`UNAVAILABLE`, 503), never admitted to the
+  sealed-window barrier status or unseal surface.
+- An unmapped peer is refused (`peer_credential_unmapped`, `UNAUTHENTICATED`).
+  With no `peer_credentials` no peer-credential authenticator is installed.
+- The authenticator is last in the authentication chain, so a client
+  certificate or a consumer authenticator presented on the socket still
+  decides the request first.
+- A `uid` match wins over a `gid` match. A uid or gid may appear in only one
+  mapping. The list is validated even while `protocols.unix` is off.
+- The account's `auth_methods`, when set, must include `peercred`.
+
+---
+
 ### raft
 
 Configures the QuicRaft consensus layer.
@@ -950,6 +996,7 @@ brings the barrier up.
 | `shamir_total` | int | — | when `strategy: shamir` | `--shares` (`qrdb init`) / `--total` (`qrdb barrier init-shamir`) | Total Shamir shares to generate. |
 | `share_ttl` | string | `"15m"` | no | N/A (env `QRDB_SEAL_SHARE_TTL`) | How long an unseal-share quorum session stays open before submitted shares expire. |
 | `credential_strategy` | string | `"barrier"` | no | N/A | `"manual"` \| `"barrier"` — where named credentials (SO/user PINs, rotated credentials) are stored. |
+| `credential_rotation_check_period` | string | `"1m"` | no | N/A | How often each node's scheduler rotates the named credentials whose rotation policy is due. See [credentials/engineering.md](credentials/engineering.md#scheduled-rotation). |
 | `cluster_lease` | string | `"15s"` | no | N/A | How long a successful read of the cluster seal records lets this node serve; a node that cannot read them for longer stops serving, keeping its keys. At most `60s`. |
 | `cluster_poll_interval` | string | `"1s"` | no | N/A | How often this node reads the cluster seal records. At most a third of `cluster_lease`. |
 | `cluster_ack_timeout` | string | `"5s"` | no | N/A | How long a node waits for every node to acknowledge a node-barrier seal before wiping its own key. At most half of `cluster_lease`. |
@@ -970,6 +1017,8 @@ brings the barrier up.
   `"shamir"`: the threshold must be `>= 2` and the total `>=` the threshold.
 - `credential_strategy`, when non-empty, must be `manual` or `barrier`.
 - `share_ttl`, when non-empty, must be a Go duration greater than zero.
+- `credential_rotation_check_period`, when non-empty, must be a Go duration
+  greater than zero.
 - `drain_timeout`, when non-empty, must be a Go duration greater than zero.
 - `cluster_lease`, `cluster_poll_interval` and `cluster_ack_timeout` must each
   be a Go duration greater than zero (empty takes the default) and keep the

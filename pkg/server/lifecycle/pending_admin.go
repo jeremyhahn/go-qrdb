@@ -21,6 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -91,13 +92,21 @@ func (n *Node) completePendingTenantAdmin(log *slog.Logger) tenant.BarrierReadyH
 }
 
 // AttachSOPINs gives tenant create the seam a tenant security officer's PIN
-// is committed through (bootstrap.SOPINSetter): the node's SO authenticator,
+// is committed through (firstboot.SOPINSetter): the node's SO authenticator,
 // built after the services. Until it is attached, and on a node with no
 // tenant onboarding, a create that names an SO is refused.
-func (n *Node) AttachSOPINs(pins bootstrap.SOPINSetter) {
+func (n *Node) AttachSOPINs(pins firstboot.SOPINSetter) {
 	if n.onboarding != nil && pins != nil {
 		n.onboarding.AttachSOPINs(pins)
 	}
+}
+
+// SOPINs is the SO PIN seam AttachSOPINs attached, or nil.
+func (n *Node) SOPINs() firstboot.SOPINSetter {
+	if n.onboarding == nil {
+		return nil
+	}
+	return n.onboarding.SOPINs()
 }
 
 func logAdminCompletion(log *slog.Logger, tenantID string, done bool, err error) {

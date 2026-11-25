@@ -15,11 +15,16 @@
 package node
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -27,6 +32,7 @@ import (
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealretire"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
@@ -302,6 +308,479 @@ func TestNode_EnableEncryption_SystemNoneToPassphrase(t *testing.T) {
 		require.NoErrorf(t, rerr, "Get(%q) after restart", k)
 		require.Equalf(t, v, string(gotR), "value for %q after restart", k)
 	}
+}
+
+// TestNode_EnableEncryption_SealStoreSecretsSurvive: the seal store's records
+// are re-encrypted by an embedded none -> passphrase enable-encryption, they
+// read back before and after a restart, and no file under <dataDir>/seal
+// still holds a secret's plaintext.
+func TestNode_EnableEncryption_SealStoreSecretsSurvive(t *testing.T) {
+	ctx := context.Background()
+
+	newCfg := func(dataDir string) *qrdbconfig.Config {
+		cfg := qrdbconfig.DefaultConfig()
+		cfg.Auth.Enabled = qrdbconfig.BoolPtr(false) // not an authorization test; see testhelpers_test.go
+		cfg.Raft.DataDir = dataDir
+		cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendPebble)}}
+		cfg.Seal.Enabled = true
+		cfg.Seal.Strategy = "none"
+		cfg.Protocols.REST = false
+		cfg.Protocols.GRPC = false
+		cfg.Protocols.QUIC = false
+		cfg.Protocols.Unix = false
+		cfg.Protocols.MCP = false
+		return cfg
+	}
+	cfg := newCfg(t.TempDir())
+
+	n, err := NewStandaloneNode(ctx, cfg, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = n.Close() })
+
+	secrets := map[string][]byte{
+		"db-primary":  []byte("seal-store-plaintext-secret-one"),
+		"api-signing": []byte("seal-store-plaintext-secret-two"),
+	}
+	for name, secret := range secrets {
+		require.NoError(t, n.Client().SealStore().SealStorePut(ctx, &transport.SealStorePutRequest{Name: name, Secret: secret}))
+	}
+
+	opts := seal.MigrationOptions{
+		TargetStrategy: seal.StrategyPassphrase,
+		Mechanism:      seal.MechanismSwap,
+		Availability:   seal.AvailabilityQuiesced,
+		Credentials:    seal.MustCredentials(context.Background(), []byte("enable-enc-pass")),
+	}
+	require.NoError(t, n.EnableEncryption(ctx, service.BarrierScope{Kind: service.ScopeSystem}, opts))
+
+	readAll := func(label string, n *Node) {
+		t.Helper()
+		for name, secret := range secrets {
+			resp, gerr := n.Client().SealStore().SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: name})
+			require.NoErrorf(t, gerr, "SealStoreGet(%q) %s", name, label)
+			require.Equalf(t, secret, resp.Secret, "secret %q %s", name, label)
+		}
+	}
+	readAll("after migration", n)
+	require.NoError(t, n.Close())
+
+	n2, err := NewStandaloneNode(ctx, newCfg(cfg.Raft.DataDir), nil, WithSealPassphrase([]byte("enable-enc-pass")))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = n2.Close() })
+	require.False(t, n2.IsSealed())
+	readAll("after restart", n2)
+	require.NoError(t, n2.Close())
+
+	sealDir := filepath.Join(cfg.Raft.DataDir, "seal")
+	root, err := os.OpenRoot(sealDir)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = root.Close() })
+	files := 0
+	require.NoError(t, fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, werr error) error {
+		if werr != nil || d.IsDir() {
+			return werr
+		}
+		files++
+		data, rerr := fs.ReadFile(root.FS(), path)
+		if rerr != nil {
+			return rerr
+		}
+		for name, secret := range secrets {
+			require.Falsef(t, bytes.Contains(data, secret), "%s still holds the plaintext of secret %q", path, name)
+		}
+		return nil
+	}))
+	require.NotZero(t, files, "the seal store has files under %s", sealDir)
+}
+
+// TestNode_EnableEncryption_RetainedScopedClientIsRefused pins that a
+// database-scoped client retained from before EnableEncryption is refused
+// after the migration tears the data plane down: it must not write the seal
+// store through the old none barrier (overwriting the migrated ciphertext with
+// plaintext the keyed barrier cannot read) nor read through it.
+func TestNode_EnableEncryption_RetainedScopedClientIsRefused(t *testing.T) {
+	ctx := context.Background()
+
+	cfg := qrdbconfig.DefaultConfig()
+	cfg.Auth.Enabled = qrdbconfig.BoolPtr(false) // not an authorization test; see testhelpers_test.go
+	cfg.Raft.DataDir = t.TempDir()
+	cfg.Databases = []qrdbconfig.DatabaseConfig{
+		{Name: "default", Backend: string(database.BackendPebble)},
+		{Name: "example", Backend: string(database.BackendPebble)},
+	}
+	cfg.Seal.Enabled = true
+	cfg.Seal.Strategy = "none"
+	cfg.Protocols.REST = false
+	cfg.Protocols.GRPC = false
+	cfg.Protocols.QUIC = false
+	cfg.Protocols.Unix = false
+	cfg.Protocols.MCP = false
+
+	n, err := NewStandaloneNode(ctx, cfg, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = n.Close() })
+
+	scoped, err := n.Client().DatabaseScoped("example")
+	require.NoError(t, err)
+	require.NotSame(t, n.Client(), scoped, "a named database must yield a scoped client, not the primary one")
+
+	before := []byte("seal-store-secret-before-migration")
+	require.NoError(t, scoped.SealStore().SealStorePut(ctx, &transport.SealStorePutRequest{Name: "retained", Secret: before}))
+
+	opts := seal.MigrationOptions{
+		TargetStrategy: seal.StrategyPassphrase,
+		Mechanism:      seal.MechanismSwap,
+		Availability:   seal.AvailabilityQuiesced,
+		Credentials:    seal.MustCredentials(context.Background(), []byte("enable-enc-pass")),
+	}
+	require.NoError(t, n.EnableEncryption(ctx, service.BarrierScope{Kind: service.ScopeSystem}, opts))
+
+	var closed *transport.ClosedError
+	perr := scoped.SealStore().SealStorePut(ctx, &transport.SealStorePutRequest{Name: "retained", Secret: []byte("plaintext-after-migration")})
+	require.ErrorAsf(t, perr, &closed, "SealStorePut through the retained scoped client: %v", perr)
+	_, gerr := scoped.SealStore().SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: "retained"})
+	require.ErrorAsf(t, gerr, &closed, "SealStoreGet through the retained scoped client: %v", gerr)
+
+	resp, err := n.Client().SealStore().SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: "retained"})
+	require.NoError(t, err)
+	require.Equal(t, before, resp.Secret, "the retained client wrote nothing")
+
+	fresh, err := n.Client().DatabaseScoped("example")
+	require.NoError(t, err)
+	resp, err = fresh.SealStore().SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: "retained"})
+	require.NoError(t, err)
+	require.Equal(t, before, resp.Secret)
+}
+
+// failStagedDeleteBackend is a seal.StorageBackend whose Delete of a key in
+// the seal store's staging keyspace fails while fail is set.
+type failStagedDeleteBackend struct {
+	seal.StorageBackend
+	prefix string
+	fail   bool
+	// failJournalGet makes every read of the migration journal fail once a
+	// staged delete or a root-key write has been injected.
+	failJournalGet bool
+	// failRootKeyPut names the canonical root-key path whose write fails.
+	failRootKeyPut    string
+	deleteFailed      atomic.Bool
+	rootKeyPutFailed  atomic.Bool
+	journalReadFailed atomic.Bool
+}
+
+var errRootKeyPut = errors.New("injected canonical root-key write failure")
+
+func (b *failStagedDeleteBackend) Put(ctx context.Context, key string, value []byte) error {
+	if b.failRootKeyPut != "" && key == b.failRootKeyPut {
+		b.rootKeyPutFailed.Store(true)
+		return errRootKeyPut
+	}
+	return b.StorageBackend.Put(ctx, key, value)
+}
+
+// errJournalRead is the injected migration-journal read fault.
+var errJournalRead = errors.New("injected migration journal read fault")
+
+func (b *failStagedDeleteBackend) Get(ctx context.Context, key string) ([]byte, error) {
+	if b.failJournalGet && (b.deleteFailed.Load() || b.rootKeyPutFailed.Load()) && strings.HasSuffix(key, ".migration") {
+		b.journalReadFailed.Store(true)
+		return nil, errJournalRead
+	}
+	return b.StorageBackend.Get(ctx, key)
+}
+
+var errStagedDelete = errors.New("injected staged-record delete failure")
+
+func (b *failStagedDeleteBackend) Delete(ctx context.Context, key string) error {
+	if b.fail && strings.HasPrefix(key, b.prefix) {
+		b.deleteFailed.Store(true)
+		return errStagedDelete
+	}
+	return b.StorageBackend.Delete(ctx, key)
+}
+
+// TestNode_EnableEncryption_StagedDeleteFault_StaysDownUntilRecovery injects
+// a failure on the seal store's staged-record delete past the migration's
+// commit point: the migration fails, the node serves none of the moved
+// secrets rather than reopening on the adopted key, and a restart's recovery
+// completes the commit so every secret reads under the new key and an update
+// made after it survives a second restart.
+func TestNode_EnableEncryption_StagedDeleteFault_StaysDownUntilRecovery(t *testing.T) {
+	ctx := context.Background()
+	f := newStagedFaultNode(t, false)
+	migErr := f.migrate(t)
+	require.ErrorIs(t, migErr, database.ErrMigrationRecordsPending)
+	require.ErrorIs(t, migErr, errStagedDelete)
+	// Reopen refused to rebuild on the adopted key: the data plane is down.
+	require.Nil(t, f.n.svcNode.Load(), "the data plane must stay down while the staged commit is pending")
+	require.Nil(t, f.n.Client(), "no client serves reads or writes of the moved secrets while the staged commit is pending")
+	require.NoError(t, f.n.Close())
+
+	n2 := f.reopen(t, "after the fault")
+	f.requireRecovered(t, n2)
+	updated := []byte("rotated-after-recovery")
+	require.NoError(t, n2.Client().SealStore().SealStorePut(ctx, &transport.SealStorePutRequest{Name: "db-primary", Secret: updated}))
+	require.NoError(t, n2.Close())
+
+	n3 := f.reopen(t, "a second time")
+	resp, err := n3.Client().SealStore().SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: "db-primary"})
+	require.NoError(t, err)
+	require.Equal(t, updated, resp.Secret, "the post-recovery update must survive a second restart")
+}
+
+// TestNode_EnableEncryption_StagedDeleteAndJournalReadFault_StaysDown pins
+// that Reopen fails closed when the committed journal cannot be read after a
+// failed staged commit: nothing proves the records committed, so the data
+// plane stays down and a restart recovers every secret.
+func TestNode_EnableEncryption_StagedDeleteAndJournalReadFault_StaysDown(t *testing.T) {
+	f := newStagedFaultNode(t, true)
+	migErr := f.migrate(t)
+	require.ErrorIs(t, migErr, database.ErrMigrationRecordsPending)
+	require.Nil(t, f.n.svcNode.Load(), "the data plane must stay down while the journal is unreadable")
+	require.Nil(t, f.n.Client(), "no client serves while the commit of the moved secrets is unproven")
+	require.NoError(t, f.n.Close())
+
+	f.requireRecovered(t, f.reopen(t, "after the faults"))
+}
+
+// TestNode_EnableEncryption_RootKeyAdoptFault_StaysDownUntilRecovery injects
+// a failure on the canonical root-key write after the migration journal is
+// committed: the node stays down rather than serving writes a restart's
+// roll-forward would overwrite, and an update made after recovery survives a
+// second restart.
+func TestNode_EnableEncryption_RootKeyAdoptFault_StaysDownUntilRecovery(t *testing.T) {
+	ctx := context.Background()
+	f := newRootKeyFaultNode(t)
+	migErr := f.migrate(t)
+	require.ErrorIs(t, migErr, errRootKeyPut)
+	strategy, err := canonicalRootKeyStrategy(ctx, f.n)
+	require.NoError(t, err)
+	require.Equal(t, seal.StrategyNone, strategy, "the canonical root key must still name the source strategy")
+	require.Nil(t, f.n.svcNode.Load(), "the data plane must stay down while the committed migration is unadopted")
+	require.Nil(t, f.n.Client(), "no client serves writes a restart's roll-forward would overwrite")
+	require.NoError(t, f.n.Close())
+
+	n2 := f.reopen(t, "after the adoption fault")
+	f.requireRecovered(t, n2)
+	updated := []byte("rotated-after-adoption-recovery")
+	require.NoError(t, n2.Client().SealStore().SealStorePut(ctx, &transport.SealStorePutRequest{Name: "db-primary", Secret: updated}))
+	require.NoError(t, n2.Close())
+
+	n3 := f.reopen(t, "a second time")
+	resp, err := n3.Client().SealStore().SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: "db-primary"})
+	require.NoError(t, err)
+	require.Equal(t, updated, resp.Secret, "the post-recovery update must survive a second restart")
+}
+
+// TestNode_EnableEncryption_RootKeyAdoptAndJournalReadFault_StaysDown pins
+// that Reopen fails closed when the canonical root key was not adopted and
+// the migration journal cannot be read: nothing proves the migration did not
+// commit, so the data plane stays down and a restart recovers every secret.
+func TestNode_EnableEncryption_RootKeyAdoptAndJournalReadFault_StaysDown(t *testing.T) {
+	ctx := context.Background()
+	f := newFaultNode(t, faultOptions{failRootKeyPut: true, failJournalGet: true})
+	migErr := f.migrate(t)
+	require.ErrorIs(t, migErr, errRootKeyPut)
+	require.True(t, f.fb.journalReadFailed.Load(), "the reopen guard must have read the journal through the fault")
+	strategy, err := canonicalRootKeyStrategy(ctx, f.n)
+	require.NoError(t, err)
+	require.Equal(t, seal.StrategyNone, strategy, "the canonical root key must still name the source strategy")
+	require.Nil(t, f.n.svcNode.Load(), "the data plane must stay down while the journal is unreadable")
+	require.Nil(t, f.n.Client(), "no client serves while the migration's commit state is unknown")
+	require.NoError(t, f.n.Close())
+
+	n2 := f.reopen(t, "after the faults")
+	f.requireRecovered(t, n2)
+	updated := []byte("rotated-after-journal-fault-recovery")
+	require.NoError(t, n2.Client().SealStore().SealStorePut(ctx, &transport.SealStorePutRequest{Name: "db-primary", Secret: updated}))
+	require.NoError(t, n2.Close())
+
+	n3 := f.reopen(t, "a second time")
+	resp, err := n3.Client().SealStore().SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: "db-primary"})
+	require.NoError(t, err)
+	require.Equal(t, updated, resp.Secret, "the post-recovery update must survive a second restart")
+}
+
+// TestNode_EnableEncryption_ShamirRootKeyAdoptFault_StaysDownUntilRecovery
+// injects a failure on the canonical root-key write of a Shamir target after
+// the wrapped root key is written: the node stays down, and a restart rolls
+// the migration forward so a share-holder quorum unseals it with every
+// seal-store secret intact and an update made after it survives a restart.
+func TestNode_EnableEncryption_ShamirRootKeyAdoptFault_StaysDownUntilRecovery(t *testing.T) {
+	ctx := context.Background()
+	f := newFaultNode(t, faultOptions{failRootKeyPut: true})
+	custody := sealtest.NewCustody("h1", "h2", "h3")
+	custody.Install(f.n.barrier.Load())
+	migErr := f.migrateShamir(t)
+	require.ErrorIs(t, migErr, errRootKeyPut)
+	strategy, err := canonicalRootKeyStrategy(ctx, f.n)
+	require.NoError(t, err)
+	require.Equal(t, seal.StrategyNone, strategy, "the canonical root key must still name the source strategy")
+	require.Nil(t, f.n.svcNode.Load(), "the data plane must stay down while the committed migration is unadopted")
+	require.Nil(t, f.n.Client(), "no client serves writes a restart's roll-forward would overwrite")
+	require.NoError(t, f.n.Close())
+
+	n2 := f.reopenShamir(t, custody, "after the adoption fault")
+	f.requireRecovered(t, n2)
+	updated := []byte("rotated-after-shamir-adoption-recovery")
+	require.NoError(t, n2.Client().SealStore().SealStorePut(ctx, &transport.SealStorePutRequest{Name: "db-primary", Secret: updated}))
+	require.NoError(t, n2.Close())
+
+	n3 := f.reopenShamir(t, custody, "a second time")
+	resp, err := n3.Client().SealStore().SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: "db-primary"})
+	require.NoError(t, err)
+	require.Equal(t, updated, resp.Secret, "the post-recovery update must survive a second restart")
+}
+
+// stagedFaultNode is a standalone node whose system barrier runs over a
+// failStagedDeleteBackend, holding seal-store secrets to migrate.
+type stagedFaultNode struct {
+	n       *Node
+	fb      *failStagedDeleteBackend
+	dataDir string
+	secrets map[string][]byte
+}
+
+const stagedFaultPass = "staged-fault-pass"
+
+func stagedFaultConfig(dataDir string) *qrdbconfig.Config {
+	cfg := qrdbconfig.DefaultConfig()
+	cfg.Auth.Enabled = qrdbconfig.BoolPtr(false) // not an authorization test; see testhelpers_test.go
+	cfg.Raft.DataDir = dataDir
+	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendPebble)}}
+	cfg.Seal.Enabled = true
+	cfg.Seal.Strategy = "none"
+	cfg.Protocols.REST = false
+	cfg.Protocols.GRPC = false
+	cfg.Protocols.QUIC = false
+	cfg.Protocols.Unix = false
+	cfg.Protocols.MCP = false
+	return cfg
+}
+
+func newStagedFaultNode(t *testing.T, failJournalGet bool) *stagedFaultNode {
+	t.Helper()
+	return newFaultNode(t, faultOptions{failStagedDelete: true, failJournalGet: failJournalGet})
+}
+
+// newRootKeyFaultNode builds a node whose canonical root-key write fails.
+func newRootKeyFaultNode(t *testing.T) *stagedFaultNode {
+	t.Helper()
+	return newFaultNode(t, faultOptions{failRootKeyPut: true})
+}
+
+// faultOptions selects the faults newFaultNode injects.
+type faultOptions struct {
+	failStagedDelete bool
+	failJournalGet   bool
+	failRootKeyPut   bool
+}
+
+func newFaultNode(t *testing.T, opts faultOptions) *stagedFaultNode {
+	t.Helper()
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	n, err := NewStandaloneNode(ctx, stagedFaultConfig(dataDir), nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = n.Close() })
+
+	secrets := map[string][]byte{
+		"db-primary":  []byte("staged-fault-secret-one"),
+		"api-signing": []byte("staged-fault-secret-two"),
+	}
+	for name, secret := range secrets {
+		require.NoError(t, n.Client().SealStore().SealStorePut(ctx, &transport.SealStorePutRequest{Name: name, Secret: secret}))
+	}
+
+	// Route the system barrier through a backend whose staged-record delete
+	// fails: the same seal store, the same barrier config.
+	fb := &failStagedDeleteBackend{
+		StorageBackend: seal.NewStorageAdapter(n.sealStore),
+		prefix:         sealretire.StagedRecords().StagingPrefix,
+		fail:           opts.failStagedDelete,
+		failJournalGet: opts.failJournalGet,
+	}
+	if opts.failRootKeyPut {
+		fb.failRootKeyPut = n.barrier.Load().Config().RootKeyPath
+	}
+	faulty, err := seal.NewStorageBarrier(n.logger, fb, n.barrier.Load().Config(), seal.NewNoneStrategy())
+	require.NoError(t, err)
+	require.NoError(t, faulty.Unseal(ctx, seal.Credentials{}))
+	n.barrier.Store(faulty)
+	n.barrierRegistry.Load().SetSystemBarrier(faulty)
+	return &stagedFaultNode{n: n, fb: fb, dataDir: dataDir, secrets: secrets}
+}
+
+func (f *stagedFaultNode) migrate(t *testing.T) error {
+	t.Helper()
+	opts := seal.MigrationOptions{
+		TargetStrategy: seal.StrategyPassphrase,
+		Mechanism:      seal.MechanismSwap,
+		Availability:   seal.AvailabilityQuiesced,
+		Credentials:    seal.MustCredentials(context.Background(), []byte(stagedFaultPass)),
+	}
+	return f.n.EnableEncryption(context.Background(), service.BarrierScope{Kind: service.ScopeSystem}, opts)
+}
+
+// migrateShamir migrates the system barrier to a 2-of-3 Shamir target.
+func (f *stagedFaultNode) migrateShamir(t *testing.T) error {
+	t.Helper()
+	opts := seal.MigrationOptions{
+		TargetStrategy:  seal.StrategyShamir,
+		Mechanism:       seal.MechanismSwap,
+		Availability:    seal.AvailabilityQuiesced,
+		ShamirThreshold: 2,
+		ShamirTotal:     3,
+	}
+	return f.n.EnableEncryption(context.Background(), service.BarrierScope{Kind: service.ScopeSystem}, opts)
+}
+
+// reopenShamir restarts the node without a passphrase and unseals it with a
+// 2-of-3 quorum of custody's holders.
+func (f *stagedFaultNode) reopenShamir(t *testing.T, custody *sealtest.Custody, label string) *Node {
+	t.Helper()
+	ctx := context.Background()
+	cfg := stagedFaultConfig(f.dataDir)
+	// The system strategy registry builds the Shamir strategy from the configured M-of-N.
+	cfg.Seal.ShamirThreshold = 2
+	cfg.Seal.ShamirTotal = 3
+	rn, err := NewStandaloneNode(ctx, cfg, nil)
+	require.NoErrorf(t, err, "restart %s", label)
+	t.Cleanup(func() { _ = rn.Close() })
+	require.True(t, rn.IsSealed(), "a Shamir node never auto-unseals")
+	b := rn.barrier.Load()
+	custody.Install(b)
+	progress, err := custody.Quorum(ctx, b, seal.DomainUnseal, seal.OpUnseal, "h1", "h2")
+	require.NoErrorf(t, err, "unseal quorum %s", label)
+	require.True(t, progress.Complete)
+	require.NoError(t, rn.Unseal(ctx, seal.Credentials{}))
+	require.False(t, rn.IsSealed())
+	require.Equal(t, seal.StrategyShamir, rn.barrier.Load().Status().Strategy)
+	return rn
+}
+
+func (f *stagedFaultNode) reopen(t *testing.T, label string) *Node {
+	t.Helper()
+	rn, err := NewStandaloneNode(context.Background(), stagedFaultConfig(f.dataDir), nil, WithSealPassphrase([]byte(stagedFaultPass)))
+	require.NoErrorf(t, err, "restart %s", label)
+	t.Cleanup(func() { _ = rn.Close() })
+	require.False(t, rn.IsSealed())
+	return rn
+}
+
+// requireRecovered asserts every secret reads back on rn and no staged copy
+// is left to overwrite a later write.
+func (f *stagedFaultNode) requireRecovered(t *testing.T, rn *Node) {
+	t.Helper()
+	ctx := context.Background()
+	for name, secret := range f.secrets {
+		resp, err := rn.Client().SealStore().SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: name})
+		require.NoErrorf(t, err, "SealStoreGet(%q) after recovery", name)
+		require.Equalf(t, secret, resp.Secret, "secret %q after recovery", name)
+	}
+	staged, err := seal.NewStorageAdapter(rn.sealStore).List(ctx, f.fb.prefix)
+	require.NoError(t, err)
+	require.Empty(t, staged, "recovery must delete every staged copy before serving")
 }
 
 // TestNode_EnableEncryption_ViaEmbeddedTransport is the go-qrdb#558 SDK-wiring

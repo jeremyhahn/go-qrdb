@@ -253,6 +253,21 @@ type RoleServiceError struct {
 	Err error
 }
 
+// GroupServiceError is returned when the IAM group store cannot be built.
+type GroupServiceError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *GroupServiceError) Error() string {
+	return "lifecycle: group service initialization failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *GroupServiceError) Unwrap() error {
+	return e.Err
+}
+
 // Error returns a human-readable description.
 func (e *RoleServiceError) Error() string {
 	return "lifecycle: role service initialization failed: " + e.Err.Error()

@@ -24,7 +24,6 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
@@ -442,7 +441,7 @@ func TestGRPC_TenantList_NilService(t *testing.T) {
 	client, cleanup := startTestServerWithAll(t, newMockKVService(), newMockAdminService())
 	defer cleanup()
 
-	_, err := client.TenantList(context.Background(), &emptypb.Empty{})
+	_, err := client.TenantList(context.Background(), &pb.TenantListRequest{})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -464,7 +463,7 @@ func TestGRPC_TenantList_Success(t *testing.T) {
 		WithTenantService(svc))
 	defer cleanup()
 
-	resp, err := client.TenantList(context.Background(), &emptypb.Empty{})
+	resp, err := client.TenantList(context.Background(), &pb.TenantListRequest{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -473,6 +472,32 @@ func TestGRPC_TenantList_Success(t *testing.T) {
 	}
 	if resp.GetTenants()[0].GetId() != "t1" {
 		t.Errorf("expected first tenant id 't1', got %q", resp.GetTenants()[0].GetId())
+	}
+}
+
+func TestTenantList_StatusFilter(t *testing.T) {
+	svc := newMockTenantService()
+	svc.listFn = func(_ context.Context) ([]tenant.TenantInfo, error) {
+		return []tenant.TenantInfo{
+			{ID: "t-active", Status: tenant.StatusActive},
+			{ID: "t-suspended", Status: tenant.StatusSuspended},
+		}, nil
+	}
+	client, cleanup := startTestServerWithAll(t, newMockKVService(), newMockAdminService(),
+		WithTenantService(svc))
+	defer cleanup()
+
+	resp, err := client.TenantList(context.Background(), &pb.TenantListRequest{Status: "suspended"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.GetTenants()) != 1 || resp.GetTenants()[0].GetId() != "t-suspended" {
+		t.Fatalf("tenants = %v, want only t-suspended", resp.GetTenants())
+	}
+
+	_, err = client.TenantList(context.Background(), &pb.TenantListRequest{Status: "deleted"})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("code = %v (%v), want InvalidArgument", status.Code(err), err)
 	}
 }
 
@@ -485,7 +510,7 @@ func TestGRPC_TenantList_StoreError(t *testing.T) {
 		WithTenantService(svc))
 	defer cleanup()
 
-	_, err := client.TenantList(context.Background(), &emptypb.Empty{})
+	_, err := client.TenantList(context.Background(), &pb.TenantListRequest{})
 	if err == nil {
 		t.Fatal("expected error")
 	}

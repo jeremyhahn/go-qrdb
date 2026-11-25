@@ -249,7 +249,7 @@ func unaryCalls() map[string]func(context.Context, *Transport) error {
 			return err
 		},
 		"ListTenants": func(ctx context.Context, tr *Transport) error {
-			_, err := tr.ListTenants(ctx)
+			_, err := tr.ListTenants(ctx, nil)
 			return err
 		},
 		"UpdateTenant": func(ctx context.Context, tr *Transport) error {

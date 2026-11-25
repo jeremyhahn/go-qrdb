@@ -525,6 +525,250 @@ func TestHandleCredentialByPath_DispatchRotate(t *testing.T) {
 	}
 }
 
+func TestHandleCredentialByPath_SetRotationPolicy(t *testing.T) {
+	svc := newCoverageCredentialService()
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+		WithCredentialService(svc))
+	req := httptest.NewRequest(http.MethodPut, "/v1/credentials/k/rotation-policy",
+		strings.NewReader(`{"enabled":true,"interval":"720h","retain_versions":2}`))
+	rec := httptest.NewRecorder()
+	s.handleCredentialByPath(rec, req)
+	assertStatus(t, rec, http.StatusNoContent)
+	want := credentials.RotationPolicy{Enabled: true, Interval: 720 * time.Hour, RetainVersions: 2}
+	if svc.setPolicy != want {
+		t.Fatalf("policy = %+v, want %+v", svc.setPolicy, want)
+	}
+}
+
+func TestHandleCredentialByPath_SetRotationPolicyRefused(t *testing.T) {
+	svc := newCoverageCredentialService()
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+		WithCredentialService(svc))
+	for name, body := range map[string]string{
+		"bad interval": `{"enabled":true,"interval":"monthly","retain_versions":1}`,
+		"bad retain":   `{"enabled":true,"interval":"1h","retain_versions":0}`,
+		"bad body":     `{`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPut, "/v1/credentials/k/rotation-policy", strings.NewReader(body))
+			rec := httptest.NewRecorder()
+			s.handleCredentialByPath(rec, req)
+			assertStatus(t, rec, http.StatusBadRequest)
+		})
+	}
+	req := httptest.NewRequest(http.MethodPut, "/v1/credentials/missing/rotation-policy",
+		strings.NewReader(`{"enabled":false}`))
+	rec := httptest.NewRecorder()
+	s.handleCredentialByPath(rec, req)
+	assertStatus(t, rec, http.StatusNotFound)
+}
+
+func TestHandleCredentialByPath_RotationPolicy(t *testing.T) {
+	svc := newCoverageCredentialService()
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+		WithCredentialService(svc))
+	req := httptest.NewRequest(http.MethodGet, "/v1/credentials/k/rotation-policy", nil)
+	rec := httptest.NewRecorder()
+	s.handleCredentialByPath(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	var got transport.CredentialRotationPolicyResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	want := transport.CredentialRotationPolicyResponse{Name: "k", Enabled: true, Interval: "1h0m0s", RetainVersions: 2}
+	if got != want {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/credentials/missing/rotation-policy", nil)
+	rec = httptest.NewRecorder()
+	s.handleCredentialByPath(rec, req)
+	assertStatus(t, rec, http.StatusNotFound)
+
+	req = httptest.NewRequest(http.MethodPost, "/v1/credentials/k/rotation-policy", nil)
+	rec = httptest.NewRecorder()
+	s.handleCredentialByPath(rec, req)
+	assertStatus(t, rec, http.StatusMethodNotAllowed)
+}
+
+func TestHandleCredentialRotationPolicy_NilServiceAndEmptyName(t *testing.T) {
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0")
+	rec := httptest.NewRecorder()
+	s.handleCredentialSetRotationPolicy(rec, httptest.NewRequest(http.MethodPut, "/", nil), "k")
+	assertStatus(t, rec, http.StatusNotImplemented)
+	rec = httptest.NewRecorder()
+	s.handleCredentialRotationPolicy(rec, httptest.NewRequest(http.MethodGet, "/", nil), "k")
+	assertStatus(t, rec, http.StatusNotImplemented)
+
+	s = NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+		WithCredentialService(newCoverageCredentialService()))
+	rec = httptest.NewRecorder()
+	s.handleCredentialSetRotationPolicy(rec, httptest.NewRequest(http.MethodPut, "/", nil), "")
+	assertStatus(t, rec, http.StatusBadRequest)
+	rec = httptest.NewRecorder()
+	s.handleCredentialRotationPolicy(rec, httptest.NewRequest(http.MethodGet, "/", nil), "")
+	assertStatus(t, rec, http.StatusBadRequest)
+}
+
+func TestHandleCredentialMigrationConflicts_Lists(t *testing.T) {
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+		WithCredentialService(newCoverageCredentialService()))
+	rec := httptest.NewRecorder()
+	s.handleCredentialMigrationConflicts(rec, httptest.NewRequest(http.MethodGet, "/v1/credentials/migration-conflicts", nil))
+	assertStatus(t, rec, http.StatusOK)
+	var got transport.CredentialMigrationConflictsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	want := []transport.CredentialMigrationConflict{{Name: "db", Value: true, Policy: true}}
+	if len(got.Conflicts) != 1 || got.Conflicts[0] != want[0] {
+		t.Fatalf("got %+v, want %+v", got.Conflicts, want)
+	}
+}
+
+func TestHandleCredentialMigrationConflicts_NilService(t *testing.T) {
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0")
+	rec := httptest.NewRecorder()
+	s.handleCredentialMigrationConflicts(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	assertStatus(t, rec, http.StatusNotImplemented)
+}
+
+func TestHandleCredentialByPath_ResolveMigrationConflict(t *testing.T) {
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+		WithCredentialService(newCoverageCredentialService()))
+	for name, tc := range map[string]struct {
+		method, path, body string
+		want               int
+	}{
+		"import":       {http.MethodPost, "/v1/credentials/db/migration-resolve", `{"resolution":"import"}`, http.StatusNoContent},
+		"missing":      {http.MethodPost, "/v1/credentials/missing/migration-resolve", `{"resolution":"discard"}`, http.StatusNotFound},
+		"bad body":     {http.MethodPost, "/v1/credentials/db/migration-resolve", `{`, http.StatusBadRequest},
+		"wrong method": {http.MethodGet, "/v1/credentials/db/migration-resolve", ``, http.StatusMethodNotAllowed},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			s.handleCredentialByPath(rec, httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body)))
+			assertStatus(t, rec, tc.want)
+		})
+	}
+}
+
+func TestHandleCredentialResolveMigrationConflict_NilServiceAndEmptyName(t *testing.T) {
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0")
+	rec := httptest.NewRecorder()
+	s.handleCredentialResolveMigrationConflict(rec, httptest.NewRequest(http.MethodPost, "/", nil), "db")
+	assertStatus(t, rec, http.StatusNotImplemented)
+
+	s = NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+		WithCredentialService(newCoverageCredentialService()))
+	rec = httptest.NewRecorder()
+	s.handleCredentialResolveMigrationConflict(rec, httptest.NewRequest(http.MethodPost, "/", nil), "")
+	assertStatus(t, rec, http.StatusBadRequest)
+}
+
+// credErrMapService fails the rotation-policy and migration-conflict verbs
+// with err, so a table test can pin the status each typed error maps to.
+type credErrMapService struct {
+	*coverageCredentialService
+	err error
+}
+
+func (m *credErrMapService) CredentialSetRotationPolicy(context.Context, string, credentials.RotationPolicy) error {
+	return m.err
+}
+
+func (m *credErrMapService) CredentialRotationPolicy(context.Context, string) (*service.CredentialRotationPolicyStatus, error) {
+	return nil, m.err
+}
+
+func (m *credErrMapService) CredentialMigrationConflicts(context.Context) ([]credentials.CredentialMigrationConflictError, error) {
+	return nil, m.err
+}
+
+func (m *credErrMapService) CredentialResolveMigrationConflict(context.Context, string, credentials.MigrationResolution) error {
+	return m.err
+}
+
+// credentialTypedErrorStatuses is the REST status of every credential typed
+// error the rotation-policy and migration-conflict verbs can carry
+// (docs/credentials/api.md, "Status and error mapping"). The last three are
+// raised only at boot or by the scheduler, never by a verb; they keep the
+// default internal class, the same on every transport.
+var credentialTypedErrorStatuses = []struct {
+	name string
+	err  error
+	want int
+}{
+	{"invalid rotation policy", &credentials.InvalidRotationPolicyError{Reason: "x"}, http.StatusBadRequest},
+	{"invalid resolution", credentials.ErrInvalidMigrationResolution, http.StatusBadRequest},
+	{"conflict not found", credentials.ErrMigrationConflictNotFound, http.StatusNotFound},
+	{"credential not found", credentials.ErrCredentialNotFound, http.StatusNotFound},
+	{"meta contended", credentials.ErrRotationMetaContended, http.StatusConflict},
+	{"no value source", credentials.ErrNoRotationValueSource, http.StatusInternalServerError},
+	{"layout conflict", &credentials.LayoutConflictError{Names: []string{"a"}}, http.StatusInternalServerError},
+	{"migration conflict", &credentials.CredentialMigrationConflictError{Name: "a", Value: true}, http.StatusInternalServerError},
+}
+
+func TestHandleCredential_RotationAndConflictVerbs_TypedErrorStatus(t *testing.T) {
+	verbs := []struct{ method, path, body string }{
+		{http.MethodPut, "/v1/credentials/db/rotation-policy", `{"enabled":false}`},
+		{http.MethodGet, "/v1/credentials/db/rotation-policy", ``},
+		{http.MethodGet, "/v1/credentials/migration-conflicts", ``},
+		{http.MethodPost, "/v1/credentials/db/migration-resolve", `{"resolution":"import"}`},
+	}
+	for _, tc := range credentialTypedErrorStatuses {
+		for _, v := range verbs {
+			t.Run(tc.name+" "+v.method+" "+v.path, func(t *testing.T) {
+				s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+					WithCredentialService(&credErrMapService{coverageCredentialService: newCoverageCredentialService(), err: tc.err}))
+				rec := httptest.NewRecorder()
+				req := httptest.NewRequest(v.method, v.path, strings.NewReader(v.body))
+				if v.path == "/v1/credentials/migration-conflicts" {
+					s.handleCredentialMigrationConflicts(rec, req)
+				} else {
+					s.handleCredentialByPath(rec, req)
+				}
+				assertStatus(t, rec, tc.want)
+			})
+		}
+	}
+}
+
+// TestHandleCredentialResolveMigrationConflict_RefusesUnknownResolution pins
+// that a resolution other than import or discard reaches the service, whose
+// ErrInvalidMigrationResolution is a 400, and an empty name is a 400 before
+// the body is read.
+func TestHandleCredentialResolveMigrationConflict_RefusesUnknownResolution(t *testing.T) {
+	var got credentials.MigrationResolution
+	svc := &resolveRecordingService{coverageCredentialService: newCoverageCredentialService(), got: &got}
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0", WithCredentialService(svc))
+	rec := httptest.NewRecorder()
+	s.handleCredentialByPath(rec, httptest.NewRequest(http.MethodPost, "/v1/credentials/db/migration-resolve",
+		strings.NewReader(`{"resolution":"merge"}`)))
+	assertStatus(t, rec, http.StatusBadRequest)
+	if got != "merge" {
+		t.Fatalf("service saw resolution %q, want merge", got)
+	}
+	rec = httptest.NewRecorder()
+	s.handleCredentialResolveMigrationConflict(rec, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"resolution":"import"}`)), "")
+	assertStatus(t, rec, http.StatusBadRequest)
+}
+
+// resolveRecordingService records the resolution it is given and refuses any
+// but import or discard, as credentials.CredentialService does.
+type resolveRecordingService struct {
+	*coverageCredentialService
+	got *credentials.MigrationResolution
+}
+
+func (m *resolveRecordingService) CredentialResolveMigrationConflict(_ context.Context, _ string, how credentials.MigrationResolution) error {
+	*m.got = how
+	if how != credentials.MigrationImport && how != credentials.MigrationDiscard {
+		return credentials.ErrInvalidMigrationResolution
+	}
+	return nil
+}
+
 func TestHandleCredentialByPath_DispatchGC(t *testing.T) {
 	svc := newCoverageCredentialService()
 	called := false

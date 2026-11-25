@@ -32,7 +32,8 @@ import (
 // TestNodeMigrationProvider_StoreDirs_ClassifiesPebbleAndFileStores pins that
 // the system migration names each existing store directory by the kind of
 // store it holds: pebble and vector as Pebble stores, file as a file store,
-// and nothing that is absent or not a directory.
+// and nothing that is absent or not a directory. The seal store's secrets
+// ride along as staged records, re-encrypted with the barrier's records.
 func TestNodeMigrationProvider_StoreDirs_ClassifiesPebbleAndFileStores(t *testing.T) {
 	dataDir := t.TempDir()
 	for _, d := range []string{"pebble", "file"} {
@@ -45,8 +46,9 @@ func TestNodeMigrationProvider_StoreDirs_ClassifiesPebbleAndFileStores(t *testin
 	got, err := p.StoreDirs(context.Background(), service.BarrierScope{Kind: service.ScopeSystem})
 	require.NoError(t, err)
 	require.Equal(t, service.MigrationStores{
-		Pebble: []string{filepath.Join(dataDir, "pebble")},
-		File:   []string{filepath.Join(dataDir, "file")},
+		Pebble:  []string{filepath.Join(dataDir, "pebble")},
+		File:    []string{filepath.Join(dataDir, "file")},
+		Records: []seal.StagedRecords{{Prefix: "sealstore/", StagingPrefix: "sealstore.migrating/"}},
 	}, got)
 }
 

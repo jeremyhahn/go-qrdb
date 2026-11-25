@@ -70,7 +70,7 @@ func TestGRPCTenant_CRUDMethods_Success(t *testing.T) {
 	// TestTenantOnboarding_CSRAdminLogsInUnderRequired, and GetTenant and
 	// UpdateTenant in TestTenantDescriptiveFields_RoundTripOnEveryTransport.
 	t.Run("ListTenants", func(t *testing.T) {
-		if _, err := tr.ListTenants(ctx); err != nil {
+		if _, err := tr.ListTenants(ctx, nil); err != nil {
 			t.Fatalf("ListTenants: %v", err)
 		}
 	})

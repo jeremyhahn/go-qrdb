@@ -27,6 +27,7 @@ import (
 	"time"
 
 	gomysql "github.com/go-sql-driver/mysql"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
@@ -89,21 +90,15 @@ func TestOpenSession_SealClosesTheConnection(t *testing.T) {
 			ctx := context.Background()
 			require.NoError(t, conn.PingContext(ctx))
 			seal(probe, streams)
-			deadline := time.Now().Add(5 * time.Second)
-			for {
+			require.EventuallyWithT(t, func(ct *assert.CollectT) {
 				// A closed connection reads as driver.ErrBadConn; a refusal
 				// on a connection still open does not.
 				err := conn.Raw(func(dc any) error {
 					return dc.(driver.Pinger).Ping(ctx) //nolint:errcheck // the go-sql-driver connection is a driver.Pinger
 				})
-				if errors.Is(err, driver.ErrBadConn) || errors.Is(err, gomysql.ErrInvalidConn) {
-					return
-				}
-				if time.Now().After(deadline) {
-					t.Fatalf("the session's connection stayed open after the seal (last: %v)", err)
-				}
-				time.Sleep(20 * time.Millisecond)
-			}
+				closed := errors.Is(err, driver.ErrBadConn) || errors.Is(err, gomysql.ErrInvalidConn)
+				assert.Truef(ct, closed, "the session's connection stayed open after the seal (last: %v)", err)
+			}, 5*time.Second, 20*time.Millisecond)
 		})
 	}
 }
@@ -150,16 +145,13 @@ func TestOpenTransaction_ClusterSealClosesTheConnection(t *testing.T) {
 	// The system tenant -- this unauthenticated session's -- is sealed.
 	streams.EndTenant("system", &clusterseal.SealedError{Barrier: clusterseal.TenantBarrier("system")})
 
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, err := tx.ExecContext(ctx, "SELECT 1"); err != nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			_ = tx.Rollback() // an open transaction would hold the cleanup's Close
-			t.Fatal("the transaction kept serving after its tenant was sealed")
-		}
-		time.Sleep(20 * time.Millisecond)
+	refused := assert.Eventually(t, func() bool {
+		_, err := tx.ExecContext(ctx, "SELECT 1")
+		return err != nil
+	}, 5*time.Second, 20*time.Millisecond, "the transaction kept serving after its tenant was sealed")
+	if !refused {
+		_ = tx.Rollback() // an open transaction would hold the cleanup's Close
+		t.FailNow()
 	}
 	require.Error(t, tx.Commit(), "a transaction held across the seal committed")
 

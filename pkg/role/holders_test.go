@@ -259,6 +259,32 @@ func TestDeleteRole_ARevokerFailureKeepsTheRoleMarked(t *testing.T) {
 	}
 }
 
+// countingHolders reports n changed holders and records that it ran.
+type countingHolders struct {
+	n   int
+	ran *int
+}
+
+func (c countingHolders) RevokeRole(context.Context, string, string) (int, error) {
+	*c.ran++
+	return c.n, nil
+}
+
+func TestHolderRevokers_SumsAndStopsOnError(t *testing.T) {
+	ctx := context.Background()
+	ran := 0
+	n, err := HolderRevokers(countingHolders{n: 2, ran: &ran}, countingHolders{n: 3, ran: &ran}).RevokeRole(ctx, "acme", "r1")
+	if err != nil || n != 5 || ran != 2 {
+		t.Fatalf("RevokeRole = %d, %v (ran %d); want 5, nil (ran 2)", n, err, ran)
+	}
+	sentinel := errors.New("groups unreachable")
+	ran = 0
+	n, err = HolderRevokers(countingHolders{n: 1, ran: &ran}, failingHolders{err: sentinel}, countingHolders{n: 4, ran: &ran}).RevokeRole(ctx, "acme", "r1")
+	if !errors.Is(err, sentinel) || n != 1 || ran != 1 {
+		t.Fatalf("RevokeRole = %d, %v (ran %d); want 1, sentinel (ran 1)", n, err, ran)
+	}
+}
+
 func TestDeleteRole_MarkWriteFailureLeavesTheRoleIntact(t *testing.T) {
 	fkv := &faultKVStore{inner: newMemKVStore()}
 	svc, err := NewStore(fkv, WithHolderRevoker(noHolders{}))

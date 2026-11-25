@@ -131,6 +131,10 @@ func registerGovernanceDuties() {
 		RolesCreate, RolesRead, RolesUpdate,
 		RolesDelete, RolesList, RolesAssign,
 		RolesUnassign, PermissionsList,
+		// IAM groups: granted exactly as their roles:* counterparts.
+		GroupsCreate, GroupsRead, GroupsUpdate,
+		GroupsDelete, GroupsList, GroupsAddMember,
+		GroupsRemoveMember,
 		// User administration.
 		UsersCreate, UsersRead, UsersUpdate,
 		UsersDelete, UsersList, UsersEnable,
@@ -158,6 +162,9 @@ func registerGovernanceDuties() {
 		// the token, not use of its keys (piv:use is DutyCryptoUse).
 		PINRead, PINWrite,
 		PIVRead, PIVWrite, PIVDelete,
+		// Shared-password ownership override: a governance decision over a
+		// record, not a cryptographic use.
+		PasswordsOverrideOwnership,
 		// Audit oversight and retention administration.
 		AuditRead, AuditQuery, AuditDelete, AuditVerify, AuditVerifyReplicated,
 		// Cluster and node control.

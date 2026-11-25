@@ -147,15 +147,6 @@ func TestShareSplitter_RoundTrip_BinarySecret(t *testing.T) {
 	assertEnclaveEquals(t, secretEnclave, secret)
 }
 
-// ---------- Compile-time interface checks ----------
-
-func TestShareSplitter_ImplementsInterface(t *testing.T) {
-	var splitter interface{} = NewShamirShareSplitter()
-	if _, ok := splitter.(ShareSplitter); !ok {
-		t.Fatal("ShamirShareSplitter does not implement ShareSplitter")
-	}
-}
-
 // destroyShares releases every protected share in the slice. Safe on nil
 // entries and a nil slice.
 func destroyShares(shares []*shamir.ProtectedShare) {

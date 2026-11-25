@@ -23,6 +23,61 @@ to [../shamir-custody/api.md](../shamir-custody/api.md).
 | Enable encryption | `POST /v1/barrier/enable-encryption` | `BarrierEnableEncryption` | `barrier.EnableEncryption` | `qrdb_barrier_enable_encryption` | `BarrierEnableEncryption` | `seal:enable_encryption` (node) or `tenant_barrier:enable_encryption` (named tenant) |
 | Cluster unseal | `POST /v1/barrier/cluster-unseal` | `BarrierClusterUnseal` | `barrier.ClusterUnseal` | `qrdb_barrier_cluster_unseal` | `BarrierClusterUnseal` | `seal:unseal` |
 
+## Seal store (named secrets)
+
+The node's seal store holds named secrets. Every entry is encrypted under the
+system barrier, so a sealed node serves none of them. `enable-encryption`
+re-encrypts the seal store under the new root key, rolls it forward at the next
+boot after a crash past the commit point, and compacts the plaintext history
+out of the seal store's files.
+
+Seal-store data is **embedded-only** (ruling 1234): only the embedded transport
+serves the seal-store verbs, through two in-process consumers: the client of an
+`sdk/go/node` node (`node.Client().SealStore()`) and the desktop/GUI build's
+embedded binding. There is no `qrdb seal-store` CLI group: the shipped `qrdb`
+binary links no in-process node, so no CLI build can serve the data.
+The node serves no seal-store route on any network transport: no REST
+`/v1/seal-store` route, no gRPC or Unix `SealStore*` RPC, no QUIC `sealstore.*`
+method and no MCP `qrdb_seal_store_*` tool. Every remote SDK transport (gRPC
+incl. gRPC-Web, Unix, REST, QUIC and MCP) refuses each verb before any I/O with
+`*transport.EmbeddedOnlyError`, which matches `errors.Is(err,
+transport.ErrEmbeddedOnly)` and names the operation and the transport. The
+list of embedded-only operations is `transport.EmbeddedOnlyOperations`; a
+refusal carried over the wire uses the `EMBEDDED_ONLY` reason
+(`transport.ReasonEmbeddedOnly`). Seal and unseal stay on every transport
+(`Client.Barrier()`, `qrdb barrier seal|unseal`).
+
+| Operation | Embedded (`Client.SealStore()`) | `scp` permission |
+|---|---|---|
+| Put | `SealStorePut` | `seal:store_manage` |
+| Get | `SealStoreGet` | `seal:store_manage` |
+| List | `SealStoreList` | `seal:store_manage` |
+| Delete | `SealStoreDelete` | `seal:store_manage` |
+| Reseal | `SealStoreReseal` | `seal:store_manage` |
+| Status | `SealStoreStatus` | `seal:store_manage` |
+
+A secret name is one opaque segment: it may not be empty, `.` or `..`, or
+contain `/`, `\` or a control character. The store refuses such a name with
+`seal.ErrInvalidSecretName`. A record stored before this rule (for example
+`tls/key` in an upgraded embedded deployment) still shows in List and stays
+readable, deletable and resealable through the embedded `seal.SealStore`: Get,
+Delete and Reseal accept such a name only when its record exists, and Put never
+creates one. Reseal replaces the record in one write, and Put, Delete and
+Reseal are serialized, so a failed reseal leaves the old record.
+
+On a node's embedded client (`sdk/go/node`), a seal-store call made while the
+node barrier is sealed is refused by the node's seal gate before the store
+runs: the caller sees `seal.ErrSealed` (`errors.Is(err, seal.ErrSealed)`), not
+`sdk.ErrSealStoreBarrierSealed`, which is only the store's own in-store guard
+behind the gate and reaches a caller only through a `seal.SealStore` used
+directly. A missing secret and an invalid name surface as
+`sdk.ErrSealStoreSecretNotFound` and `seal.ErrInvalidSecretName`, matched with
+`errors.Is`. The sentinels are embedded-only: only `seal.SealStore` returns
+them, the embedded transport returns them unclassified, and no remote RPC
+serves the store (the node's PIN backend persists through the seal backend
+directly, not the seal store), so they have neither an `errclass` row nor a
+structured refusal reason.
+
 A Shamir barrier is unsealed, sealed and rekeyed, and root tokens are minted,
 only by a quorum of authenticated share holders: `POST /v1/barrier/quorum/*`
 and `POST /v1/barrier/rekey/start`, in

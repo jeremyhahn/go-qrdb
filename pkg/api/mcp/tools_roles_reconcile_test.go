@@ -51,7 +51,7 @@ func TestRoleReconcileTool_Success(t *testing.T) {
 			}, nil
 		},
 	}
-	handler := handleRoleReconcile(svc)
+	handler := handleRoleReconcile(svc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{"tenant_id": "t1"}))
 	if err != nil {
@@ -92,7 +92,7 @@ func TestRoleReconcileTool_NoTenant(t *testing.T) {
 			return &role.ReconcileReport{TenantID: "own"}, nil
 		},
 	}
-	handler := handleRoleReconcile(svc)
+	handler := handleRoleReconcile(svc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{}))
 	if err != nil {
@@ -117,7 +117,7 @@ func TestRoleReconcileTool_ServiceError(t *testing.T) {
 			return nil, &role.StoreError{Op: "reconcile", Err: errors.New("storage failure")}
 		},
 	}
-	handler := handleRoleReconcile(svc)
+	handler := handleRoleReconcile(svc, nil)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{"tenant_id": "t1"}))
 	var toolErr *ToolError

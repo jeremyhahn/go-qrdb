@@ -958,7 +958,7 @@ func TestEmbeddedTenant_List(t *testing.T) {
 		},
 	}
 	tr := newExtTransport(t, WithTenantService(svc))
-	resp, err := tr.ListTenants(context.Background())
+	resp, err := tr.ListTenants(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("ListTenants: %v", err)
 	}
@@ -972,7 +972,7 @@ func TestEmbeddedTenant_List(t *testing.T) {
 
 func TestEmbeddedTenant_List_NilService(t *testing.T) {
 	tr := newExtTransport(t)
-	_, err := tr.ListTenants(context.Background())
+	_, err := tr.ListTenants(context.Background(), nil)
 	var nilErr *NilServiceError
 	if !errors.As(err, &nilErr) {
 		t.Fatalf("expected NilServiceError, got %T", err)
@@ -981,7 +981,7 @@ func TestEmbeddedTenant_List_NilService(t *testing.T) {
 
 func TestEmbeddedTenant_List_Closed(t *testing.T) {
 	tr := closedExtTransport(t, WithTenantService(&mockTenantService{}))
-	_, err := tr.ListTenants(context.Background())
+	_, err := tr.ListTenants(context.Background(), nil)
 	var closedErr *transport.ClosedError
 	if !errors.As(err, &closedErr) {
 		t.Fatalf("expected ClosedError, got %T", err)
@@ -995,7 +995,7 @@ func TestEmbeddedTenant_List_Error(t *testing.T) {
 		},
 	}
 	tr := newExtTransport(t, WithTenantService(svc))
-	_, err := tr.ListTenants(context.Background())
+	_, err := tr.ListTenants(context.Background(), nil)
 	if !errors.Is(err, errSentinel) {
 		t.Errorf("expected errSentinel, got %v", err)
 	}

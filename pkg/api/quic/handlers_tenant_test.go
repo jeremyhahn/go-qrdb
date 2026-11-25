@@ -298,6 +298,49 @@ func TestHandleTenantList_Success(t *testing.T) {
 	}
 }
 
+func TestHandleTenantList_StatusFilter(t *testing.T) {
+	svc := &mockTenantService{
+		listFn: func(_ context.Context) ([]tenant.TenantInfo, error) {
+			return []tenant.TenantInfo{
+				{ID: "t-active", Status: tenant.StatusActive},
+				{ID: "t-suspended", Status: tenant.StatusSuspended},
+			}, nil
+		},
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithTenantService(svc))
+
+	payload, err := proto.Marshal(&pb.TenantListRequest{Status: "suspended"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	resp, err := srv.handleTenantList(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var listResp pb.TenantListResponse
+	if err := proto.Unmarshal(resp, &listResp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(listResp.GetTenants()) != 1 || listResp.GetTenants()[0].GetId() != "t-suspended" {
+		t.Fatalf("tenants = %v, want only t-suspended", listResp.GetTenants())
+	}
+
+	payload, err = proto.Marshal(&pb.TenantListRequest{Status: "deleted"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	_, err = srv.handleTenantList(context.Background(), payload)
+	var ie *tenant.InvalidStatusError
+	if !errors.As(err, &ie) || ie.Value != "deleted" {
+		t.Fatalf("err = %T(%v), want *tenant.InvalidStatusError", err, err)
+	}
+
+	var ue *UnmarshalError
+	if _, err = srv.handleTenantList(context.Background(), []byte{0xff}); !errors.As(err, &ue) {
+		t.Fatalf("malformed payload err = %T(%v), want *UnmarshalError", err, err)
+	}
+}
+
 func TestHandleTenantList_ServiceError(t *testing.T) {
 	svcErr := &testError{msg: "list failed"}
 	svc := &mockTenantService{

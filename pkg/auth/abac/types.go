@@ -166,6 +166,13 @@ type Condition struct {
 	Expression string `json:"expression,omitempty" yaml:"expression,omitempty"`
 }
 
+// ResourceOwnerContextKey is the CheckRequest.Context key that carries the
+// owner of the object an operation acts on. The decorator sets it from
+// auth.ResourceOwnerFromContext; conditions read it as resource.owner, and
+// subject.owns_resource compares it with the subject's bound account
+// (auth.UserSubject(Subject.UserID)).
+const ResourceOwnerContextKey = "resource_owner"
+
 // CheckRequest represents an authorization check request.
 type CheckRequest struct {
 	// Subject is the principal requesting access.
@@ -186,6 +193,12 @@ type CheckRequest struct {
 type Subject struct {
 	// ID is the subject identifier.
 	ID string `json:"id" yaml:"id"`
+
+	// UserID is the bound account's user id; 0 when the identity has no
+	// account (a certificate holder or a service identity). Object ownership
+	// (subject.owns_resource) is decided on it, never on ID, which for an
+	// unbound identity is a name that may be all digits.
+	UserID uint64 `json:"user_id,omitempty" yaml:"user_id,omitempty"`
 
 	// Name is the subject's display name.
 	Name string `json:"name,omitempty" yaml:"name,omitempty"`

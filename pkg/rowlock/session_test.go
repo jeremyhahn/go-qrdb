@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -197,26 +198,45 @@ func TestSession_IdleLeaseIsRevoked(t *testing.T) {
 	id := o.lease.id
 	require.NoError(t, o.Release(context.Background()))
 
-	deadline := time.Now().Add(5 * time.Second)
-	for leaseAlive(t, s, id) && time.Now().Before(deadline) {
-		time.Sleep(50 * time.Millisecond)
-	}
-	assert.False(t, leaseAlive(t, s, id), "a lease no transaction used for a TTL is revoked")
+	require.Eventuallyf(t, func() bool { return !leaseAlive(t, s, id) }, 5*time.Second, 50*time.Millisecond,
+		"a lease no transaction used for a TTL is revoked")
 	sess.mu.Lock()
 	assert.Empty(t, sess.leases)
 	sess.mu.Unlock()
 }
 
 func TestSession_LeaseInUseIsNotIdle(t *testing.T) {
-	s := newStack(t)
+	// The lessor runs on a fake clock, so the lease expires only when the
+	// test advances it. Each half-TTL step is taken after a renewal that
+	// began at the current time; four steps carry the lock two TTLs past its
+	// grant, where a lease that was never renewed has expired.
+	const ttlSeconds = 1
+	ttl := ttlSeconds * time.Second
+	clk := clocktest.NewAt(time.Unix(1_000_000, 0))
+	s := newStack(t, lease.WithClock(clk))
 	s.runExpiry(t)
-	tbl := s.table(t, WithLeaseTTL(1))
+	renewals := make(chan time.Time, 1)
+	deps := s.deps
+	deps.Lease = renewalLease{LeaseServicer: s.deps.Lease, clk: clk, renewed: renewals}
+	tbl, err := New(deps, "acme/shop", WithLeaseTTL(ttlSeconds))
+	require.NoError(t, err)
 	sess := NewSession()
 	t.Cleanup(func() { _ = sess.Close(context.Background()) })
 
 	o := sess.NewOwner()
 	require.NoError(t, o.Acquire(context.Background(), tbl, []string{keyA}, ModeExclusive, 0))
-	time.Sleep(1500 * time.Millisecond)
+	for range 4 {
+		clk.Advance(ttl / 2)
+		since := clk.Now()
+		for renewed := false; !renewed; {
+			select {
+			case began := <-renewals:
+				renewed = !began.Before(since)
+			case <-time.After(30 * time.Second):
+				t.Fatalf("the session's keepalive renewed no lease at or after %v", since)
+			}
+		}
+	}
 	assert.True(t, leaseAlive(t, s, o.lease.id), "a held lock keeps its lease renewed")
 	assert.Equal(t, []string{o.ID() + "/x"}, queueOwners(t, tbl, keyA))
 	require.NoError(t, o.Release(context.Background()))

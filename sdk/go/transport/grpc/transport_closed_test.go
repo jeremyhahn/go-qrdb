@@ -493,7 +493,7 @@ func TestGRPCTenant_AfterClose(t *testing.T) {
 	runClosedCases(t, []closedCase{
 		{"CreateTenant", func() error { _, e := tr.CreateTenant(ctx, &transport.CreateTenantRequest{}); return e }},
 		{"GetTenant", func() error { _, e := tr.GetTenant(ctx, "t1"); return e }},
-		{"ListTenants", func() error { _, e := tr.ListTenants(ctx); return e }},
+		{"ListTenants", func() error { _, e := tr.ListTenants(ctx, nil); return e }},
 		{"DeleteTenant", func() error { return tr.DeleteTenant(ctx, "t1") }},
 		{"UpdateTenant", func() error { _, e := tr.UpdateTenant(ctx, &transport.UpdateTenantRequest{}); return e }},
 		{"UpdateTenantQuotas", func() error {

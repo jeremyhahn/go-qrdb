@@ -202,16 +202,21 @@ func TestTenantOwner_NoRoleStoreRefuses(t *testing.T) {
 func TestTenantOwner_EarlyReturnPathsAreDecided(t *testing.T) {
 	cause := errors.New("store down")
 	t.Run("sealed tenant", func(t *testing.T) {
-		// A role on the authenticated identity makes the decision a store
-		// read; a role-less one is "not owner" without one.
+		// The authenticator's claimed Admin role is discarded, so the
+		// sealed identity is role-less and decided "not owner" without a
+		// store read: the failing role store is never consulted.
 		claimed := &auth.Identity{Subject: "carol", TenantID: "acme", Roles: []string{role.SystemRoleID("acme", role.RoleNameAdmin)}}
 		m := newTestMiddleware(&mockAuthorizer{},
 			WithAuthenticator(&mockAuthenticator{name: "test-authn", identity: claimed}),
 			WithUserService(&mockUserServicer{err: tenant.ErrTenantSealed}),
 			WithRoleResolver(failingRoles{err: cause}),
 		)
-		if _, _, err := m.authenticate(context.Background()); !errors.Is(err, cause) {
-			t.Fatalf("want the role store error, got %v", err)
+		_, id, err := m.authenticate(context.Background())
+		if err != nil {
+			t.Fatalf("sealed role-less identity: want no error (role store not consulted), got %v", err)
+		}
+		if id.Roles != nil || id.TenantOwner || !IdentityIAMSealed(id) {
+			t.Fatalf("sealed identity = roles %v owner %v sealed %v, want none/false/true", id.Roles, id.TenantOwner, IdentityIAMSealed(id))
 		}
 	})
 	t.Run("no role store", func(t *testing.T) {

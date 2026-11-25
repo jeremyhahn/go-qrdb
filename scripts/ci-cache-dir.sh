@@ -1,53 +1,15 @@
 #!/usr/bin/env bash
-# CUSTOMIZE (go-qrdb, #1596): where a CI job keeps its Go build and
-# golangci-lint caches.
-#
-#   ci-cache-dir.sh   prints CI_CACHE_DIR=<dir> for "$GITHUB_ENV";
-#                     scripts/in-toolchain-image.sh bind-mounts <dir>/gobuild
-#                     and <dir>/golangci, or, when <dir> is empty, uses its
-#                     named Docker volumes.
-#
-#   - A hosted runner (RUNNER_ENVIRONMENT=github-hosted) is thrown away after
-#     the job: the cache is $RUNNER_TEMP/ci-cache, which actions/cache
-#     restores and saves.
-#   - A self-hosted pool host keeps its disk: $RUNNER_TEMP is on the root
-#     filesystem and outlives the job, and the cache there grew to 168 GB
-#     (#1596). The cache is a persistent base directory on the data array:
-#       $CI_CACHE_ROOT/gh-runner-cache/go-qrdb/ci-cache  when
-#           $CI_CACHE_ROOT/gh-runner-cache is a writable directory, else
-#       $CI_CACHE_ROOT/go-qrdb-ci-cache                  when $CI_CACHE_ROOT
-#           is a writable directory, else
-#       none (CI_CACHE_DIR empty: the named volumes), never $RUNNER_TEMP.
-#     CI_CACHE_ROOT defaults to /mnt/raid0.
-#
-# Generations. Every self-hosted job on a host shares the base, and a running
-# stage has <gen>/gobuild and <gen>/golangci bind-mounted: deleting them under
-# it fails the stage (ENOENT). So the cache lives in <base>/gen-<UTC stamp>/
-# and <base>/current names the live generation. Each job that selects a
-# generation touches its <gen>/.last-use marker. When the live generation's
-# gobuild and golangci together exceed CI_CACHE_MAX_GB (default 40; du -s
-# --block-size=1G, which rounds each up), the job creates a new generation
-# and switches `current` to it by an atomic rename of a temp file, with a
-# ::notice::. A generation that is not current is deleted only once its
-# last-use marker is older than CI_CACHE_RECLAIM_HOURS (default 7, longer
-# than the 6 h longest a job may run), so no job still using it can remain.
-# A job never deletes the generation it uses, nor the current one. Anything
-# else in the base (a cache from before the generations) goes by the same
-# age, from its own mtime. Selection, rotation and the reclaim decision run
-# under flock(1) on <base>/.lock when flock is present; a reclaimed
-# generation is renamed to trash-<name> there and deleted after.
-#
-# Deletion goes through scripts/ci-cache-clean.sh: the stages give the
-# cache's files to their uid 10001, which the runner's user cannot delete, so
-# the helper deletes them as root in the toolchain image, and a failure is a
-# ::warning::, never a failed job. The legacy $RUNNER_TEMP/ci-cache is
-# removed the same way before any stage runs.
-#
-# Notices go to stderr: stdout is the environment file.
+# CUSTOMIZE: where a CI job keeps its Go build and golangci-lint caches.
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 clean() { bash "$here/ci-cache-clean.sh" "$@" || true; }
+
+named_volumes() {
+  echo "::notice::$1: the Go caches are the stage's named Docker volumes" >&2
+  echo "CI_CACHE_DIR="
+  exit 0
+}
 
 if [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ]; then
   if [ -z "${RUNNER_TEMP:-}" ]; then
@@ -58,7 +20,14 @@ if [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ]; then
   exit 0
 fi
 
-root=${CI_CACHE_ROOT:-/mnt/raid0}
+# A self-hosted pool runner is a container sharing only the Docker daemon:
+# its $RUNNER_TEMP is private to it, while the stages bind-mount the same path
+# on the daemon's host. No root is ever derived from RUNNER_TEMP here.
+if [ -z "${CI_CACHE_ROOT:-}" ]; then
+  named_volumes "Self-hosted runner with no CI_CACHE_ROOT"
+fi
+root=$CI_CACHE_ROOT
+legacy=${RUNNER_TEMP:-}
 cap=${CI_CACHE_MAX_GB:-40}
 case $cap in
   '' | *[!0-9]*)
@@ -75,16 +44,10 @@ case $hours in
 esac
 reclaim_min=$((hours * 60))
 
-named_volumes() {
-  echo "::notice::$1: the Go caches are the stage's named Docker volumes" >&2
-  echo "CI_CACHE_DIR="
-  exit 0
-}
-
 # The legacy cache in the pool host's temp dir holds stage-owned files: delete
-# it before any stage runs. No stage on a self-hosted runner writes there.
-if [ -n "${RUNNER_TEMP:-}" ]; then
-  clean "$RUNNER_TEMP/ci-cache"
+# it before any stage runs, since CI_CACHE_ROOT puts the cache elsewhere.
+if [ -n "$legacy" ]; then
+  clean "$legacy/ci-cache"
 fi
 
 writable_dir() { [ -d "$1" ] && [ -w "$1" ]; }
@@ -144,6 +107,10 @@ select_locked() {
     mv -f -- "$base/current.tmp.$$" "$base/current"
   fi
   touch "$base/$cur/.last-use"
+  # The stages bind-mount these two at /cache/gobuild and /cache/golangci
+  # (scripts/in-toolchain-image.sh) and GOCACHE/GOLANGCI_LINT_CACHE point
+  # there: the generation has them before any stage runs, whatever the root.
+  mkdir -p "$base/$cur/gobuild" "$base/$cur/golangci"
   for e in "$base"/* "$base"/.[!.]*; do
     [ -e "$e" ] || [ -L "$e" ] || continue
     name=${e##*/}

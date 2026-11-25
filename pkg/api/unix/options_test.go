@@ -20,8 +20,10 @@ import (
 	"context"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
 // stubEncryptionMigrator is a minimal service.EncryptionMigrator used to
@@ -53,6 +55,50 @@ func TestStart_WithEncryptionMigrator_Registered(t *testing.T) {
 	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath,
 		WithEncryptionMigrator(stubEncryptionMigrator{}),
 		WithTLS(selfSignedTLSConfig(t)))
+
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer srv.Stop()
+
+	if srv.Addr() == "" {
+		t.Fatal("expected non-empty Addr after Start")
+	}
+}
+
+type stubGroupService struct{ group.GroupServicer }
+
+type stubVolumeService struct{ volume.Service }
+
+type stubAwaitingAdminProbe struct{ awaiting bool }
+
+func (p stubAwaitingAdminProbe) AwaitingAdminCredential() bool { return p.awaiting }
+
+func TestStart_WithGroupVolumeAuditAndProbe_Registered(t *testing.T) {
+	socketPath := tempSocketPath(t)
+	groups := stubGroupService{}
+	volumes := stubVolumeService{}
+	replicated := service.NewOptInAuditLogger(nil, nil, false)
+	probe := stubAwaitingAdminProbe{}
+	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath,
+		WithGroupService(groups),
+		WithVolumeService(volumes),
+		WithReplicatedAuditLogger(replicated),
+		WithAwaitingAdminCredentialProbe(probe),
+		WithTLS(selfSignedTLSConfig(t)))
+
+	if srv.groupSvc != groups {
+		t.Fatal("WithGroupService did not set the group service")
+	}
+	if srv.volumeSvc != volumes {
+		t.Fatal("WithVolumeService did not set the volume service")
+	}
+	if srv.replicatedAudit != replicated {
+		t.Fatal("WithReplicatedAuditLogger did not set the replicated audit logger")
+	}
+	if srv.awaitingAdminCredentialProbe != probe {
+		t.Fatal("WithAwaitingAdminCredentialProbe did not set the probe")
+	}
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)

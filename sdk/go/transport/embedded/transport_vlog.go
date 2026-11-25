@@ -38,9 +38,6 @@ func (t *Transport) vlogAdmit(ctx context.Context, method string, req any) (cont
 	if err := t.authorize(ctx, method); err != nil {
 		return nil, nil, err
 	}
-	if t.closed.Load() {
-		return nil, nil, &transport.ClosedError{}
-	}
 	if req == nil {
 		return nil, nil, &NilRequestError{Method: method}
 	}

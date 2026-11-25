@@ -34,6 +34,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/jeremyhahn/go-qrdb/internal/netport"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterca"
@@ -397,22 +399,24 @@ func TestJoin_TokenlessApprovalQueue_PollsUntilApproved(t *testing.T) {
 
 	// Wait for the CSR to actually land in the queue, then approve it --
 	// exactly the operator action an admin CLI would trigger.
-	deadline := time.Now().Add(5 * time.Second)
+	// A list error ends the poll at once (the condition reports done) and
+	// fails the test below; the pending request's ID is captured for the
+	// approval.
 	var requestID string
-	for time.Now().Before(deadline) {
-		pending, err := ListPendingJoinRequests(context.Background(), store)
-		if err != nil {
-			t.Fatalf("ListPendingJoinRequests: %v", err)
+	var listErr error
+	require.Eventually(t, func() bool {
+		var pending []*PendingJoinRequest
+		pending, listErr = ListPendingJoinRequests(context.Background(), store)
+		if listErr != nil {
+			return true
 		}
 		if len(pending) == 1 {
 			requestID = pending[0].ID
-			break
+			return true
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if requestID == "" {
-		t.Fatal("the tokenless CSR never appeared in the pending queue")
-	}
+		return false
+	}, 5*time.Second, 10*time.Millisecond, "the tokenless CSR never appeared in the pending queue")
+	require.NoError(t, listErr, "ListPendingJoinRequests")
 	if _, err := ApproveJoinRequest(context.Background(), store, testTrustDomain, requestID, "63199", "operator-1"); err != nil {
 		t.Fatalf("ApproveJoinRequest: %v", err)
 	}

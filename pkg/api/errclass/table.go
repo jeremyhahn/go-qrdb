@@ -42,6 +42,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
+	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/initproof"
 	"github.com/jeremyhahn/go-qrdb/pkg/invite"
@@ -132,9 +133,13 @@ var dominantRules = []rule{
 	// A barrier-isolated tenant's IAM store resolved to a SEALED barrier; the
 	// resolver fails closed rather than falling back to the shared store.
 	is(tenant.ErrTenantSealed, Unavailable),
+	// A standalone barrier log store a migration replaced: the retry resolves the new barrier.
+	is(service.ErrLogStoreReplaced, Unavailable),
 	// The same seal met one step later: the barrier sealed AFTER Resolve
 	// returned a store and BEFORE that store's own Get/Put ran, which reports
 	// the barrier's sentinel unwrapped (go-qrdb#464 round 6).
+	// An unseal the strategy could not run is a server fault whatever cause it wraps.
+	is(seal.ErrUnsealFailed, Internal),
 	is(seal.ErrSealed, Unavailable),
 	// go-quicraft's own sentinel for the same condition: a node barrier
 	// re-sealed at runtime refuses every store read and write with it, and
@@ -420,6 +425,9 @@ var vlogRules = []rule{
 	as(&vlog.ExpireNotAllowedError{}, FailedPrecondition),
 	as(&vlog.ReservedLogError{}, PermissionDenied),
 	as(&vlog.NotAuditLogError{}, InvalidArgument),
+	// A kv key or delete range inside the verifiable log's reserved
+	// keyspace: only the log service reads or writes it.
+	as(&service.ReservedKeyError{}, InvalidArgument),
 	as(&vlog.CheckpointRootMismatchError{}, FailedPrecondition),
 	as(&vlog.InvalidSigningKeyError{}, FailedPrecondition),
 	// Another rotation applied first: the caller retries against the new key.
@@ -428,10 +436,11 @@ var vlogRules = []rule{
 	as(&vlog.CorruptTableError{}, DataLoss),
 	as(&vlog.NotCompiledError{}, Unimplemented),
 	as(&service.LogFeatureNotActiveError{}, Unavailable),
-	// A barrier tenant or database keeps its data under its own barrier; the
-	// log registry sits under the system barrier, so neither is served.
-	as(&service.BarrierTenantLogNotSupportedError{}, Unimplemented),
-	as(&service.BarrierDatabaseLogNotSupportedError{}, Unimplemented),
+	// A barrier-enabled database create over a name that already holds logs.
+	as(&service.DatabaseLogsExistError{}, FailedPrecondition),
+	// A barrier tenant's log lives in its home group, which this node cannot
+	// reach yet.
+	as(&service.BarrierStoreUnavailableError{}, Unavailable),
 }
 
 // collectionRules are the document-collection conditions.
@@ -975,6 +984,13 @@ var identityRules = []rule{
 	// A grantor may grant only permissions it holds (go-qrdb#1278).
 	as(&role.GrantExceedsHolderError{}, PermissionDenied),
 	as(&role.ValidationError{}, InvalidArgument),
+	// IAM groups map like their role equivalents.
+	as(&group.GroupNotFoundError{}, NotFound),
+	as(&group.GroupNameTakenError{}, AlreadyExists),
+	as(&group.RoleNotInTenantError{}, InvalidArgument),
+	as(&group.ValidationError{}, InvalidArgument),
+	as(&group.GroupConflictError{}, Aborted),
+	as(&user.GroupMembershipUnsupportedError{}, Unimplemented),
 	as(&role.InvalidPermissionError{}, InvalidArgument),
 	as(&cert.CertNotFoundError{}, NotFound),
 	as(&cert.CertRevokedError{}, FailedPrecondition),
@@ -1073,9 +1089,9 @@ var onboardingRules = []rule{
 	as(&bootstrap.InvalidTrustAnchorsError{}, InvalidArgument),
 	// A tenant SO named in part, with two credentials, or as the admin by
 	// name or by key is the request's fault.
-	as(&bootstrap.IncompleteTenantSOError{}, InvalidArgument),
-	as(&bootstrap.ConflictingSOCredentialError{}, InvalidArgument),
-	as(&bootstrap.SOMatchesAdminError{}, InvalidArgument),
+	as(&firstboot.IncompleteSOError{}, InvalidArgument),
+	as(&firstboot.ConflictingSOCredentialError{}, InvalidArgument),
+	as(&firstboot.SOMatchesAdminError{}, InvalidArgument),
 	as(&bootstrap.SOPartlyMatchesAdminError{}, InvalidArgument),
 	as(&bootstrap.MissingProvisioningSeamError{}, Unimplemented),
 	// Invitation self-enrolment. A token that cannot be redeemed is a bad
@@ -1169,6 +1185,15 @@ var credentialRules = []rule{
 	is(credentials.ErrEmptyCredentialName, InvalidArgument),
 	is(credentials.ErrEmptyCredentialValue, InvalidArgument),
 	is(credentials.ErrInvalidGracePeriod, InvalidArgument),
+	as(&credentials.InvalidRotationPolicyError{}, InvalidArgument),
+	is(credentials.ErrMigrationConflictNotFound, NotFound),
+	is(credentials.ErrInvalidMigrationResolution, InvalidArgument),
+	is(credentials.ErrRotationMetaContended, Aborted),
+	// An undecodable migration claim is a corrupt record a retry never repairs.
+	is(credentials.ErrCorruptMigrationClaim, DataLoss),
+	// The replicated credential store is bound once the node has unsealed
+	// and its system shard's KV has started; a call before then is retryable.
+	is(credentials.ErrStoreUnavailable, Unavailable),
 }
 
 // dekRules are the tenant DEK keyring's conditions. Every keyring error
@@ -1449,6 +1474,8 @@ var ceremonyRules = []rule{
 	// input, an expired window, or a chain that does not validate. The
 	// caller's request is what is wrong, not this node.
 	as(&ceremony.AdminCredentialRejectedError{Cause: errors.New("sample")}, InvalidArgument),
+	// The system SO's inputs are malformed, conflict, or name the admin.
+	as(&ceremony.SystemSORejectedError{Cause: errors.New("sample")}, InvalidArgument),
 	// The ceremony CA itself refused to sign (or the in-process generate
 	// path failed before reaching it): a server-side fault, not something
 	// the caller's request can fix by retrying unchanged.
@@ -1588,7 +1615,7 @@ var genericRules = []rule{
 	// The credential service validates its strategy at construction; meeting
 	// either at request time is a server fault, not the caller's.
 	is(credentials.ErrInvalidStrategy, Internal),
-	is(credentials.ErrNilBarrier, Internal),
+	is(credentials.ErrNilStore, Internal),
 }
 
 // memberIdentityClasses is the class of each member-identity refusal kind.

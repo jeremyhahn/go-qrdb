@@ -155,7 +155,7 @@ func (g *SOGate) Enforce(ctx context.Context, perm permission.Permission, resour
 
 	identity := auth.IdentityFromContext(ctx)
 	if identity == nil {
-		return &SORoleRequiredError{}
+		return &auth.SORoleRequiredError{}
 	}
 	isSO, err := role.HoldsSystemRole(ctx, g.roles, identity.TenantID, identity.Roles, role.RoleNameSO)
 	if err != nil {
@@ -166,7 +166,7 @@ func (g *SOGate) Enforce(ctx context.Context, perm permission.Permission, resour
 		return &SORoleUnresolvedError{Err: err}
 	}
 	if !isSO {
-		return &SORoleRequiredError{}
+		return &auth.SORoleRequiredError{}
 	}
 
 	// ONE emitter for all three outcomes, so the gating decision is made once
@@ -289,14 +289,6 @@ type SOFactorError struct {
 
 // Error returns the refusal message.
 func (e *SOFactorError) Error() string { return string(e.Reason) }
-
-// SORoleRequiredError is the SO gate's refusal of a caller that does not hold
-// the SO role. The credential is good and the role is absent, so it
-// classifies as AuthFailureUnauthorized: 403 / PermissionDenied.
-type SORoleRequiredError struct{}
-
-// Error returns the refusal message.
-func (e *SORoleRequiredError) Error() string { return "SO role required" }
 
 // SORoleUnresolvedError is the SO gate's refusal when the role store could
 // not say whether the caller holds the SO role. Neither the credential nor

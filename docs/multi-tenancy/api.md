@@ -14,7 +14,7 @@ wire over a UDS.
 |---|---|---|---|---|---|---|
 | Create | `POST /v1/tenants` | `TenantCreate` | `tenant.Create` | `qrdb_tenant_create` | `CreateTenant` | `tenants:create` (platform operator) |
 | Get | `GET /v1/tenants/{id}` | `TenantGet` | `tenant.Get` | `qrdb_tenant_get` | `GetTenant` | `tenants:read` |
-| List | `GET /v1/tenants/list` | `TenantList` | `tenant.List` | `qrdb_tenant_list` | `ListTenants` | `tenants:list`; the full list needs `tenants:list:cross` |
+| List | `GET /v1/tenants/list` | `TenantList` | `tenant.List` | `qrdb_tenant_list` | `ListTenants` | `tenants:list`; the full list needs `tenants:list:cross`; optional `status` filter, see [Status](#status) |
 | Update | `PUT /v1/tenants/{id}` | `TenantUpdate` | `tenant.Update` | `qrdb_tenant_update` | `UpdateTenant` | `tenants:update`; an isolation change also needs `tenants:set_isolation`, a status change `tenants:set_status` (platform operator) |
 | Delete | `DELETE /v1/tenants/{id}` | `TenantDelete` | `tenant.Delete` | `qrdb_tenant_delete` | `DeleteTenant` | `tenants:delete` |
 | Update quotas | `POST /v1/tenants/{id}/quotas` | `TenantUpdateQuotas` | `tenant.UpdateQuotas` | `qrdb_tenant_update_quotas` | `UpdateTenantQuotas` | `tenants:set_quotas` (platform operator) |
@@ -352,6 +352,34 @@ absent leaves it unchanged. Any status may move to any other except
 | Go SDK `transport.UpdateTenantRequest` | `Status *TenantStatus`: nil unchanged; `TenantInfo.Status` |
 | CLI | `qrdb tenant update <id> --status suspended`; `tenant get` / `list` show it |
 
+The list takes an optional `status` filter. Empty or absent lists every tenant
+the caller may see. `active`, `suspended` or `disabled` keeps only the tenants
+stored with exactly that status; a legacy tenant with no stored status matches
+only the unfiltered list. Any other value, `deleted` included, is refused with
+400 / `INVALID_ARGUMENT` (`*InvalidStatusError` listing the allowed values):
+a deleted tenant is a retired-id record, listed by List deleted, not a status.
+The filter applies after the `tenants:list:cross` narrowing, so it never
+widens what a caller sees.
+
+A server older than the filter drops it and answers every tenant. The Go SDK's
+network transports (REST, gRPC, Unix, QUIC, MCP) and so the CLI check the answer
+(`transport.EnforceStatusFilter`): when a status was asked for and any returned
+tenant's status differs from it, a tenant with no stored status included, the
+answer is refused with no tenants and a `*transport.CapabilityUnsupportedError`
+(`transport: unsupported capability: server ignored the tenant list status
+filter "<status>": it answered tenant "<id>" with status "<got>"; upgrade the
+server`); the CLI exits non-zero rather than print an unfiltered list. An
+unfiltered request, or an answer whose every tenant matches, passes unchanged.
+The embedded transport is the same build as its server and is not checked.
+
+| Transport | List filter |
+|---|---|
+| REST `GET /v1/tenants/list` | `?status=suspended` |
+| gRPC / Unix `TenantList`, QUIC `tenant.List` | `TenantListRequest.status` |
+| MCP `qrdb_tenant_list` | optional `status` string |
+| Go SDK `TenantClient.ListTenants(ctx, req)` | `*transport.ListTenantsRequest{Status}`; nil lists all |
+| CLI | `qrdb tenant list --status suspended` |
+
 A status change needs `tenants:set_status`, which is cross-scope: only a
 system-tenant Admin holds it, so a tenant's own Admin cannot suspend or
 reactivate its tenant. While a tenant is not active the auth chain refuses
@@ -505,6 +533,8 @@ leaks to a caller with no access to the tier.
 | Reconcile deleted: a live tenant record is unreadable, or the tombstones cannot be listed | 500 | `INTERNAL` — `*ResidueReconcileError` naming the step; the pass stopped, and re-running resumes |
 | Reconcile deleted: one or more retired ids failed | 200 | `OK` — the report, with `failed` naming each failed tenant, step, path and message; every other id was still reclaimed, a failed id keeps its records, and re-running resumes. The Go SDK returns the response and a `*transport.ReconcileDeletedTenantsError` |
 | Update with a `description` or `metadata` over its limit, a metadata key outside the key grammar, or invalid UTF-8 | 400 | `INVALID_ARGUMENT` — `*TenantFieldError` naming the field; nothing written |
+| List with a `status` filter that is not `active`, `suspended` or `disabled` | 400 | `INVALID_ARGUMENT` — `*InvalidStatusError` listing the allowed values |
+| List with a `status` filter against a server older than the filter, which dropped it and answered a tenant of another status | client-side, no wire status (the server answered 200 / `OK`) | `*transport.CapabilityUnsupportedError` (`server ignored the tenant list status filter ...; upgrade the server`) from the Go SDK's network transports and the CLI; no tenants returned |
 | Update with a `status` that is not `active`, `suspended` or `disabled` | 400 | `INVALID_ARGUMENT` — `*InvalidStatusError` listing the allowed values; nothing written |
 | Update with a `status` the tenant cannot move to from its current one (`disabled` → `suspended`) | 409 | `FAILED_PRECONDITION` — `*StatusTransitionError`; nothing written |
 | Any request by a principal of a suspended or disabled tenant | 403 | `PERMISSION_DENIED` — `*middleware.TenantNotActiveError`, classed as a disabled account |
@@ -627,7 +657,8 @@ statement for the signing tool) and `qrdb tenant barrier-init-complete`
 
 ## Pagination
 
-`ListTenants` returns every tenant and is not paginated. `ListDeletedTenants`
+`ListTenants` returns every tenant the caller may see (and the `status`
+filter keeps) and is not paginated. `ListDeletedTenants`
 is paginated as described under "Retired tenant ids".
 
 ## Versioning

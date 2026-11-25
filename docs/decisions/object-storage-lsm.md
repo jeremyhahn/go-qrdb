@@ -1,6 +1,6 @@
-# The object-storage LSM segment layout: the open owner decisions
+# The object-storage LSM segment layout: decisions
 
-> **Status: RULED — OS-0 option A (owner ruling 1243, 2026-11-24); OS-1, OS-3 and OS-7 open** · Scope: go-qrdb
+> **Status: RULED — OS-0 option A; OS-1, OS-3 and OS-7 open** · Scope: go-qrdb
 > Last verified: 2026-11-24
 > SPEC row: `object-storage-lsm` (in progress). Design:
 > [../storage-engines/architecture.md](../storage-engines/architecture.md),
@@ -8,8 +8,8 @@
 > its options, a recommendation and the reason, and the lower-project API each
 > option needs. On main and not yet wired: the go-objstore adapter, the
 > encrypting wrapper, `remotelsm.WithRemote`, the composition and the cache
-> (slices 1 to 4a3 of [../plans/924.md](../plans/924.md)). Not built: the
-> engine switch (the flat engine deleted, the per-database refusal lifted).
+> (SPEC row #924). Not built: the engine switch (the flat engine deleted, the
+> per-database refusal lifted).
 
 ## Problem
 
@@ -28,7 +28,7 @@ adapter (plus an encrypting wrapper) over go-objstore `common.Storage`; the
 flat engine and its batch journal are deleted. Object names are Pebble's own
 (`<hash>-<creator-id>-<file-num>.sst`), never derived from qrdb keys.
 
-Adopting the design is decision OS-0, decided by owner ruling 1243; OS-1 to
+Adopting the design is decision OS-0, decided A; OS-1 to
 OS-7 are the questions adopting it raises.
 
 ### Dependencies
@@ -60,7 +60,7 @@ what qrdb already uses.
 - **C: write an in-house LSM.** Needs: go-objstore v0.9.1-alpha `common.Storage`;
   a new compaction, manifest and WAL implementation in qrdb.
 
-**Decided (owner ruling 1243, 2026-11-24): A.** It removes every listed cost
+**Decided: A.** It removes every listed cost
 of the shipped engine by construction, reuses an engine qrdb already runs and
 tests, and keeps go-objstore the only backend source. B leaves the problem as it is; C is the
 last resort and nothing forces it.
@@ -96,7 +96,7 @@ bumps the format major version and cannot be read by an older Pebble.
 WAL must be durable on a local disk exactly like `backend: pebble`; one rule
 for both modes is simpler and costs nothing. C is not available.
 
-**Decided (convention, ruling 109): A.**
+**Decided: A.**
 
 ### OS-3 — Ownership: a prefix per Pebble instance, or shared across replicas?
 
@@ -137,7 +137,7 @@ Note for OS-6: whole-object AEAD means a ranged read must either fetch the
 whole object or the wrapper must seal in fixed-size chunks; C should seal in
 chunks so a future ranged read can decrypt only the chunks it covers.
 
-**Decided (convention, ruling 109): C.**
+**Decided: C.**
 
 ### OS-5 — The encoded-name layout and the stores written in it
 
@@ -155,7 +155,7 @@ rather than misread it; B and C keep the deleted engine as a compatibility
 surface, which the project does not do, and backup/restore already moves data
 between formats.
 
-**Decided (convention, ruling 109): A.**
+**Decided: A.**
 
 ### OS-6 — go-objstore has no ranged read
 
@@ -180,7 +180,7 @@ interim cache is a performance caveat, not a correctness one, and Pebble's
 `SecondaryCacheSizeBytes` absorbs repeated block reads. Missing API, to file
 on go-objstore: a byte-range read on `common.Storage` (not in v0.9.1-alpha).
 
-**Decided (convention, ruling 109): A.** The interim cache is
+**Decided: A.** The interim cache is
 `objstore.CachedRemote`; the go-objstore ranged read is still to be requested.
 
 ### OS-7 — Lifting "objstore is refused as a hot apply path"
@@ -203,11 +203,11 @@ like every Raft-visible change.
 
 | Question | Recommendation | Decision | Lower-project dependency |
 |---|---|---|---|
-| OS-0 adopt | A: adopt, delete the flat engine | A (owner ruling 1243) | go-objstore v0.9.1-alpha `common.Storage` |
+| OS-0 adopt | A: adopt, delete the flat engine | A | go-objstore v0.9.1-alpha `common.Storage` |
 | OS-1 Experimental surface | A: proceed, exact pin | open | none (Pebble v2 pinned) |
-| OS-2 WAL placement | A: local, durable, both modes | A (convention, ruling 109) | none |
+| OS-2 WAL placement | A: local, durable, both modes | A | none |
 | OS-3 ownership | A: own prefix + `CreatorID` per instance | open | go-objstore v0.9.1-alpha `ListWithContext`/`DeleteWithContext` |
-| OS-4 encryption | C: barrier-AEAD `remote.Storage` wrapper, chunked | C (convention, ruling 109) | go-objstore v0.9.1-alpha `common.Storage` |
-| OS-5 old layout | A: refuse at open, no migration | A (convention, ruling 109) | none |
-| OS-6 ranged read | A: request on go-objstore, cache meanwhile | A (convention, ruling 109) | ranged read missing from go-objstore v0.9.1-alpha |
+| OS-4 encryption | C: barrier-AEAD `remote.Storage` wrapper, chunked | C | go-objstore v0.9.1-alpha `common.Storage` |
+| OS-5 old layout | A: refuse at open, no migration | A | none |
+| OS-6 ranged read | A: request on go-objstore, cache meanwhile | A | ranged read missing from go-objstore v0.9.1-alpha |
 | OS-7 hot apply path | A: per-database now, Raft in a gated phase 3 | open | none |

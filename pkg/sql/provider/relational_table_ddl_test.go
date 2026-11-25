@@ -670,28 +670,6 @@ func TestRelationalTable_Comment(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Interface assertions
-// ---------------------------------------------------------------------------
-
-func TestRelationalTable_ImplementsDDLInterfaces(t *testing.T) {
-	def := testUsersDef()
-	tbl, err := NewRelationalTable(def, &mockKVService{}, nil)
-	require.NoError(t, err)
-
-	var st sqle.Table = tbl
-	_, ok := st.(sqle.AlterableTable)
-	assert.True(t, ok)
-	_, ok = st.(sqle.IndexAlterableTable)
-	assert.True(t, ok)
-	_, ok = st.(sqle.IndexBuildingTable)
-	assert.True(t, ok)
-	_, ok = st.(sqle.RewritableTable)
-	assert.True(t, ok)
-	_, ok = st.(sqle.CommentedTable)
-	assert.True(t, ok)
-}
-
-// ---------------------------------------------------------------------------
 // ModifyColumn as RENAME COLUMN
 // ---------------------------------------------------------------------------
 

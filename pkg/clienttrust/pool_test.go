@@ -32,6 +32,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -1278,13 +1281,9 @@ func TestPool_HandshakeNeverWaitsOnABlockedRead(t *testing.T) {
 	prov.blockUntil = release
 	pool.Invalidate()
 	go func() { _ = pool.Refresh(context.Background()) }()
-	deadline := time.Now().Add(2 * time.Second)
-	for atomic.LoadInt32(&prov.blockingCalls) == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for the rebuild to enter CACertPEMs")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	require.Eventually(t, func() bool {
+		return atomic.LoadInt32(&prov.blockingCalls) != 0
+	}, 2*time.Second, time.Millisecond, "timed out waiting for the rebuild to enter CACertPEMs")
 
 	done := make(chan *tls.Config, 1)
 	go func() {
@@ -1442,13 +1441,9 @@ func TestPool_Refresh_SetDuringFlightWins(t *testing.T) {
 
 	// Wait for the rebuild to actually be inside the blocking CACertPEMs
 	// call before the change, so it genuinely lands mid-flight.
-	deadline := time.Now().Add(2 * time.Second)
-	for atomic.LoadInt32(&prov.blockingCalls) == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for the rebuild to enter CACertPEMs")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	require.Eventually(t, func() bool {
+		return atomic.LoadInt32(&prov.blockingCalls) != 0
+	}, 2*time.Second, time.Millisecond, "timed out waiting for the rebuild to enter CACertPEMs")
 
 	pool.SetKeyBProvider(nil)
 	close(prov.blockUntil)
@@ -2429,17 +2424,12 @@ func TestPool_Run_RebuildsOnInvalidate(t *testing.T) {
 	registerAnchor(t, reg, "tenant-a", anchorPEM)
 	pool.Invalidate()
 
-	deadline := time.Now().Add(poolCacheTTL / 2)
-	for {
-		if _, err := pool.VerifyPeerChain(context.Background(), anchorCert, nil); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			cancel()
-			t.Fatal("Run did not rebuild on Invalidate before the next TTL tick")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	// cancel is deferred so a failed poll below still stops the Run goroutine.
+	defer cancel()
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		_, err := pool.VerifyPeerChain(context.Background(), anchorCert, nil)
+		assert.NoError(c, err)
+	}, poolCacheTTL/2, 5*time.Millisecond, "Run did not rebuild on Invalidate before the next TTL tick")
 
 	cancel()
 	select {

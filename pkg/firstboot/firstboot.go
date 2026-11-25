@@ -82,6 +82,24 @@ type Result struct {
 	// AdminCertThumbprint is the SPKI SHA-256 thumbprint of the issued admin
 	// certificate, bound to the admin user. Empty when no cert was issued.
 	AdminCertThumbprint string
+
+	// SOCreated is true when this run created the system SO (Dependencies.SO).
+	SOCreated bool
+
+	// SOUserID is the system SO's user id. Zero when no SO was given.
+	SOUserID uint64
+
+	// SORetired is true when Dependencies.SO came from a retained pending
+	// record that an earlier run enrolled and whose account was deleted
+	// since: this run enrolled nothing (pendingSOAccountDeleted).
+	SORetired bool
+
+	// SOCertPEM is the system SO's certificate this run bound: signed from
+	// its CSR or adopted. Nil when no SO was given or it was already bound.
+	SOCertPEM []byte
+
+	// SOCertThumbprint is SOCertPEM's SPKI SHA-256 thumbprint.
+	SOCertThumbprint string
 }
 
 // CertProvider is the minimal cert-issuance contract first-boot needs (Path
@@ -253,6 +271,37 @@ type Dependencies struct {
 	// Logger receives structured progress events. Required.
 	Logger *slog.Logger
 
+	// SO is the system tenant's Security Officer, enrolled the way tenant
+	// create enrols a tenant SO (bootstrap.TenantProvisionConfig.SO): an
+	// account holding the system tenant's so role, its certificate signed
+	// through Signer (CSRPEM) or verified against AdminCertPool (CertPEM)
+	// and bound through Binder, and its PIN committed through SOPINs.
+	//
+	// Optional in both postures (SPEC row 124): a deployment booted
+	// without one refuses only the SO-exclusive operations, which carry
+	// their own gates. Under strict separation the SO is a separate
+	// account and never shares the admin's username (any case variant) or
+	// key (*SOMatchesAdminError). In the standard posture the bootstrap
+	// admin may be named as the SO, and is granted the so role on its own
+	// account; only another SO sharing the admin's key is refused.
+	//
+	// Initialize opens SO.PIN only to commit it and never destroys it, so a
+	// caller that retries Initialize keeps it; the caller destroys it.
+	SO *SOConfig
+
+	// SOPINs commits the system SO's PIN. Required when SO is set.
+	SOPINs SOPINSetter
+
+	// TrustAnchors persists the system tenant's client-trust anchors, and
+	// ClientTrust refreshes the node's runtime client trust from them. Both
+	// are required when SO presents a certificate with its own trust pool
+	// (SO.PoolPEM, carried from the ceremony's AdminCertPoolPEM): that
+	// pool's issuers are trusted nowhere else on the node, so first boot
+	// installs them as system trust anchors and refreshes client trust
+	// before it declares the SO enrolled, or the SO could never log in.
+	TrustAnchors TrustAnchorAdder
+	ClientTrust  ClientTrustRefresher
+
 	// SeparationOfDuties selects the RBAC posture for the bootstrap admin.
 	// When false (default, "standard") the admin is also granted the Owner
 	// role (full operational authority) so one identity can run the whole
@@ -302,6 +351,9 @@ func Initialize(ctx context.Context, deps Dependencies) (*Result, error) {
 		return nil, err
 	}
 	if err := checkBindingPosture(ctx, deps); err != nil {
+		return nil, err
+	}
+	if err := checkSystemSO(ctx, deps); err != nil {
 		return nil, err
 	}
 
@@ -358,34 +410,54 @@ func Initialize(ctx context.Context, deps Dependencies) (*Result, error) {
 	//   Path A (generate-and-distribute): else CA generates the key+cert bundle,
 	//     which must be securely distributed to the admin.
 	// There is no invite/activation token — enrollment is cert-based.
+	//
+	// The certificate is issued here but bound only after step 5: the SO
+	// enrollment can fail (account, PIN, signing, binding), and a binding
+	// committed before it would make a retry see a bound admin and skip
+	// generation, losing a generated admin private key with the failed
+	// run's result. Bound last, a failure leaves the admin unbound and the
+	// retry issues a fresh, usable credential.
+	var bindThumbprint string
 	if needsBinding {
 		certPEM, keyPEM, issueErr := issueAdminCert(ctx, deps, tenantID)
 		if issueErr != nil {
 			return nil, issueErr
 		}
 		if len(certPEM) > 0 {
-			result.AdminCertPEM = certPEM
-			result.AdminKeyPEM = keyPEM
 			thumbprint, tpErr := spkiThumbprintFromCertPEM(certPEM)
 			if tpErr != nil {
 				return nil, &AdminCertGenerationError{Cause: tpErr}
 			}
+			result.AdminCertPEM = certPEM
+			result.AdminKeyPEM = keyPEM
 			result.AdminCertThumbprint = thumbprint
-			if deps.Binder != nil && adminUser != nil {
-				if bindErr := deps.Binder.BindAdminCert(ctx, tenantID, adminUser.ID, thumbprint); bindErr != nil {
-					return nil, &AdminCertBindError{Cause: bindErr}
-				}
-				logger.Info("first-boot: admin cert bound",
-					slog.String("tenant", tenantID),
-					slog.Uint64("user_id", adminUser.ID),
-				)
-			}
+			bindThumbprint = thumbprint
 			logger.Info("first-boot: admin cert issued",
 				slog.String("tenant", tenantID),
 				slog.String("subject", adminUsername),
 				slog.Bool("csr_signed", len(deps.AdminCSRPEM) > 0),
 			)
 		}
+	}
+
+	// Step 5: the system SO (Dependencies.SO), if one is given: under strict
+	// separation a separate principal with the so role alone, the only one
+	// that can create roles and run the built-in reconcile; in the standard
+	// posture it may be the bootstrap admin, granted the so role.
+	if err := enrollSystemSO(ctx, deps, tenantID, result); err != nil {
+		return nil, err
+	}
+
+	// Step 6: commit the admin binding issued in step 4, the last fallible
+	// write of the run.
+	if bindThumbprint != "" && deps.Binder != nil && adminUser != nil {
+		if bindErr := deps.Binder.BindAdminCert(ctx, tenantID, adminUser.ID, bindThumbprint); bindErr != nil {
+			return nil, &AdminCertBindError{Cause: bindErr}
+		}
+		logger.Info("first-boot: admin cert bound",
+			slog.String("tenant", tenantID),
+			slog.Uint64("user_id", adminUser.ID),
+		)
 	}
 
 	// Under "required", verify the OUTCOME, not only the inputs the
@@ -833,7 +905,7 @@ func issueAdminCert(ctx context.Context, deps Dependencies, tenantID string) (ce
 	// identity the admin authenticates as, so falling through to a CA that
 	// happens to be configured would mint a second, unrelated credential.
 	case len(deps.AdminCertPEM) > 0:
-		adopted, adoptErr := adoptPresentedAdminCert(deps.AdminCertPEM, deps.AdminCertPool, deps.TrustDomain, tenantID)
+		adopted, adoptErr := adoptPresentedCert(deps.AdminCertPEM, nil, deps.AdminCertPool, deps.TrustDomain, tenantID)
 		if adoptErr != nil {
 			return nil, nil, adoptErr
 		}
@@ -855,7 +927,8 @@ func issueAdminCert(ctx context.Context, deps Dependencies, tenantID string) (ce
 	}
 }
 
-// adoptPresentedAdminCert validates a certificate the admin already holds and
+// adoptPresentedCert validates a certificate the admin (or the system SO,
+// whose chainPEM may carry intermediates) already holds and
 // returns it unchanged for binding (Path C).
 //
 // "Adopt" rather than "issue": nothing is signed and no key is generated. The
@@ -877,7 +950,7 @@ func issueAdminCert(ctx context.Context, deps Dependencies, tenantID string) (ce
 //
 // A nil pool is refused rather than treated as "trust anything"; see
 // MissingAdminCertPoolError.
-func adoptPresentedAdminCert(certPEM []byte, pool *x509.CertPool, trustDomain, tenantID string) ([]byte, error) {
+func adoptPresentedCert(certPEM, chainPEM []byte, pool *x509.CertPool, trustDomain, tenantID string) ([]byte, error) {
 	if pool == nil {
 		return nil, &MissingAdminCertPoolError{}
 	}
@@ -901,9 +974,15 @@ func adoptPresentedAdminCert(certPEM []byte, pool *x509.CertPool, trustDomain, t
 	// demanding ClientAuth here would reject cards this deployment can still
 	// authenticate. Whether the certificate may be used for a given operation is
 	// an authorization question answered at login, not an adoption-time one.
+	var intermediates *x509.CertPool
+	if len(chainPEM) > 0 {
+		intermediates = x509.NewCertPool()
+		intermediates.AppendCertsFromPEM(chainPEM)
+	}
 	if _, verifyErr := cert.Verify(x509.VerifyOptions{
-		Roots:     pool,
-		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+		Roots:         pool,
+		Intermediates: intermediates,
+		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
 	}); verifyErr != nil {
 		return nil, &AdminCertRejectedError{Cause: verifyErr}
 	}

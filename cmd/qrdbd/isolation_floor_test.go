@@ -21,6 +21,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -142,16 +144,11 @@ func TestApplyIsolationFloor_ContinuesInBackground(t *testing.T) {
 
 	applyIsolationFloor(ctx, svc, "strict")
 
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if floor, _ := svc.state(); floor == tenant.ClusterIsolationPolicyStrict {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the floor was not applied in the background after the wait ran out")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	require.Eventuallyf(t, func() bool {
+		floor, _ := svc.state()
+		return floor == tenant.ClusterIsolationPolicyStrict
+	}, 5*time.Second, 5*time.Millisecond,
+		"the floor was not applied in the background after the wait ran out")
 }
 
 func TestIsolationFloorRefused(t *testing.T) {

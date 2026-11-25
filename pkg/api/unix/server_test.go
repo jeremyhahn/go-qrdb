@@ -34,8 +34,10 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	grpccredentials "google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
@@ -1213,6 +1215,124 @@ func (s *stubCredentialSvc) CredentialSubmit(_ context.Context, _ string, _ []by
 	return nil
 }
 func (s *stubCredentialSvc) CredentialDelete(_ context.Context, _ string) error { return nil }
+
+func (*stubCredentialSvc) CredentialSetRotationPolicy(context.Context, string, credentials.RotationPolicy) error {
+	return nil
+}
+
+func (*stubCredentialSvc) CredentialRotationPolicy(context.Context, string) (*service.CredentialRotationPolicyStatus, error) {
+	return &service.CredentialRotationPolicyStatus{}, nil
+}
+
+func (*stubCredentialSvc) CredentialMigrationConflicts(context.Context) ([]credentials.CredentialMigrationConflictError, error) {
+	return nil, nil
+}
+
+func (*stubCredentialSvc) CredentialResolveMigrationConflict(context.Context, string, credentials.MigrationResolution) error {
+	return nil
+}
+
+// rotationErrCredentialSvc fails the rotation-policy and migration-conflict
+// verbs with err; a nil err lets them succeed with fixed data.
+type rotationErrCredentialSvc struct {
+	stubCredentialSvc
+	err error
+	how credentials.MigrationResolution
+}
+
+func (s *rotationErrCredentialSvc) CredentialSetRotationPolicy(context.Context, string, credentials.RotationPolicy) error {
+	return s.err
+}
+
+func (s *rotationErrCredentialSvc) CredentialRotationPolicy(context.Context, string) (*service.CredentialRotationPolicyStatus, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return &service.CredentialRotationPolicyStatus{Policy: credentials.RotationPolicy{Enabled: true, Interval: time.Hour, RetainVersions: 2}}, nil
+}
+
+func (s *rotationErrCredentialSvc) CredentialMigrationConflicts(context.Context) ([]credentials.CredentialMigrationConflictError, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return []credentials.CredentialMigrationConflictError{{Name: "db", Value: true}}, nil
+}
+
+func (s *rotationErrCredentialSvc) CredentialResolveMigrationConflict(_ context.Context, _ string, how credentials.MigrationResolution) error {
+	s.how = how
+	return s.err
+}
+
+// credentialClientOverSocket starts a Unix server over svc and returns a
+// client dialled over the socket.
+func credentialClientOverSocket(t *testing.T, svc service.CredentialServicer) pb.QRDBServiceClient {
+	t.Helper()
+	socketPath := tempSocketPath(t)
+	tlsCfg := selfSignedTLSConfig(t)
+	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath, WithCredentialService(svc), WithTLS(tlsCfg))
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	t.Cleanup(srv.Stop)
+	conn := dialUnixTLS(t, socketPath, tlsCfg)
+	t.Cleanup(func() { _ = conn.Close() })
+	return pb.NewQRDBServiceClient(conn)
+}
+
+// TestUnix_CredentialRotationAndConflictVerbs pins that the Unix socket
+// serves the four rotation-policy and migration-conflict RPCs and renders
+// each typed credential error as the same gRPC code the gRPC transport does.
+func TestUnix_CredentialRotationAndConflictVerbs(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	ok := &rotationErrCredentialSvc{}
+	client := credentialClientOverSocket(t, ok)
+	if _, err := client.CredentialSetRotationPolicy(ctx, &pb.CredentialSetRotationPolicyRequest{Name: "db", Enabled: true, Interval: "1h", RetainVersions: 2}); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	pol, err := client.CredentialRotationPolicy(ctx, &pb.CredentialRotationPolicyRequest{Name: "db"})
+	if err != nil || !pol.GetEnabled() || pol.GetRetainVersions() != 2 {
+		t.Fatalf("get: %+v, %v", pol, err)
+	}
+	list, err := client.CredentialMigrationConflicts(ctx, &pb.CredentialMigrationConflictsRequest{})
+	if err != nil || len(list.GetConflicts()) != 1 || list.GetConflicts()[0].GetName() != "db" || !list.GetConflicts()[0].GetValue() {
+		t.Fatalf("list: %+v, %v", list, err)
+	}
+	if _, err := client.CredentialResolveMigrationConflict(ctx, &pb.CredentialResolveMigrationConflictRequest{Name: "db", Resolution: "discard"}); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if ok.how != credentials.MigrationDiscard {
+		t.Fatalf("resolution reached the service as %q", ok.how)
+	}
+
+	cases := []struct {
+		label string
+		err   error
+		want  codes.Code
+	}{
+		{"invalid policy", &credentials.InvalidRotationPolicyError{Reason: "interval must be positive"}, codes.InvalidArgument},
+		{"conflict not found", credentials.ErrMigrationConflictNotFound, codes.NotFound},
+		{"invalid resolution", credentials.ErrInvalidMigrationResolution, codes.InvalidArgument},
+		{"meta contended", credentials.ErrRotationMetaContended, codes.Aborted},
+		{"empty name", credentials.ErrEmptyCredentialName, codes.InvalidArgument},
+	}
+	for _, tc := range cases {
+		t.Run(tc.label, func(t *testing.T) {
+			c := credentialClientOverSocket(t, &rotationErrCredentialSvc{err: tc.err})
+			calls := map[string]error{}
+			_, calls["set"] = c.CredentialSetRotationPolicy(ctx, &pb.CredentialSetRotationPolicyRequest{Name: "db", Enabled: true, Interval: "1h", RetainVersions: 2})
+			_, calls["get"] = c.CredentialRotationPolicy(ctx, &pb.CredentialRotationPolicyRequest{Name: "db"})
+			_, calls["list"] = c.CredentialMigrationConflicts(ctx, &pb.CredentialMigrationConflictsRequest{})
+			_, calls["resolve"] = c.CredentialResolveMigrationConflict(ctx, &pb.CredentialResolveMigrationConflictRequest{Name: "db", Resolution: "import"})
+			for verb, err := range calls {
+				if status.Code(err) != tc.want {
+					t.Errorf("%s: code %v (%v), want %v", verb, status.Code(err), err, tc.want)
+				}
+			}
+		})
+	}
+}
 func (s *stubCredentialSvc) CredentialStrategy(context.Context) (string, error) {
 	return "stub", nil
 }

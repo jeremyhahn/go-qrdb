@@ -14,75 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# check-bundled-gosec.sh — golangci-lint bundles a gosec, and this repository's
-# security exclusions were measured against a SPECIFIC one (go-qrdb#295).
-#
-# WHY THIS EXISTS
-#
-# Two legs of this repository's security gate run gosec, and they cannot run
-# the same one:
-#
-#   make gosec / gosec-sdk   the gosec CLI, pinned directly by GOSEC_VERSION
-#   make lint / lint-sdk     the gosec INSIDE golangci-lint, pinned only
-#                            transitively by whatever that release depends on
-#
-# So the second version is real, it judges pull requests, and until this script
-# it was written down nowhere. It moves when golangci-lint moves, silently, and
-# with it moves the meaning of every gosec entry in .golangci.yml.
-#
-# That is not hypothetical. golangci-lint v2.13.2 bundled gosec v2.28.0, whose
-# G703 accepts filepath.Clean as a path-traversal sanitizer; the directly
-# pinned v2.29.0 does not, having removed Clean from its sanitizer list with
-# the note that Clean "evaluates '..' elements instead of rejecting them, so
-# the traversal succeeds". The two legs therefore differed in SOUNDNESS, not
-# just in strictness, and the .golangci.yml entry written against the older one
-# was INERT while reading as a decision the gate had made (#181, #295). From
-# golangci-lint v2.14.0 the bundled gosec is v2.29.0, the same as the direct
-# pin, but nothing keeps it so: the next golangci-lint release chooses its own.
-#
-# WHAT IT ASSERTS, AND WHY NOT THE OBVIOUS THING
-#
-# The obvious assertion — bundled gosec == GOSEC_VERSION — cannot hold and is
-# not what this checks. Nothing in this repository chooses golangci-lint's
-# dependency; demanding they match would be a gate that is red by construction,
-# which is a gate nobody keeps.
-#
-# What it asserts instead is that the bundled gosec is THE ONE THE EXCLUSIONS
-# WERE MEASURED AGAINST — GOLANGCI_GOSEC_VERSION in the Makefile, a reviewed
-# value with a measurement behind it. When golangci-lint is bumped and its
-# gosec moves with it, this goes RED and names the re-measurement, instead of
-# the exclusion lists quietly coming to mean something else. The divergence
-# from GOSEC_VERSION is then PRINTED, every run, so the fact that this tree is
-# judged by two different gosecs is visible rather than deducible.
-#
-# It reads the binary's own build info rather than a pin, for the same reason
-# require-tool.sh reads a self-report: a pin says which analyser should be
-# there, not which one is. `go version -m` is stronger than a self-report,
-# because a dependency version comes from the module graph and cannot be handed
-# in by ldflags — which is precisely how gosec's own version string came to say
-# `dev` (#154, #195).
-#
-# THIS AND require-tool.sh ARE ONE ASSERTION IN TWO HALVES, and the ci.yml
-# Lint job runs them in that order: require-tool.sh establishes that the
-# golangci-lint on PATH IS the pinned one, and this establishes what that
-# binary bundles. Neither half is checked here twice: golangci-lint's own
-# module version is REPORTED below, not asserted, because a release built from
-# a tarball rather than by `go install` records `(devel)` for its main module
-# while still recording exact versions for every dependency. Asserting a field
-# that is legitimately absent in one install method would fail for a reason
-# that has nothing to do with the property.
-#
-# DISCOVERY HAS A FLOOR, as in check-tool-versions.sh: every lookup that finds
-# nothing is a failure, never a vacuous pass. A renamed variable or a
-# reformatted assignment would otherwise turn this into a comparison over empty
-# strings, which always agree.
-#
-# Usage: check-bundled-gosec.sh [repo-dir] [golangci-lint-binary]
-#
-#   repo-dir                 defaults to the current directory
-#   golangci-lint-binary     defaults to `golangci-lint` on PATH
-#
-# Exit status: 0 when the bundled gosec is the measured one, 1 otherwise.
+# check-bundled-gosec.sh: the gosec bundled in golangci-lint must be the recorded version.
 
 set -eu
 

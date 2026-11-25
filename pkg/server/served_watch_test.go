@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -130,13 +132,8 @@ func newTestServedWatchService(t *testing.T, inner *queuedWatchService) (*served
 // drained waits until the wrapper has taken the queued response off ch.
 func drained[T any](t *testing.T, ch chan T) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for len(ch) > 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the wrapper never took the queued event")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	require.Eventually(t, func() bool { return len(ch) == 0 }, 5*time.Second, time.Millisecond,
+		"the wrapper never took the queued event")
 }
 
 // ended reports whether a watch's event channel closes within the deadline.

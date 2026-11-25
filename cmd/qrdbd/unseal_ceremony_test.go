@@ -17,9 +17,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
@@ -31,6 +36,9 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/internal/netport"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
@@ -443,6 +451,11 @@ func initializeCeremony(t *testing.T, bundle *TLSBundle, adminPort int, secret s
 		// text instead, which is not valid base64 and the decoder rejects.
 		"secret":         []byte(secret),
 		"admin_generate": true,
+		// A system SO: the SO is optional, but the fixture names one so
+		// the strict FIPS 140-3 posture keeps an SO for the SO-exclusive
+		// operations.
+		"so_username": "system-so",
+		"so_csr_pem":  systemSOCSRPEM(t),
 	})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -452,29 +465,35 @@ func initializeCeremony(t *testing.T, bundle *TLSBundle, adminPort int, secret s
 
 	// The listener accepts before the handler is necessarily wired, so this
 	// retries until the endpoint answers rather than betting on one attempt.
-	deadline := time.Now().Add(readinessTimeout)
-	var lastErr error
-	for time.Now().Before(deadline) {
+	require.EventuallyWithTf(t, func(c *assert.CollectT) {
 		req, rerr := http.NewRequestWithContext(context.Background(),
 			http.MethodPost, url, bytes.NewReader(body))
-		if rerr != nil {
-			t.Fatalf("new request: %v", rerr)
+		if !assert.NoError(c, rerr, "new request") {
+			return
 		}
 		req.Header.Set("Content-Type", "application/json")
 
 		resp, derr := client.Do(req)
-		if derr != nil {
-			lastErr = derr
-			time.Sleep(signalRetryInterval)
-			continue
-		}
-		_ = resp.Body.Close()
-
-		if resp.StatusCode < 300 {
+		if !assert.NoError(c, derr, "ceremony initialize request") {
 			return
 		}
-		lastErr = fmt.Errorf("status %d", resp.StatusCode)
-		time.Sleep(signalRetryInterval)
+		_ = resp.Body.Close()
+		assert.Less(c, resp.StatusCode, 300, "ceremony initialize status %d", resp.StatusCode)
+	}, readinessTimeout, signalRetryInterval,
+		"ceremony initialize never succeeded within %v", readinessTimeout)
+}
+
+// systemSOCSRPEM returns a PEM CSR for the system SO over a fresh P-256 key,
+// a key that is never the admin's.
+func systemSOCSRPEM(t *testing.T) string {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("systemSOCSRPEM: generate key: %v", err)
 	}
-	t.Fatalf("ceremony initialize never succeeded within %v: %v", readinessTimeout, lastErr)
+	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: "system-so"}}, key)
+	if err != nil {
+		t.Fatalf("systemSOCSRPEM: create CSR: %v", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}))
 }

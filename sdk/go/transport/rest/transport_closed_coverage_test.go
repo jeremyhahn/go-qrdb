@@ -144,7 +144,7 @@ func TestRESTTenant_AllMethods_Closed(t *testing.T) {
 	}{
 		{"CreateTenant", func() error { _, e := rt.CreateTenant(ctx, &transport.CreateTenantRequest{}); return e }},
 		{"GetTenant", func() error { _, e := rt.GetTenant(ctx, "t1"); return e }},
-		{"ListTenants", func() error { _, e := rt.ListTenants(ctx); return e }},
+		{"ListTenants", func() error { _, e := rt.ListTenants(ctx, nil); return e }},
 		{"DeleteTenant", func() error { return rt.DeleteTenant(ctx, "t1") }},
 		{"UpdateTenant", func() error { _, e := rt.UpdateTenant(ctx, &transport.UpdateTenantRequest{}); return e }},
 		{"UpdateTenantQuotas", func() error {

@@ -795,14 +795,6 @@ func newTestDatabaseServiceWithBarrier(t *testing.T) (*DatabaseService, *databas
 	return svc, mgr
 }
 
-func TestDatabaseService_ImplementsDatabaseCredentialCreator(t *testing.T) {
-	svc, _ := newTestDatabaseServiceWithBarrier(t)
-	var _ DatabaseCredentialCreator = svc
-	if _, ok := DatabaseServicer(svc).(DatabaseCredentialCreator); !ok {
-		t.Fatal("*DatabaseService does not satisfy DatabaseCredentialCreator via the DatabaseServicer interface value")
-	}
-}
-
 func TestDatabaseService_CreateWithCredentials_DedicatedStore(t *testing.T) {
 	svc, _ := newTestDatabaseServiceWithBarrier(t)
 

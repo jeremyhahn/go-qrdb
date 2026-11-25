@@ -42,6 +42,8 @@ import (
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
 	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
@@ -329,19 +331,22 @@ var readSettle = service.SettlePolicy{
 // raftharness.Bound -- see extraShardReadyBound.
 func waitShardReadableWithin(t testing.TB, hosts []*quicraft.Host, shardID uint64, bound time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(bound)
-	for _, host := range hosts {
-		for {
+	// One bound covers every host, as before; a host that has answered is
+	// not asked again, and each attempt keeps its own shardReadyPollAttempt
+	// timeout. The last membership error is reported on timeout.
+	readable := make([]bool, len(hosts))
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		for i, host := range hosts {
+			if readable[i] {
+				continue
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), shardReadyPollAttempt)
 			_, err := host.SyncGetShardMembership(ctx, shardID)
 			cancel()
-			if err == nil {
-				break
+			if !assert.NoErrorf(c, err, "host %d", i) {
+				return
 			}
-			if time.Now().After(deadline) {
-				t.Fatalf("waitShardReadableWithin: shard %d membership never became readable: %v", shardID, err)
-			}
-			time.Sleep(10 * time.Millisecond)
+			readable[i] = true
 		}
-	}
+	}, bound, 10*time.Millisecond, "waitShardReadableWithin: shard %d membership never became readable", shardID)
 }

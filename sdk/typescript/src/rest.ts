@@ -74,6 +74,7 @@ import type {
     RebalanceClient,
     RedeemInvitationOptions,
     RoleClient,
+    GroupClient,
     SealClient,
     ServerConfigClient,
     SQLClient,
@@ -122,6 +123,12 @@ import type {
     NodeCompactionBody,
     MintJoinTokenResponse,
     CreateNamespaceResponse,
+    Group,
+    CreateGroupRequest,
+    UpdateGroupRequest,
+    ListGroupsRequest,
+    ListGroupsResponse,
+    GroupMember,
     CreateRoleRequest,
     CreateUserRequest,
     CollectionInfo,
@@ -294,6 +301,16 @@ import {
     TransportError,
 } from './errors.js';
 import type { AuditFilter, AuditPage } from './audit.js';
+import {
+    createGroupWire,
+    groupFromWire,
+    groupMemberFromWire,
+    groupPageFromWire,
+    updateGroupWire,
+    type GroupMemberWire,
+    type GroupWire,
+    type ListGroupsWire,
+} from './group-wire.js';
 
 // ---------------------------------------------------------------------------
 // SDK version constant
@@ -1729,6 +1746,78 @@ export class RestClient implements Client {
     // -----------------------------------------------------------------------
     // Roles
     // -----------------------------------------------------------------------
+
+    /**
+     * IAM group management over REST. Removing the Security Officer role
+     * from a group, or deleting a group that carries it, is refused unless
+     * the caller is the tenant's Security Officer.
+     */
+    get groups(): GroupClient {
+        return {
+            create: async (req: CreateGroupRequest): Promise<Group> => {
+                this.ensureConnected();
+                return groupFromWire(await this.fetchJSON<GroupWire>('/groups', {
+                    method: 'POST',
+                    ...wireBody(createGroupWire(req)),
+                }));
+            },
+            get: async (id: string): Promise<Group> => {
+                this.ensureConnected();
+                return groupFromWire(await this.fetchJSON<GroupWire>(
+                    `/groups/${encodeURIComponent(id)}`,
+                ));
+            },
+            getByName: async (name: string, tenantId?: string): Promise<Group> => {
+                this.ensureConnected();
+                return groupFromWire(await this.fetchJSON<GroupWire>(`/groups/by-name${buildQuery({
+                    tenantID: tenantId,
+                    name,
+                })}`));
+            },
+            update: async (req: UpdateGroupRequest): Promise<Group> => {
+                this.ensureConnected();
+                return groupFromWire(await this.fetchJSON<GroupWire>(
+                    `/groups/${encodeURIComponent(req.id)}`,
+                    { method: 'PUT', ...wireBody(updateGroupWire(req)) },
+                ));
+            },
+            delete: async (id: string): Promise<void> => {
+                this.ensureConnected();
+                await this.fetchVoid(`/groups/${encodeURIComponent(id)}`,
+                    { method: 'DELETE' },
+                );
+            },
+            list: async (req?: ListGroupsRequest): Promise<ListGroupsResponse> => {
+                this.ensureConnected();
+                return groupPageFromWire(await this.fetchJSON<ListGroupsWire>(`/groups/list${buildQuery({
+                    tenantID: req?.tenantId,
+                    page: req?.page,
+                    pageSize: req?.pageSize,
+                })}`));
+            },
+            addMember: async (groupId: string, userId: string): Promise<void> => {
+                this.ensureConnected();
+                await this.fetchVoid('/groups/members/add', {
+                    method: 'POST',
+                    ...wireBody({ userID: userId, groupID: groupId }),
+                });
+            },
+            removeMember: async (groupId: string, userId: string): Promise<void> => {
+                this.ensureConnected();
+                await this.fetchVoid('/groups/members/remove', {
+                    method: 'POST',
+                    ...wireBody({ userID: userId, groupID: groupId }),
+                });
+            },
+            members: async (groupId: string): Promise<readonly GroupMember[]> => {
+                this.ensureConnected();
+                const resp = await this.fetchJSON<{ members?: readonly GroupMemberWire[] | null }>(
+                    `/groups/members${buildQuery({ groupID: groupId })}`,
+                );
+                return (resp.members ?? []).map(groupMemberFromWire);
+            },
+        };
+    }
 
     /** @inheritdoc */
     get roles(): RoleClient {

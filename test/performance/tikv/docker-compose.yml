@@ -1,5 +1,4 @@
 # TiKV benchmark cluster with TLS.
-# Uses host networking for direct host access to PD and TiKV.
 
 volumes:
   certs:

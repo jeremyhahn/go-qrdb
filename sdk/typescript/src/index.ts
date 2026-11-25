@@ -47,6 +47,7 @@ export type {
     InvitationClient,
     RedeemInvitationOptions,
     RoleClient,
+    GroupClient,
     CertClient,
     DatabaseClient,
     CollectionClient,
@@ -280,6 +281,13 @@ export type {
     Invitation,
     RedeemInvitationRequest,
 
+    // Group management
+    Group,
+    CreateGroupRequest,
+    UpdateGroupRequest,
+    ListGroupsRequest,
+    ListGroupsResponse,
+    GroupMember,
     // Role management
     Role,
     CreateRoleRequest,

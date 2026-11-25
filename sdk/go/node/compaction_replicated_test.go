@@ -248,6 +248,8 @@ func sampleMostOfAPeriod(t *testing.T, ctx context.Context, target compactionTar
 func setPolicy(t *testing.T, ctx context.Context, n *Node, owner, db string, policy *compaction.Policy) {
 	t.Helper()
 	deadline := time.Now().Add(clusterFormationBudget)
+	poll := time.NewTicker(clusterPollInterval)
+	defer poll.Stop()
 	for {
 		_, err := n.Services().Database.UpdateCompactionForTenant(tenant.WithTenantID(ctx, owner), db, policy)
 		if err == nil {
@@ -257,7 +259,7 @@ func setPolicy(t *testing.T, ctx context.Context, n *Node, owner, db string, pol
 		if !errors.As(err, &gate) || time.Now().After(deadline) {
 			t.Fatalf("UpdateCompactionForTenant(%s): %v", db, err)
 		}
-		time.Sleep(clusterPollInterval)
+		<-poll.C
 	}
 }
 

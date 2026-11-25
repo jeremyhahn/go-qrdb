@@ -228,6 +228,12 @@ qrdb vlog rotate-key --log releases --signing-key-type ecdsa-p256-sha256
 qrdb vlog list
 ```
 
+A log in a barrier-enabled database is replicated with the tenant's other
+logs, each entry and signing key encrypted under the database's key before it
+leaves the node: it is refused while the database is sealed, served unchanged
+once it is unsealed, and removed when the database is dropped. Proofs and
+checkpoints commit to the plaintext entries, so they verify as for any log.
+
 `--origin` is required on every log and becomes the checkpoint's first line;
 `--signing-key-type` gives the log a head-signing key (`ed25519` or
 `ecdsa-p256-sha256`), and a log without one cannot sign heads. The proofs print
@@ -328,11 +334,50 @@ Logs are never created implicitly, as databases are not: create it with
 `qrdb vlog create`, and check `--database`, since each database has its own
 logs.
 
-**`qrdb vlog` says verifiable logs are not available in a barrier-enabled
-database.** A log is kept under the cluster's system barrier, not under a
-database's or tenant's own, so a database with a barrier (sealed or not) and a
-barrier-isolated tenant have no logs; the server answers `501 Not Implemented`
-(`UNIMPLEMENTED`). Keep the log in a database without a barrier.
+**`qrdb vlog` says the barrier is sealed.** A barrier-isolated tenant's logs
+are kept under the tenant's own barrier; while that barrier is sealed every
+`qrdb vlog` command is refused. Unseal it, then retry.
+
+**`qrdb vlog` says the barrier-sealed store is not reachable on this node.**
+The node has neither a barrier-sealed group nor a standalone barrier store for
+the tenant. The server answers `503 Service Unavailable` (`UNAVAILABLE`).
+A barrier tenant's audit trail is not in its barrier: it stays on the system
+shard.
+
+**A `qrdb kv` call is refused as reserved for the verifiable log.** The
+verifiable log's keyspace is reserved in every database, a barrier-enabled one
+too: its logs are kept, sealed under the database's key, in the group its
+tenant resolves to (on a standalone node, the node's local store), never in
+the database's own store, and only `qrdb vlog` reads and writes them (`ReservedKeyError`,
+`400 Bad Request`, `INVALID_ARGUMENT`). Use another key. Dropping a database
+removes its logs, so one created again under the name starts with none.
+
+**`qrdb vlog --database <db>` says the database is sealed.** The database's
+barrier is sealed (`BarrierSealedError`, `503 Service Unavailable`,
+`UNAVAILABLE`), and so is every log in it. Unseal it with
+`qrdb database unseal <db> --secret ...`, then retry: the log is unchanged.
+
+**`qrdb vlog --database <db>` says a per-database barrier would not protect
+the database.** The database is a `raft` database carrying a barrier record
+from an earlier release (`BarrierOffDataPathError`, classed
+`Unprocessable`): its data is served from its Raft group, not from a store the barrier
+wraps, so its log is refused rather than kept outside the barrier. Keep the
+log in a non-`raft` database created with `--barrier-enabled` and a
+`--data-dir` of its own.
+
+**A log is still there, or cannot be read, after a database was dropped and
+created again.** A barrier database's logs live in its parent group, not in
+its `--data-dir`. The drop reclaims every log of the name in that group before
+the name is released, so a database created again under the name starts with
+none. A drop that cannot reclaim them is refused (`LogFeatureNotActiveError`,
+`UNAVAILABLE`) and leaves the database in place: retry the drop once the
+cluster feature is active on every replica.
+
+**`qrdb database create --barrier-enabled` says the name already holds
+verifiable logs.** Logs were created under the name before the database
+existed (`DatabaseLogsExistError`, `FAILED_PRECONDITION`). They are stored
+without the barrier, and a barrier-enabled database cannot adopt them. Create
+the barrier database under another name.
 
 **`qrdb vlog` is an unknown command.** The client was built without verifiable
 logs (`WITH_QRDB_VLOG=0`); a server built without them answers every vlog call

@@ -45,6 +45,7 @@ package mcp
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
@@ -53,6 +54,7 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // expectedToolPerms is the authoritative tool -> permission table for the MCP
@@ -167,6 +169,15 @@ var expectedToolPerms = map[string]permission.Permission{
 	"qrdb_user_get_by_cert_thumbprint":        permission.UsersGetByCertThumbprint,
 	"qrdb_user_add_cert_binding":              permission.UsersAddCertBinding,
 	"qrdb_user_remove_cert_binding":           permission.UsersRemoveCertBinding,
+	"qrdb_group_create":                       permission.GroupsCreate,
+	"qrdb_group_get":                          permission.GroupsRead,
+	"qrdb_group_get_by_name":                  permission.GroupsRead,
+	"qrdb_group_update":                       permission.GroupsUpdate,
+	"qrdb_group_delete":                       permission.GroupsDelete,
+	"qrdb_group_list":                         permission.GroupsList,
+	"qrdb_group_add_member":                   permission.GroupsAddMember,
+	"qrdb_group_remove_member":                permission.GroupsRemoveMember,
+	"qrdb_group_list_members":                 permission.GroupsRead,
 	"qrdb_role_create":                        permission.RolesCreate,
 	"qrdb_role_get":                           permission.RolesRead,
 	"qrdb_role_get_by_name":                   permission.RolesRead,
@@ -262,6 +273,10 @@ var expectedToolPerms = map[string]permission.Permission{
 	"qrdb_credential_list":                       permission.CredentialsList,
 	"qrdb_credential_delete":                     permission.CredentialsDelete,
 	"qrdb_credential_rotate":                     permission.CredentialsRotate,
+	"qrdb_credential_set_rotation_policy":        permission.CredentialsRotate,
+	"qrdb_credential_rotation_policy":            permission.CredentialsRotate,
+	"qrdb_credential_migration_conflicts":        permission.CredentialsList,
+	"qrdb_credential_resolve_migration_conflict": permission.CredentialsRotate,
 	"qrdb_credential_gc_expired":                 permission.CredentialsGCExpired,
 	"qrdb_credential_retrieve_version":           permission.CredentialsRetrieveVersion,
 	"qrdb_credential_list_versions":              permission.CredentialsListVersions,
@@ -436,6 +451,7 @@ func newFullyWiredGuardServer(t *testing.T, extra ...ServerOption) *Server {
 		WithRAG(&mockRAGSvc{}),
 		WithUserService(&mockUserService{}),
 		WithRoleService(&mockRoleService{}),
+		WithGroupService(mustMemoryGroupStore()),
 		WithCertProvider(&mockCertProvider{}),
 		WithCertEnrollment(&fakeCertEnrollTool{}),
 		WithCollectionService(newMockCollectionService()),
@@ -587,5 +603,44 @@ func TestToolMappingGuard_DefaultDenyRegression(t *testing.T) {
 	}
 	if authz.calls != 4 {
 		t.Errorf("authorizer consulted %d times for allowed tools, want 4", authz.calls)
+	}
+}
+
+// namesSealStore reports whether name, lowercased with non-letters removed,
+// contains "sealstore".
+func namesSealStore(name string) bool {
+	letters := make([]byte, 0, len(name))
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c >= 'a' && c <= 'z' {
+			letters = append(letters, c)
+		}
+	}
+	return strings.Contains(string(letters), "sealstore")
+}
+
+// TestToolMappingGuard_NoEmbeddedOnlyTools: the seal-store verbs are
+// embedded-only (ruling 1234, transport.EmbeddedOnlyOperations), so neither
+// the fully wired server nor the sealed-window catalogue serves a seal-store
+// tool.
+func TestToolMappingGuard_NoEmbeddedOnlyTools(t *testing.T) {
+	srv := newFullyWiredGuardServer(t)
+	for name := range srv.MCPServer().ListTools() {
+		if namesSealStore(name) {
+			t.Errorf("MCP tool %q serves an embedded-only seal-store verb (%v)", name, transport.EmbeddedOnlyOperations)
+		}
+	}
+	for _, st := range builtinToolCatalogue() {
+		if namesSealStore(st.Tool.Name) {
+			t.Errorf("builtin (sealed-window) catalogue names embedded-only seal-store tool %q", st.Tool.Name)
+		}
+	}
+	for name := range expectedToolPerms {
+		if namesSealStore(name) {
+			t.Errorf("expectedToolPerms lists embedded-only seal-store tool %q", name)
+		}
 	}
 }
