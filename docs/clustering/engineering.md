@@ -1307,3 +1307,26 @@ suite is not served there — the listener still opens, for the P-256 suite — 
 ## Integration Target
 
 Run `make integration-test-clustering` for this feature. The per-transport accounting row is `test/integration/COVERAGE.md` under `clustering`.
+
+## First-boot feature activation order
+
+On the first boot of a new cluster the activating node writes one
+activation record per cluster feature, in the order of
+`featuregate.Supported()`. A feature is marked active only after its
+record is written, and activation is permanent.
+
+- guarded-writes is written, and active, before strict-isolation. No node
+  can observe strict-isolation active while guarded-writes is not.
+- A single-node cluster activates every feature inside `Gate.Start`.
+- A multi-node cluster activates once every member advertises the
+  feature; the order above still holds.
+- A standalone node (no Raft) has every feature active at once.
+
+Under FIPS-140, `lifecycle.ApplyFIPSIsolationFloor` waits, bounded by the
+start-up context, until both strict-isolation and guarded-writes are
+active before it writes the strict isolation floor. If the context ends
+first, start-up is refused with `ErrFIPSFloorNotStrict` naming the
+feature that is not active. A floor that is already strict needs no wait.
+
+`TestGate_FirstBootActivationOrder` in `pkg/cluster/featuregate` asserts
+this order.
