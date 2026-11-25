@@ -274,6 +274,40 @@ func TestEncodeVerifiableLogExpireBodies_RoundTrips(t *testing.T) {
 	}
 }
 
+func TestEncodeVerifiableLogDropDatabase_RoundTrips(t *testing.T) {
+	for _, incarnation := range []string{"inc-1", ""} {
+		cmd, err := EncodeVerifiableLogDropDatabase(testLogID.TenantID, testLogID.Database, incarnation)
+		if err != nil {
+			t.Fatalf("EncodeVerifiableLogDropDatabase: %v", err)
+		}
+		if len(cmd) != cap(cmd) {
+			t.Fatalf("len = %d, cap = %d: size precomputed wrongly", len(cmd), cap(cmd))
+		}
+		tenantID, body := splitVerifiableLog(t, cmd, VerifiableLogSubtypeDropDatabase)
+		database, gotIncarnation, err := DecodeVerifiableLogDropDatabase(tenantID, body)
+		if err != nil {
+			t.Fatalf("DecodeVerifiableLogDropDatabase: %v", err)
+		}
+		if tenantID != testLogID.TenantID || database != testLogID.Database || gotIncarnation != incarnation {
+			t.Fatalf("got (%q, %q, %q)", tenantID, database, gotIncarnation)
+		}
+		if _, _, err := DecodeVerifiableLogDropDatabase(tenantID, body[:len(body)-1]); incarnation != "" && err == nil {
+			t.Fatal("DecodeVerifiableLogDropDatabase accepted a truncated incarnation")
+		}
+	}
+	if _, err := EncodeVerifiableLogDropDatabase(testLogID.TenantID, "", "inc-1"); err == nil {
+		t.Fatal("EncodeVerifiableLogDropDatabase with no database encoded")
+	}
+	logCmd, err := EncodeVerifiableLogExpireBodies(testLogID, 1)
+	if err != nil {
+		t.Fatalf("EncodeVerifiableLogExpireBodies: %v", err)
+	}
+	tenantID, body := splitVerifiableLog(t, logCmd, VerifiableLogSubtypeExpireBodies)
+	if _, _, err := DecodeVerifiableLogDropDatabase(tenantID, body); err == nil {
+		t.Fatal("DecodeVerifiableLogDropDatabase accepted a command naming a log")
+	}
+}
+
 func TestEncodeVerifiableLog_EmptyTenantIDRoundTrips(t *testing.T) {
 	id := vlog.LogID{Database: "system", Log: "audit"}
 	cmd, err := EncodeVerifiableLogExpireBodies(id, 3)
@@ -469,5 +503,81 @@ func TestVerifiableLogAuditAppend_RoundTrip(t *testing.T) {
 	var batch *vlog.AppendBatchError
 	if _, err := EncodeVerifiableLogAuditAppend(id, nil); !errors.As(err, &batch) {
 		t.Fatalf("empty audit append: err = %v, want AppendBatchError", err)
+	}
+}
+
+func TestEncodeVerifiableLogAppendSealed_RoundTrips(t *testing.T) {
+	leaves := []vlog.SealedLeaf{
+		{Hash: vlog.LeafHash([]byte("one")), Body: []byte("sealed-one")},
+		{Hash: vlog.LeafHash(nil), Body: []byte{}},
+	}
+	cmd, err := EncodeVerifiableLogAppendSealed(testLogID, leaves)
+	if err != nil {
+		t.Fatalf("EncodeVerifiableLogAppendSealed: %v", err)
+	}
+	if len(cmd) != cap(cmd) {
+		t.Fatalf("len = %d, cap = %d: size precomputed wrongly", len(cmd), cap(cmd))
+	}
+	tenantID, body := splitVerifiableLog(t, cmd, VerifiableLogSubtypeAppendSealed)
+	id, got, err := DecodeVerifiableLogAppendSealed(tenantID, body)
+	if err != nil || id != testLogID || len(got) != len(leaves) {
+		t.Fatalf("decoded = %v, %d leaves, %v; want %v with %d", id, len(got), err, testLogID, len(leaves))
+	}
+	for i := range leaves {
+		if !bytes.Equal(got[i].Hash, leaves[i].Hash) || !bytes.Equal(got[i].Body, leaves[i].Body) {
+			t.Fatalf("leaf %d = %x/%q, want %x/%q", i, got[i].Hash, got[i].Body, leaves[i].Hash, leaves[i].Body)
+		}
+	}
+	_ = append(got[0].Hash, 'Z')
+	_ = append(got[0].Body, 'Z')
+	if !bytes.Equal(got[1].Hash, leaves[1].Hash) {
+		t.Fatal("appending to leaf 0 overwrote leaf 1")
+	}
+
+	// Truncated at every byte of the body: each is refused, never a panic.
+	for n := range len(body) {
+		var ice *InvalidCommandError
+		if _, _, err := DecodeVerifiableLogAppendSealed(tenantID, body[:n]); err == nil {
+			t.Fatalf("truncated to %d: decoded, want an error", n)
+		} else if n > len(body)-8 && !errors.As(err, &ice) {
+			t.Fatalf("truncated to %d: err = %v, want *InvalidCommandError", n, err)
+		}
+	}
+}
+
+func TestEncodeVerifiableLogAppendSealed_Refusals(t *testing.T) {
+	var lhe *vlog.LeafHashError
+	if _, err := EncodeVerifiableLogAppendSealed(testLogID, []vlog.SealedLeaf{{Hash: make([]byte, 31), Body: []byte("b")}}); !errors.As(err, &lhe) {
+		t.Fatalf("31-byte hash: err = %v, want *vlog.LeafHashError", err)
+	}
+	for _, n := range []int{0, vlog.MaxAppendPerCommand + 1} {
+		leaves := make([]vlog.SealedLeaf, n)
+		for i := range leaves {
+			leaves[i].Hash = make([]byte, 32)
+		}
+		var abe *vlog.AppendBatchError
+		if _, err := EncodeVerifiableLogAppendSealed(testLogID, leaves); !errors.As(err, &abe) || abe.Count != n {
+			t.Fatalf("n = %d: err = %v, want *vlog.AppendBatchError", n, err)
+		}
+	}
+	// A count the body cannot hold is refused before it sizes an allocation.
+	cmd, err := EncodeVerifiableLogAppendSealed(testLogID, []vlog.SealedLeaf{{Hash: make([]byte, 32), Body: []byte("b")}})
+	if err != nil {
+		t.Fatalf("EncodeVerifiableLogAppendSealed: %v", err)
+	}
+	tenantID, body := splitVerifiableLog(t, cmd, VerifiableLogSubtypeAppendSealed)
+	forged := append([]byte(nil), body...)
+	at := len(forged) - (4 + 32 + 4 + 1)
+	forged[at], forged[at+1], forged[at+2], forged[at+3] = 0xff, 0xff, 0xff, 0xff
+	var ice *InvalidCommandError
+	if _, _, err := DecodeVerifiableLogAppendSealed(tenantID, forged); !errors.As(err, &ice) {
+		t.Fatalf("forged count: err = %v, want *InvalidCommandError", err)
+	}
+	// A 31-byte hash framed by hand leaves the body one byte short.
+	short := append([]byte(nil), body[:at+4]...)
+	short = append(short, make([]byte, 31)...)
+	short = append(short, 0, 0, 0, 1, 'b')
+	if _, _, err := DecodeVerifiableLogAppendSealed(tenantID, short); !errors.As(err, &ice) {
+		t.Fatalf("31-byte hash: err = %v, want *InvalidCommandError", err)
 	}
 }

@@ -15,46 +15,29 @@
 package service
 
 import (
+	"fmt"
 	"strconv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 )
+
+// BarrierStoreUnavailableError is returned by every LogService call for a
+// barrier tenant on a node whose composer attached no LogGroupSource: the
+// barrier-sealed home group the tenant's log lives in cannot be reached here,
+// and the log fails closed rather than falling back to the system shard.
+type BarrierStoreUnavailableError struct {
+	TenantID string
+}
+
+func (e *BarrierStoreUnavailableError) Error() string {
+	return "service: the barrier-sealed store of barrier tenant " + strconv.Quote(e.TenantID) + " is not reachable on this node"
+}
 
 // LogFeatureNotActiveError is returned by a LogService write while a cluster
 // feature the write's command needs (featuregate.VerifiableLog, and for a
 // create or a key rotation featuregate.VerifiableLogKeys) is not yet active on
 // every replica of the tenant's group: a replica that cannot apply a command
 // must never be sent it.
-// BarrierTenantLogNotSupportedError is returned by every LogService call for
-// a tenant whose isolation is barrier. The log registry is applied on the
-// system shard under the system barrier, so the log's entries and its sealed
-// head-signing key would stay readable while the tenant's own barrier is
-// sealed. The tenant is refused until its logs route through storage its
-// barrier protects.
-type BarrierTenantLogNotSupportedError struct {
-	TenantID string
-}
-
-func (e *BarrierTenantLogNotSupportedError) Error() string {
-	return "service: verifiable logs are not available to barrier-isolated tenant " + strconv.Quote(e.TenantID) +
-		": the log registry is not protected by the tenant's barrier"
-}
-
-// BarrierDatabaseLogNotSupportedError is returned by every LogService call
-// naming a database that has its own barrier. The log registry is applied on
-// the system shard under the system barrier, so the log's entries and its
-// sealed head-signing key would stay readable while the database's barrier is
-// sealed. The database is refused before any key is created or log read.
-type BarrierDatabaseLogNotSupportedError struct {
-	TenantID string
-	Database string
-}
-
-func (e *BarrierDatabaseLogNotSupportedError) Error() string {
-	return "service: verifiable logs are not available in barrier-enabled database " + strconv.Quote(e.Database) +
-		" of tenant " + strconv.Quote(e.TenantID) + ": the log registry is not protected by the database's barrier"
-}
-
 type LogFeatureNotActiveError struct {
 	TenantID string
 	ShardID  uint64
@@ -65,4 +48,38 @@ func (e *LogFeatureNotActiveError) Error() string {
 	return "service: verifiable log write not yet active for tenant " + strconv.Quote(e.TenantID) +
 		" (shard " + strconv.FormatUint(e.ShardID, 10) + "): the cluster feature gate has not activated " +
 		string(e.Feature) + " on every replica of this shard"
+}
+
+// DatabaseLogsExistError is returned by a barrier-enabled database create
+// when the name already holds verifiable logs created before the database
+// existed: they are plaintext with no incarnation, and a barrier-enabled
+// database cannot adopt them. Create the database under another name.
+type DatabaseLogsExistError struct {
+	TenantID string
+	Database string
+	Logs     int
+}
+
+func (e *DatabaseLogsExistError) Error() string {
+	return "service: database " + strconv.Quote(e.Database) + " of tenant " + strconv.Quote(e.TenantID) +
+		" already holds " + strconv.Itoa(e.Logs) + " verifiable log(s) created before the database, " +
+		"and a barrier-enabled database cannot adopt them"
+}
+
+// ReservedKeyError refuses a kv operation on the verifiable log's reserved
+// keyspace (vlog.TablePrefix, vlog.LogTablePrefix). A barrier database keeps
+// its logs and their signing-key records in its own backend; only the log
+// service writes or reads them, never the kv surface. Range is set when a
+// delete range overlapped the reserved keyspace rather than naming a key in
+// it.
+type ReservedKeyError struct {
+	Key   string
+	Range bool
+}
+
+func (e *ReservedKeyError) Error() string {
+	if e.Range {
+		return fmt.Sprintf("kv: delete range overlaps the reserved verifiable-log keyspace %q", e.Key)
+	}
+	return fmt.Sprintf("kv: key %q is in the reserved verifiable-log keyspace", e.Key)
 }

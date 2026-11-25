@@ -281,6 +281,36 @@ type recordingResidueWiring struct {
 
 func (r *recordingResidueWiring) SetTenantRuntimeCloser(c tenant.TenantRuntimeCloser) { r.closer = c }
 
+// TenantRuntimeCloser returns the closer wired last, as tenant.TenantService
+// does.
+func (r *recordingResidueWiring) TenantRuntimeCloser() tenant.TenantRuntimeCloser { return r.closer }
+
+// countingRuntimeCloser counts the tenants it is asked to close.
+type countingRuntimeCloser struct{ closed []string }
+
+func (c *countingRuntimeCloser) CloseTenantRuntime(_ context.Context, tenantID string) error {
+	c.closed = append(c.closed, tenantID)
+	return nil
+}
+
+// TestWireTenantRuntimeCloser_KeepsTheCloserWiredBefore proves the runtime
+// closer runs a closer wired before it (the log service's tenant eviction)
+// after the runtimes close, and that wiring it again replaces the runtime
+// closer rather than stacking a second one.
+func TestWireTenantRuntimeCloser_KeepsTheCloserWiredBefore(t *testing.T) {
+	hosts := NewTenantHostRegistry(nil, nil, reattachTestLogger())
+	prior := &countingRuntimeCloser{}
+	w := &recordingResidueWiring{closer: prior}
+	WireTenantRuntimeCloser(w, hosts, nil)
+	WireTenantRuntimeCloser(w, hosts, nil)
+	if err := w.closer.CloseTenantRuntime(context.Background(), "vault"); err != nil {
+		t.Fatalf("CloseTenantRuntime: %v", err)
+	}
+	if len(prior.closed) != 1 || prior.closed[0] != "vault" {
+		t.Fatalf("prior closer closed %v, want [vault] once", prior.closed)
+	}
+}
+
 // TestWireTenantRuntimeCloser_WiresOnlyAServiceThatAcceptsIt covers both
 // halves of the wiring seam.
 func TestWireTenantRuntimeCloser_WiresOnlyAServiceThatAcceptsIt(t *testing.T) {

@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -139,10 +140,15 @@ func (r *TenantHostRegistry) MigrateEncryption(ctx context.Context, tenantID str
 	// the HomeName keyspace, beside the root key and this journal: no store
 	// directory to swap. They are re-encrypted record by record into a staging
 	// keyspace the commit copies over them (a raft tenant's home group is one
-	// of its shards, and this keyspace is then empty).
+	// of its shards, and this keyspace is then empty). The tenant's verifiable
+	// logs -- entries, tree state and signing keys -- sit beside it in their
+	// own keyspace (service.BarrierLogKeyspace) and are carried the same way.
 	j.StagedRecords = []seal.StagedRecords{{
 		Prefix:        tenant.HomeName + "/",
 		StagingPrefix: target.RootKeyPath() + "/records/",
+	}, {
+		Prefix:        service.BarrierLogKeyspace + "/",
+		StagingPrefix: target.RootKeyPath() + "/vlog-records/",
 	}}
 	// Registered BEFORE the first CheckpointMigration so any post-begin failure
 	// rolls the journal to terminal PhaseFailed — else a leftover non-terminal

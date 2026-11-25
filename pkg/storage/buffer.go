@@ -850,3 +850,17 @@ func (it *sliceIterator) Error() error { return it.err }
 
 // Close releases the iterator. Materialized iterators hold no resources.
 func (it *sliceIterator) Close() error { return nil }
+
+// NewSliceIterator returns an ascending Iterator over keys and values (same
+// length, keys sorted); a non-nil err is reported by Error and leaves it
+// invalid.
+func NewSliceIterator(keys, values [][]byte, err error) Iterator {
+	if err != nil {
+		return &sliceIterator{err: err}
+	}
+	entries := make([]sliceEntry, len(keys))
+	for i := range keys {
+		entries[i] = sliceEntry{key: keys[i], value: values[i]}
+	}
+	return &sliceIterator{entries: entries}
+}

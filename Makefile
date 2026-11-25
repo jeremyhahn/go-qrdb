@@ -315,11 +315,13 @@ release-platform = $(call release-build,$(word 1,$(subst /, ,$(1))),$(word 2,$(s
 	$(call release-build,$(word 1,$(subst /, ,$(1))),$(word 2,$(subst /, ,$(1))),-fips,$(RELEASE_FIPS_MODULE))
 
 # release-cross builds one platform, plain and FIPS: make release-cross PLATFORM=linux/arm64
+# It ends with check-release-artifacts for $(PLATFORM) without SHA256SUMS.
 .PHONY: release-cross
 release-cross:
 	@case "$(PLATFORM)" in */*) ;; *) echo "release-cross: set PLATFORM=<goos>/<goarch>, e.g. make release-cross PLATFORM=linux/arm64" >&2; exit 2 ;; esac
 	@mkdir -p $(RELEASE_DIR)
 	$(call release-platform,$(PLATFORM))
+	@$(MAKE) --no-print-directory check-release-artifacts PLATFORMS='$(PLATFORM)' CRA_SUMS=0
 
 # test-cross compiles the release test binaries of one platform, plain and FIPS, without running them.
 .PHONY: test-cross
@@ -348,13 +350,41 @@ test-cross:
 test-test-cross:
 	@./scripts/test-cross_test.sh
 
-# release-artifacts builds every RELEASE_PLATFORMS entry into a clean $(RELEASE_DIR) and writes SHA256SUMS.
+# release-artifacts builds every RELEASE_PLATFORMS entry into a clean $(RELEASE_DIR), writes SHA256SUMS and checks the set with check-release-artifacts.
 .PHONY: release-artifacts
 release-artifacts:
 	rm -rf $(RELEASE_DIR)
 	mkdir -p $(RELEASE_DIR)
 	$(foreach p,$(RELEASE_PLATFORMS),$(call release-platform,$(p)) && ) true
 	cd $(RELEASE_DIR) && sha256sum $(SERVER_BINARY)-* $(CLIENT_BINARY)-* > SHA256SUMS
+	@$(MAKE) --no-print-directory check-release-artifacts PLATFORMS='$(RELEASE_PLATFORMS)' CRA_SUMS=1
+
+# check-release-artifacts checks each artifact's ELF machine, GOOS/GOARCH, release flags, tags, FIPS variant and, with CRA_SUMS=1, SHA256SUMS.
+PLATFORMS ?= $(RELEASE_PLATFORMS)
+CRA_SUMS  ?= 1
+.PHONY: check-release-artifacts
+check-release-artifacts:
+	@CRA_DIR='$(RELEASE_DIR)' CRA_VERSION='$(BUILD_VERSION)' CRA_PLATFORMS='$(PLATFORMS)' \
+		CRA_BINARIES='$(SERVER_BINARY) $(CLIENT_BINARY)' CRA_SUMS='$(CRA_SUMS)' \
+		CRA_FIPS_MODULE='$(RELEASE_FIPS_MODULE)' CRA_TAGS='$(RELEASE_TAGS)' GO='$(GO)' \
+		./scripts/check-release-artifacts.sh
+
+# release-smoke runs every artifact of the host PLATFORM and checks its version, the -fips variant under GODEBUG=fips140=only.
+.PHONY: release-smoke
+release-smoke:
+	@RS_DIR='$(RELEASE_DIR)' RS_VERSION='$(BUILD_VERSION)' RS_PLATFORM='$(PLATFORM)' \
+		RS_BINARIES='$(SERVER_BINARY) $(CLIENT_BINARY)' GO='$(GO)' \
+		./scripts/release-smoke.sh
+
+# test-release-smoke tests release-smoke with stub artifacts and a stub GO.
+.PHONY: test-release-smoke
+test-release-smoke:
+	@GO='$(GO)' ./scripts/release-smoke_test.sh
+
+# test-check-release-artifacts tests check-release-artifacts against built fixtures and broken copies of them.
+.PHONY: test-check-release-artifacts
+test-check-release-artifacts:
+	@GO='$(GO)' ./scripts/check-release-artifacts_test.sh
 
 # TypeScript SDK and frontend build targets
 .PHONY: install-sdk
@@ -1648,7 +1678,7 @@ LINT_GATES := test-require-tool check-bundled-gosec test-bundled-gosec \
 	test-touched-features test-touched-packages \
 	check-iface-sweep-findings test-iface-sweep-findings check-artifact-paths \
 	test-artifact-paths check-generated check-mod-tidy test-mod-tidy test-vet-modules \
-	test-release-alpha test-test-cross fmt vet test-secure-analyzer vet-sdk lint-sdk
+	test-release-alpha test-test-cross test-check-release-artifacts test-release-smoke fmt vet test-secure-analyzer vet-sdk lint-sdk
 LINT_SWEEPS := vet-tags secure-analyzer
 
 .PHONY: lint-gates
