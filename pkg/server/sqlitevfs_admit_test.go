@@ -324,3 +324,101 @@ func TestSQLiteAdmitMovePrefix_StagedCreateIsGated(t *testing.T) {
 		})
 	}
 }
+
+func TestSQLiteAdmitMovePrefix_MovedMetaIsGated(t *testing.T) {
+	for name, build := range lockScenes {
+		t.Run(name, func(t *testing.T) {
+			fakes := &admitFakes{allowed: false, max: 1}
+			svcs := gatedServices(t, build(t).registry, lockTenantA, fakes)
+			seed := []service.Op{{Type: service.OpPut, Key: []byte("seed/" + wiringDB + "/meta"), Value: []byte("staged")}}
+			if resp, err := svcs.Transaction.Execute(t.Context(), nil, seed, nil); err != nil || resp == nil || !resp.Succeeded {
+				t.Fatalf("seed: %+v, %v", resp, err)
+			}
+			mover, ok := svcs.MVCC.(service.PrefixMover)
+			if !ok {
+				t.Fatalf("gated MVCC %T is no PrefixMover", svcs.MVCC)
+			}
+			moveIn := &service.MovePrefixRequest{Src: "seed/", Dst: "sqlite/", ExpectedKeys: 1}
+			var ent *quota.EntitlementError
+			if _, err := mover.MovePrefix(t.Context(), moveIn); !errors.As(err, &ent) {
+				t.Fatalf("move creating a meta record with sqlite_vfs off = %v, want quota.EntitlementError", err)
+			}
+			assertNoMeta(t, gatedStore(t, svcs))
+
+			fakes.mu.Lock()
+			fakes.allowed = true
+			fakes.mu.Unlock()
+			if _, err := mover.MovePrefix(t.Context(), moveIn); err != nil {
+				t.Fatalf("move with sqlite_vfs on: %v", err)
+			}
+			if usage, _ := fakes.counts(); usage != 1 {
+				t.Fatalf("usage after the move in = %d, want 1", usage)
+			}
+			if _, err := mover.MovePrefix(t.Context(), &service.MovePrefixRequest{Src: "sqlite/", Dst: "gone/", ExpectedKeys: 1}); err != nil {
+				t.Fatalf("move out: %v", err)
+			}
+			if usage, _ := fakes.counts(); usage != 0 {
+				t.Fatalf("usage after the move out = %d, want 0", usage)
+			}
+		})
+	}
+}
+
+func TestSQLiteAdmitRestore_CreateAndRemoveAreGated(t *testing.T) {
+	for name, build := range lockScenes {
+		t.Run(name, func(t *testing.T) {
+			fakes := &admitFakes{allowed: true, max: 1}
+			svcs := gatedServices(t, build(t).registry, lockTenantA, fakes)
+			other := []service.Op{{Type: service.OpPut, Key: []byte("other"), Value: []byte("v")}}
+			if resp, err := svcs.Transaction.Execute(t.Context(), nil, other, nil); err != nil || resp == nil || !resp.Succeeded {
+				t.Fatalf("seed: %+v, %v", resp, err)
+			}
+			w := gatedStore(t, svcs)
+			before, err := w.backend.Revision(t.Context())
+			if err != nil {
+				t.Fatalf("Revision: %v", err)
+			}
+			if err := createDatabase(t, w, 0x21); err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			created, err := w.backend.Revision(t.Context())
+			if err != nil {
+				t.Fatalf("Revision: %v", err)
+			}
+			restorer, ok := svcs.MVCC.(*sqliteRestoreMVCC)
+			if !ok {
+				t.Fatalf("gated MVCC %T is no sqliteRestoreMVCC", svcs.MVCC)
+			}
+			restore := func(rev int64) error {
+				_, err := restorer.RestoreToRevision(t.Context(), &service.RestoreRevisionRequest{Prefix: "sqlite/", Revision: rev, Force: true})
+				return err
+			}
+			if err := restore(before); err != nil {
+				t.Fatalf("restore to before the create: %v", err)
+			}
+			assertNoMeta(t, gatedStore(t, svcs))
+			if usage, _ := fakes.counts(); usage != 0 {
+				t.Fatalf("usage after a restore removed the database = %d, want 0", usage)
+			}
+
+			fakes.mu.Lock()
+			fakes.allowed = false
+			fakes.mu.Unlock()
+			var ent *quota.EntitlementError
+			if err := restore(created); !errors.As(err, &ent) {
+				t.Fatalf("restore recreating the database with sqlite_vfs off = %v, want quota.EntitlementError", err)
+			}
+			assertNoMeta(t, gatedStore(t, svcs))
+
+			fakes.mu.Lock()
+			fakes.allowed = true
+			fakes.mu.Unlock()
+			if err := restore(created); err != nil {
+				t.Fatalf("restore recreating the database: %v", err)
+			}
+			if usage, _ := fakes.counts(); usage != 1 {
+				t.Fatalf("usage after a restore recreated the database = %d, want 1", usage)
+			}
+		})
+	}
+}

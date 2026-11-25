@@ -22,6 +22,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sqlitevfs"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
 
 // sqliteRestoreMVCC is the SQLite VFS restore hook (row #926, Q4 A, o9) over
@@ -123,7 +124,13 @@ func (s *sqliteRestoreMVCC) RestoreToRevision(ctx context.Context, req *service.
 			result.Conflicts = append(result.Conflicts, other.Conflicts...)
 		}
 	}
-	backend, err := sqlitevfs.NewServiceBackend(s.kv, s.txn)
+	var kv sqlitevfs.ServiceKV = s.kv
+	var txn sqlitevfs.ServiceTxn = s.txn
+	if s.gate != nil {
+		kv = sqliteGatedKV{ServiceKV: s.kv, mover: s}
+		txn = sqliteGatedServiceTxn{inner: s.txn, gate: s.gate}
+	}
+	backend, err := sqlitevfs.NewServiceBackend(kv, txn)
 	if err != nil {
 		return nil, fmt.Errorf("sqlitevfs restore hook: %w", err)
 	}
@@ -188,15 +195,44 @@ func (s *sqliteRestoreMVCC) MovePrefix(ctx context.Context, req *service.MovePre
 	if s.gate == nil || req == nil {
 		return mover.MovePrefix(ctx, req)
 	}
-	live, err := s.gate.admit(ctx, req.Ops)
+	moved, err := s.movedMeta(ctx, req)
+	if err != nil {
+		return 0, err
+	}
+	live, err := s.gate.admit(ctx, moved, req.Ops)
 	if err != nil {
 		return 0, err
 	}
 	rev, err := mover.MovePrefix(ctx, req)
 	if err == nil {
-		s.gate.record(ctx, live, req.Ops)
+		s.gate.record(ctx, live, append(moved, req.Ops...))
 	}
 	return rev, err
+}
+
+// movedMeta returns the meta-record writes the move itself makes: a delete
+// of each SQLite meta record under req.Src and a put of each source key that
+// lands on a SQLite meta record under req.Dst.
+func (s *sqliteRestoreMVCC) movedMeta(ctx context.Context, req *service.MovePrefixRequest) ([]service.Op, error) {
+	if req.Src == "" || req.ExpectedKeys < 1 {
+		return nil, nil
+	}
+	src := []byte(req.Src)
+	kvs, _, _, err := s.kv.Range(ctx, src, storage.PrefixEnd(src), service.WithKeysOnly(), service.WithLimit(req.ExpectedKeys+1))
+	if err != nil {
+		return nil, fmt.Errorf("sqlitevfs move gate: list %q: %w", req.Src, err)
+	}
+	var ops []service.Op
+	for _, kv := range kvs {
+		if _, ok := metaDatabase(kv.Key); ok {
+			ops = append(ops, service.Op{Type: service.OpDelete, Key: kv.Key})
+		}
+		mapped := append([]byte(req.Dst), kv.Key[len(src):]...)
+		if _, ok := metaDatabase(mapped); ok {
+			ops = append(ops, service.Op{Type: service.OpPut, Key: mapped})
+		}
+	}
+	return ops, nil
 }
 
 // KeepsRevisionHistory forwards to the wrapped service.

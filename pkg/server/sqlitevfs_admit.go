@@ -200,6 +200,43 @@ func (s *sqliteAdmitTxn) recordResponse(ctx context.Context, live map[string]boo
 	s.gate.record(ctx, live, failureOps)
 }
 
+// sqliteGatedKV is a ServiceKV whose prefix moves pass the admission gate.
+type sqliteGatedKV struct {
+	sqlitevfs.ServiceKV
+	mover service.PrefixMover
+}
+
+// MovePrefix moves through the gated mover.
+func (k sqliteGatedKV) MovePrefix(ctx context.Context, req *service.MovePrefixRequest) (int64, error) {
+	return k.mover.MovePrefix(ctx, req)
+}
+
+// sqliteGatedServiceTxn is a ServiceTxn that admits and counts the SQLite
+// databases its transactions create or delete.
+type sqliteGatedServiceTxn struct {
+	inner sqlitevfs.ServiceTxn
+	gate  *sqliteAdmitGate
+}
+
+// Execute admits the transaction's meta-record writes, runs it and records
+// the databases the applied branch created or deleted.
+func (s sqliteGatedServiceTxn) Execute(ctx context.Context, compares []service.Compare, successOps, failureOps []service.Op) (*service.TransactionResponse, error) {
+	live, err := s.gate.admit(ctx, successOps, failureOps)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := s.inner.Execute(ctx, compares, successOps, failureOps)
+	if err != nil || resp == nil {
+		return resp, err
+	}
+	if resp.Succeeded {
+		s.gate.record(ctx, live, successOps)
+	} else {
+		s.gate.record(ctx, live, failureOps)
+	}
+	return resp, nil
+}
+
 // withSQLiteAdmission returns svcs with the SQLite creation gate on its
 // transaction service and its MVCC MovePrefix. svcs is returned as it is when
 // adm is nil, the gate is already on, or its services cannot back a page
