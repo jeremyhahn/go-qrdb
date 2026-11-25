@@ -210,7 +210,10 @@ func (s *Service) AddMember(ctx context.Context, userID uint64, groupID string) 
 // RemoveMember removes a user from a group. Like AddMember, the removal
 // check is judged on a member-claimed record, so a role added concurrently
 // (an SO adding SO) cannot be stripped from the member unchecked.
-// A removal whose claim lapsed before it committed is undone and reported as a conflict.
+// A removal whose claim lapsed before it committed is undone through AddMember,
+// which re-checks the caller against the group's current roles, and reported
+// as a conflict; when that re-add is refused the member stays removed and the
+// refusal is joined to the conflict.
 func (s *Service) RemoveMember(ctx context.Context, userID uint64, groupID string) error {
 	g, token, err := s.Groups.ClaimGroup(ctx, groupID, group.ClaimMember, func(c *group.Group) error {
 		if err := s.Auth.AuthorizeGroupMemberRemoval(ctx, s.Users, userID, c); err != nil {
@@ -223,16 +226,16 @@ func (s *Service) RemoveMember(ctx context.Context, userID uint64, groupID strin
 	}
 	changed, err := s.Members.RemoveMember(ctx, userID, g.ID)
 	return s.finishMember(ctx, g.ID, token, changed, err, func(ctx context.Context) error {
-		_, err := s.Members.AddMember(ctx, userID, g.ID)
-		return err
+		return s.AddMember(ctx, userID, g.ID)
 	})
 }
 
 // finishMember releases the member claim of a removal once the change it
 // guarded has committed (or failed), even when ctx is already cancelled. When
 // the claim lapsed before the removal committed, undo restores the membership
-// and the result is *group.GroupConflictError; an unreleased claim lapses
-// after its lease.
+// through the authorized add path, which re-checks the caller, and the result
+// is *group.GroupConflictError joined with any undo error; an unreleased claim
+// lapses after its lease.
 func (s *Service) finishMember(ctx context.Context, id, token string, changed bool, err error, undo func(context.Context) error) error {
 	ctx = context.WithoutCancel(ctx)
 	rerr := s.Groups.ReleaseClaim(ctx, id, token)

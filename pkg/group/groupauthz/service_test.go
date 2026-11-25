@@ -499,6 +499,25 @@ func TestGroupService_JoinAfterALapsedClaimIsUndone(t *testing.T) {
 }
 
 func TestGroupService_RemovalAfterALapsedClaimIsUndone(t *testing.T) {
+	f, asAdmin, aliceID, groupID := lapsedRemovalFixture(t, func(f *strictFixture, asSO context.Context, groupID string) {
+		desc := "renamed while the removal claim lapsed"
+		if _, err := f.svc.Update(asSO, &group.UpdateGroupRequest{ID: groupID, Description: &desc}); err != nil {
+			t.Errorf("SO update over the lapsed claim: %v", err)
+		}
+	})
+	var conflict *group.GroupConflictError
+	if err := f.svc.RemoveMember(asAdmin, aliceID, groupID); !errors.As(err, &conflict) {
+		t.Fatalf("removal after its claim lapsed: %v, want *GroupConflictError", err)
+	}
+	if u, err := f.users.GetUser(asAdmin, aliceID); err != nil || !slices.Contains(u.GroupIDs, groupID) {
+		t.Fatalf("alice after the undone removal = %+v, %v; want the membership", u, err)
+	}
+}
+
+// lapsedRemovalFixture seeds alice as a member of a role-less acme group and
+// arms a race that lapses the next member claim and then runs during.
+func lapsedRemovalFixture(t *testing.T, during func(f *strictFixture, asSO context.Context, groupID string)) (*strictFixture, context.Context, uint64, string) {
+	t.Helper()
 	f := newStrictFixture(t)
 	admin, so := role.SystemRoleID("acme", role.RoleNameAdmin), role.SystemRoleID("acme", role.RoleNameSO)
 	keeper := authtest.CustomRole(t, f.roles, "acme", "group-keeper", permission.GroupsRead, permission.GroupsUpdate)
@@ -514,24 +533,41 @@ func TestGroupService_RemovalAfterALapsedClaimIsUndone(t *testing.T) {
 	if _, err := f.members.AddMember(asSO, alice.ID, g.ID); err != nil {
 		t.Fatalf("seed membership: %v", err)
 	}
-	asAdmin := acmeCaller(0, admin, keeper)
 	raced := false
 	f.racing.claimAfter = func() {
 		raced = true
 		f.clock.Advance(31 * time.Second)
-		if _, err := f.svc.Update(asSO, &group.UpdateGroupRequest{ID: g.ID, RoleIDs: []string{so}}); err != nil {
+		during(f, asSO, g.ID)
+	}
+	t.Cleanup(func() {
+		if !raced {
+			t.Error("the race never ran after the claim")
+		}
+	})
+	return f, acmeCaller(0, admin, keeper), alice.ID, g.ID
+}
+
+// TestRemoveMember_LapsedClaimUndoIsReauthorized pins that the undo of a
+// lapsed removal is judged on the current record: once the group gained a
+// role the caller cannot grant, the member stays removed and the result is
+// a conflict joined with the refusal.
+func TestRemoveMember_LapsedClaimUndoIsReauthorized(t *testing.T) {
+	so := role.SystemRoleID("acme", role.RoleNameSO)
+	f, asAdmin, aliceID, groupID := lapsedRemovalFixture(t, func(f *strictFixture, asSO context.Context, groupID string) {
+		if _, err := f.svc.Update(asSO, &group.UpdateGroupRequest{ID: groupID, RoleIDs: []string{so}}); err != nil {
 			t.Errorf("SO add over the lapsed claim: %v", err)
 		}
-	}
+	})
+	err := f.svc.RemoveMember(asAdmin, aliceID, groupID)
 	var conflict *group.GroupConflictError
-	if err := f.svc.RemoveMember(asAdmin, alice.ID, g.ID); !errors.As(err, &conflict) {
+	if !errors.As(err, &conflict) {
 		t.Fatalf("removal after its claim lapsed: %v, want *GroupConflictError", err)
 	}
-	if !raced {
-		t.Fatal("the SO add never ran after the claim")
+	if err.Error() == conflict.Error() {
+		t.Fatalf("removal error %v carries no refusal of the re-add", err)
 	}
-	if u, err := f.users.GetUser(asSO, alice.ID); err != nil || !slices.Contains(u.GroupIDs, g.ID) {
-		t.Fatalf("alice after the undone removal = %+v, %v; want the membership", u, err)
+	if u, err := f.users.GetUser(asAdmin, aliceID); err != nil || slices.Contains(u.GroupIDs, groupID) {
+		t.Fatalf("alice after a refused undo = %+v, %v; want no membership", u, err)
 	}
 }
 
