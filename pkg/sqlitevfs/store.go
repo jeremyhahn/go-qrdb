@@ -137,7 +137,9 @@ func WithStageChunkBytes(bytes int) Option {
 
 // WithWriterLock serializes the Store's writers through w (Q3 A): a
 // transaction writes only after Txn.Reserve took the lock, and holds it until
-// Commit or Rollback. A nil lock is refused with ErrInvalidOption.
+// Commit or Rollback. A nil lock is refused with ErrInvalidOption. Without
+// this option or WithOptimistic (the default mode), writers take no lock and
+// a commit whose database moved since its snapshot is ErrSnapshotChanged.
 func WithWriterLock(w WriterLock) Option {
 	return func(s *Store) error {
 		if w == nil {
@@ -812,17 +814,15 @@ func (t *Txn) Truncate(size int64) error {
 // transaction still holds it: a lost lease is ErrBusy and nothing is
 // written. It then re-reads the meta record at the backend's current
 // revision: if its generation differs from the one this transaction pinned,
-// the database was restored underneath it (Q4 A), and with a writer lock a
-// moved change counter means another writer committed since the snapshot;
-// either way Commit returns ErrSnapshotChanged and writes nothing. With the
-// writer lock held from Reserve to Commit, no other page store writer
-// commits between the check and the write. RestoreToRevision takes the lock
+// the database was restored underneath it (Q4 A), and outside optimistic
+// mode a moved change counter means another writer committed since the
+// snapshot; either way Commit returns ErrSnapshotChanged and writes nothing. RestoreToRevision takes the lock
 // too; BumpGeneration does not: a bump racing a commit is caught at the next
 // Begin.
 //
-// Without a writer lock the meta record Commit re-read is a read check of
-// the write itself, so a commit landing between that read and the write is
-// ErrSnapshotChanged too. In optimistic mode (WithOptimistic) the write also
+// In every mode the meta record Commit re-read is a read check of the write
+// itself, so a commit landing between that read and the write, from a
+// writer with or without the lock, is ErrSnapshotChanged too. In optimistic mode (WithOptimistic) the write also
 // carries every page the transaction read from its snapshot, present or
 // absent: a page another writer changed or created since the snapshot is
 // ErrSnapshotChanged and nothing is written; a moved page count or page size
@@ -876,7 +876,7 @@ func (t *Txn) commitWrites(ctx context.Context) (int64, error) {
 		// A restore removed the database the snapshot saw.
 		return 0, fmt.Errorf("%w: %q was removed", ErrSnapshotChanged, t.store.db)
 	}
-	if t.store.writer != nil && current.ChangeCounter != t.base.ChangeCounter {
+	if !t.store.optimistic && current.ChangeCounter != t.base.ChangeCounter {
 		return 0, fmt.Errorf("%w: %q moved from change counter %d to %d", ErrSnapshotChanged, t.store.db, t.base.ChangeCounter, current.ChangeCounter)
 	}
 	counter := t.base.ChangeCounter
@@ -969,17 +969,14 @@ func (t *Txn) dropUnchanged(ctx context.Context) error {
 	return nil
 }
 
-// readSet returns the read checks a commit carries. A transaction holding
-// the writer lock carries none: no other page store writer commits while it
-// holds it. Without one, the meta record read at revision now (found or not)
-// must be unchanged at the write, which makes Commit's generation (and, in
-// optimistic mode, file size) check atomic with it; in optimistic mode every
-// page the transaction read from its snapshot must also be unchanged since
-// rev, in key order.
+// readSet returns the read checks a commit carries. In every mode the meta
+// record read at revision now (found or not) must be unchanged at the write,
+// which makes Commit's generation and change counter checks (and, in
+// optimistic mode, its file size check) atomic with it, so a writer that
+// does not take the writer lock cannot slip a commit in under one that
+// does. In optimistic mode every page the transaction read from its snapshot
+// must also be unchanged since rev, in key order.
 func (t *Txn) readSet(now int64, metaFound bool) []ReadCheck {
-	if t.store.writer != nil {
-		return nil
-	}
 	reads := make([]ReadCheck, 0, len(t.reads)+1)
 	reads = append(reads, ReadCheck{Key: t.store.metaKey, Rev: now, Found: metaFound})
 	keys := make([]string, 0, len(t.reads))

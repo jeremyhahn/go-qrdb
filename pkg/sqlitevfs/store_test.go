@@ -1621,19 +1621,62 @@ func TestStoreWithoutWriterLock(t *testing.T) {
 	}
 	writePages(t, txn, 0x02)
 	commit(t, txn)
-	// Without the lock and without WithOptimistic, two writers on one
-	// snapshot both commit (the read-set check is opt-in; see
-	// TestOptimistic_*); the counter still counts.
+	// Without the lock and without WithOptimistic, the second of two
+	// writers on one snapshot finds the database moved and writes nothing.
 	one, two := begin(t, s), begin(t, s)
 	writePages(t, one, 0x03)
 	writePages(t, two, 0x04)
 	commit(t, one)
-	commit(t, two)
-	if got := readAll(t, begin(t, s)); !bytes.Equal(got, pageOf(0x04)) {
-		t.Fatal("the last unlocked commit is not visible")
+	if _, err := two.Commit(ctx); !errors.Is(err, ErrSnapshotChanged) {
+		t.Fatalf("stale unlocked Commit = %v, want ErrSnapshotChanged", err)
+	}
+	if got := readAll(t, begin(t, s)); !bytes.Equal(got, pageOf(0x03)) {
+		t.Fatal("the first unlocked commit is not the one visible")
 	}
 	if got := changeCounter(t, s); got != 3 {
 		t.Fatalf("change counter = %d, want 3", got)
+	}
+}
+
+// racingBackend runs before once, ahead of the first Commit it forwards.
+type racingBackend struct {
+	*MVCCBackend
+	before func()
+}
+
+func (r *racingBackend) Commit(ctx context.Context, reads []ReadCheck, puts map[string][]byte, deletes [][]byte) (int64, error) {
+	if hook := r.before; hook != nil {
+		r.before = nil
+		hook()
+	}
+	return r.MVCCBackend.Commit(ctx, reads, puts, deletes)
+}
+
+func TestStoreWriterLockCommitRefusesUnlockedWriter(t *testing.T) {
+	ctx := t.Context()
+	b := newTestBackend(t)
+	unlocked := newTestStore(t, b, "app.db")
+	seed(t, unlocked, 0x01)
+	race := &racingBackend{MVCCBackend: b}
+	locked, err := NewStore(race, "app.db", WithWriterLock(newWriter(t, newMemLocker(), "a")))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	txn := beginReserved(t, locked)
+	writePages(t, txn, 0x02)
+	race.before = func() {
+		other := begin(t, unlocked)
+		writePages(t, other, 0x03)
+		commit(t, other)
+	}
+	if _, err := txn.Commit(ctx); !errors.Is(err, ErrSnapshotChanged) {
+		t.Fatalf("locked Commit racing an unlocked one = %v, want ErrSnapshotChanged", err)
+	}
+	if got := readAll(t, begin(t, unlocked)); !bytes.Equal(got, pageOf(0x03)) {
+		t.Fatal("the newer unlocked page did not survive")
+	}
+	if got := changeCounter(t, unlocked); got != 2 {
+		t.Fatalf("change counter = %d, want 2", got)
 	}
 }
 
