@@ -186,7 +186,7 @@ func TestRoleReconcileAllTenantsTool_StrictSeparationIsSOExclusive(t *testing.T)
 	caller := func(roleID string) context.Context {
 		return auth.WithIdentity(sysCtx, &auth.Identity{Subject: "system-caller", TenantID: tenantid.System, Roles: []string{roleID}})
 	}
-	handler := handleRoleReconcileAllTenants(mw, &mockRoleService{}, liveMCPTenants(t, "acme"))
+	handler := handleRoleReconcileAllTenants(mw, &mockRoleService{}, liveMCPTenants(t, "acme"), mw.OperatorAccessGate(permission.RolesReconcileAll))
 
 	_, err := handler(caller(roleID(role.RoleNameAdmin)), mcp.CallToolRequest{})
 	var toolErr *ToolError
@@ -231,7 +231,7 @@ func TestRoleTools_SOExclusivePostureGate(t *testing.T) {
 		}},
 		{name: "reconcile every tenant", h: func(mw *authmw.AuthMiddleware, roles role.RoleServicer) func(context.Context) error {
 			return func(ctx context.Context) error {
-				_, err := handleRoleReconcileAllTenants(mw, roles, liveMCPTenants(t, "acme"))(ctx, mcp.CallToolRequest{})
+				_, err := handleRoleReconcileAllTenants(mw, roles, liveMCPTenants(t, "acme"), mw.OperatorAccessGate(permission.RolesReconcileAll))(ctx, mcp.CallToolRequest{})
 				return err
 			}
 		}},

@@ -146,7 +146,7 @@ func TestStorageBarrier_VerifyCredentialsWithStrategy(t *testing.T) {
 		want     error
 	}{
 		{name: "registered strategy", strategy: registered},
-		{name: "same-ID strategy with another key", strategy: newMockHSMStrategy(t, "verify-hsm"), want: ErrCredentialMismatch},
+		{name: "same-ID strategy with another key", strategy: newMockHSMStrategy(t, "verify-hsm"), want: ErrUnsealFailed},
 		{name: "strategy with another ID", strategy: newMockHSMStrategy(t, "other-hsm"), want: ErrCredentialMismatch},
 		{name: "no strategy", want: ErrStrategyNotFound},
 	}

@@ -270,7 +270,9 @@ func isolatedTenantsLookup() *fakeIsolationLookup {
 func TestSystemShardAuditResolver_RoutesIsolatedTenantsToTheirHomeGroup(t *testing.T) {
 	for name, build := range map[string]func(Host, uint64, AuditIsolationLookup) *SystemShardAuditResolver{
 		"audit": NewSystemShardAuditResolver,
-		"log":   NewSystemShardLogResolver,
+		"log": func(host Host, shardID uint64, isolation AuditIsolationLookup) *SystemShardAuditResolver {
+			return NewSystemShardLogResolver(host, shardID, isolation, nil)
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			homeHost := &mockHost{}

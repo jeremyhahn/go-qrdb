@@ -86,9 +86,10 @@ func newOperatorServerWithReader(t *testing.T, reader authmw.IsolationPolicyRead
 	t.Helper()
 	sink := &operatorAuditSink{}
 	roles := authtest.BuiltInRoles(t, tenantid.System, "acme")
+	caller := authtest.NewFixedAuthenticator(authtest.AdminIdentity(tenantid.System, "operator"))
 	mw := authmw.New(rbac.New(roles),
 		authmw.WithRoleResolver(roles),
-		authmw.WithAuthenticator(authtest.NewFixedAuthenticator(authtest.AdminIdentity(tenantid.System, "operator"))),
+		authmw.WithAuthenticator(caller), authmw.WithUserService(caller.Users()),
 		authmw.WithAuditLogger(sink), authmw.WithOperatorAccessTenantTrail(sink),
 		authmw.WithIsolationPolicyReader(reader))
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0", append([]ServerOption{WithAuthMiddleware(mw)}, opts...)...)

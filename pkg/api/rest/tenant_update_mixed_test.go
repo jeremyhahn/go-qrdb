@@ -58,7 +58,7 @@ func TestTenantUpdate_MixedStatusAndIsolationPolicyRefusedWithoutTargetUpdate(t 
 		t.Fatalf("CreateRole: %v", err)
 	}
 	caller := authtest.NewFixedAuthenticator(&auth.Identity{Subject: "operator", TenantID: tenantid.System, Roles: []string{r.ID}})
-	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(caller))
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(caller), authmw.WithUserService(caller.Users()))
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
 		WithTenantService(tenants),
 		WithAuthMiddleware(mw),
