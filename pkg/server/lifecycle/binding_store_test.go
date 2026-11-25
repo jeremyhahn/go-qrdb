@@ -666,6 +666,51 @@ func TestTenantServiceBindingLookup_VolumeTenantDataRoot(t *testing.T) {
 	}
 }
 
+// TestTenantServiceBindingLookup_VolumeTenantDataRootFromEveryResolver binds a
+// volume tenant's database at the root of the first resolver that resolves
+// one, past a missing and an unresolvable resolver, in standalone and raft mode.
+func TestTenantServiceBindingLookup_VolumeTenantDataRootFromEveryResolver(t *testing.T) {
+	tenantEnc := atrest.New(newUnsealedBarrier(t))
+	encs := func(string) (*atrest.Encryptor, error) { return tenantEnc, nil }
+	for _, raftMode := range []bool{false, true} {
+		t.Run(map[bool]string{false: "standalone", true: "raft"}[raftMode], func(t *testing.T) {
+			newMgr := func(roots ...func() lifecycle.TenantDataRootResolver) *database.Manager {
+				svc := &isolationTenantService{isolation: tenant.IsolationVolume}
+				dir := t.TempDir()
+				f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir, RaftMode: raftMode}, nil, qrdbconfig.StorageConfig{},
+					lifecycle.TenantServiceBindingLookup(func() tenant.TenantServicer { return svc }, roots...)).
+					WithTenantEncryptors(encs)
+				mgr := database.NewManager(slog.Default(), dir, database.WithBackendFactory(f))
+				cat, err := database.NewKVCatalog(kvstore.NewMemoryKVStore(), nil)
+				if err != nil {
+					t.Fatalf("NewKVCatalog: %v", err)
+				}
+				mgr.SetCatalog(cat)
+				t.Cleanup(func() { _ = mgr.Close() })
+				return mgr
+			}
+			missing := func() lifecycle.TenantDataRootResolver { return nil }
+			unresolvable := func() lifecycle.TenantDataRootResolver { return staticDataRoot("") }
+			root := t.TempDir()
+			resolved := func() lifecycle.TenantDataRootResolver { return staticDataRoot(root) }
+
+			db, err := newMgr(missing, unresolvable, resolved).Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "d", Backend: database.BackendPebble})
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			if want := filepath.Join(root, "databases", "d"); materialized(t, db).DataRoot() != want {
+				t.Fatalf("DataRoot() = %q, want %q", materialized(t, db).DataRoot(), want)
+			}
+
+			_, err = newMgr(missing, unresolvable).Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "d", Backend: database.BackendPebble})
+			var unavailable *lifecycle.BindingTenantUnavailableError
+			if !errors.As(err, &unavailable) {
+				t.Fatalf("Create with no resolvable root = %v, want *BindingTenantUnavailableError", err)
+			}
+		})
+	}
+}
+
 // TestLocalBindingFactory_VolumeTenantDatabaseOwnStore checks a volume
 // tenant's memory and pebble databases open their own store under the
 // tenant's data root, encrypted under the tenant's encryptor, and that the

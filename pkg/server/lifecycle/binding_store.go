@@ -424,22 +424,24 @@ type TenantDataRootResolver interface {
 	LocalTenantDataRoot(ctx context.Context, tenantID string) (string, error)
 }
 
-// volumeDataRoot resolves tenantID's data root through the first resolver
-// roots yields. No resolver, a resolver error or an empty root is a
+// volumeDataRoot resolves tenantID's data root through each resolver of
+// roots in order; the first root resolved wins. When no resolver yields a
+// root (none present, an error or an empty root) it is a
 // *BindingTenantUnavailableError.
 func volumeDataRoot(tenantID string, roots []func() TenantDataRootResolver) (string, error) {
-	var r TenantDataRootResolver
-	if len(roots) > 0 && roots[0] != nil {
-		r = roots[0]()
+	for _, get := range roots {
+		if get == nil {
+			continue
+		}
+		r := get()
+		if r == nil {
+			continue
+		}
+		if root, err := r.LocalTenantDataRoot(context.Background(), tenantID); err == nil && root != "" {
+			return root, nil
+		}
 	}
-	if r == nil {
-		return "", &BindingTenantUnavailableError{TenantID: tenantID}
-	}
-	root, err := r.LocalTenantDataRoot(context.Background(), tenantID)
-	if err != nil || root == "" {
-		return "", &BindingTenantUnavailableError{TenantID: tenantID}
-	}
-	return root, nil
+	return "", &BindingTenantUnavailableError{TenantID: tenantID}
 }
 
 // TenantBarrierEncryptorLookup returns the tenant encryptor lookup
