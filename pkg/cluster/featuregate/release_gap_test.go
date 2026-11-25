@@ -58,17 +58,22 @@ func TestAdmitReplica_RefusesVersionGap(t *testing.T) {
 	assert.NoError(t, g.AdmitReplica(dedicatedShard, "n2:7000"))
 }
 
-func TestAdmitReplica_AcceptsAdjacentAndUnannounced(t *testing.T) {
+func TestAdmitReplica_AcceptsAdjacentRefusesUnannounced(t *testing.T) {
 	t.Cleanup(release.SetForTesting("0.59.0-alpha"))
 	store, kv := newLeaseStore(), newMemKV()
 	store.advertiseRelease(t, 2, "n2:7000", "0.58.3-alpha")
-	store.advertiseRelease(t, 3, "n3:7000", "") // predates announcement
+	store.advertiseRelease(t, 3, "n3:7000", "0.59.0-alpha")
+	store.advertiseRelease(t, 4, "n4:7000", "") // carries no release
 	g := newGate(t, threeNodes())
 	require.NoError(t, g.Start(context.Background(), kv, store))
 
 	assert.NoError(t, g.AdmitReplica(dedicatedShard, "n2:7000"))
-	assert.NoError(t, g.AdmitReplica(dedicatedShard, "n3:7000"))
-	assert.NoError(t, g.AdmitReplica(systemShard, "n3:7000"), "a live record that predates announcement is judged by features alone")
+	want := release.GapError{Channel: "raft-membership", Local: "0.59.0-alpha", Peer: ""}
+	for _, shard := range []uint64{systemShard, dedicatedShard} {
+		var gap *release.GapError
+		require.ErrorAs(t, g.AdmitReplica(shard, "n4:7000"), &gap, "shard %d", shard)
+		assert.Equal(t, want, *gap, "shard %d", shard)
+	}
 	assert.NoError(t, g.AdmitReplica(dedicatedShard, "n1:7000"), "this node admits itself")
 }
 
@@ -197,6 +202,18 @@ func TestStart_RefusesExistingMemberRestartAcrossAGap(t *testing.T) {
 			assert.True(t, kv.has(ReleasePrefix+"1/0.58.0-alpha"))
 		})
 	}
+}
+
+func TestStart_RefusesRestartBesideAMemberWithoutARelease(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.59.0-alpha"))
+	store, kv := newLeaseStore(), newMemKV()
+	store.advertiseRelease(t, 2, "n2:7000", "") // carries no release
+	store.advertiseRelease(t, 3, "n3:7000", "0.59.0-alpha")
+	g := newGate(t, threeNodes())
+
+	var gap *release.GapError
+	require.ErrorAs(t, g.Start(context.Background(), kv, store), &gap)
+	assert.Equal(t, release.GapError{Channel: "raft-membership", Local: "0.59.0-alpha", Peer: ""}, *gap)
 }
 
 // A member advertised from two sources with different releases is compared

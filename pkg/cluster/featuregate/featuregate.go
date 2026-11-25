@@ -869,6 +869,10 @@ func (g *Gate) claimRelease(b ConfigBinding) (created []string, withdraw func(),
 	prefix := ReleaseIntentPrefix + url.PathEscape(b.Candidate) + "/"
 	suffix := "/" + strconv.FormatUint(self.ReplicaID, 10) + "/" + strconv.FormatUint(b.ConfigChangeID, 10)
 	for _, rel := range b.CandidateReleases {
+		if rel == "" {
+			// An empty release passes admission only on a development build and has no intent key.
+			continue
+		}
 		key := prefix + rel + suffix
 		ok, err := kv.PutIfAbsent(ctx, key, []byte(b.Candidate))
 		if err != nil {
@@ -1006,7 +1010,7 @@ func (g *Gate) isSystemMember(addr string) bool {
 // The binding is not Required when shardID is not the system shard (release
 // admission is about system-shard membership; another group's configuration
 // change index is a different counter) or when no membership was compared
-// (the node itself, or a candidate that advertises no release).
+// (the node itself).
 func (g *Gate) AdmitReplicaAt(shardID uint64, raftAddr string) (ConfigBinding, error) {
 	binding, err := g.admitRelease(shardID, raftAddr)
 	if err != nil {
@@ -1055,10 +1059,9 @@ func (g *Gate) AdmitReplicaAt(shardID uint64, raftAddr string) (ConfigBinding, e
 // still in the cluster would leave two non-adjacent releases side by side.
 // It returns the *release.GapError with Channel "raft-membership" whose
 // Local is the release of the first member the candidate is not adjacent
-// to (this node first). A record with an empty ReleaseVersion predates
-// release announcement and is judged by its features alone, both as the
-// candidate and as a member compared against; this node itself is never
-// refused.
+// to (this node first). A record with an empty ReleaseVersion is refused
+// by a stamped binary, both as the candidate and as a member compared
+// against; this node itself is never refused.
 func (g *Gate) admitRelease(shardID uint64, raftAddr string) (ConfigBinding, error) {
 	self, selfErr := g.AdvertisedSelf()
 	if selfErr == nil && self.Address == raftAddr {
@@ -1086,12 +1089,11 @@ func (g *Gate) admitRelease(shardID uint64, raftAddr string) (ConfigBinding, err
 			"member_release", memberRelease)
 		return ConfigBinding{}, err
 	}
-	// No live record at all is not the same as a live record that predates
-	// announcement: the feature check that follows reads the watch-fed
-	// cache, which can still hold an advertisement the store has expired,
-	// so a system-shard candidate with nothing live is refused here rather
-	// than judged on stale features. A non-system shard's candidates are
-	// committed members, judged by features alone.
+	// The feature check that follows reads the watch-fed cache, which can
+	// still hold an advertisement the store has expired, so a system-shard
+	// candidate with nothing live is refused here rather than judged on
+	// stale features. A non-system shard's candidate with nothing live is a
+	// committed member, judged by features alone.
 	if shardID == g.systemShard && !hasLiveRecord(view, raftAddr) {
 		return refuse(&UnannouncedCandidateError{ShardID: shardID, Address: raftAddr}, "", "self", release.Version())
 	}
@@ -1107,8 +1109,7 @@ func (g *Gate) admitRelease(shardID uint64, raftAddr string) (ConfigBinding, err
 	// Compare only with committed system-shard members: a pre-membership
 	// advertisement is another candidate, not a member it must stay
 	// adjacent to. A member's releases are those its live advertisements
-	// announce (every distinct one, when several sources disagree); one
-	// whose advertisements all predate announcement is skipped; an offline
+	// announce (every distinct one, when several sources disagree); an offline
 	// member's are the releases it recorded, and with neither the candidate
 	// is refused. The verdict holds only for this configuration and these
 	// releases, so its change ID and release digest are returned to bind
@@ -1226,14 +1227,12 @@ func liveRecords(view map[viewKey]cluster.Member, id uint64, addr string) []clus
 	return recs
 }
 
-// announcedReleases returns the distinct non-empty releases recs announce,
-// sorted: a record that predates announcement contributes none.
+// announcedReleases returns the distinct releases recs announce, sorted; a
+// record without a release contributes "".
 func announcedReleases(recs []cluster.Member) []string {
-	var rels []string
+	rels := make([]string, 0, len(recs))
 	for _, rec := range recs {
-		if rec.ReleaseVersion != "" {
-			rels = append(rels, rec.ReleaseVersion)
-		}
+		rels = append(rels, rec.ReleaseVersion)
 	}
 	slices.Sort(rels)
 	return slices.Compact(rels)
@@ -1263,7 +1262,7 @@ func candidateReleases(view map[viewKey]cluster.Member, raftAddr string) []strin
 
 // comparedMember is a committed system-shard member admission compares a
 // candidate with, and the releases it compares: those its live records
-// announce (live; none when all predate announcement), else those it
+// announce (live), else those it
 // recorded.
 type comparedMember struct {
 	committedMember
@@ -1306,9 +1305,17 @@ func releaseDigest(candidates []string, members []comparedMember) string {
 }
 
 // releasesAdjacent reports whether two announced releases may run side by
-// side: a development build accepts any peer, as release.Check does.
+// side: a development build accepts any peer, as release.Check does, and an
+// empty release is adjacent only while this binary is itself a development
+// build.
 func releasesAdjacent(a, b string) bool {
-	return a == release.Dev || b == release.Dev || release.Adjacent(a, b)
+	if a == release.Dev || b == release.Dev {
+		return true
+	}
+	if (a == "" || b == "") && release.Version() == release.Dev {
+		return true
+	}
+	return release.Adjacent(a, b)
 }
 
 // releaseChannel names the cluster-membership channel in a
@@ -1514,8 +1521,8 @@ func parseReleases(keys []string) map[uint64][]string {
 // upgrade that skips a release -- is judged here, before it records its
 // release or serves. Another member's release is its live advertisement's,
 // else the releases it recorded under ReleasePrefix; this node's is every
-// release it recorded or still advertises. A member with neither, or whose record
-// predates release announcement, is skipped: a cold restart of a cluster
+// release it recorded or still advertises; a live record without a release
+// is a gap. A member with neither is skipped: a cold restart of a cluster
 // whose members have not recorded a release yet must still come up. A node
 // that is not yet a member is left to admission. A membership or recorded
 // release history this node cannot read refuses the start (a *StoreError
@@ -1571,9 +1578,6 @@ func (g *Gate) checkRestartRelease(ctx context.Context, kv ActivationKV) error {
 			// last ran: the upgrade itself must be to an adjacent release.
 			rels = append(slices.Clone(rels), live...)
 		} else if len(recs) > 0 {
-			if len(live) == 0 {
-				continue
-			}
 			rels = live
 		}
 		for _, rel := range rels {

@@ -91,9 +91,8 @@ type Member struct {
 
 	// ReleaseVersion is the Semantic Versioning 2.0.0 release of the
 	// member's binary (pkg/release.Version). Peers admit only adjacent
-	// releases (pkg/release.Adjacent). A member registered by a binary that
-	// predates release announcement carries none and is judged by Features
-	// alone.
+	// releases (pkg/release.Adjacent). A stamped node refuses a record
+	// whose ReleaseVersion is empty.
 	ReleaseVersion string `json:"release_version,omitempty"`
 }
 

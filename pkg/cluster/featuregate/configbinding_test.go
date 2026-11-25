@@ -21,14 +21,14 @@ func setMembersErr(m *fakeMembers, err error) {
 // adjacentCluster starts a gate on a 0.59 node whose members n2 and n3 run
 // 0.59, whose candidate n4 advertises the adjacent 0.59.1 and whose
 // candidate n5 advertises no release.
-func adjacentCluster(t *testing.T, members *fakeMembers) *Gate {
+func adjacentCluster(t *testing.T, members *fakeMembers, n5Release string) *Gate {
 	t.Helper()
 	t.Cleanup(release.SetForTesting("0.59.0-alpha"))
 	store, kv := newLeaseStore(), newMemKV()
 	store.advertiseRelease(t, 2, "n2:7000", "0.59.0-alpha")
 	store.advertiseRelease(t, 3, "n3:7000", "0.59.0-alpha")
 	store.advertiseRelease(t, 4, "n4:7000", "0.59.1-alpha")
-	store.advertiseRelease(t, 5, "n5:7000", "") // predates announcement
+	store.advertiseRelease(t, 5, "n5:7000", n5Release)
 	g := newGate(t, members)
 	require.NoError(t, g.Start(context.Background(), kv, store))
 	return g
@@ -247,7 +247,7 @@ func TestProposeBound_PassesTheGateStop(t *testing.T) {
 
 func TestAdmitReplicaAt_BindsTheSystemShardConfiguration(t *testing.T) {
 	members := threeNodes()
-	g := adjacentCluster(t, members)
+	g := adjacentCluster(t, members, "")
 
 	b, err := g.AdmitReplicaAt(systemShard, "n4:7000")
 	require.NoError(t, err)
@@ -262,12 +262,16 @@ func TestAdmitReplicaAt_BindsTheSystemShardConfiguration(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, ConfigBinding{}, b)
 
-	// No membership compared: the node itself, or an unannounced candidate.
+	// No membership compared: the node itself.
 	b, err = g.AdmitReplicaAt(systemShard, "n1:7000")
 	require.NoError(t, err)
 	assert.Equal(t, ConfigBinding{}, b)
+
+	// A candidate whose live record carries no release is a release gap.
 	b, err = g.AdmitReplicaAt(systemShard, "n5:7000")
-	require.NoError(t, err)
+	var gap *release.GapError
+	require.ErrorAs(t, err, &gap)
+	assert.Equal(t, release.GapError{Channel: "raft-membership", Local: "0.59.0-alpha", Peer: ""}, *gap)
 	assert.Equal(t, ConfigBinding{}, b)
 
 	// A membership change after admission makes the binding stale.
@@ -280,7 +284,7 @@ func TestAdmitReplicaAt_BindsTheSystemShardConfiguration(t *testing.T) {
 func TestAdmitReplicaAt_InitialConfigurationIsRequired(t *testing.T) {
 	members := threeNodes()
 	members.set(systemShard, 0, map[uint64]string{1: "n1:7000", 2: "n2:7000", 3: "n3:7000"})
-	g := adjacentCluster(t, members)
+	g := adjacentCluster(t, members, "0.59.0-alpha")
 
 	b, err := g.AdmitReplicaAt(systemShard, "n4:7000")
 	require.NoError(t, err)
@@ -320,7 +324,7 @@ func TestAdmitReplicaAt_RefusalsCarryNoBinding(t *testing.T) {
 	})
 	t.Run("membership unreadable", func(t *testing.T) {
 		members := threeNodes()
-		g := adjacentCluster(t, members)
+		g := adjacentCluster(t, members, "0.59.0-alpha")
 		readErr := errors.New("membership unavailable")
 		setMembersErr(members, readErr)
 		b, err := g.AdmitReplicaAt(systemShard, "n4:7000")

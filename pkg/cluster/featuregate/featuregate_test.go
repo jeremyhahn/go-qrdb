@@ -151,7 +151,7 @@ func (s *leaseStore) ListMembers(context.Context) ([]cluster.Member, error) {
 // running node does.
 func (s *leaseStore) advertise(t *testing.T, id uint64, addr string, features ...string) {
 	t.Helper()
-	a, err := cluster.NewAdvertiser(s, cluster.Member{NodeID: id, Address: addr, Features: features}, cluster.AdvertiseConfig{})
+	a, err := cluster.NewAdvertiser(s, cluster.Member{NodeID: id, Address: addr, Features: features, ReleaseVersion: release.Version()}, cluster.AdvertiseConfig{})
 	require.NoError(t, err)
 	require.NoError(t, a.Register(context.Background()))
 }
