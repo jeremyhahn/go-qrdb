@@ -51,6 +51,12 @@ type failStorage struct {
 
 	// List injection: listErr is returned instead of calling inner.List.
 	listErr error
+
+	// Exists injection: existsErr is returned on the existsFailAt-th call.
+	// existsFailAt == 0 means fail on every call.
+	existsErr    error
+	existsFailAt int
+	existsCalls  int
 }
 
 func (f *failStorage) Get(key []byte) ([]byte, error) {
@@ -85,8 +91,14 @@ func (f *failStorage) List(prefix []byte) ([][]byte, error) {
 	return f.inner.List(prefix)
 }
 
-func (f *failStorage) Exists(key []byte) (bool, error) { return f.inner.Exists(key) }
-func (f *failStorage) Batch() storage.Batch            { return f.inner.Batch() }
+func (f *failStorage) Exists(key []byte) (bool, error) {
+	f.existsCalls++
+	if f.existsErr != nil && (f.existsFailAt == 0 || f.existsCalls == f.existsFailAt) {
+		return false, f.existsErr
+	}
+	return f.inner.Exists(key)
+}
+func (f *failStorage) Batch() storage.Batch { return f.inner.Batch() }
 func (f *failStorage) NewIterator(opts *storage.IteratorOptions) storage.Iterator {
 	return f.inner.NewIterator(opts)
 }
@@ -385,6 +397,40 @@ func TestSink_Delete_MetaFails(t *testing.T) {
 	fail.deleteFailAt = 1 // fail on the first Delete (meta key)
 	err := sink.Delete(ctx, "someid")
 	require.ErrorIs(t, err, fail.deleteErr, "Delete must propagate a meta-key deletion error")
+}
+
+// TestSink_Delete_ExistsFails proves Delete propagates a probe error, both
+// on the metadata probe and on the leftover-artifact probe, and deletes
+// nothing when it cannot tell whether the backup exists.
+func TestSink_Delete_ExistsFails(t *testing.T) {
+	cases := []struct {
+		name   string
+		write  bool
+		failAt int
+	}{
+		{name: "metadata probe", write: true, failAt: 1},
+		{name: "artifact probe", write: false, failAt: 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			inner, fail := newFailStore(t)
+			sink := backupsink.New(fail)
+			if tc.write {
+				require.NoError(t, sink.Write(ctx, service.BackupInfo{ID: "someid"}, map[uint64][]byte{1: []byte("x")}, nil))
+			}
+			fail.existsErr = errors.New("exists failure")
+			fail.existsFailAt = tc.failAt
+			err := sink.Delete(ctx, "someid")
+			require.ErrorIs(t, err, fail.existsErr)
+			require.Zero(t, fail.deleteCalls, "Delete must not delete after a failed probe")
+			if tc.write {
+				ok, err := inner.Exists([]byte("meta/someid"))
+				require.NoError(t, err)
+				require.True(t, ok, "metadata must survive a failed probe")
+			}
+		})
+	}
 }
 
 func TestSink_Delete_EnvelopeFails(t *testing.T) {
