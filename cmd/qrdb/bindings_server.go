@@ -34,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/wiring"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
+	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -640,6 +641,9 @@ func (b *EmbeddedServerBinding) startLocalNode(cfg *EmbeddedConfig, hub *watch.H
 	if err != nil {
 		return nil, err
 	}
+	if err := lifecycle.ClaimRunMode(dataDir, capabilities.ModeStandalone); err != nil {
+		return nil, err
+	}
 
 	// Create storage backend.
 	stg, pebbleDB, err := b.createStorage(cfg, dataDir)
@@ -761,6 +765,9 @@ func (b *EmbeddedServerBinding) startRaftNode(cfg *EmbeddedConfig) (*quicraft.Ho
 
 	dataDir, err := b.resolveDataDir(cfg)
 	if err != nil {
+		return nil, err
+	}
+	if err := lifecycle.ClaimRunMode(dataDir, capabilities.ModeRaft); err != nil {
 		return nil, err
 	}
 

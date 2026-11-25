@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
+	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	secure "github.com/jeremyhahn/go-qrdb/sdk/go/secure"
 )
@@ -36,6 +37,18 @@ var errNoCertsInPEM = clustertls.ErrNoCertsInPEM
 // parsed. The canonical type lives in pkg/cluster; the daemon aliases it so
 // CLI callers and tests share the cluster package's error contract.
 type PeerParseError = cluster.PeerParseError
+
+// RunModeMismatchError is returned when the data directory belongs to the
+// other run mode; the canonical type lives in pkg/server/lifecycle.
+type RunModeMismatchError = lifecycle.RunModeMismatchError
+
+// RunModeAmbiguousError is returned when a data directory without a run-mode
+// marker holds the stores of both modes.
+type RunModeAmbiguousError = lifecycle.RunModeAmbiguousError
+
+// RunModeMarkerError is returned when the run-mode marker cannot be read or
+// written, or records no known mode.
+type RunModeMarkerError = lifecycle.RunModeMarkerError
 
 // UnknownDiscoveryError is returned when the --discovery flag specifies an
 // unknown discovery method. Aliased from pkg/cluster.

@@ -1867,10 +1867,11 @@ func TestRunStart_CACertMkdirAllError(t *testing.T) {
 		host:            testBindHost,
 	}
 
+	// The run-mode claim is the first write into the data directory.
 	err := runStart(f)
 	require.Error(t, err)
-	var writeErr *BootstrapWriteError
-	require.True(t, errors.As(err, &writeErr), "err = %v (%T)", err, err)
+	var markerErr *RunModeMarkerError
+	require.True(t, errors.As(err, &markerErr), "err = %v (%T)", err, err)
 }
 
 // ---------------------------------------------------------------------------
