@@ -3057,6 +3057,11 @@ func (v *vectorService) BatchDeleteVectors(ctx context.Context, req *BatchDelete
 	if len(req.IDs) == 0 {
 		return nil, &InvalidVectorError{Reason: "vector IDs must not be empty"}
 	}
+	for _, id := range req.IDs {
+		if id == 0 {
+			return nil, &InvalidVectorError{Reason: "ID must be greater than 0"}
+		}
+	}
 
 	scoped := scopedFromContext(ctx, req.Namespace)
 

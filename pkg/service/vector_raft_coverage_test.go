@@ -182,6 +182,49 @@ func TestVectorService_RaftBatchDeleteGoesThroughConsensus(t *testing.T) {
 	}
 }
 
+// TestVectorService_BatchDeleteZeroIDIsRefused checks that a batch delete
+// holding a zero ID is refused before any delete, standalone and over Raft.
+func TestVectorService_BatchDeleteZeroIDIsRefused(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("standalone", func(t *testing.T) {
+		store := &countingVectorStorage{MemoryVectorStorage: vector.NewMemoryVectorStorage()}
+		svc, err := NewVectorService(store, newVecTestLogger())
+		require.NoError(t, err)
+		_, err = svc.CreateNamespace(ctx, &CreateNamespaceRequest{
+			Namespace: "docs", Dimension: 2, DistanceMetric: "COSINE", IndexType: "HNSW",
+		})
+		require.NoError(t, err)
+		_, err = svc.UpsertVector(ctx, &UpsertVectorRequest{Namespace: "docs", ID: 1, Vector: []float32{1, 0}})
+		require.NoError(t, err)
+
+		resp, err := svc.BatchDeleteVectors(ctx, &BatchDeleteVectorsRequest{Namespace: "docs", IDs: []uint64{1, 0}})
+		requireErrorAs[*InvalidVectorError](t, err)
+		require.Nil(t, resp)
+		require.Zero(t, store.directBatchDeletes)
+
+		_, err = svc.GetVector(ctx, &GetVectorRequest{Namespace: "docs", ID: 1})
+		require.NoError(t, err)
+	})
+
+	t.Run("raft", func(t *testing.T) {
+		svc, store, applied := raftAppliedVectorService(t, nil)
+		_, err := svc.BatchUpsert(ctx, &BatchUpsertRequest{Namespace: "docs", Vectors: []*VectorData{
+			{ID: 1, Vector: []float32{1, 0}},
+		}})
+		require.NoError(t, err)
+
+		resp, err := svc.BatchDeleteVectors(ctx, &BatchDeleteVectorsRequest{Namespace: "docs", IDs: []uint64{1, 0}})
+		requireErrorAs[*InvalidVectorError](t, err)
+		require.Nil(t, resp)
+		require.Zero(t, store.directBatchDeletes)
+		require.Len(t, *applied, 1, "a refused batch delete was proposed")
+
+		_, err = svc.GetVector(ctx, &GetVectorRequest{Namespace: "docs", ID: 1})
+		require.NoError(t, err)
+	})
+}
+
 // TestVectorService_RaftBatchDeleteProposalErrorDeletesNothing checks that a
 // failed proposal is the caller's answer and no vector is deleted, neither
 // through consensus nor node-locally.
