@@ -89,6 +89,9 @@ type MoveStoreCloser struct {
 	// dataDirs rewrites the tenant's database records onto a settled root;
 	// nil when the node keeps no database records.
 	dataDirs MoveDataDirRelocator
+	// snapshots lists a tenant's started shards for RelocateSnapshots; nil
+	// when the node runs none.
+	snapshots MoveSnapshotShards
 
 	mu         sync.Mutex
 	closed     map[string][]string

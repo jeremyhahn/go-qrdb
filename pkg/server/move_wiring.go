@@ -183,6 +183,7 @@ func newMoveStores(cfg TenantMoveConfig) (*MoveStoreCloser, error) {
 	}
 	if cfg.Infra != nil && cfg.Infra.Hosts != nil {
 		opts = append(opts, WithMoveTenantHosts(cfg.Infra.Hosts))
+		opts = append(opts, WithMoveSnapshotShards(cfg.Infra.Hosts))
 	}
 	if cfg.DataDirs != nil {
 		opts = append(opts, WithMoveDataDirRelocator(cfg.DataDirs))

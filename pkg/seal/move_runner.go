@@ -35,6 +35,12 @@ type TenantStoreCloser interface {
 	OpenTenantStores(ctx context.Context, tenantID string) error
 }
 
+// TenantSnapshotRelocator re-snapshots a tenant's started shards whose
+// newest snapshot record names a file outside root.
+type TenantSnapshotRelocator interface {
+	RelocateSnapshots(ctx context.Context, tenantID, root string) error
+}
+
 // TenantDataDirRelocator is implemented by a TenantStoreCloser whose
 // tenant database records name absolute data directories: a settle rewrites
 // each one under fromRoot to the same path under toRoot before it reopens
@@ -138,13 +144,19 @@ func (m *MoveStepRunner) SettleMoveStep(ctx context.Context, step volume.MoveSte
 		if err := m.relocateDataDirs(ctx, step, false); err != nil {
 			return err
 		}
-		return m.stores.OpenTenantStores(ctx, step.TenantID)
+		if err := m.stores.OpenTenantStores(ctx, step.TenantID); err != nil {
+			return err
+		}
+		return m.relocateSnapshots(ctx, step, false)
 	case step.Phase == volume.MoveStepPhaseAbort && step.Copied:
 		m.reg.moveOpenPools.Delete(step.TenantID)
 		if err := m.relocateDataDirs(ctx, step, true); err != nil {
 			return err
 		}
 		if err := m.stores.OpenTenantStores(ctx, step.TenantID); err != nil {
+			return err
+		}
+		if err := m.relocateSnapshots(ctx, step, true); err != nil {
 			return err
 		}
 		return m.removePlacement(ctx, step.TenantID, step.ToPool)
@@ -169,6 +181,25 @@ func (m *MoveStepRunner) relocateDataDirs(ctx context.Context, step volume.MoveS
 		src, dst = dst, src
 	}
 	return rel.RelocateTenantDataDirs(ctx, step.TenantID, src, dst)
+}
+
+// relocateSnapshots re-snapshots the tenant's shards whose newest snapshot
+// lies outside the root its stores now open from: the destination, or the
+// source when back is true.
+func (m *MoveStepRunner) relocateSnapshots(ctx context.Context, step volume.MoveStep, back bool) error {
+	rel, ok := m.stores.(TenantSnapshotRelocator)
+	if !ok {
+		return nil
+	}
+	src, dst, err := m.placements(ctx, step)
+	if err != nil {
+		return err
+	}
+	root := dst
+	if back {
+		root = src
+	}
+	return rel.RelocateSnapshots(ctx, step.TenantID, root)
 }
 
 func (m *MoveStepRunner) copyStep(ctx context.Context, step volume.MoveStep) error {
