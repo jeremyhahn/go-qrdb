@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
@@ -422,14 +424,27 @@ func TestMoveStoreCloser_CatchUpTimeout(t *testing.T) {
 }
 
 type fakeMoveHosts struct {
-	started map[string]bool
-	calls   []string
+	started   map[string]bool
+	volume    map[string]bool
+	lookupErr error
+	attachErr error
+	calls     []string
 }
 
 func (f *fakeMoveHosts) Started(tenantID string) bool { return f.started[tenantID] }
 
+func (f *fakeMoveHosts) HostsTenant(_ context.Context, tenantID string) (bool, error) {
+	if f.lookupErr != nil {
+		return false, f.lookupErr
+	}
+	return f.volume[tenantID], nil
+}
+
 func (f *fakeMoveHosts) Attach(_ context.Context, tenantID string) error {
 	f.calls = append(f.calls, "attach "+tenantID)
+	if f.attachErr != nil {
+		return f.attachErr
+	}
 	f.started[tenantID] = true
 	return nil
 }
@@ -522,6 +537,102 @@ func TestMoveStoreCloser_ResumedSettleReopensPlacedReplicas(t *testing.T) {
 	}
 	if got := c.PendingReopen(); len(got) != 0 {
 		t.Fatalf("pending = %v", got)
+	}
+}
+
+// resumedVolumeCloser builds a closer with no close record, as after a
+// restart, in standalone mode (no shards) or raft mode (placement lists no
+// databases for a volume tenant).
+func resumedVolumeCloser(t *testing.T, mode string, hosts *fakeMoveHosts) *MoveStoreCloser {
+	t.Helper()
+	opts := []MoveStoreCloserOption{WithMoveTenantHosts(hosts)}
+	var shards MoveShardLifecycle
+	if mode == "raft" {
+		shards = &fakeMoveShards{started: map[StartedShard]bool{}}
+		opts = append(opts, WithMoveLocalReplicas(placedReplicas()))
+	}
+	c, err := NewMoveStoreCloser(shards, &fakeMoveBarriers{}, nil, 0, opts...)
+	if err != nil {
+		t.Fatalf("NewMoveStoreCloser: %v", err)
+	}
+	return c
+}
+
+func TestMoveStoreCloser_ResumedSettleAttachesVolumeTenantHost(t *testing.T) {
+	for _, mode := range []string{"standalone", "raft"} {
+		t.Run(mode, func(t *testing.T) {
+			hosts := &fakeMoveHosts{started: map[string]bool{}, volume: map[string]bool{"acme": true}}
+			c := resumedVolumeCloser(t, mode, hosts)
+			if err := c.OpenTenantStores(context.Background(), "acme"); err != nil {
+				t.Fatalf("open: %v", err)
+			}
+			if want := []string{"attach acme"}; !reflect.DeepEqual(hosts.calls, want) {
+				t.Fatalf("host calls = %v, want %v", hosts.calls, want)
+			}
+			if got := c.PendingReopen(); len(got) != 0 {
+				t.Fatalf("pending = %v", got)
+			}
+		})
+	}
+}
+
+func TestMoveStoreCloser_ResumedSettleUnopenableHostStaysPending(t *testing.T) {
+	for _, mode := range []string{"standalone", "raft"} {
+		t.Run(mode, func(t *testing.T) {
+			attachErr := errors.New("host attach failed")
+			hosts := &fakeMoveHosts{started: map[string]bool{}, volume: map[string]bool{"acme": true}, attachErr: attachErr}
+			c := resumedVolumeCloser(t, mode, hosts)
+			if err := c.OpenTenantStores(context.Background(), "acme"); !errors.Is(err, attachErr) {
+				t.Fatalf("open: err = %v, want %v", err, attachErr)
+			}
+			if got := c.PendingReopen(); !reflect.DeepEqual(got, []string{"acme"}) {
+				t.Fatalf("pending = %v, want [acme]", got)
+			}
+		})
+	}
+}
+
+func TestMoveStoreCloser_ResumedSettleHostLookupFailureStaysPending(t *testing.T) {
+	lookupErr := errors.New("tenant metadata unavailable")
+	hosts := &fakeMoveHosts{started: map[string]bool{}, lookupErr: lookupErr}
+	c := resumedVolumeCloser(t, "standalone", hosts)
+	if err := c.OpenTenantStores(context.Background(), "acme"); !errors.Is(err, lookupErr) {
+		t.Fatalf("open: err = %v, want %v", err, lookupErr)
+	}
+	if got := c.PendingReopen(); !reflect.DeepEqual(got, []string{"acme"}) {
+		t.Fatalf("pending = %v, want [acme]", got)
+	}
+}
+
+type fakeIsolationLookup struct {
+	tenants map[string]*tenant.TenantInfo
+	err     error
+}
+
+func (f fakeIsolationLookup) GetTenant(_ context.Context, tenantID string) (*tenant.TenantInfo, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.tenants[tenantID], nil
+}
+
+func TestTenantHostRegistry_HostsTenantReadsTenantIsolation(t *testing.T) {
+	ctx := context.Background()
+	lookup := fakeIsolationLookup{tenants: map[string]*tenant.TenantInfo{
+		"vol":  {ID: "vol", IsolationType: tenant.IsolationVolume},
+		"raft": {ID: "raft", IsolationType: tenant.IsolationRaft},
+	}}
+	reg := NewTenantHostRegistryFromLookup(&seal.BarrierRegistry{}, lookup, volTestLogger())
+	for id, want := range map[string]bool{"vol": true, "raft": false, "none": false} {
+		got, err := reg.HostsTenant(ctx, id)
+		if err != nil || got != want {
+			t.Fatalf("HostsTenant(%q) = %v, %v; want %v", id, got, err, want)
+		}
+	}
+	lookupErr := errors.New("metadata unavailable")
+	failing := NewTenantHostRegistryFromLookup(&seal.BarrierRegistry{}, fakeIsolationLookup{err: lookupErr}, volTestLogger())
+	if _, err := failing.HostsTenant(ctx, "vol"); !errors.Is(err, lookupErr) {
+		t.Fatalf("HostsTenant with a failing lookup: err = %v, want %v", err, lookupErr)
 	}
 }
 

@@ -24,6 +24,7 @@ import (
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -114,6 +115,9 @@ type TenantHostRegistry struct {
 // resolve a tenant's DataRoot. It is satisfied by lookupDataRootSource.
 type tenantInfoSource interface {
 	dataRootOf(ctx context.Context, tenantID string) (string, error)
+	// isVolumeTenant reports whether the tenant's metadata names
+	// IsolationVolume.
+	isVolumeTenant(ctx context.Context, tenantID string) (bool, error)
 }
 
 // TenantHostRegistryOption configures optional TenantHostRegistry behavior at
@@ -183,7 +187,7 @@ func NewTenantHostRegistry(barrierReg *seal.BarrierRegistry, tenants tenantInfoS
 func NewTenantHostRegistryFromLookup(barrierReg *seal.BarrierRegistry, lookup TenantLookup, logger *slog.Logger, opts ...TenantHostRegistryOption) *TenantHostRegistry {
 	var source tenantInfoSource
 	if lookup != nil {
-		source = &lookupDataRootSource{registry: barrierReg}
+		source = &lookupDataRootSource{registry: barrierReg, lookup: lookup}
 	}
 	return NewTenantHostRegistry(barrierReg, source, logger, opts...)
 }
@@ -195,11 +199,25 @@ func NewTenantHostRegistryFromLookup(barrierReg *seal.BarrierRegistry, lookup Te
 // resolution goes through the registry rather than the tenant lookup.
 type lookupDataRootSource struct {
 	registry *seal.BarrierRegistry
+	lookup   TenantLookup
 }
 
 // dataRootOf returns the local DataRoot resolved for the tenant, or an error.
 func (s *lookupDataRootSource) dataRootOf(ctx context.Context, tenantID string) (string, error) {
 	return s.registry.LocalTenantDataRoot(ctx, tenantID)
+}
+
+// isVolumeTenant reads the tenant's isolation from its metadata; with no
+// lookup wired it reports false.
+func (s *lookupDataRootSource) isVolumeTenant(ctx context.Context, tenantID string) (bool, error) {
+	if s.lookup == nil {
+		return false, nil
+	}
+	info, err := s.lookup.GetTenant(ctx, tenantID)
+	if err != nil {
+		return false, err
+	}
+	return info != nil && info.EffectiveIsolationType() == tenant.IsolationVolume, nil
 }
 
 // Services returns the (un-namespaced) data-plane service set backing the named
@@ -363,6 +381,15 @@ func (r *TenantHostRegistry) StartedHosts() map[string]service.AdminHost {
 func (r *TenantHostRegistry) Attach(ctx context.Context, tenantID string) error {
 	_, err := r.services(ctx, tenantID, false)
 	return err
+}
+
+// HostsTenant reports whether durable tenant metadata names tenantID an
+// IsolationVolume tenant, whose Host this registry serves.
+func (r *TenantHostRegistry) HostsTenant(ctx context.Context, tenantID string) (bool, error) {
+	if r == nil || r.tenants == nil {
+		return false, nil
+	}
+	return r.tenants.isVolumeTenant(ctx, tenantID)
 }
 
 // Close stops and closes the named tenant's Host, releasing its Pebble lock,

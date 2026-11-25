@@ -48,6 +48,9 @@ type MoveSealedBarriers interface {
 // drives for an IsolationVolume tenant: its one Host on this node.
 type MoveTenantHosts interface {
 	Started(tenantID string) bool
+	// HostsTenant reports whether durable tenant metadata says the tenant
+	// is an IsolationVolume tenant, whose Host this registry serves.
+	HostsTenant(ctx context.Context, tenantID string) (bool, error)
 	Attach(ctx context.Context, tenantID string) error
 	Close(tenantID string) error
 }
@@ -303,6 +306,15 @@ func (c *MoveStoreCloser) reopen(ctx context.Context, tenantID string) error {
 			return fail(fmt.Errorf("move: list local replicas of tenant %s: %w", tenantID, err))
 		}
 		dbs = placed
+	}
+	if !recorded && !hostRecorded && c.hosts != nil {
+		// No close record survives a restart: the tenant metadata says
+		// whether this tenant's stores include a volume tenant Host.
+		hosted, err := c.hosts.HostsTenant(ctx, tenantID)
+		if err != nil {
+			return fail(fmt.Errorf("move: resolve the host of tenant %s: %w", tenantID, err))
+		}
+		host = hosted
 	}
 	if !barrierOpen {
 		if err := c.barriers.ReopenVolumeTenant(ctx, tenantID); err != nil {
