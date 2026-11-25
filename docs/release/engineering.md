@@ -651,7 +651,7 @@ step when a leg's measured time drifts toward its limit.
 
 The release publishes linux/arm64 binaries, plain and FIPS (`make
 release-cross PLATFORM=linux/arm64`, CI's full tier), but no CI job runs a
-test on arm64. Two steps close that gap:
+test on arm64 or runs a shipped binary. Three steps close that gap:
 
 - `make test-cross PLATFORM=linux/arm64` compiles and links the unit and
   integration test binaries of the root module, the Go SDK (`sdk/go`) and
@@ -669,12 +669,24 @@ test on arm64. Two steps close that gap:
   a clean checkout of the RC candidate commit:
 
   ```sh
-  make test-cross PLATFORM=linux/arm64 && make integration-test
+  make test-cross PLATFORM=linux/arm64 && make release-cross PLATFORM=linux/arm64 && make release-smoke PLATFORM=linux/arm64 && make integration-test
   ```
 
   `make integration-test` builds the integration image for the host's
   architecture and runs every self-spawned qrdbdharness suite
   (`./test/integration`) in it. A failure blocks the RC like a red `main`.
+  The run is recorded in `docs/release/readiness.md`: the host's
+  architecture, the commit, the date and each target's result.
+- `make release-smoke PLATFORM=linux/arm64` (`scripts/release-smoke.sh`)
+  runs the four published arm64 binaries natively from `dist/`: `<file>
+  version` must exit 0 and print the build's version, the plain ones with
+  `GODEBUG` unset and the FIPS ones under `GODEBUG=fips140=only`, so the Go
+  FIPS module's integrity self-test runs on arm64. `make integration-test`
+  runs binaries the harness builds from source with cgo, and
+  `check-release-artifacts` only reads headers, so release-smoke is the one
+  step that executes what ships. A foreign binary cannot run natively, so it
+  refuses a `PLATFORM` that is not the host's. `make test-release-smoke` (a
+  lint gate) pins it with stub artifacts.
 
 ### Cluster stage, locally
 

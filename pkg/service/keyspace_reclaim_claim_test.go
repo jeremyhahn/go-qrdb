@@ -213,6 +213,81 @@ func TestUnfence_FailedReleaseIsReported(t *testing.T) {
 	}
 }
 
+// A barrier tenant's create marks the home-group log marker live before the
+// system store's data marker. When that second claim fails, the create is
+// undone, so the log marker it claimed goes back to what it held: a live
+// marker under an incarnation no catalog holds would refuse every later
+// create of the name.
+func TestUnfence_FailedDataClaimReleasesTheLogMarker(t *testing.T) {
+	ctx := context.Background()
+	key := DropFenceKey("acme", "ledger")
+	for _, tc := range []struct {
+		name  string
+		prior []byte // the home marker before the create; nil = absent
+	}{
+		{name: "fresh name", prior: nil},
+		{name: "after a drop", prior: dropFenceTombstone},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := newMemoryKVSvc()
+			systemMem := newMemoryKVSvc()
+			if tc.prior != nil {
+				for _, kv := range []*memoryKVSvc{home, systemMem} {
+					if err := kv.Put(ctx, key, tc.prior); err != nil {
+						t.Fatalf("seed marker: %v", err)
+					}
+				}
+			}
+			system := &unknownOutcomeKV{memoryKVSvc: systemMem, failPutIfAbsent: true, failClaimSwap: true}
+			svc := NewKeyspaceReclaimService(ReclaimTarget{KV: system})
+			svc.SetStoreResolver(&fixedStoreResolver{logKV: home})
+
+			err := svc.UnfenceDatabaseKeyspace(ctx, "acme", "ledger", "inc-a", "")
+			if !errors.Is(err, errProposeTimeout) {
+				t.Fatalf("err = %v, want the system claim's timeout", err)
+			}
+			var release *MarkerReleaseError
+			if errors.As(err, &release) {
+				t.Fatalf("err = %v, want no failed release", err)
+			}
+			if tc.prior == nil {
+				_, present, readErr := readMarker(ctx, home, key)
+				if readErr != nil {
+					t.Fatalf("read home marker: %v", readErr)
+				}
+				if present {
+					t.Fatal("the home-group log marker must be absent again")
+				}
+			} else {
+				assertMarkerAt(t, home, key, tc.prior)
+			}
+
+			system.failPutIfAbsent = false
+			system.failClaimSwap = false
+			if err := svc.UnfenceDatabaseKeyspace(ctx, "acme", "ledger", "inc-b", ""); err != nil {
+				t.Fatalf("retry: %v", err)
+			}
+			assertMarkerAt(t, home, key, []byte("inc-b"))
+			assertMarkerAt(t, systemMem, key, []byte("inc-b"))
+		})
+	}
+
+	t.Run("a log marker already live for the incarnation is left", func(t *testing.T) {
+		home := newMemoryKVSvc()
+		if err := home.Put(ctx, key, []byte("inc-a")); err != nil {
+			t.Fatalf("seed marker: %v", err)
+		}
+		system := &unknownOutcomeKV{memoryKVSvc: newMemoryKVSvc(), failPutIfAbsent: true}
+		svc := NewKeyspaceReclaimService(ReclaimTarget{KV: system})
+		svc.SetStoreResolver(&fixedStoreResolver{logKV: home})
+
+		if err := svc.UnfenceDatabaseKeyspace(ctx, "acme", "ledger", "inc-a", ""); err == nil {
+			t.Fatal("want the system claim's failure")
+		}
+		assertMarkerAt(t, home, key, []byte("inc-a"))
+	})
+}
+
 // TestUnfence_PerDatabaseTimedOutClaimThatLandsIsReleased pins the release
 // on the path of a database with a store of its own: its incarnation is
 // claimed on the marker in the store its namespaced keyspace is reclaimed

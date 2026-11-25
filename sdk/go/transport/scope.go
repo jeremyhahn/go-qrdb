@@ -83,7 +83,7 @@ func DatabaseStreamClientInterceptor(db string) grpc.StreamClientInterceptor {
 
 // dataPlanePrefixes are the REST path prefixes for data-plane endpoints (KV,
 // MVCC, transaction, batch, watch, lease, lock, secondary index, time-series,
-// and vector). Only requests to these paths carry the database scope header;
+// vector and verifiable log). Only requests to these paths carry the database scope header;
 // management, admin, and system endpoints are never database-scoped via the
 // header because they are tenant- or cluster-global (and collection paths embed
 // the database in the URL).
@@ -97,6 +97,7 @@ var dataPlanePrefixes = []string{
 	"/index",
 	"/ts",
 	"/vector",
+	"/vlog",
 }
 
 // IsDataPlanePath reports whether a REST request path targets a data-plane
