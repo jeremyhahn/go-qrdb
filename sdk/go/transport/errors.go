@@ -577,6 +577,50 @@ func UserConcurrentUpdateFromMetadata(md map[string]string) *UserConcurrentUpdat
 	return &UserConcurrentUpdateError{ID: id}
 }
 
+// CommandConflictError reports that the server refused a write because it
+// conflicts with stored state, a unique secondary index the value would
+// violate. The server's *service.CommandConflictError reaches a client as the
+// ReasonCommandConflict structured refusal and is rebuilt as this type.
+// Through As it is a *dberrors.QRDBError with Code ErrConflict, the code the
+// embedded store returns for the same refusal.
+type CommandConflictError struct {
+	// Message is the server's refusal message.
+	Message string
+}
+
+// Error implements error.
+func (e *CommandConflictError) Error() string {
+	return "transport: write conflict: " + e.Message
+}
+
+// As presents the refusal as a *dberrors.QRDBError with Code ErrConflict.
+func (e *CommandConflictError) As(target any) bool {
+	qe, ok := target.(**dberrors.QRDBError)
+	if !ok {
+		return false
+	}
+	*qe = &dberrors.QRDBError{Code: dberrors.ErrConflict, Op: "kv.write", Err: e}
+	return true
+}
+
+// ReasonCommandConflict is the structured-refusal reason every transport
+// carries beside the message of a server-side command conflict, so a client
+// rebuilds a *CommandConflictError.
+const ReasonCommandConflict = "COMMAND_CONFLICT"
+
+// commandConflictKeyMessage is the metadata key carrying the refusal message.
+const commandConflictKeyMessage = "message"
+
+// Metadata returns the structured-refusal metadata carrying Message.
+func (e *CommandConflictError) Metadata() map[string]string {
+	return map[string]string{commandConflictKeyMessage: e.Message}
+}
+
+// CommandConflictFromMetadata rebuilds the error Metadata encoded.
+func CommandConflictFromMetadata(md map[string]string) *CommandConflictError {
+	return &CommandConflictError{Message: md[commandConflictKeyMessage]}
+}
+
 // UserExistsError is returned when a username already exists within
 // the tenant.
 type UserExistsError struct {

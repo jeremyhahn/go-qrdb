@@ -17,6 +17,8 @@ package engine
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"sort"
 
@@ -798,11 +800,26 @@ func (e *KVEngine) handleTransaction(payload []byte) (sm.Result, error) {
 	// consensus stall — matching the MVCC and batch handlers. Read through
 	// the batch so a uniqueness check sees an index write staged earlier in
 	// this same batch (storage.Reader).
-	if verr := CheckUniqueViolationsBatch(batch, e.indexes, e.indexFields, e.indexScopes, putsFromOps(ops), deleteKeysFromOps(ops)); verr != nil {
+	// The ordered check releases only the entries a key's prior value
+	// carries, read through the batch as the apply loop below reads it.
+	prior := func(k []byte) ([]byte, error) { return batch.Get(k) }
+	if verr := checkUniqueForOps(batch, e.indexes, e.indexFields, e.indexScopes, ops, txn.Flags, prior); verr != nil {
 		if res, handled, aerr := asAppErrResult(verr); handled {
 			return res, aerr
 		}
 		return sm.Result{}, verr
+	}
+	// A flagged command also checks the unique compound indexes across its
+	// writes in op order, and applies them through the batch; an unflagged one
+	// keeps the committed-storage check, so an existing log replays unchanged.
+	orderedUnique := txn.Flags&protocol.CmdFlagOrderedUnique != 0
+	if orderedUnique {
+		if verr := checkCompoundUniqueBatch(batch, e.compoundIndexes, e.compoundIndexFields, e.compoundIndexScopes, writesFromOps(ops), prior); verr != nil {
+			if res, handled, aerr := asAppErrResult(verr); handled {
+				return res, aerr
+			}
+			return sm.Result{}, verr
+		}
 	}
 
 	// Watch notifications are collected during the batch and emitted only after
@@ -838,12 +855,12 @@ func (e *KVEngine) handleTransaction(payload []byte) (sm.Result, error) {
 				return sm.Result{}, err
 			}
 			if len(e.indexes) > 0 {
-				if err := UpdateIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, op.Key, op.Value, prevKv); err != nil {
+				if err := updateIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, op.Key, op.Value, prevKv, orderedUnique); err != nil {
 					return sm.Result{}, err
 				}
 			}
 			if len(e.compoundIndexes) > 0 {
-				if err := UpdateCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, e.compoundIndexScopes, op.Key, op.Value, prevKv); err != nil {
+				if err := updateCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, e.compoundIndexScopes, op.Key, op.Value, prevKv, orderedUnique); err != nil {
 					return sm.Result{}, err
 				}
 			}
@@ -1008,9 +1025,12 @@ func (e *KVEngine) handleIndexCreate(payload []byte) (sm.Result, error) {
 	// Do not recreate an existing index, and do not let a different owner
 	// adopt it either: a create naming an index another owner holds is
 	// refused as an application error (go-qrdb#426). A same-owner create
-	// asking for a different value type rebuilds the index at that type
-	// instead (see IndexCreateValueType).
+	// asking for a different value type (see IndexCreateValueType) or a
+	// different key scope rebuilds the index at the requested one instead:
+	// the old terms are cleared and only the new scope is backfilled. A
+	// same-owner create diverging in field or uniqueness alone is a no-op.
 	valueType := IndexCreateValueType(opts)
+	scope := ComposeIndexScope(name, opts.KeyPrefix)
 	existing, exists := e.indexes[name]
 	// The shard's index cap is checked against the index set the create
 	// applies over, so every replica reaches the same verdict.
@@ -1022,8 +1042,23 @@ func (e *KVEngine) handleIndexCreate(payload []byte) (sm.Result, error) {
 		if index.CheckCreateOwner(name, owner, opts.Owner) != nil {
 			return sm.Result{Data: protocol.EncodeIndexOwnershipError(name, owner)}, nil
 		}
-		if e.indexValueTypes[name] == valueType {
+		// A key-scope difference rebuilds the index only for a command
+		// carrying protocol.IndexCreateOptions.Rescope, proposed once
+		// featuregate.IndexRescope is enabled: one without it (an older
+		// proposer, a historical log) keeps the existing index and its
+		// original scope, as every replica of the merge base does.
+		if e.indexValueTypes[name] == valueType && (!opts.Rescope || bytes.Equal(e.indexScopes[name], scope)) {
 			return sm.Result{}, nil
+		}
+		if opts.Rescope && opts.Unique && !bytes.Equal(e.indexScopes[name], scope) {
+			check := NewUniqueScopeCheck(fieldName, scope, index.IndexConfig{ValueType: valueType, CaseSensitive: !opts.CaseInsensitive})
+			conflict, err := check.ScanConflict(e.scanAllKVs)
+			if err != nil {
+				return sm.Result{Value: 1}, err
+			}
+			if conflict {
+				return RescopeConflictResult(name), nil
+			}
 		}
 		if err := existing.Close(); err != nil {
 			return sm.Result{Value: 1}, err
@@ -1075,7 +1110,6 @@ func (e *KVEngine) handleIndexCreate(payload []byte) (sm.Result, error) {
 		return sm.Result{Value: 1}, err
 	}
 
-	scope := ComposeIndexScope(name, opts.KeyPrefix)
 	e.indexes[name] = idx
 	e.indexFields[name] = fieldName
 	e.indexScopes[name] = scope
@@ -1286,17 +1320,43 @@ func (e *KVEngine) applyBatchOps(ops []protocol.DecodedOp) (sm.Result, error) {
 // the legacy "{entityType}.{FieldName}" format for backward compatibility.
 // All indexes are maintained atomically during Put/Delete via batch
 // operations.
-func (e *KVEngine) RegisterEntityType(entityType string, indexes []EntityIndex) error {
+//
+// Registration is all-or-nothing: when an index cannot be created or its
+// backfill cannot write an entry (a unique violation among existing records
+// or a storage write failure), every index this call added is cleared and
+// unregistered, the entity type's index list is left unchanged, and the
+// error is returned. A retry after the cause is removed builds the indexes
+// again. Indexes registered by an earlier call are kept.
+func (e *KVEngine) RegisterEntityType(entityType string, indexes []EntityIndex) (retErr error) {
 	log := e.logger
 	if log == nil {
 		log = defaultLogger()
 	}
 
+	// Indexes this call added, so a failure part-way through rolls back
+	// every one of them and registration stays all-or-nothing.
+	var addedSingle, addedCompound []string
+	defer func() {
+		if retErr == nil {
+			return
+		}
+		for _, name := range addedSingle {
+			retErr = errors.Join(retErr, e.unregisterIndex(name))
+		}
+		for _, name := range addedCompound {
+			retErr = errors.Join(retErr, e.unregisterCompoundIndex(name))
+		}
+	}()
+
 	for _, def := range indexes {
 		// Compound indexes: multi-field.
 		if def.IsCompound() {
-			if err := e.registerCompoundIndex(entityType, def, log); err != nil {
+			added, err := e.registerCompoundIndex(entityType, def, log)
+			if err != nil {
 				return err
+			}
+			if added != "" {
+				addedCompound = append(addedCompound, added)
 			}
 			continue
 		}
@@ -1337,11 +1397,17 @@ func (e *KVEngine) RegisterEntityType(entityType string, indexes []EntityIndex) 
 		e.indexes[idxName] = idx
 		e.indexFields[idxName] = def.JSONFieldName
 		e.indexScopes[idxName] = ComposeIndexScope(idxName, entityScope)
+		addedSingle = append(addedSingle, idxName)
+
+		// A newly registered index is rebuilt from the stored records only.
+		if cErr := idx.Clear(); cErr != nil {
+			return fmt.Errorf("register index %s: clear: %w", idxName, cErr)
+		}
 
 		// Backfill from existing keys matching the entity prefix.
 		prefix := []byte(entityScope)
 		if bErr := BackfillIndexWithPrefix(e.stg, idx, def.JSONFieldName, prefix); bErr != nil {
-			return bErr
+			return fmt.Errorf("register index %s: %w", idxName, bErr)
 		}
 	}
 
@@ -1350,12 +1416,12 @@ func (e *KVEngine) RegisterEntityType(entityType string, indexes []EntityIndex) 
 }
 
 // registerCompoundIndex creates and registers a compound (multi-field) index.
-func (e *KVEngine) registerCompoundIndex(entityType string, def EntityIndex, log *logger.Logger) error {
+func (e *KVEngine) registerCompoundIndex(entityType string, def EntityIndex, log *logger.Logger) (string, error) {
 	idxName := e.buildCompoundIndexName(entityType, def.FieldNames)
 
 	// Skip if already registered.
 	if _, exists := e.compoundIndexes[idxName]; exists {
-		return nil
+		return "", nil
 	}
 
 	idxType := index.IndexTypeNormal
@@ -1379,20 +1445,58 @@ func (e *KVEngine) registerCompoundIndex(entityType string, def EntityIndex, log
 
 	idx, err := index.NewCompoundIndex(e.stg, cfg, log)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	e.compoundIndexes[idxName] = idx
 	e.compoundIndexFields[idxName] = def.JSONFieldNames
 	e.compoundIndexScopes[idxName] = ComposeIndexScope(idxName, entityScope)
 
-	// Backfill from existing data.
-	prefix := []byte(entityScope)
-	if bErr := BackfillCompoundIndexWithPrefix(e.stg, idx, def.JSONFieldNames, prefix); bErr != nil {
-		return bErr
+	// A newly registered index is rebuilt from the stored records only.
+	if cErr := idx.Clear(); cErr != nil {
+		cErr = fmt.Errorf("register compound index %s: clear: %w", idxName, cErr)
+		return "", errors.Join(cErr, e.unregisterCompoundIndex(idxName))
 	}
 
-	return nil
+	// Backfill from existing data. On failure the index is cleared and
+	// unregistered, so a retry builds it again instead of keeping an
+	// incomplete index behind the "already registered" skip above.
+	prefix := []byte(entityScope)
+	if bErr := BackfillCompoundIndexWithPrefix(e.stg, idx, def.JSONFieldNames, prefix); bErr != nil {
+		bErr = fmt.Errorf("register compound index %s: %w", idxName, bErr)
+		return "", errors.Join(bErr, e.unregisterCompoundIndex(idxName))
+	}
+
+	return idxName, nil
+}
+
+// unregisterIndex clears the single-field index idxName and removes it from
+// the engine's index maps. It is the rollback of a failed registration.
+func (e *KVEngine) unregisterIndex(idxName string) error {
+	idx, ok := e.indexes[idxName]
+	if !ok {
+		return nil
+	}
+	err := idx.Clear()
+	delete(e.indexes, idxName)
+	delete(e.indexFields, idxName)
+	delete(e.indexScopes, idxName)
+	return err
+}
+
+// unregisterCompoundIndex clears the compound index idxName and removes it
+// from the engine's compound index maps. It is the rollback of a failed
+// registration.
+func (e *KVEngine) unregisterCompoundIndex(idxName string) error {
+	idx, ok := e.compoundIndexes[idxName]
+	if !ok {
+		return nil
+	}
+	err := idx.Clear()
+	delete(e.compoundIndexes, idxName)
+	delete(e.compoundIndexFields, idxName)
+	delete(e.compoundIndexScopes, idxName)
+	return err
 }
 
 // buildCompoundIndexName constructs the index name for a compound index
@@ -1451,6 +1555,14 @@ func defaultLogger() *logger.Logger {
 // scope is declared at registration and composed with the namespace the index
 // name carries, so it holds for a bare, a per-tenant and a per-(tenant,
 // database) key alike, with nothing about the layout assumed here.
+//
+// It is the standalone helper (the embedded store's write, sdk.NewEmbeddedKVStore)
+// and has no log to replay, so it maintains the indexes in order: an overwrite
+// whose new value is not a JSON object, or carries none of an index's fields,
+// removes the previous value's entries, so a unique value the record held is
+// released. The replicated plain put (handleKVPut, the MVCC put) keeps the
+// exported updaters' merge-base semantics, where such an overwrite leaves the
+// old entries, so existing logs replay unchanged.
 func (e *KVEngine) PutWithIndexes(key, value []byte) error {
 	// A fault reading the previous value is returned, not taken for "no
 	// previous value": that would write the key without retracting the
@@ -1471,10 +1583,10 @@ func (e *KVEngine) PutWithIndexes(key, value []byte) error {
 	if err := batch.Set(key, value); err != nil {
 		return err
 	}
-	if err := UpdateIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, key, value, prevKv); err != nil {
+	if err := updateIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, key, value, prevKv, true); err != nil {
 		return err
 	}
-	if err := UpdateCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, e.compoundIndexScopes, key, value, prevKv); err != nil {
+	if err := updateCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, e.compoundIndexScopes, key, value, prevKv, true); err != nil {
 		return err
 	}
 	return batch.Commit()

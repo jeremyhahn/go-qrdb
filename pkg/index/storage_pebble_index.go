@@ -516,6 +516,24 @@ func (idx *StoragePebbleIndex) Clear() error {
 	return nil
 }
 
+// ClearBatch queues the removal of every entry of the index into the
+// provided batch as one range delete. Unlike Clear, it also drops entries
+// written earlier into the same batch and not yet committed, so a rebuild
+// applied inside an apply batch leaves nothing staged before it behind. The
+// caller is responsible for committing the batch.
+func (idx *StoragePebbleIndex) ClearBatch(batch storage.Batch) error {
+	prefix := idx.buildIndexPrefix()
+	if err := batch.DeleteRange(prefix, storageIncrementBytes(prefix)); err != nil {
+		return errors.Wrapf(
+			err,
+			errors.ErrStorage,
+			"index.StoragePebbleIndex.ClearBatch",
+			"failed to delete index range",
+		)
+	}
+	return nil
+}
+
 // Close releases resources held by the index.
 func (idx *StoragePebbleIndex) Close() error {
 	// StoragePebbleIndex doesn't own the storage, so nothing to close

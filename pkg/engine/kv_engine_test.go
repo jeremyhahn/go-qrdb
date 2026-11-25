@@ -15,6 +15,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"slices"
@@ -2653,6 +2654,448 @@ func TestKVEngine_RegisterEntityType_UniqueCompoundIndex(t *testing.T) {
 	}
 }
 
+// TestKVEngine_LegacyTransactionKeepsUnorderedUniqueCheck pins the replay
+// contract on the KV engine: a transaction without the ordered-unique flag
+// keeps the delete-only unique check, so moving a unique value between keys
+// by overwrite is refused and writes nothing; the same ops with the flag
+// commit.
+func TestKVEngine_LegacyTransactionKeepsUnorderedUniqueCheck(t *testing.T) {
+	setup := func(t *testing.T) *KVEngine {
+		t.Helper()
+		stg := memory.NewStorage()
+		t.Cleanup(func() { _ = stg.Close() })
+		eng := NewKVEngine(stg)
+		cmd := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name", protocol.IndexCreateOptions{Unique: true}))
+		seed := mustEncode(protocol.EncodeTransaction(nil, [][]byte{
+			mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("user:1"), []byte(`{"name":"x"}`), nil, 0)),
+		}, nil))
+		res := applyKVEntries(t, eng, []sm.Entry{{Index: 1, Cmd: cmd}, {Index: 2, Cmd: seed}})
+		if !txnSucceeded(t, res[1]) {
+			t.Fatal("seed transaction did not run its success branch")
+		}
+		return eng
+	}
+	ops := [][]byte{
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("user:1"), []byte(`{"name":"y"}`), nil, 0)),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("user:2"), []byte(`{"name":"x"}`), nil, 0)),
+	}
+
+	t.Run("legacy refused", func(t *testing.T) {
+		eng := setup(t)
+		cmd := mustEncode(protocol.EncodeTransaction(nil, ops, nil))
+		res := applyKVEntries(t, eng, []sm.Entry{{Index: 3, Cmd: cmd}})[0]
+		_, kind, ok := protocol.DecodeAppErrorKind(res.Data)
+		if !ok || kind != protocol.AppErrorConflict {
+			t.Fatalf("result data = %q, want a conflict application error", res.Data)
+		}
+		mustLookupValue(t, eng, "user:1", `{"name":"x"}`)
+		mustLookupAbsent(t, eng, "user:2")
+	})
+	t.Run("flagged commits", func(t *testing.T) {
+		eng := setup(t)
+		cmd := mustEncode(protocol.EncodeTransactionFlags(nil, ops, nil, protocol.CmdFlagOrderedUnique))
+		if !txnSucceeded(t, applyKVEntries(t, eng, []sm.Entry{{Index: 3, Cmd: cmd}})[0]) {
+			t.Fatal("the flagged move should run its success branch")
+		}
+		mustLookupValue(t, eng, "user:1", `{"name":"y"}`)
+		mustLookupValue(t, eng, "user:2", `{"name":"x"}`)
+	})
+}
+
+// TestKVEngine_LegacyNonJSONOverwriteReplay pins the replay of an existing,
+// unflagged log: a plain non-JSON overwrite of A keeps A's unique entry, so a
+// later unflagged write of B with A's old value is refused exactly as the
+// binary that committed the log refused it. Only a transaction proposed with
+// ordered-unique-check releases the value through a non-JSON overwrite.
+func TestKVEngine_LegacyNonJSONOverwriteReplay(t *testing.T) {
+	setup := func(t *testing.T) *KVEngine {
+		t.Helper()
+		stg := memory.NewStorage()
+		t.Cleanup(func() { _ = stg.Close() })
+		eng := NewKVEngine(stg)
+		create := mustEncode(protocol.EncodeIndexCreateOpts("by_email", "email", protocol.IndexCreateOptions{Unique: true}))
+		applyKVEntries(t, eng, []sm.Entry{{Index: 1, Cmd: create}, kvPutEntry(2, "user:1", `{"email":"x"}`)})
+		mustLookupValue(t, eng, "user:1", `{"email":"x"}`)
+		return eng
+	}
+	claimB := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("user:2"), []byte(`{"email":"x"}`), nil, 0))
+
+	t.Run("legacy refused", func(t *testing.T) {
+		eng := setup(t)
+		txn := mustEncode(protocol.EncodeTransaction(nil, [][]byte{claimB}, nil))
+		res := applyKVEntries(t, eng, []sm.Entry{kvPutEntry(3, "user:1", "not-json"), {Index: 4, Cmd: txn}})
+		mustLookupValue(t, eng, "user:1", "not-json")
+		_, kind, ok := protocol.DecodeAppErrorKind(res[1].Data)
+		if !ok || kind != protocol.AppErrorConflict {
+			t.Fatalf("result data = %q, want a conflict application error", res[1].Data)
+		}
+		mustLookupAbsent(t, eng, "user:2")
+	})
+	t.Run("flagged commits", func(t *testing.T) {
+		eng := setup(t)
+		overwrite := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("user:1"), []byte("not-json"), nil, 0))
+		txn := mustEncode(protocol.EncodeTransactionFlags(nil, [][]byte{overwrite, claimB}, nil, protocol.CmdFlagOrderedUnique))
+		if !txnSucceeded(t, applyKVEntries(t, eng, []sm.Entry{{Index: 3, Cmd: txn}})[0]) {
+			t.Fatal("the flagged overwrite and claim should run its success branch")
+		}
+		mustLookupValue(t, eng, "user:1", "not-json")
+		mustLookupValue(t, eng, "user:2", `{"email":"x"}`)
+	})
+}
+
+// TestKVEngine_OrderedTransactionAfterLegacyNonJSONOverwrite: a legacy plain
+// non-JSON overwrite keeps user:1's stale x entry. A flagged transaction that
+// moves user:1 to y and gives x to user:2 must not treat that entry as
+// released (the value user:1 holds carries no email, so apply cannot retract
+// it): the set is refused as a conflict, not failed at apply.
+func TestKVEngine_OrderedTransactionAfterLegacyNonJSONOverwrite(t *testing.T) {
+	stg := memory.NewStorage()
+	t.Cleanup(func() { _ = stg.Close() })
+	eng := NewKVEngine(stg)
+	create := mustEncode(protocol.EncodeIndexCreateOpts("by_email", "email", protocol.IndexCreateOptions{Unique: true}))
+	applyKVEntries(t, eng, []sm.Entry{
+		{Index: 1, Cmd: create},
+		kvPutEntry(2, "user:1", `{"email":"x"}`),
+		kvPutEntry(3, "user:1", "not-json"),
+	})
+	txn := mustEncode(protocol.EncodeTransactionFlags(nil, [][]byte{
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("user:1"), []byte(`{"email":"y"}`), nil, 0)),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("user:2"), []byte(`{"email":"x"}`), nil, 0)),
+	}, nil, protocol.CmdFlagOrderedUnique))
+	res := applyKVEntries(t, eng, []sm.Entry{{Index: 4, Cmd: txn}})
+	_, kind, ok := protocol.DecodeAppErrorKind(res[0].Data)
+	if !ok || kind != protocol.AppErrorConflict {
+		t.Fatalf("result data = %q, want a conflict application error", res[0].Data)
+	}
+	mustLookupValue(t, eng, "user:1", "not-json")
+	mustLookupAbsent(t, eng, "user:2")
+}
+
+// TestKVEngine_OrderedTransactionAfterLegacyNonJSONOverwriteCompound is the
+// compound-index twin: the stale (u1, d1) tuple of sessions/1 stays held.
+func TestKVEngine_OrderedTransactionAfterLegacyNonJSONOverwriteCompound(t *testing.T) {
+	value := `{"user_id":"u1","device_id":"d1"}`
+	stg := memory.NewStorage()
+	t.Cleanup(func() { _ = stg.Close() })
+	eng := NewKVEngine(stg, WithKVLogger(testLogger(t)))
+	if err := eng.RegisterEntityType("sessions", []EntityIndex{
+		{FieldNames: []string{"UserID", "DeviceID"}, JSONFieldNames: []string{"user_id", "device_id"}, Unique: true},
+	}); err != nil {
+		t.Fatalf("RegisterEntityType: %v", err)
+	}
+	// The legacy state comes from the replicated plain put, which keeps the
+	// merge-base semantics; PutWithIndexes (standalone) now releases the entry.
+	applyKVEntries(t, eng, []sm.Entry{
+		kvPutEntry(1, "sessions/1", value),
+		kvPutEntry(2, "sessions/1", "not-json"),
+	})
+	txn := mustEncode(protocol.EncodeTransactionFlags(nil, [][]byte{
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("sessions/1"), []byte(`{"user_id":"u2","device_id":"d1"}`), nil, 0)),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("sessions/2"), []byte(value), nil, 0)),
+	}, nil, protocol.CmdFlagOrderedUnique))
+	res := applyKVEntries(t, eng, []sm.Entry{{Index: 3, Cmd: txn}})
+	_, kind, ok := protocol.DecodeAppErrorKind(res[0].Data)
+	if !ok || kind != protocol.AppErrorConflict {
+		t.Fatalf("result data = %q, want a conflict application error", res[0].Data)
+	}
+	mustLookupValue(t, eng, "sessions/1", "not-json")
+	mustLookupAbsent(t, eng, "sessions/2")
+}
+
+// TestKVEngine_OrderedTransactionCaseInsensitiveReleaseThenDuplicate pins that
+// a flagged transaction claiming one case-folded unique term twice (A releases
+// "alpha", then B "ALPHA" and C "alpha") is refused as a conflict result by
+// the pre-check, with no apply error and nothing written.
+func TestKVEngine_OrderedTransactionCaseInsensitiveReleaseThenDuplicate(t *testing.T) {
+	stg := memory.NewStorage()
+	t.Cleanup(func() { _ = stg.Close() })
+	eng := NewKVEngine(stg)
+	create := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name",
+		protocol.IndexCreateOptions{Unique: true, CaseInsensitive: true}))
+	applyKVEntries(t, eng, []sm.Entry{{Index: 1, Cmd: create}, kvPutEntry(2, "user:A", `{"name":"alpha"}`)})
+
+	txn := mustEncode(protocol.EncodeTransactionFlags(nil, [][]byte{
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("user:A"), []byte(`{"name":"beta"}`), nil, 0)),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("user:B"), []byte(`{"name":"ALPHA"}`), nil, 0)),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("user:C"), []byte(`{"name":"alpha"}`), nil, 0)),
+	}, nil, protocol.CmdFlagOrderedUnique))
+	res := applyKVEntries(t, eng, []sm.Entry{{Index: 3, Cmd: txn}})[0]
+	_, kind, ok := protocol.DecodeAppErrorKind(res.Data)
+	if !ok || kind != protocol.AppErrorConflict {
+		t.Fatalf("result data = %q, want a conflict application error", res.Data)
+	}
+	mustLookupValue(t, eng, "user:A", `{"name":"alpha"}`)
+	mustLookupAbsent(t, eng, "user:B")
+	mustLookupAbsent(t, eng, "user:C")
+}
+
+// TestKVEngine_OrderedTransactionNULKeyReleaseIsConflict: deleting key
+// "a\x00b" (term x) releases only that holder; it must not also release key
+// "b"'s term "x\x00a", whose old NUL-joined release marker was the same
+// string. A put of "x\x00a" for a third key is then a conflict result, not a
+// fatal apply error from the staged batch.
+func TestKVEngine_OrderedTransactionNULKeyReleaseIsConflict(t *testing.T) {
+	stg := memory.NewStorage()
+	t.Cleanup(func() { _ = stg.Close() })
+	eng := NewKVEngine(stg)
+	create := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name",
+		protocol.IndexCreateOptions{Unique: true}))
+	applyKVEntries(t, eng, []sm.Entry{
+		{Index: 1, Cmd: create},
+		kvPutEntry(2, "a\x00b", `{"name":"x"}`),
+		kvPutEntry(3, "b", `{"name":"x\u0000a"}`),
+	})
+
+	txn := mustEncode(protocol.EncodeTransactionFlags(nil, [][]byte{
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCDelete, []byte("a\x00b"), nil, nil, 0)),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("c"), []byte(`{"name":"x\u0000a"}`), nil, 0)),
+	}, nil, protocol.CmdFlagOrderedUnique))
+	res := applyKVEntries(t, eng, []sm.Entry{{Index: 4, Cmd: txn}})[0]
+	_, kind, ok := protocol.DecodeAppErrorKind(res.Data)
+	if !ok || kind != protocol.AppErrorConflict {
+		t.Fatalf("result data = %q, want a conflict application error", res.Data)
+	}
+	mustLookupValue(t, eng, "a\x00b", `{"name":"x"}`)
+	mustLookupAbsent(t, eng, "c")
+}
+
+// A flagged transaction checks a unique compound index across all its
+// writes in op order: two keys cannot claim one tuple, and a tuple an
+// earlier overwrite released may be taken by a later write.
+func TestKVEngine_FlaggedTransactionChecksUniqueCompoundAcrossWrites(t *testing.T) {
+	setup := func(t *testing.T) *KVEngine {
+		t.Helper()
+		stg := memory.NewStorage()
+		t.Cleanup(func() { _ = stg.Close() })
+		eng := NewKVEngine(stg)
+		if err := eng.RegisterEntityType("sessions", []EntityIndex{
+			{FieldNames: []string{"UserID", "DeviceID"}, JSONFieldNames: []string{"user_id", "device_id"}, Unique: true},
+		}); err != nil {
+			t.Fatalf("RegisterEntityType: %v", err)
+		}
+		seed := mustEncode(protocol.EncodeTransactionFlags(nil, [][]byte{
+			mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("sessions/1"), []byte(`{"user_id":"u","device_id":"d1"}`), nil, 0)),
+		}, nil, protocol.CmdFlagOrderedUnique))
+		if !txnSucceeded(t, applyKVEntries(t, eng, []sm.Entry{{Index: 1, Cmd: seed}})[0]) {
+			t.Fatal("seed transaction did not run its success branch")
+		}
+		return eng
+	}
+	flagged := func(ops ...[]byte) []byte {
+		return mustEncode(protocol.EncodeTransactionFlags(nil, ops, nil, protocol.CmdFlagOrderedUnique))
+	}
+	put := func(k, v string) []byte {
+		return mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte(k), []byte(v), nil, 0))
+	}
+
+	t.Run("two keys one tuple refused", func(t *testing.T) {
+		eng := setup(t)
+		cmd := flagged(put("sessions/2", `{"user_id":"u","device_id":"d2"}`), put("sessions/3", `{"user_id":"u","device_id":"d2"}`))
+		res := applyKVEntries(t, eng, []sm.Entry{{Index: 2, Cmd: cmd}})[0]
+		_, kind, ok := protocol.DecodeAppErrorKind(res.Data)
+		if !ok || kind != protocol.AppErrorConflict {
+			t.Fatalf("result data = %q, want a conflict application error", res.Data)
+		}
+		mustLookupAbsent(t, eng, "sessions/2")
+		mustLookupAbsent(t, eng, "sessions/3")
+	})
+	t.Run("a committed tuple refused", func(t *testing.T) {
+		eng := setup(t)
+		cmd := flagged(put("sessions/2", `{"user_id":"u","device_id":"d1"}`))
+		res := applyKVEntries(t, eng, []sm.Entry{{Index: 2, Cmd: cmd}})[0]
+		_, kind, ok := protocol.DecodeAppErrorKind(res.Data)
+		if !ok || kind != protocol.AppErrorConflict {
+			t.Fatalf("result data = %q, want a conflict application error", res.Data)
+		}
+		mustLookupAbsent(t, eng, "sessions/2")
+	})
+	t.Run("move commits", func(t *testing.T) {
+		eng := setup(t)
+		cmd := flagged(put("sessions/1", `{"user_id":"u","device_id":"d2"}`), put("sessions/2", `{"user_id":"u","device_id":"d1"}`))
+		if !txnSucceeded(t, applyKVEntries(t, eng, []sm.Entry{{Index: 2, Cmd: cmd}})[0]) {
+			t.Fatal("the flagged move should run its success branch")
+		}
+		mustLookupValue(t, eng, "sessions/1", `{"user_id":"u","device_id":"d2"}`)
+		mustLookupValue(t, eng, "sessions/2", `{"user_id":"u","device_id":"d1"}`)
+		keys, err := eng.compoundIndexes["sessions.UserID_DeviceID"].GetCompound([][]byte{[]byte("u"), []byte("d1")})
+		if err != nil || len(keys) != 1 || string(keys[0]) != "sessions/2" {
+			t.Fatalf("index (u, d1) = %q, %v; want [sessions/2]", keys, err)
+		}
+	})
+}
+
+// indexSetFailingStorage wraps storage.Storage and, while failIndexSet is
+// set, fails every Set of a key outside entityPrefix: the index entry
+// writes a backfill makes. Every other call is forwarded unchanged.
+type indexSetFailingStorage struct {
+	storage.Storage
+	entityPrefix []byte
+	failIndexSet bool
+}
+
+var errIndexSetInjected = errors.New("injected index Set failure")
+
+func (f *indexSetFailingStorage) Set(key, value []byte) error {
+	if f.failIndexSet && !bytes.HasPrefix(key, f.entityPrefix) {
+		return errIndexSetInjected
+	}
+	return f.Storage.Set(key, value)
+}
+
+func TestKVEngine_RegisterEntityType_UniqueBackfillDuplicateRefused(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+	eng := NewKVEngine(stg, WithKVLogger(testLogger(t)))
+
+	applyKVEntries(t, eng, []sm.Entry{
+		kvPutEntry(1, "users/1", `{"email":"a@example.com"}`),
+		kvPutEntry(2, "users/2", `{"email":"a@example.com"}`),
+	})
+
+	defs := []EntityIndex{{FieldName: "Email", JSONFieldName: "email", Unique: true}}
+	if err := eng.RegisterEntityType("users", defs); err == nil {
+		t.Fatal("RegisterEntityType over duplicate values: want error, got nil")
+	}
+	if err := eng.RegisterEntityType("users", defs); err == nil {
+		t.Fatal("second RegisterEntityType over duplicate values: want error, got nil")
+	}
+
+	_, err := eng.Lookup(context.Background(), index.IndexQueryRequest{
+		IndexName: "users.Email",
+		Value:     []byte("a@example.com"),
+	})
+	var nf *index.NotFoundError
+	if !errors.As(err, &nf) {
+		t.Fatalf("Lookup after refused registration: want *index.NotFoundError, got %T: %v", err, err)
+	}
+	if _, ok := eng.entityIndexes["users"]; ok {
+		t.Error("entityIndexes[users] set after refused registration")
+	}
+}
+
+func TestKVEngine_RegisterEntityType_CompoundUniqueBackfillDuplicateRefused(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+	eng := NewKVEngine(stg, WithKVLogger(testLogger(t)))
+
+	applyKVEntries(t, eng, []sm.Entry{
+		kvPutEntry(1, "sessions/1", `{"user_id":"u1","device_id":"d1"}`),
+		kvPutEntry(2, "sessions/2", `{"user_id":"u1","device_id":"d1"}`),
+	})
+
+	defs := []EntityIndex{
+		{FieldName: "UserID", JSONFieldName: "user_id"},
+		{FieldNames: []string{"UserID", "DeviceID"}, JSONFieldNames: []string{"user_id", "device_id"}, Unique: true},
+	}
+	if err := eng.RegisterEntityType("sessions", defs); err == nil {
+		t.Fatal("RegisterEntityType over duplicate compound values: want error, got nil")
+	}
+	if err := eng.RegisterEntityType("sessions", defs); err == nil {
+		t.Fatal("second RegisterEntityType over duplicate compound values: want error, got nil")
+	}
+
+	_, err := eng.Lookup(context.Background(), index.CompoundIndexQueryRequest{
+		IndexName: "sessions.UserID_DeviceID",
+		Values:    [][]byte{[]byte("u1"), []byte("d1")},
+	})
+	var nf *index.NotFoundError
+	if !errors.As(err, &nf) {
+		t.Fatalf("compound Lookup after refused registration: want *index.NotFoundError, got %T: %v", err, err)
+	}
+	// The single-field index registered earlier in the same call is rolled back.
+	_, err = eng.Lookup(context.Background(), index.IndexQueryRequest{
+		IndexName: "sessions.UserID",
+		Value:     []byte("u1"),
+	})
+	if !errors.As(err, &nf) {
+		t.Fatalf("Lookup of rolled-back index: want *index.NotFoundError, got %T: %v", err, err)
+	}
+	if _, ok := eng.entityIndexes["sessions"]; ok {
+		t.Error("entityIndexes[sessions] set after refused registration")
+	}
+}
+
+func TestKVEngine_RegisterEntityType_BackfillWriteFailureRollsBack(t *testing.T) {
+	real := memory.NewStorage()
+	defer func() { _ = real.Close() }()
+	fs := &indexSetFailingStorage{Storage: real, entityPrefix: []byte("orders/")}
+	eng := NewKVEngine(fs, WithKVLogger(testLogger(t)))
+
+	applyKVEntries(t, eng, []sm.Entry{
+		kvPutEntry(1, "orders/1", `{"cust":"c1","sku":"s1"}`),
+		kvPutEntry(2, "orders/2", `{"cust":"c1","sku":"s2"}`),
+		kvPutEntry(3, "orders/3", `{"cust":"c2","sku":"s1"}`),
+	})
+
+	defs := []EntityIndex{
+		{FieldName: "Cust", JSONFieldName: "cust"},
+		{FieldNames: []string{"Cust", "Sku"}, JSONFieldNames: []string{"cust", "sku"}},
+	}
+
+	fs.failIndexSet = true
+	err := eng.RegisterEntityType("orders", defs)
+	if !errors.Is(err, errIndexSetInjected) {
+		t.Fatalf("RegisterEntityType with failing index writes: want injected error, got %v", err)
+	}
+	if len(eng.indexes) != 0 || len(eng.indexFields) != 0 || len(eng.indexScopes) != 0 {
+		t.Errorf("single-field index left registered: %d indexes", len(eng.indexes))
+	}
+	if len(eng.compoundIndexes) != 0 || len(eng.compoundIndexFields) != 0 || len(eng.compoundIndexScopes) != 0 {
+		t.Errorf("compound index left registered: %d indexes", len(eng.compoundIndexes))
+	}
+	if _, ok := eng.entityIndexes["orders"]; ok {
+		t.Error("entityIndexes[orders] set after failed registration")
+	}
+
+	// Single-field index succeeds, compound fails: both rolled back.
+	fs.failIndexSet = false
+	if err := eng.RegisterEntityType("orders", defs[:1]); err != nil {
+		t.Fatalf("register single-field index: %v", err)
+	}
+	eng2 := NewKVEngine(fs, WithKVLogger(testLogger(t)))
+	fs.failIndexSet = true
+	if err := eng2.RegisterEntityType("orders", defs[1:]); !errors.Is(err, errIndexSetInjected) {
+		t.Fatalf("compound registration with failing index writes: want injected error, got %v", err)
+	}
+	if len(eng2.compoundIndexes) != 0 {
+		t.Errorf("compound index left registered: %d", len(eng2.compoundIndexes))
+	}
+	fs.failIndexSet = false
+
+	// Retry on a fresh engine after the fault is cleared: every record is indexed.
+	eng3 := NewKVEngine(fs, WithKVLogger(testLogger(t)))
+	if err := eng3.RegisterEntityType("orders", defs); err != nil {
+		t.Fatalf("retry RegisterEntityType: %v", err)
+	}
+	got, err := eng3.Lookup(context.Background(), index.IndexQueryRequest{IndexName: "orders.Cust", Value: []byte("c1")})
+	if err != nil {
+		t.Fatalf("Lookup(c1): %v", err)
+	}
+	if ids := got.([][]byte); len(ids) != 2 {
+		t.Errorf("orders.Cust c1: want 2 keys, got %d", len(ids))
+	}
+	for _, v := range [][2]string{{"c1", "s1"}, {"c1", "s2"}, {"c2", "s1"}} {
+		got, err := eng3.Lookup(context.Background(), index.CompoundIndexQueryRequest{
+			IndexName: "orders.Cust_Sku",
+			Values:    [][]byte{[]byte(v[0]), []byte(v[1])},
+		})
+		if err != nil {
+			t.Fatalf("compound Lookup(%v): %v", v, err)
+		}
+		if ids := got.([][]byte); len(ids) != 1 {
+			t.Errorf("orders.Cust_Sku %v: want 1 key, got %d", v, len(ids))
+		}
+	}
+
+	// Retry on the engine whose registration failed also succeeds.
+	if err := eng.RegisterEntityType("orders", defs); err != nil {
+		t.Fatalf("retry on the same engine: %v", err)
+	}
+	if len(eng.compoundIndexes) != 1 {
+		t.Errorf("retry on the same engine: want 1 compound index, got %d", len(eng.compoundIndexes))
+	}
+}
+
 func TestKVEngine_BuildCompoundIndexName_NoDatabase(t *testing.T) {
 	stg := memory.NewStorage()
 	defer func() { _ = stg.Close() }()
@@ -2765,6 +3208,214 @@ func TestKVEngine_PutWithIndexes_UpdateExistingKey(t *testing.T) {
 	ids := result.([][]byte)
 	if len(ids) != 1 || string(ids[0]) != "users/1" {
 		t.Errorf("expected [users/1] for bob, got %v", ids)
+	}
+}
+
+// TestKVEngine_PutWithIndexes_NonJSONOverwriteReleasesUniqueValue overwrites
+// an indexed JSON record with non-JSON bytes: its old unique entry must be
+// released, so another key can take the value and a lookup of it no longer
+// returns the overwritten key.
+func TestKVEngine_PutWithIndexes_NonJSONOverwriteReleasesUniqueValue(t *testing.T) {
+	setup := func(t *testing.T) *KVEngine {
+		t.Helper()
+		stg := memory.NewStorage()
+		t.Cleanup(func() { _ = stg.Close() })
+		eng := NewKVEngine(stg, WithKVLogger(testLogger(t)))
+		if err := eng.RegisterEntityType("member", []EntityIndex{
+			{FieldName: "Email", JSONFieldName: "email", Unique: true},
+		}); err != nil {
+			t.Fatalf("RegisterEntityType: %v", err)
+		}
+		if err := eng.PutWithIndexes([]byte("member/1"), []byte(`{"email":"a"}`)); err != nil {
+			t.Fatalf("PutWithIndexes member/1 JSON: %v", err)
+		}
+		return eng
+	}
+	lookupA := func(t *testing.T, eng *KVEngine) [][]byte {
+		t.Helper()
+		result, err := eng.Lookup(context.Background(), index.IndexQueryRequest{
+			IndexName: "member.Email",
+			Value:     []byte("a"),
+		})
+		if err != nil {
+			t.Fatalf("Lookup a: %v", err)
+		}
+		return result.([][]byte)
+	}
+
+	// An unflagged (plain) non-JSON overwrite keeps the old entry, as every
+	// replica of an existing log applied it.
+	t.Run("put with indexes releases", func(t *testing.T) {
+		eng := setup(t)
+		if err := eng.PutWithIndexes([]byte("member/1"), []byte("not-json")); err != nil {
+			t.Fatalf("PutWithIndexes member/1 non-JSON: %v", err)
+		}
+		if ids := lookupA(t, eng); len(ids) != 0 {
+			t.Errorf("lookup a = %q, want no entries after the non-JSON overwrite", ids)
+		}
+		if err := eng.PutWithIndexes([]byte("member/2"), []byte(`{"email":"a"}`)); err != nil {
+			t.Fatalf("PutWithIndexes member/2 with the released value: %v", err)
+		}
+		if ids := lookupA(t, eng); len(ids) != 1 || string(ids[0]) != "member/2" {
+			t.Errorf("lookup a = %q, want [member/2]", ids)
+		}
+	})
+	// A transaction proposed with ordered-unique-check releases the value.
+	t.Run("flagged releases", func(t *testing.T) {
+		eng := setup(t)
+		cmd := mustEncode(protocol.EncodeTransactionFlags(nil, [][]byte{
+			mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("member/1"), []byte("not-json"), nil, 0)),
+		}, nil, protocol.CmdFlagOrderedUnique))
+		if !txnSucceeded(t, applyKVEntries(t, eng, []sm.Entry{{Index: 1, Cmd: cmd}})[0]) {
+			t.Fatal("the flagged non-JSON overwrite should run its success branch")
+		}
+		if ids := lookupA(t, eng); len(ids) != 0 {
+			t.Errorf("expected no keys for the overwritten value, got %q", ids)
+		}
+		if err := eng.PutWithIndexes([]byte("member/2"), []byte(`{"email":"a"}`)); err != nil {
+			t.Fatalf("PutWithIndexes member/2 with the released value: %v", err)
+		}
+	})
+}
+
+// TestKVEngine_PutWithIndexes_NonJSONOverwriteReleasesCompoundUniqueValue is
+// the compound-index twin of the test above.
+func TestKVEngine_PutWithIndexes_NonJSONOverwriteReleasesCompoundUniqueValue(t *testing.T) {
+	value := []byte(`{"user_id":"u1","device_id":"d1"}`)
+	setup := func(t *testing.T) *KVEngine {
+		t.Helper()
+		stg := memory.NewStorage()
+		t.Cleanup(func() { _ = stg.Close() })
+		eng := NewKVEngine(stg, WithKVLogger(testLogger(t)))
+		if err := eng.RegisterEntityType("sessions", []EntityIndex{
+			{FieldNames: []string{"UserID", "DeviceID"}, JSONFieldNames: []string{"user_id", "device_id"}, Unique: true},
+		}); err != nil {
+			t.Fatalf("RegisterEntityType: %v", err)
+		}
+		if len(eng.compoundIndexes) != 1 {
+			t.Fatalf("expected 1 compound index, got %d", len(eng.compoundIndexes))
+		}
+		if err := eng.PutWithIndexes([]byte("sessions/1"), value); err != nil {
+			t.Fatalf("PutWithIndexes sessions/1 JSON: %v", err)
+		}
+		return eng
+	}
+	holders := func(t *testing.T, eng *KVEngine) [][]byte {
+		t.Helper()
+		var all [][]byte
+		for name, idx := range eng.compoundIndexes {
+			ids, err := idx.GetCompound([][]byte{[]byte("u1"), []byte("d1")})
+			if err != nil {
+				t.Fatalf("GetCompound %s: %v", name, err)
+			}
+			all = append(all, ids...)
+		}
+		return all
+	}
+
+	// An unflagged (plain) non-JSON overwrite keeps the old compound entry.
+	t.Run("put with indexes releases", func(t *testing.T) {
+		eng := setup(t)
+		if err := eng.PutWithIndexes([]byte("sessions/1"), []byte("not-json")); err != nil {
+			t.Fatalf("PutWithIndexes sessions/1 non-JSON: %v", err)
+		}
+		if ids := holders(t, eng); len(ids) != 0 {
+			t.Errorf("compound holders = %q, want no entries after the non-JSON overwrite", ids)
+		}
+		if err := eng.PutWithIndexes([]byte("sessions/2"), value); err != nil {
+			t.Fatalf("PutWithIndexes sessions/2 with the released tuple: %v", err)
+		}
+		if ids := holders(t, eng); len(ids) != 1 || string(ids[0]) != "sessions/2" {
+			t.Errorf("compound holders = %q, want [sessions/2]", ids)
+		}
+	})
+	// A transaction proposed with ordered-unique-check releases the tuple.
+	t.Run("flagged releases", func(t *testing.T) {
+		eng := setup(t)
+		cmd := mustEncode(protocol.EncodeTransactionFlags(nil, [][]byte{
+			mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("sessions/1"), []byte("not-json"), nil, 0)),
+		}, nil, protocol.CmdFlagOrderedUnique))
+		if !txnSucceeded(t, applyKVEntries(t, eng, []sm.Entry{{Index: 1, Cmd: cmd}})[0]) {
+			t.Fatal("the flagged non-JSON overwrite should run its success branch")
+		}
+		if ids := holders(t, eng); len(ids) != 0 {
+			t.Errorf("expected no keys for the overwritten compound value, got %q", ids)
+		}
+		if err := eng.PutWithIndexes([]byte("sessions/2"), value); err != nil {
+			t.Fatalf("PutWithIndexes sessions/2 with the released value: %v", err)
+		}
+	})
+}
+
+func TestKVEngine_RegisterEntityType_ClearsPersistedEntriesOfANewIndex(t *testing.T) {
+	cases := map[string]struct {
+		def     EntityIndex
+		a, b    []byte
+		holders func(t *testing.T, eng *KVEngine, value []byte) [][]byte
+	}{
+		"single": {
+			def: EntityIndex{FieldName: "Email", JSONFieldName: "email", Unique: true},
+			a:   []byte(`{"email":"a@x"}`),
+			b:   []byte(`{"email":"b@x"}`),
+			holders: func(t *testing.T, eng *KVEngine, value []byte) [][]byte {
+				t.Helper()
+				ids, err := eng.indexes[eng.buildIndexName("member", "Email")].Get(value)
+				if err != nil {
+					t.Fatalf("Get %s: %v", value, err)
+				}
+				return ids
+			},
+		},
+		"compound": {
+			def: EntityIndex{FieldNames: []string{"Team", "State"}, JSONFieldNames: []string{"team", "state"}, Unique: true},
+			a:   []byte(`{"team":"t","state":"a"}`),
+			b:   []byte(`{"team":"t","state":"b"}`),
+			holders: func(t *testing.T, eng *KVEngine, value []byte) [][]byte {
+				t.Helper()
+				ids, err := eng.compoundIndexes[eng.buildCompoundIndexName("member", []string{"Team", "State"})].GetCompound([][]byte{[]byte("t"), value})
+				if err != nil {
+					t.Fatalf("GetCompound %s: %v", value, err)
+				}
+				return ids
+			},
+		},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			stg := memory.NewStorage()
+			t.Cleanup(func() { _ = stg.Close() })
+
+			first := NewKVEngine(stg, WithKVLogger(testLogger(t)))
+			if err := first.RegisterEntityType("member", []EntityIndex{c.def}); err != nil {
+				t.Fatalf("RegisterEntityType: %v", err)
+			}
+			if err := first.PutWithIndexes([]byte("member/1"), c.a); err != nil {
+				t.Fatalf("PutWithIndexes member/1 a: %v", err)
+			}
+
+			// A second engine over the same storage starts with an empty catalog.
+			second := NewKVEngine(stg, WithKVLogger(testLogger(t)))
+			if err := second.PutWithIndexes([]byte("member/1"), c.b); err != nil {
+				t.Fatalf("PutWithIndexes member/1 b: %v", err)
+			}
+			if err := second.RegisterEntityType("member", []EntityIndex{c.def}); err != nil {
+				t.Fatalf("RegisterEntityType again: %v", err)
+			}
+
+			valA, valB := []byte("a@x"), []byte("b@x")
+			if name == "compound" {
+				valA, valB = []byte("a"), []byte("b")
+			}
+			if ids := c.holders(t, second, valA); len(ids) != 0 {
+				t.Errorf("holders of a = %q, want none", ids)
+			}
+			if ids := c.holders(t, second, valB); len(ids) != 1 || string(ids[0]) != "member/1" {
+				t.Errorf("holders of b = %q, want [member/1]", ids)
+			}
+			if err := second.PutWithIndexes([]byte("member/2"), c.a); err != nil {
+				t.Errorf("PutWithIndexes member/2 a: %v, want the released value admitted", err)
+			}
+		})
 	}
 }
 

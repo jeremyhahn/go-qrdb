@@ -66,8 +66,12 @@ func TestCheckUniqueViolation_ReplayIndexedNonJSONDocumentAdmitted(t *testing.T)
 	if err := CheckUniqueViolation(nil, indexes, map[string]string{name: "email"}, scopes, key, []byte(cborDocument(t))); err != nil {
 		t.Fatalf("CheckUniqueViolation = %v, want nil (not a JSON object, nothing to index)", err)
 	}
-	if err := CheckUniqueViolationsBatch(nil, indexes, map[string]string{name: "email"}, scopes,
+	if err := checkUniqueViolationsBatchUnordered(nil, indexes, map[string]string{name: "email"}, scopes,
 		[]indexedPut{{Key: key, Value: []byte(cborDocument(t))}}, nil); err != nil {
+		t.Fatalf("checkUniqueViolationsBatchUnordered = %v, want nil", err)
+	}
+	if err := CheckUniqueViolationsBatch(nil, indexes, map[string]string{name: "email"}, scopes,
+		[]indexedWrite{{Key: key, Value: []byte(cborDocument(t))}}, nil); err != nil {
 		t.Fatalf("CheckUniqueViolationsBatch = %v, want nil", err)
 	}
 }

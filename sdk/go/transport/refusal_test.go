@@ -82,6 +82,21 @@ func TestRefusalError_userConcurrentUpdate(t *testing.T) {
 	}
 }
 
+func TestRefusalError_commandConflict(t *testing.T) {
+	want := &CommandConflictError{Message: "unique index taken"}
+	err := RefusalError(ReasonCommandConflict, want.Metadata())
+	got, ok := errors.AsType[*CommandConflictError](err)
+	if !ok || *got != *want {
+		t.Fatalf("RefusalError() = %+v, want %+v", got, want)
+	}
+	if !dberrors.Is(err, dberrors.ErrConflict) || dberrors.IsRetryable(err) {
+		t.Fatalf("RefusalError() = %v, want a non-retryable ErrConflict", err)
+	}
+	if (&CommandConflictError{}).As(new(*UserNotFoundError)) {
+		t.Fatal("As matched a target that is not a QRDBError")
+	}
+}
+
 // TestRefusalError_lockOutcomes pins that each lock refusal rebuilds the
 // typed lock error a caller matches with errors.As, fields included.
 func TestRefusalError_lockOutcomes(t *testing.T) {

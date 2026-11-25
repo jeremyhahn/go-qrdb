@@ -49,6 +49,7 @@ func newIndexCreateCmd() *cobra.Command {
 		unique    bool
 		sparse    bool
 		numeric   bool
+		keyPrefix string
 	)
 
 	cmd := &cobra.Command{
@@ -57,9 +58,10 @@ func newIndexCreateCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			config := transport.IndexConfig{
-				Unique:  unique,
-				Sparse:  sparse,
-				Numeric: numeric,
+				Unique:    unique,
+				Sparse:    sparse,
+				Numeric:   numeric,
+				KeyPrefix: keyPrefix,
 			}
 			if err := client.Index().IndexCreate(cmd.Context(), args[0], fieldName, config); err != nil {
 				return err
@@ -75,6 +77,7 @@ func newIndexCreateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&sparse, "sparse", false, "Allow missing indexed field values")
 	cmd.Flags().BoolVar(&numeric, "numeric", false,
 		"Index values as numbers, so scans run in numeric order (non-numbers and NaN are not indexed)")
+	cmd.Flags().StringVar(&keyPrefix, "key-prefix", "", "Index only keys under this prefix")
 
 	return cmd
 }

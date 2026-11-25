@@ -46,6 +46,7 @@ func (t *Transport) IndexCreate(ctx context.Context, name, fieldName string, con
 		Sparse:          config.Sparse,
 		Numeric:         config.Numeric,
 		CaseInsensitive: config.CaseInsensitive,
+		KeyPrefix:       config.KeyPrefix,
 	})
 	if err != nil {
 		return mapGRPCError("IndexCreate", err)

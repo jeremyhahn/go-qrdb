@@ -39,6 +39,12 @@ type IndexConfig struct {
 	// what every request written before this field existed meant
 	// (go-qrdb#34).
 	CaseInsensitive bool `json:"case_insensitive"`
+
+	// KeyPrefix is the key scope the index covers, relative to the namespace
+	// the server gives the index name: only keys under it are indexed, and a
+	// unique index is unique only among them. Empty, the zero value, covers
+	// every key.
+	KeyPrefix string `json:"key_prefix"`
 }
 
 // IndexQueryResponse is the response from an index query operation.

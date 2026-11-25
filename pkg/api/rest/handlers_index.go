@@ -38,6 +38,9 @@ type indexCreateRequest struct {
 	// CaseInsensitive marks the POSITIVE claim, so an absent value means a
 	// case-SENSITIVE index -- what every request predating the field meant.
 	CaseInsensitive bool `json:"case_insensitive"`
+	// KeyPrefix scopes the index to keys under it, relative to the index
+	// name's namespace; empty covers every key.
+	KeyPrefix string `json:"key_prefix"`
 }
 
 // indexDropRequest is the JSON payload for POST /index/drop.
@@ -90,6 +93,7 @@ func (s *Server) handleIndexCreate(w http.ResponseWriter, r *http.Request) {
 		// site now that the engine derives the index's case behaviour from the
 		// config instead of hardcoding CaseSensitive:true (go-qrdb#34).
 		CaseSensitive: !req.CaseInsensitive,
+		KeyPrefix:     req.KeyPrefix,
 	}
 	if req.Numeric {
 		config.ValueType = index.IndexValueTypeNumeric

@@ -133,6 +133,80 @@ func TestCLIMultiProtocolBatchExecuteFile(t *testing.T) {
 	}
 }
 
+// TestCLIMultiProtocolBatchExecuteMovesUniqueValue: one batch that overwrites
+// key A with another value and then gives A's old unique value to key B is
+// applied, as ordered apply admits it; a batch that claims a value for key C
+// before A, its holder, releases it is refused with the uniqueness error and
+// writes nothing.
+func TestCLIMultiProtocolBatchExecuteMovesUniqueValue(t *testing.T) {
+	cfg := LoadTestConfig()
+	requireCLI(t, cfg)
+
+	for _, proto := range AllProtocols() {
+		t.Run(string(proto), func(t *testing.T) {
+			if !cfg.IsProtocolAvailable(t, proto) {
+				t.Fatalf("server not available for protocol %s", proto)
+			}
+
+			ts := testTimestamp()
+			id := generateUniqueID(fmt.Sprintf("bmove-%s-%d", proto, ts))
+			field := "f_" + strings.NewReplacer("-", "_", ".", "_").Replace(id)
+			indexName := "idx-" + id
+			keyA, keyB, keyC := id+"/a", id+"/b", id+"/c"
+			doc := func(v string) string { return fmt.Sprintf(`{"%s":"%s-%d"}`, field, v, ts) }
+			putOp := func(key, value string) string {
+				return fmt.Sprintf(`{"type":0,"key":"%s","value":"%s"}`,
+					base64.StdEncoding.EncodeToString([]byte(key)),
+					base64.StdEncoding.EncodeToString([]byte(value)))
+			}
+
+			t.Cleanup(func() {
+				for _, key := range []string{keyA, keyB, keyC} {
+					execCLIWithProtocol(t, cfg, proto, "kv", "del", key) //nolint:errcheck
+				}
+				execCLIWithProtocol(t, cfg, proto, "index", "drop", indexName) //nolint:errcheck
+			})
+
+			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto,
+				"index", "create", indexName, "--field", field, "--unique")
+			if err != nil {
+				t.Fatalf("[%s] index create --unique failed: %v\nstdout: %s\nstderr: %s", proto, err, stdout, stderr)
+			}
+			if stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "kv", "put", keyA, doc("v")); err != nil {
+				t.Fatalf("[%s] kv put %s failed: %v\nstdout: %s\nstderr: %s", proto, keyA, err, stdout, stderr)
+			}
+
+			// A releases v (taking x), then B claims v: admitted.
+			move := createTempJSONFile(t, fmt.Sprintf(`{"ops":[%s,%s]}`, putOp(keyA, doc("x")), putOp(keyB, doc("v"))))
+			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "batch", "execute", "--file", move)
+			if err != nil {
+				t.Fatalf("[%s] moving batch failed: %v\nstdout: %s\nstderr: %s", proto, err, stdout, stderr)
+			}
+			assertContains(t, stdout+stderr, "succeeded=true",
+				fmt.Sprintf("[%s] moving batch should report succeeded=true", proto))
+			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "kv", "get", keyB)
+			if err != nil {
+				t.Fatalf("[%s] kv get %s failed: %v\nstdout: %s\nstderr: %s", proto, keyB, err, stdout, stderr)
+			}
+			assertContains(t, stdout, fmt.Sprintf("v-%d", ts),
+				fmt.Sprintf("[%s] %s should hold the moved value", proto, keyB))
+
+			// C claims x before A (holding x) releases it: refused.
+			early := createTempJSONFile(t, fmt.Sprintf(`{"ops":[%s,%s]}`, putOp(keyC, doc("x")), putOp(keyA, doc("y"))))
+			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "batch", "execute", "--file", early)
+			output := stdout + stderr
+			if err == nil && strings.Contains(output, "succeeded=true") {
+				t.Fatalf("[%s] batch claiming a value before its holder releases it was admitted: %s", proto, output)
+			}
+			assertContains(t, strings.ToLower(output), "unique",
+				fmt.Sprintf("[%s] refused batch should report the uniqueness error", proto))
+			if stdout, _, err = execCLIWithProtocol(t, cfg, proto, "kv", "get", keyC); err == nil && strings.Contains(stdout, fmt.Sprintf("x-%d", ts)) {
+				t.Fatalf("[%s] %s was written by a refused batch: %s", proto, keyC, stdout)
+			}
+		})
+	}
+}
+
 // TestCLIMultiProtocolBatchExecuteStdin tests batch execute from standard
 // input across all protocols. It pipes a JSON payload containing two put
 // operations with base64-encoded keys and values to the CLI's stdin, then

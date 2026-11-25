@@ -48,6 +48,9 @@ func (t *Transport) IndexCreate(ctx context.Context, name, fieldName string, con
 	if config.CaseInsensitive {
 		params["case_insensitive"] = true
 	}
+	if config.KeyPrefix != "" {
+		params["key_prefix"] = config.KeyPrefix
+	}
 
 	_, err := t.callTool(ctx, "qrdb_index_create", params)
 	return err

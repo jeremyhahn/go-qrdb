@@ -86,11 +86,11 @@ func TestCheckUniqueViolationsBatch_IntraBatchConflict(t *testing.T) {
 	val1, _ := json.Marshal(map[string]string{"name": "alice"})
 	val2, _ := json.Marshal(map[string]string{"name": "alice"})
 
-	puts := []indexedPut{
+	writes := []indexedWrite{
 		{Key: []byte("k1"), Value: val1},
 		{Key: []byte("k2"), Value: val2}, // same "name" → conflict
 	}
-	err := CheckUniqueViolationsBatch(nil, indexes, indexFields, nil, puts, nil)
+	err := CheckUniqueViolationsBatch(nil, indexes, indexFields, nil, writes, nil)
 	if err == nil {
 		t.Fatal("expected UniqueConstraintError for intra-batch duplicate")
 	}
@@ -112,16 +112,192 @@ func TestCheckUniqueViolationsBatch_DeletedKeyFreesValue(t *testing.T) {
 	indexes := map[string]index.Index{"by_name": idx}
 	indexFields := map[string]string{"by_name": "name"}
 
-	// k1 is being deleted; k2 claims the same value → should be allowed.
+	// old:1 is deleted first; new:2 then claims the same value → allowed.
 	val, _ := json.Marshal(map[string]string{"name": "alice"})
-	puts := []indexedPut{
+	writes := []indexedWrite{
+		{Key: []byte("old:1"), Delete: true},
 		{Key: []byte("new:2"), Value: val},
 	}
-	deletedKeys := [][]byte{[]byte("old:1")}
 
-	err := CheckUniqueViolationsBatch(nil, indexes, indexFields, nil, puts, deletedKeys)
+	err := CheckUniqueViolationsBatch(nil, indexes, indexFields, nil, writes, committedNameDocs(t, map[string]string{"old:1": "alice"}))
 	if err != nil {
-		t.Fatalf("expected nil when conflicting key is in deletedKeys, got: %v", err)
+		t.Fatalf("expected nil when the holder is deleted earlier in the batch, got: %v", err)
+	}
+}
+
+// uniqueNameIndex returns a unique "by_name" index on field "name", with the
+// given key -> value entries already committed.
+func uniqueNameIndex(t *testing.T, committed map[string]string) (map[string]index.Index, map[string]string) {
+	t.Helper()
+	idx := index.NewMemoryIndex("by_name", true)
+	for k, v := range committed {
+		if err := idx.Put([]byte(k), []byte(v)); err != nil {
+			t.Fatalf("seed %s: %v", k, err)
+		}
+	}
+	return map[string]index.Index{"by_name": idx}, map[string]string{"by_name": "name"}
+}
+
+func nameDoc(t *testing.T, name string) []byte {
+	t.Helper()
+	b, err := json.Marshal(map[string]string{"name": name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// committedNameDocs is the prior-value reader for the holders uniqueNameIndex
+// seeds: each committed key holds the nameDoc its index entry was made from,
+// as apply always has it; any other key is absent.
+func committedNameDocs(t *testing.T, committed map[string]string) func(key []byte) ([]byte, error) {
+	t.Helper()
+	return func(key []byte) ([]byte, error) {
+		name, ok := committed[string(key)]
+		if !ok {
+			return nil, nil
+		}
+		return nameDoc(t, name), nil
+	}
+}
+
+func requireUniqueConflict(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected *UniqueConstraintError, got nil")
+	}
+	if _, ok := err.(*UniqueConstraintError); !ok {
+		t.Fatalf("expected *UniqueConstraintError, got %T: %v", err, err)
+	}
+}
+
+func TestCheckUniqueViolationsBatch_OverwriteWithOtherValueFreesValue(t *testing.T) {
+	indexes, fields := uniqueNameIndex(t, map[string]string{"A": "alice"})
+	writes := []indexedWrite{
+		{Key: []byte("A"), Value: nameDoc(t, "bob")},
+		{Key: []byte("B"), Value: nameDoc(t, "alice")},
+	}
+	if err := CheckUniqueViolationsBatch(nil, indexes, fields, nil, writes, committedNameDocs(t, map[string]string{"A": "alice"})); err != nil {
+		t.Fatalf("A releases alice before B claims it; expected nil, got: %v", err)
+	}
+}
+
+// TestCheckUniqueViolationsBatchUnordered_MoveRefused pins the legacy check
+// every unflagged transaction or batch keeps: an overwrite does not free the
+// overwritten key's value, so moving it to another key is refused.
+func TestCheckUniqueViolationsBatchUnordered_MoveRefused(t *testing.T) {
+	indexes, fields := uniqueNameIndex(t, map[string]string{"A": "alice"})
+	puts := []indexedPut{
+		{Key: []byte("A"), Value: nameDoc(t, "bob")},
+		{Key: []byte("B"), Value: nameDoc(t, "alice")},
+	}
+	requireUniqueConflict(t, checkUniqueViolationsBatchUnordered(nil, indexes, fields, nil, puts, nil))
+}
+
+// TestCheckUniqueViolationsBatchUnordered_DeletedKeyFreesValue: in the legacy
+// check a key deleted anywhere in the set frees its value, and a put may
+// update its own key's entry.
+func TestCheckUniqueViolationsBatchUnordered_DeletedKeyFreesValue(t *testing.T) {
+	indexes, fields := uniqueNameIndex(t, map[string]string{"A": "alice"})
+	puts := []indexedPut{{Key: []byte("B"), Value: nameDoc(t, "alice")}}
+	if err := checkUniqueViolationsBatchUnordered(nil, indexes, fields, nil, puts, [][]byte{[]byte("A")}); err != nil {
+		t.Fatalf("A is deleted in the set; expected nil, got: %v", err)
+	}
+	own := []indexedPut{{Key: []byte("A"), Value: nameDoc(t, "alice")}}
+	if err := checkUniqueViolationsBatchUnordered(nil, indexes, fields, nil, own, nil); err != nil {
+		t.Fatalf("A rewriting its own value; expected nil, got: %v", err)
+	}
+	dup := []indexedPut{
+		{Key: []byte("C"), Value: nameDoc(t, "carol")},
+		{Key: []byte("D"), Value: nameDoc(t, "carol")},
+	}
+	requireUniqueConflict(t, checkUniqueViolationsBatchUnordered(nil, indexes, fields, nil, dup, nil))
+}
+
+// TestCheckUniqueViolationsBatchUnordered_JoinedClaimKeyCollides: the unordered
+// check joins index name and value with a NUL, so these two claims collide
+// there, while the ordered check keeps them apart.
+func TestCheckUniqueViolationsBatchUnordered_JoinedClaimKeyCollides(t *testing.T) {
+	indexes := map[string]index.Index{
+		"a":     index.NewMemoryIndex("a", true),
+		"a\x00": index.NewMemoryIndex("a\x00", true),
+	}
+	fields := map[string]string{"a": "f1", "a\x00": "f2"}
+	doc := func(field, val string) []byte {
+		b, err := json.Marshal(map[string]string{field: val})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	k1 := doc("f1", "\x00b")
+	k2 := doc("f2", "b")
+	puts := []indexedPut{
+		{Key: []byte("K1"), Value: k1},
+		{Key: []byte("K2"), Value: k2},
+	}
+	requireUniqueConflict(t, checkUniqueViolationsBatchUnordered(nil, indexes, fields, nil, puts, nil))
+	writes := []indexedWrite{
+		{Key: []byte("K1"), Value: k1},
+		{Key: []byte("K2"), Value: k2},
+	}
+	none := func([]byte) ([]byte, error) { return nil, nil }
+	if err := CheckUniqueViolationsBatch(nil, indexes, fields, nil, writes, none); err != nil {
+		t.Fatalf("distinct indexes and values; expected nil, got: %v", err)
+	}
+}
+
+func TestCheckUniqueViolationsBatch_NonJSONOverwriteFreesValue(t *testing.T) {
+	indexes, fields := uniqueNameIndex(t, map[string]string{"A": "alice"})
+	writes := []indexedWrite{
+		{Key: []byte("A"), Value: []byte("not-json")},
+		{Key: []byte("B"), Value: nameDoc(t, "alice")},
+	}
+	if err := CheckUniqueViolationsBatch(nil, indexes, fields, nil, writes, committedNameDocs(t, map[string]string{"A": "alice"})); err != nil {
+		t.Fatalf("a non-JSON overwrite of A releases alice; expected nil, got: %v", err)
+	}
+}
+
+func TestCheckUniqueViolationsBatch_OverwriteAfterClaimRefused(t *testing.T) {
+	indexes, fields := uniqueNameIndex(t, map[string]string{"A": "alice"})
+	writes := []indexedWrite{
+		{Key: []byte("B"), Value: nameDoc(t, "alice")},
+		{Key: []byte("A"), Value: nameDoc(t, "bob")},
+	}
+	requireUniqueConflict(t, CheckUniqueViolationsBatch(nil, indexes, fields, nil, writes, committedNameDocs(t, map[string]string{"A": "alice"})))
+}
+
+func TestCheckUniqueViolationsBatch_DeleteAfterClaimRefused(t *testing.T) {
+	indexes, fields := uniqueNameIndex(t, map[string]string{"A": "alice"})
+	writes := []indexedWrite{
+		{Key: []byte("B"), Value: nameDoc(t, "alice")},
+		{Key: []byte("A"), Delete: true},
+	}
+	requireUniqueConflict(t, CheckUniqueViolationsBatch(nil, indexes, fields, nil, writes, committedNameDocs(t, map[string]string{"A": "alice"})))
+}
+
+func TestCheckUniqueViolationsBatch_OverwriteKeepingValueStillConflicts(t *testing.T) {
+	indexes, fields := uniqueNameIndex(t, map[string]string{"A": "alice"})
+	keep, err := json.Marshal(map[string]any{"name": "alice", "x": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writes := []indexedWrite{
+		{Key: []byte("A"), Value: keep},
+		{Key: []byte("B"), Value: nameDoc(t, "alice")},
+	}
+	requireUniqueConflict(t, CheckUniqueViolationsBatch(nil, indexes, fields, nil, writes, committedNameDocs(t, map[string]string{"A": "alice"})))
+}
+
+func TestCheckUniqueViolationsBatch_RewrittenClaimReleased(t *testing.T) {
+	indexes, fields := uniqueNameIndex(t, nil)
+	writes := []indexedWrite{
+		{Key: []byte("A"), Value: nameDoc(t, "alice")},
+		{Key: []byte("A"), Value: nameDoc(t, "bob")},
+		{Key: []byte("B"), Value: nameDoc(t, "alice")},
+	}
+	if err := CheckUniqueViolationsBatch(nil, indexes, fields, nil, writes, nil); err != nil {
+		t.Fatalf("A re-claims bob, so alice is free for B; expected nil, got: %v", err)
 	}
 }
 
@@ -180,10 +356,10 @@ func TestCheckUniqueViolationsBatch_NonJSONSkipped(t *testing.T) {
 	indexes := map[string]index.Index{"by_name": idx}
 	indexFields := map[string]string{"by_name": "name"}
 
-	puts := []indexedPut{
+	writes := []indexedWrite{
 		{Key: []byte("k1"), Value: []byte("not-json")},
 	}
-	err := CheckUniqueViolationsBatch(nil, indexes, indexFields, nil, puts, nil)
+	err := CheckUniqueViolationsBatch(nil, indexes, indexFields, nil, writes, nil)
 	if err != nil {
 		t.Fatalf("expected nil for non-JSON value, got: %v", err)
 	}
@@ -303,11 +479,11 @@ func TestCheckUniqueViolationsBatch_NonUniqueIndexSkipped(t *testing.T) {
 	val2, _ := json.Marshal(map[string]string{"tag": "red"})
 
 	// Duplicate values are allowed for non-unique indexes.
-	puts := []indexedPut{
+	writes := []indexedWrite{
 		{Key: []byte("k1"), Value: val1},
 		{Key: []byte("k2"), Value: val2},
 	}
-	err := CheckUniqueViolationsBatch(nil, indexes, indexFields, nil, puts, nil)
+	err := CheckUniqueViolationsBatch(nil, indexes, indexFields, nil, writes, nil)
 	if err != nil {
 		t.Fatalf("expected nil for non-unique index with duplicate, got: %v", err)
 	}

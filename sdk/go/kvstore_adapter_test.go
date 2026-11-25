@@ -755,6 +755,86 @@ func TestKVStoreAdapter_RegisterEntityIndexes_ForwardsNumeric(t *testing.T) {
 	}
 }
 
+// TestKVStoreAdapter_RegisterEntityIndexes_ForwardsKeyPrefix pins that the
+// client adapter scopes every index to the keys of its entity type: the
+// absolute prefix the store declares ("{entityType}/" by default) is sent in
+// transport.IndexConfig.KeyPrefix made relative to the namespace the index
+// name carries, exactly as the service store does
+// (pkg/server/lifecycle/kv_adapter.go). Without it the server indexes every
+// key of the database, so a unique index refuses a value another entity type
+// holds (#1649).
+func TestKVStoreAdapter_RegisterEntityIndexes_ForwardsKeyPrefix(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		ei         kvstore.EntityIndex
+		wantName   string
+		wantPrefix string
+	}{
+		{
+			name:       "bare entity type",
+			ei:         kvstore.EntityIndex{FieldName: "Email", JSONFieldName: "email", Unique: true, CaseSensitive: true},
+			wantName:   "member.Email",
+			wantPrefix: "member/",
+		},
+		{
+			name: "namespaced name and prefix",
+			ei: kvstore.EntityIndex{
+				FieldName: "Email", JSONFieldName: "email", Unique: true, CaseSensitive: true,
+				IndexName: "acme/db1/member.Email", KeyPrefix: "acme/db1/member/",
+			},
+			wantName:   "acme/db1/member.Email",
+			wantPrefix: "member/",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []transport.IndexConfig
+			var names []string
+			idx := &mockTransportIndex{
+				createFn: func(_ context.Context, name, _ string, cfg transport.IndexConfig) error {
+					names = append(names, name)
+					got = append(got, cfg)
+					return nil
+				},
+			}
+			adapter := newTestAdapter(&mockTransportKV{}, idx)
+
+			if err := adapter.RegisterEntityIndexes("member", []kvstore.EntityIndex{tc.ei}); err != nil {
+				t.Fatalf("RegisterEntityIndexes = %v; want nil", err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("created %d indexes; want 1", len(got))
+			}
+			if names[0] != tc.wantName {
+				t.Errorf("index name = %q; want %q", names[0], tc.wantName)
+			}
+			if got[0].KeyPrefix != tc.wantPrefix {
+				t.Errorf("forwarded KeyPrefix = %q; want %q", got[0].KeyPrefix, tc.wantPrefix)
+			}
+		})
+	}
+
+	t.Run("namespace the keys do not live under", func(t *testing.T) {
+		created := false
+		idx := &mockTransportIndex{
+			createFn: func(context.Context, string, string, transport.IndexConfig) error {
+				created = true
+				return nil
+			},
+		}
+		adapter := newTestAdapter(&mockTransportKV{}, idx)
+		err := adapter.RegisterEntityIndexes("member", []kvstore.EntityIndex{{
+			FieldName: "Email", JSONFieldName: "email", Unique: true,
+			IndexName: "acme/db1/member.Email", KeyPrefix: "other/db2/member/",
+		}})
+		if !errors.Is(err, kvstore.ErrIndexUnsupported) {
+			t.Fatalf("RegisterEntityIndexes = %v; want kvstore.ErrIndexUnsupported", err)
+		}
+		if created {
+			t.Error("an index was created over a keyspace the entity type's keys do not live under")
+		}
+	})
+}
+
 // TestKVStoreAdapter_ScanIndexThreadsOpenBounds is the go-qrdb#36 replacement
 // for the earlier open-bound refusal. A nil []byte bound now reaches the
 // transport as a nil *string — an OPEN bound — instead of being refused or
