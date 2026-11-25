@@ -82,6 +82,7 @@ func runPreflight(t *testing.T, files string, diffRC string) (string, string) {
 		"BASE=base",
 		"HEAD=head",
 		"CI_FULL_TIER=false",
+		"CI_FULL_LABEL=false",
 		"DOCS_ONLY_PATTERN=" + wfEnv["DOCS_ONLY_PATTERN"],
 		"CLUSTERPROOF_PATTERN=" + wfEnv["CLUSTERPROOF_PATTERN"],
 		"STUB_FILES=" + files,

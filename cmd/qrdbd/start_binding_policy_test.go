@@ -63,7 +63,7 @@ func bootstrapForBindingPolicy(t *testing.T) *mgmtBootstrapResult {
 	mgmt, err := bootstrapUserRoleStores(
 		context.Background(), mock, mock, newMockTransactionServicer(store), &mockRaftNode{}, testLeaderWait,
 		1, 1, &mockTenantServicer{}, false, nil, "", nil,
-		auth.MTLSBindingEnrolled, nil, nil, nil,
+		auth.MTLSBindingEnrolled, nil, nil, nil, soTrustSeams{},
 	)
 	require.NoError(t, err)
 	return mgmt
@@ -95,7 +95,7 @@ func TestBootstrapUserRoleStores_RequiredWithNoCertPathBootsIntoAwaiting(t *test
 	mgmt, err := bootstrapUserRoleStores(
 		context.Background(), mock, mock, newMockTransactionServicer(store), &mockRaftNode{}, testLeaderWait,
 		1, 1, &mockTenantServicer{}, false, nil, "", nil,
-		auth.MTLSBindingRequired, nil, nil, nil,
+		auth.MTLSBindingRequired, nil, nil, nil, soTrustSeams{},
 	)
 	require.NoError(t, err, "a timed-out pending-credential wait must boot into awaiting, not refuse")
 	admin, lerr := mgmt.bootUserSvc.GetUserByUsername(context.Background(), tenantid.System, "admin")

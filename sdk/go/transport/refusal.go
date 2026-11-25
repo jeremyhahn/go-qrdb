@@ -44,6 +44,8 @@ const (
 	// as an overlapping passphrase change, was in flight and this one was
 	// refused before it wrote anything.
 	ReasonBarrierRootKeyWriteInProgress = "BARRIER_ROOT_KEY_WRITE_IN_PROGRESS"
+	// ReasonBarrierUnsealFailed names seal.ErrUnsealFailed: the strategy could not unseal the root key for a reason other than a refused credential.
+	ReasonBarrierUnsealFailed = "BARRIER_UNSEAL_FAILED"
 )
 
 // barrierRefusal pairs a barrier sentinel with the reason that carries it.
@@ -59,6 +61,7 @@ var barrierRefusals = []barrierRefusal{
 	{ReasonBarrierCredentialMismatch, seal.ErrCredentialMismatch},
 	{ReasonBarrierPassphraseChangeConflict, seal.ErrPassphraseChangeConflict},
 	{ReasonBarrierRootKeyWriteInProgress, seal.ErrRootKeyWriteInProgress},
+	{ReasonBarrierUnsealFailed, seal.ErrUnsealFailed},
 }
 
 // BarrierRefusal returns the structured-refusal reason of the barrier
@@ -92,6 +95,12 @@ func barrierSentinel(reason string) error {
 var refusalErrors = map[string]func(md map[string]string) error{
 	auth.ReasonFactorConditionFailed: func(md map[string]string) error {
 		return auth.FactorConditionFailedFromMetadata(md)
+	},
+	auth.ReasonSORoleRequired: func(map[string]string) error {
+		return &auth.SORoleRequiredError{}
+	},
+	auth.ReasonSORoleConflict: func(md map[string]string) error {
+		return auth.SORoleConflictFromMetadata(md)
 	},
 	ReasonUserConcurrentUpdate: func(md map[string]string) error {
 		return UserConcurrentUpdateFromMetadata(md)

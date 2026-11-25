@@ -187,42 +187,6 @@ func (e *PendingAdminAccountConflictError) Error() string {
 		" that does not hold the tenant's " + r + " role; it is not adopted as the onboarded " + r
 }
 
-// IncompleteTenantSOError is returned by ProvisionTenant when tenant create's
-// optional SO (TenantProvisionConfig.SO) is given in part: the SO is the
-// username, exactly one of a CSR or a certificate, and the PIN together, or
-// is omitted altogether. Field names the first part missing.
-type IncompleteTenantSOError struct {
-	Field string
-}
-
-// Error names the missing part.
-func (e *IncompleteTenantSOError) Error() string {
-	return "bootstrap: the tenant SO is given in part: " + e.Field + " is missing (give so_username, so_csr_pem or so_cert_pem, and so_pin together, or none)"
-}
-
-// ConflictingSOCredentialError is returned when both a CSR and a certificate
-// are given for the tenant SO: exactly one names the SO's key.
-type ConflictingSOCredentialError struct{}
-
-// Error implements error.
-func (e *ConflictingSOCredentialError) Error() string {
-	return "bootstrap: supply the tenant SO's CSR or certificate, not both"
-}
-
-// SOMatchesAdminError is returned under strict separation of duties when the
-// tenant SO is the first admin by another name: the same username, or a
-// credential over the same key (SPKI). Strict separation needs two
-// principals, so the SO and the admin never share an account or a key. Field
-// is "username" or "key".
-type SOMatchesAdminError struct {
-	Field string
-}
-
-// Error implements error.
-func (e *SOMatchesAdminError) Error() string {
-	return "bootstrap: the tenant SO must differ from the first admin; they share a " + e.Field
-}
-
 // SOPartlyMatchesAdminError is returned outside strict separation of duties
 // when the tenant SO shares exactly one of the first admin's username and key
 // (SPKI). The SO may be the admin there, named by the admin's username and
