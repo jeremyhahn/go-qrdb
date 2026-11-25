@@ -372,7 +372,7 @@ func TestRESTTenant_AllMethods_Success(t *testing.T) {
 	if _, err := rt.GetTenant(ctx, "t1"); err != nil {
 		t.Fatalf("GetTenant: %v", err)
 	}
-	if _, err := rt.ListTenants(ctx); err != nil {
+	if _, err := rt.ListTenants(ctx, nil); err != nil {
 		t.Fatalf("ListTenants: %v", err)
 	}
 	if _, err := rt.UpdateTenant(ctx, &transport.UpdateTenantRequest{TenantID: "t1"}); err != nil {

@@ -18,6 +18,7 @@
 package middleware
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"testing"
@@ -65,5 +66,23 @@ func TestMapAuthError_RevocationCheckFailureThroughChain(t *testing.T) {
 	}
 	if got := status.Code(mapGRPCAuthError(err)); got != codes.Unavailable {
 		t.Errorf("mapGRPCAuthError(wrapped) = %v, want %v", got, codes.Unavailable)
+	}
+}
+
+// TestMapAuthError_RevocationCheckFailureKeptPastPeerCredential runs the real
+// chain wiring builds when a peer-credential mapping exists -- mTLS first, the
+// peer-credential authenticator last -- on a request with no peer credential:
+// the peer-credential decline must not turn the mTLS revocation-lookup
+// failure (503 / UNAVAILABLE, retryable) into 401 / UNAUTHENTICATED.
+func TestMapAuthError_RevocationCheckFailureKeptPastPeerCredential(t *testing.T) {
+	_, _, err := declinedLaterMethodMiddleware(&auth.RevocationCheckError{Err: errors.New("kv read failed")}).Authenticate(context.Background())
+	if err == nil {
+		t.Fatal("Authenticate admitted a request no method authenticated")
+	}
+	if got := mapHTTPAuthError(err); got != http.StatusServiceUnavailable {
+		t.Errorf("mapHTTPAuthError(%v) = %d, want %d", err, got, http.StatusServiceUnavailable)
+	}
+	if got := status.Code(mapGRPCAuthError(err)); got != codes.Unavailable {
+		t.Errorf("mapGRPCAuthError(%v) = %v, want %v", err, got, codes.Unavailable)
 	}
 }

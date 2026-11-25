@@ -268,24 +268,23 @@ func TestAuditRoute_ReadsNeverRecordARoute(t *testing.T) {
 	}
 }
 
-// TestAuditRoute_AuditInstanceOnTheSystemShardIsNotReadFromTheHome: on
+// TestAuditRoute_AuditInstanceOnTheSystemShardIsServedFromTheSystemShard: on
 // the log surface, a barrier tenant whose audit chain is recorded on the
-// system shard is refused, as before, rather than answered by the home
-// group's empty instance; its other logs apply in the home group.
-func TestAuditRoute_AuditInstanceOnTheSystemShardIsNotReadFromTheHome(t *testing.T) {
+// system shard has its audit instance served from the system shard, not the
+// home group's empty instance; its other logs apply in the home group.
+func TestAuditRoute_AuditInstanceOnTheSystemShardIsServedFromTheSystemShard(t *testing.T) {
 	system := newChainShard(3, auditActive())
 	homes, _ := homeShard()
 	routes := newMemRouteStore()
 	audits := NewSystemShardAuditResolver(system.host, 1, isolatedTenantsLookup())
-	logs := NewSystemShardLogResolver(system.host, 1, isolatedTenantsLookup())
+	logs := NewSystemShardLogResolver(system.host, 1, isolatedTenantsLookup(), nil)
 	audits.SetHomeGroupSource(homes, routes)
 	logs.SetHomeGroupSource(homes, routes)
 	if err := NewReplicatedLogger(audits).Emit(context.Background(), audit.AuditEvent{TenantID: "widgets"}); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
-	var refused *BarrierTenantLogNotSupportedError
-	if _, _, err := logs.ResolveAuditInstance(context.Background(), "widgets"); !errors.As(err, &refused) {
-		t.Fatalf("ResolveAuditInstance(widgets) = %v, want *BarrierTenantLogNotSupportedError", err)
+	if host, shardID, err := logs.ResolveAuditInstance(context.Background(), "widgets"); err != nil || host != system.host || shardID != 1 {
+		t.Fatalf("ResolveAuditInstance(widgets) = %v, %d, %v; want the system shard", host, shardID, err)
 	}
 	if host, _, err := logs.ResolveAuditShard(context.Background(), "widgets"); err != nil || host != homes.host {
 		t.Fatalf("ResolveAuditShard(widgets) = %v, %v; want the home group", host, err)

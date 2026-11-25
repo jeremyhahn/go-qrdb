@@ -252,6 +252,10 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		"user.RemoveCertBinding": true, "user.Update": true,
 		"user.Delete": true, "user.List": true, "user.Enable": true,
 		"user.Disable": true, "user.Suspend": true, "user.Unsuspend": true,
+		// IAM group management
+		"group.Create": true, "group.Get": true, "group.GetByName": true,
+		"group.Update": true, "group.Delete": true, "group.List": true,
+		"group.AddMember": true, "group.RemoveMember": true, "group.ListMembers": true,
 		// Role management
 		"role.Create": true, "role.Get": true, "role.GetByName": true,
 		"role.Update": true, "role.Delete": true, "role.List": true,

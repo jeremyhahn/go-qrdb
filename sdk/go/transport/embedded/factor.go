@@ -192,9 +192,6 @@ func (c *factorClient) Enroll(ctx context.Context, userID uint64, factor transpo
 	if ctx, err = c.transport.authorizeUserTarget(ctx, userID, permission.UserAuthFactorsAdd); err != nil {
 		return err
 	}
-	if c.transport.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	if c.transport.userAuthFactorSvc == nil {
 		return &MissingUserAuthFactorServiceError{}
 	}
@@ -219,9 +216,6 @@ func (c *factorClient) List(ctx context.Context, userID uint64) ([]transport.Fac
 	}
 	if ctx, err = c.transport.authorizeUserTarget(ctx, userID, permission.UserAuthFactorsList); err != nil {
 		return nil, err
-	}
-	if c.transport.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if c.transport.userAuthFactorSvc == nil {
 		return nil, &MissingUserAuthFactorServiceError{}
@@ -252,9 +246,6 @@ func (c *factorClient) Remove(ctx context.Context, userID uint64, factorID strin
 	if ctx, err = c.transport.authorizeUserTarget(ctx, userID, permission.UserAuthFactorsRemove); err != nil {
 		return err
 	}
-	if c.transport.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	if c.transport.userAuthFactorSvc == nil {
 		return &MissingUserAuthFactorServiceError{}
 	}
@@ -282,9 +273,6 @@ func (c *factorClient) Verify(ctx context.Context, userID uint64, challenge tran
 	// gates on every network transport's userauthfactor.Login route.
 	if ctx, err = c.transport.authorizeUserTarget(ctx, userID, permission.UserAuthFactorsLogin); err != nil {
 		return nil, err
-	}
-	if c.transport.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if c.transport.userAuthFactorSvc == nil {
 		return nil, &MissingUserAuthFactorServiceError{}

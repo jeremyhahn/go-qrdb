@@ -30,9 +30,6 @@ func (t *Transport) TenantBarrierSeal(ctx context.Context, req *transport.Tenant
 	if err != nil {
 		return err
 	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	if t.tenantSvc == nil {
 		return &NilServiceError{Service: "TenantServicer"}
 	}
@@ -51,9 +48,6 @@ func (t *Transport) TenantBarrierStatus(ctx context.Context, req *transport.Tena
 	ctx, err := t.admit(ctx, "TenantBarrierStatus")
 	if err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.tenantSvc == nil {
 		return nil, &NilServiceError{Service: "TenantServicer"}

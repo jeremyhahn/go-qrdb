@@ -41,12 +41,14 @@ import (
 func awaitReadIndexReady(ctx context.Context, t *testing.T, kv service.KVServicer, key string) {
 	t.Helper()
 	deadline := time.Now().Add(15 * time.Second)
+	poll := time.NewTicker(100 * time.Millisecond)
+	defer poll.Stop()
 	for {
 		_, err := kv.Get(ctx, key)
 		if err == nil || !errors.Is(err, quicraft.ErrReadIndexNotReady) || time.Now().After(deadline) {
 			return
 		}
-		time.Sleep(100 * time.Millisecond)
+		<-poll.C
 	}
 }
 

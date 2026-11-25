@@ -77,17 +77,21 @@ func TestClassify_StrictTenantSharedStore(t *testing.T) {
 	}
 }
 
-// TestClassify_BarrierLogRefusals pins that a verifiable-log call refused for
-// a barrier tenant or a barrier database is Unimplemented on every transport:
-// the log registry sits under the system barrier, so the deployment does not
-// serve logs there (go-qrdb#912).
-func TestClassify_BarrierLogRefusals(t *testing.T) {
-	for _, err := range []error{
-		&service.BarrierTenantLogNotSupportedError{TenantID: "acme"},
-		&service.BarrierDatabaseLogNotSupportedError{TenantID: "acme", Database: "secure"},
-	} {
-		if got := Classify(err); got != Unimplemented {
-			t.Errorf("Classify(%T) = %v, want %v", err, got, Unimplemented)
-		}
+// TestClassify_BarrierStoreUnavailable pins that a verifiable-log call whose
+// barrier tenant's sealed store is not reachable on the node is Unavailable on
+// every transport.
+func TestClassify_BarrierStoreUnavailable(t *testing.T) {
+	if got := Classify(&service.BarrierStoreUnavailableError{TenantID: "acme"}); got != Unavailable {
+		t.Errorf("Classify(BarrierStoreUnavailableError) = %v, want %v", got, Unavailable)
+	}
+}
+
+// TestClassify_BarrierSealedError pins that a call to a sealed barrier
+// database, a verifiable-log call included, is Unavailable on every
+// transport.
+func TestClassify_BarrierSealedError(t *testing.T) {
+	err := &service.BarrierSealedError{TenantID: "acme", Database: "secure"}
+	if got := Classify(err); got != Unavailable {
+		t.Errorf("Classify(%T) = %v, want %v", err, got, Unavailable)
 	}
 }

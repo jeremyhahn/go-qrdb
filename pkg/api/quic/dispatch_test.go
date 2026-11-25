@@ -153,6 +153,17 @@ var expectedMethods = []string{
 	"user.Suspend",
 	"user.Unsuspend",
 
+	// IAM group management (9)
+	"group.Create",
+	"group.Get",
+	"group.GetByName",
+	"group.Update",
+	"group.Delete",
+	"group.List",
+	"group.AddMember",
+	"group.RemoveMember",
+	"group.ListMembers",
+
 	// Role management (10)
 	"role.Create",
 	"role.Get",
@@ -288,9 +299,10 @@ func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
 func TestBuildHandlers_MethodCount(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 
-	// 209 = 206 + role.ListPermissionCatalog (docs/18 V12) +
-	// cluster.IsolationPolicyGet and cluster.IsolationPolicySet, the cluster
-	// isolation floor (tenants:read, tenants:update:cross).
+	// 218 = 216 + cluster.IsolationPolicyGet and cluster.IsolationPolicySet, the
+	// cluster isolation floor (tenants:read, tenants:update:cross).
+	// 216 = 207 + the nine group.* IAM group methods (go-qrdb#1651).
+	// 207 = 206 + role.ListPermissionCatalog (docs/18 V12).
 	// 206 = 203 + cert.DelegationPolicyPut, cert.DelegationPolicyList and
 	// cert.DelegationPolicyDelete, the tenant's standing delegation policy
 	// under which the node mints delegations (docs/identity-rbac).
@@ -373,7 +385,7 @@ func TestBuildHandlers_MethodCount(t *testing.T) {
 	// kv.CompareAndDelete, kv.CompareAndSwap — go-qrdb#124), and the 161 was
 	// 160 plus user.GetByEmail, the canonical login-key lookup (go-qrdb#190).
 	// The 2 watch methods remain on the streaming path, not the unary table.
-	const wantCount = 209
+	const wantCount = 218
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}

@@ -58,6 +58,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
@@ -143,6 +144,7 @@ type Server struct {
 	ceremonyCA        ceremony.CeremonyCA
 	userSvc           user.UserServicer
 	roleSvc           role.RoleServicer
+	groupSvc          group.GroupServicer
 	tenantSvc         tenant.TenantServicer
 	volumeSvc         volume.Service
 	backupSvc         service.BackupServicer
@@ -709,6 +711,11 @@ func WithUserService(svc user.UserServicer) ServerOption {
 // WithRoleService attaches a RoleServicer for role management operations.
 func WithRoleService(svc role.RoleServicer) ServerOption {
 	return func(s *Server) { s.roleSvc = svc }
+}
+
+// WithGroupService sets the IAM group store.
+func WithGroupService(svc group.GroupServicer) ServerOption {
+	return func(s *Server) { s.groupSvc = svc }
 }
 
 // WithTenantService attaches a TenantServicer for tenant lifecycle management
@@ -2327,6 +2334,17 @@ func (s *Server) registerRoutes() {
 	// another identity is gated in the evaluator by permissions:resolve.
 	s.route(http.MethodPost, "/permissions/authorize", permission.IdentityGated, s.handleAuthorize)
 
+	// IAM groups (the handlers nil-check the group service and report 501).
+	s.route(http.MethodPost, "/groups", permission.GroupsCreate, s.handleCreateGroup)
+	s.route(http.MethodGet, "/groups/list", permission.GroupsList, s.handleListGroups)
+	s.route(http.MethodGet, "/groups/by-name", permission.GroupsRead, s.handleGetGroupByName)
+	s.route(http.MethodGet, "/groups/members", permission.GroupsRead, s.handleListGroupMembers)
+	s.route(http.MethodPost, "/groups/members/add", permission.GroupsAddMember, s.handleAddGroupMember)
+	s.route(http.MethodPost, "/groups/members/remove", permission.GroupsRemoveMember, s.handleRemoveGroupMember)
+	s.route(http.MethodGet, "/groups/{id}", permission.GroupsRead, s.handleGroup)
+	s.route(http.MethodPut, "/groups/{id}", permission.GroupsUpdate, s.handleGroup)
+	s.route(http.MethodDelete, "/groups/{id}", permission.GroupsDelete, s.handleGroup)
+
 	// Role path-param routes (the handler nil-checks the role service).
 	s.route(http.MethodGet, "/roles/{id}", permission.RolesRead, s.handleRole)
 	s.route(http.MethodPut, "/roles/{id}", permission.RolesUpdate, s.handleRole)
@@ -2597,11 +2615,15 @@ func (s *Server) registerRoutes() {
 	s.routeIf(credOn, http.MethodPost, "/v1/credentials/submit", permission.CredentialsSubmit, s.handleCredentialSubmit)
 	s.routeIf(credOn, http.MethodPost, "/v1/credentials/store", permission.CredentialsStore, s.handleCredentialStore)
 	s.routeIf(credOn, http.MethodGet, "/v1/credentials/strategy", permission.CredentialsStrategy, s.handleCredentialStrategy)
+	s.routeIf(credOn, http.MethodGet, "/v1/credentials/migration-conflicts", permission.CredentialsList, s.handleCredentialMigrationConflicts)
 	s.routeIf(credOn, http.MethodGet, "/v1/credentials", permission.CredentialsList, s.handleCredentialList)
 
 	// Credential path-param routes (the handler nil-checks the service).
 	s.route(http.MethodDelete, "/v1/credentials/{name}", permission.CredentialsDelete, s.handleCredentialByPath)
 	s.route(http.MethodPost, "/v1/credentials/{name}/rotate", permission.CredentialsRotate, s.handleCredentialByPath)
+	s.route(http.MethodPut, "/v1/credentials/{name}/rotation-policy", permission.CredentialsRotate, s.handleCredentialByPath)
+	s.route(http.MethodGet, "/v1/credentials/{name}/rotation-policy", permission.CredentialsRotate, s.handleCredentialByPath)
+	s.route(http.MethodPost, "/v1/credentials/{name}/migration-resolve", permission.CredentialsRotate, s.handleCredentialByPath)
 	s.route(http.MethodPost, "/v1/credentials/{name}/gc", permission.CredentialsGCExpired, s.handleCredentialByPath)
 	s.route(http.MethodGet, "/v1/credentials/{name}/versions", permission.CredentialsListVersions, s.handleCredentialByPath)
 	s.route(http.MethodGet, "/v1/credentials/{name}/versions/{version}", permission.CredentialsRetrieveVersion, s.handleCredentialByPath)

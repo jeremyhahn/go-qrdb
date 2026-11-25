@@ -18,6 +18,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"reflect"
+	"slices"
 	"strconv"
 	"testing"
 
@@ -356,6 +358,51 @@ func TestChain_AppendEntries_InteriorNodeWriteFault(t *testing.T) {
 	var twe *TableWriteError
 	if _, err := c.AppendEntries(w, testLog, entries(1, 1)); !errors.As(err, &twe) {
 		t.Fatalf("AppendEntries() = %v, want *TableWriteError", err)
+	}
+}
+
+func TestChain_AppendSealed_RootMatchesThePlaintextTree(t *testing.T) {
+	plain, pstg := mustCreate(t, false)
+	sealed, sstg := mustCreate(t, false)
+	es := entries(0, 5)
+	if _, err := plain.AppendEntries(pstg, testLog, es); err != nil {
+		t.Fatalf("AppendEntries: %v", err)
+	}
+	leaves := make([]SealedLeaf, len(es))
+	for i, e := range es {
+		leaves[i] = SealedLeaf{Hash: LeafHash(e), Body: append([]byte("sealed:"), e...)}
+	}
+	first, err := sealed.AppendSealed(sstg, testLog, leaves)
+	if err != nil || first != 0 {
+		t.Fatalf("AppendSealed() = %d, %v, want 0", first, err)
+	}
+	ph, err := ReadHead(pstg, testLog)
+	if err != nil {
+		t.Fatalf("ReadHead(plain): %v", err)
+	}
+	sh, err := ReadHead(sstg, testLog)
+	if err != nil {
+		t.Fatalf("ReadHead(sealed): %v", err)
+	}
+	if ph.Size != sh.Size || !bytes.Equal(ph.Root, sh.Root) {
+		t.Fatalf("sealed head = %d/%x, want %d/%x", sh.Size, sh.Root, ph.Size, ph.Root)
+	}
+	for i, l := range leaves {
+		got, err := sstg.Get(entryKey(testLog, uint64(i)))
+		if err != nil || !bytes.Equal(got, l.Body) {
+			t.Fatalf("stored body %d = %q, %v, want the opaque body", i, got, err)
+		}
+	}
+	var abe *AppendBatchError
+	if _, err := sealed.AppendSealed(sstg, testLog, nil); !errors.As(err, &abe) {
+		t.Fatalf("AppendSealed(empty) = %v, want *AppendBatchError", err)
+	}
+	var lhe *LeafHashError
+	if _, err := sealed.AppendSealed(sstg, testLog, []SealedLeaf{{Hash: make([]byte, 31), Body: []byte("x")}}); !errors.As(err, &lhe) {
+		t.Fatalf("AppendSealed(31-byte hash) = %v, want *LeafHashError", err)
+	}
+	if h, _ := ReadHead(sstg, testLog); h.Size != 5 {
+		t.Fatalf("size after the refusal = %d, want 5", h.Size)
 	}
 }
 
@@ -761,6 +808,561 @@ func TestChain_ExpireBodies_CapsPerCommand(t *testing.T) {
 	}
 	if got, err := c.ExpireBodies(stg, testLog, n); err != nil || got != 7 {
 		t.Fatalf("second ExpireBodies = %d, %v, want 7", got, err)
+	}
+}
+
+// TestChain_DropDatabase_ReclaimsEveryLogOfTheDatabase drops a database
+// whose logs need more than one bounded command: every record goes, the logs
+// are forgotten, a node restored between two commands finds every remaining
+// log whole, another database's log is untouched, and a log created again
+// under the dropped name starts empty.
+func TestChain_DropDatabase_ReclaimsEveryLogOfTheDatabase(t *testing.T) {
+	c, stg := mustCreate(t, true)
+	sibling := LogID{TenantID: testLog.TenantID, Database: testLog.Database, Log: "keys"}
+	other := LogID{TenantID: testLog.TenantID, Database: "other", Log: testLog.Log}
+	for _, id := range []LogID{sibling, other} {
+		if err := c.Create(stg, id, testDescriptor(true)); err != nil {
+			t.Fatalf("Create %v: %v", id, err)
+		}
+	}
+	const n = MaxPrunePerCommand + 7
+	for from := 0; from < n; from += MaxAppendPerCommand {
+		if _, err := c.AppendEntries(stg, testLog, entries(from, min(MaxAppendPerCommand, n-from))); err != nil {
+			t.Fatalf("AppendEntries: %v", err)
+		}
+	}
+	for _, id := range []LogID{sibling, other} {
+		if _, err := c.AppendEntries(stg, id, entries(0, 3)); err != nil {
+			t.Fatalf("AppendEntries %v: %v", id, err)
+		}
+	}
+
+	first, err := c.DropDatabase(stg, stg, testLog.TenantID, testLog.Database, "")
+	if err != nil || first < MaxPrunePerCommand {
+		t.Fatalf("first DropDatabase = %d, %v; want at least the cap %d", first, err, MaxPrunePerCommand)
+	}
+	if err := NewChain().Restore(stg); err != nil {
+		t.Fatalf("Restore between two drop commands: %v", err)
+	}
+	commands := 1
+	for {
+		got, err := c.DropDatabase(stg, stg, testLog.TenantID, testLog.Database, "")
+		if err != nil {
+			t.Fatalf("DropDatabase: %v", err)
+		}
+		if got == 0 {
+			break
+		}
+		if commands++; commands > 10 {
+			t.Fatal("DropDatabase did not converge")
+		}
+	}
+	if commands < 2 {
+		t.Fatalf("the drop took %d commands; want the bound to split it", commands)
+	}
+
+	dbPrefix := []byte(LogTablePrefix + testLog.TenantID + "/" + testLog.Database + "/")
+	it := stg.NewIterator(&storage.IteratorOptions{LowerBound: dbPrefix, UpperBound: prefixEnd(dbPrefix)})
+	if it.SeekToFirst() && it.Valid() {
+		t.Errorf("record %q of the dropped database remains", it.Key())
+	}
+	_ = it.Close()
+
+	restored := NewChain()
+	if err := restored.Restore(stg); err != nil {
+		t.Fatalf("Restore after the drop: %v", err)
+	}
+	for _, ch := range []*Chain{c, restored} {
+		for _, id := range []LogID{testLog, sibling} {
+			if _, err := ch.AppendEntries(stg, id, entries(0, 1)); !errors.As(err, new(*LogNotFoundError)) {
+				t.Fatalf("AppendEntries to dropped %v = %v; want LogNotFoundError", id, err)
+			}
+		}
+	}
+	if first, err := restored.AppendEntries(stg, other, entries(3, 1)); err != nil || first != 3 {
+		t.Fatalf("AppendEntries to the other database's log = %d, %v; want index 3", first, err)
+	}
+	if err := restored.Create(stg, testLog, testDescriptor(true)); err != nil {
+		t.Fatalf("Create again under the dropped name: %v", err)
+	}
+	if first, err := restored.AppendEntries(stg, testLog, entries(0, 1)); err != nil || first != 0 {
+		t.Fatalf("AppendEntries to the recreated log = %d, %v; want index 0", first, err)
+	}
+}
+
+// TestChain_DropDatabase_EmptyLogsAreBounded: a database of many empty logs
+// holds only descriptors and heads; they count against the step's budget, so
+// no step deletes more than MaxPrunePerCommand records, and every log a step
+// does not finish keeps its descriptor and head together.
+func TestChain_DropDatabase_EmptyLogsAreBounded(t *testing.T) {
+	c, stg := mustCreate(t, true)
+	const n = MaxPrunePerCommand/2 + 1
+	for i := range n {
+		id := LogID{TenantID: testLog.TenantID, Database: testLog.Database, Log: "empty-" + strconv.Itoa(i)}
+		if err := c.Create(stg, id, testDescriptor(true)); err != nil {
+			t.Fatalf("Create %v: %v", id, err)
+		}
+	}
+	steps := 0
+	for {
+		got, err := c.DropDatabase(stg, stg, testLog.TenantID, testLog.Database, "")
+		if err != nil {
+			t.Fatalf("DropDatabase: %v", err)
+		}
+		if got > MaxPrunePerCommand {
+			t.Fatalf("step %d deleted %d records; want at most %d", steps+1, got, MaxPrunePerCommand)
+		}
+		if got == 0 {
+			break
+		}
+		if steps++; steps > 10 {
+			t.Fatal("DropDatabase did not converge")
+		}
+		if err := NewChain().Restore(stg); err != nil {
+			t.Fatalf("Restore after step %d: %v", steps, err)
+		}
+		dbPrefix := []byte(LogTablePrefix + testLog.TenantID + "/" + testLog.Database + "/")
+		it := stg.NewIterator(&storage.IteratorOptions{LowerBound: dbPrefix, UpperBound: prefixEnd(dbPrefix)})
+		var desc, head int
+		for ok := it.SeekToFirst(); ok && it.Valid(); ok = it.Next() {
+			id, _, parsed := parseLogPrefix(it.Key())
+			if !parsed {
+				t.Fatalf("unparsable key %q", it.Key())
+			}
+			switch {
+			case bytes.Equal(it.Key(), descriptorKey(id)):
+				desc++
+			case bytes.Equal(it.Key(), logHeadKey(id)):
+				head++
+			}
+		}
+		_ = it.Close()
+		if desc != head {
+			t.Fatalf("after step %d: %d descriptors, %d heads; want them together", steps, desc, head)
+		}
+	}
+	if steps < 2 {
+		t.Fatalf("the drop took %d steps; want the budget to split it", steps)
+	}
+	restored := NewChain()
+	if err := restored.Restore(stg); err != nil {
+		t.Fatalf("Restore after the drop: %v", err)
+	}
+	for i := range n {
+		id := LogID{TenantID: testLog.TenantID, Database: testLog.Database, Log: "empty-" + strconv.Itoa(i)}
+		if _, err := restored.AppendEntries(stg, id, entries(0, 1)); !errors.As(err, new(*LogNotFoundError)) {
+			t.Fatalf("AppendEntries to dropped %v = %v; want LogNotFoundError", id, err)
+		}
+	}
+}
+
+// tableKeys lists every key of stg under prefix, in order.
+func tableKeys(t *testing.T, stg storage.Storage, prefix []byte) []string {
+	t.Helper()
+	it := stg.NewIterator(&storage.IteratorOptions{LowerBound: prefix, UpperBound: prefixEnd(prefix)})
+	var keys []string
+	for ok := it.SeekToFirst(); ok && it.Valid(); ok = it.Next() {
+		keys = append(keys, string(it.Key()))
+	}
+	if err := it.Error(); err != nil {
+		t.Fatalf("iterate: %v", err)
+	}
+	_ = it.Close()
+	return keys
+}
+
+// dropScenario runs, on a committed log of testLog's database and one of
+// another database, the commands Create sibling, AppendEntries to both logs,
+// optionally ExpireBodies, then DropDatabase until it reports 0: all in one
+// Update when packed, else each in its own. It returns every key left in the
+// table, the records the drop reported deleted and, unpacked, the records
+// under the database's prefix just before the drop.
+func dropScenario(t *testing.T, packed, expire bool) (remaining []string, deleted, before int) {
+	t.Helper()
+	c, stg := mustCreate(t, true)
+	other := LogID{TenantID: testLog.TenantID, Database: "other", Log: testLog.Log}
+	if err := c.Create(stg, other, testDescriptor(true)); err != nil {
+		t.Fatalf("Create other: %v", err)
+	}
+	for _, id := range []LogID{testLog, other} {
+		if _, err := c.AppendEntries(stg, id, entries(0, 2)); err != nil {
+			t.Fatalf("AppendEntries %v: %v", id, err)
+		}
+	}
+	sibling := LogID{TenantID: testLog.TenantID, Database: testLog.Database, Log: "keys"}
+	dbPrefix := []byte(LogTablePrefix + testLog.TenantID + "/" + testLog.Database + "/")
+
+	b := &batch{}
+	begin := func() {
+		if !packed {
+			c.BeginUpdate()
+			b = &batch{}
+		}
+	}
+	end := func() {
+		if !packed {
+			b.commit(t, stg)
+		}
+	}
+	c.BeginUpdate()
+	begin()
+	if err := c.Create(b, sibling, testDescriptor(true)); err != nil {
+		t.Fatalf("Create sibling: %v", err)
+	}
+	end()
+	begin()
+	if _, err := c.AppendEntries(b, testLog, entries(2, 5)); err != nil {
+		t.Fatalf("AppendEntries: %v", err)
+	}
+	end()
+	begin()
+	if _, err := c.AppendEntries(b, sibling, entries(0, 3)); err != nil {
+		t.Fatalf("AppendEntries sibling: %v", err)
+	}
+	end()
+	if expire {
+		begin()
+		if got, err := c.ExpireBodies(b, testLog, 4); err != nil || got != 4 {
+			t.Fatalf("ExpireBodies = %d, %v; want 4", got, err)
+		}
+		end()
+	}
+	if !packed {
+		before = len(tableKeys(t, stg, dbPrefix))
+	}
+	for commands := 0; ; commands++ {
+		if commands > 10 {
+			t.Fatal("DropDatabase did not converge")
+		}
+		begin()
+		got, err := c.DropDatabase(stg, b, testLog.TenantID, testLog.Database, "")
+		end()
+		if err != nil {
+			t.Fatalf("DropDatabase: %v", err)
+		}
+		if got == 0 {
+			break
+		}
+		deleted += got
+	}
+	if packed {
+		b.commit(t, stg)
+	}
+
+	if left := tableKeys(t, stg, dbPrefix); len(left) != 0 {
+		t.Fatalf("records %q of the dropped database remain", left)
+	}
+	if err := NewChain().Restore(stg); err != nil {
+		t.Fatalf("Restore after the drop: %v", err)
+	}
+	return tableKeys(t, stg, []byte(LogTablePrefix)), deleted, before
+}
+
+func TestChain_DropDatabase_PackedBatchMatchesSeparateUpdates(t *testing.T) {
+	for _, expire := range []bool{false, true} {
+		t.Run("expire="+strconv.FormatBool(expire), func(t *testing.T) {
+			packed, packedDeleted, _ := dropScenario(t, true, expire)
+			separate, separateDeleted, before := dropScenario(t, false, expire)
+			if !slices.Equal(packed, separate) {
+				t.Fatalf("packed drop leaves %q; separate Updates leave %q", packed, separate)
+			}
+			if len(packed) == 0 {
+				t.Fatal("the other database's log was reclaimed too")
+			}
+			if separateDeleted != before {
+				t.Fatalf("separate drop reported %d deleted; the database held %d records", separateDeleted, before)
+			}
+			if packedDeleted != separateDeleted {
+				t.Fatalf("packed drop reported %d deleted; separate Updates %d", packedDeleted, separateDeleted)
+			}
+		})
+	}
+}
+
+func TestChain_DropDatabase_RefusesAnInvalidName(t *testing.T) {
+	c, stg := mustCreate(t, false)
+	for _, name := range [][2]string{{"", "ledger"}, {"acme", ""}, {"acme", "a/b"}} {
+		if _, err := c.DropDatabase(stg, stg, name[0], name[1], ""); !errors.As(err, new(*InvalidLogNameError)) {
+			t.Errorf("DropDatabase(%q, %q) = %v; want InvalidLogNameError", name[0], name[1], err)
+		}
+	}
+}
+
+// TestIncarnationRequest_LegacyLogIsVisible pins that a log created before
+// incarnations were recorded (a descriptor without one) belongs to the
+// database that holds its name, whatever that database's incarnation: reads
+// and lists answer it, while a log of another incarnation stays hidden.
+func TestIncarnationRequest_LegacyLogIsVisible(t *testing.T) {
+	c, stg := mustCreate(t, true)
+	stale := LogID{TenantID: testLog.TenantID, Database: testLog.Database, Log: "stale"}
+	desc := testDescriptor(true)
+	desc.Incarnation = "inc-old"
+	if err := c.Create(stg, stale, desc); err != nil {
+		t.Fatalf("Create stale: %v", err)
+	}
+	if _, err := c.AppendEntries(stg, testLog, entries(0, 2)); err != nil {
+		t.Fatalf("AppendEntries to the legacy log: %v", err)
+	}
+	const live = "inc-new"
+
+	got, err := IncarnationRequest{Request: DescriptorRequest{ID: testLog}, Incarnation: live}.read(stg)
+	if err != nil {
+		t.Fatalf("read the legacy log's descriptor: %v", err)
+	}
+	if d, ok := got.(*Descriptor); !ok || d.Incarnation != "" {
+		t.Fatalf("legacy descriptor = %#v; want one recording no incarnation", got)
+	}
+	if _, err := (IncarnationRequest{Request: DescriptorRequest{ID: stale}, Incarnation: live}).read(stg); !errors.As(err, new(*LogNotFoundError)) {
+		t.Fatalf("read another incarnation's log = %v; want LogNotFoundError", err)
+	}
+	listed, err := IncarnationRequest{Request: ListRequest{TenantID: testLog.TenantID, Database: testLog.Database}, Incarnation: live}.read(stg)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	ids, _ := listed.([]LogID)
+	if len(ids) != 1 || ids[0] != testLog {
+		t.Fatalf("list = %v; want only the legacy log %v", listed, testLog)
+	}
+	if first, err := c.AppendEntries(stg, testLog, entries(2, 1)); err != nil || first != 2 {
+		t.Fatalf("AppendEntries after the reads = %d, %v; want index 2", first, err)
+	}
+}
+
+func TestIncarnationRequest_StrictRefusesALegacyLog(t *testing.T) {
+	c, stg := mustCreate(t, true)
+	const live = "inc-live"
+	owned := LogID{TenantID: testLog.TenantID, Database: testLog.Database, Log: "owned"}
+	desc := testDescriptor(true)
+	desc.Incarnation = live
+	if err := c.Create(stg, owned, desc); err != nil {
+		t.Fatalf("Create owned: %v", err)
+	}
+	list := ListRequest{TenantID: testLog.TenantID, Database: testLog.Database}
+	for _, strict := range []bool{false, true} {
+		_, err := IncarnationRequest{Request: DescriptorRequest{ID: testLog}, Incarnation: live, Strict: strict}.read(stg)
+		if strict && !errors.As(err, new(*LogNotFoundError)) {
+			t.Fatalf("strict read of the legacy log = %v; want LogNotFoundError", err)
+		}
+		if !strict && err != nil {
+			t.Fatalf("read of the legacy log: %v", err)
+		}
+		got, err := IncarnationRequest{Request: DescriptorRequest{ID: owned}, Incarnation: live, Strict: strict}.read(stg)
+		if d, ok := got.(*Descriptor); err != nil || !ok || d.Incarnation != live {
+			t.Fatalf("read (strict %v) of the live incarnation's log = %#v, %v; want its descriptor", strict, got, err)
+		}
+		listed, err := IncarnationRequest{Request: list, Incarnation: live, Strict: strict}.read(stg)
+		if err != nil {
+			t.Fatalf("list (strict %v): %v", strict, err)
+		}
+		ids, _ := listed.([]LogID)
+		want := 2
+		if strict {
+			want = 1
+		}
+		if len(ids) != want || !slices.Contains(ids, owned) || slices.Contains(ids, testLog) == strict {
+			t.Fatalf("list (strict %v) = %v; want the owned log%s", strict, ids, map[bool]string{false: " and the legacy log", true: " only"}[strict])
+		}
+	}
+}
+
+// TestChain_DropDatabase_KeepsAnotherIncarnationsLogs pins that a drop
+// under one incarnation deletes that incarnation's logs and the legacy logs
+// (no incarnation recorded) and keeps every record of another incarnation's
+// log, whether the logs are committed or staged in the same Update.
+func TestChain_DropDatabase_KeepsAnotherIncarnationsLogs(t *testing.T) {
+	const live = "inc-new"
+	newLog := LogID{TenantID: testLog.TenantID, Database: testLog.Database, Log: "keys"}
+	legacy := LogID{TenantID: testLog.TenantID, Database: testLog.Database, Log: "legacy"}
+	staged := LogID{TenantID: testLog.TenantID, Database: testLog.Database, Log: "staged"}
+	descOf := func(incarnation string) Descriptor {
+		d := testDescriptor(true)
+		d.Incarnation = incarnation
+		return d
+	}
+	for _, packed := range []bool{false, true} {
+		t.Run(map[bool]string{false: "committed", true: "staged"}[packed], func(t *testing.T) {
+			stg := memory.NewStorage()
+			c := NewChain()
+			for id, inc := range map[LogID]string{testLog: "inc-old", newLog: live, legacy: ""} {
+				if err := c.Create(stg, id, descOf(inc)); err != nil {
+					t.Fatalf("Create %v: %v", id, err)
+				}
+				if _, err := c.AppendEntries(stg, id, entries(0, 3)); err != nil {
+					t.Fatalf("AppendEntries %v: %v", id, err)
+				}
+			}
+			kept := tableKeys(t, stg, logPrefix(testLog))
+			var w Writer = stg
+			b := &batch{}
+			if packed {
+				c.BeginUpdate()
+				w = b
+				if err := c.Create(b, staged, descOf(live)); err != nil {
+					t.Fatalf("Create staged: %v", err)
+				}
+				if _, err := c.AppendEntries(b, staged, entries(0, 3)); err != nil {
+					t.Fatalf("AppendEntries staged: %v", err)
+				}
+			}
+			for commands := 0; ; commands++ {
+				if commands > 10 {
+					t.Fatal("DropDatabase did not converge")
+				}
+				got, err := c.DropDatabase(stg, w, testLog.TenantID, testLog.Database, live)
+				if err != nil {
+					t.Fatalf("DropDatabase: %v", err)
+				}
+				if got == 0 {
+					break
+				}
+			}
+			b.commit(t, stg)
+			if got := tableKeys(t, stg, logPrefix(testLog)); !reflect.DeepEqual(got, kept) {
+				t.Fatalf("another incarnation's records = %q; want %q", got, kept)
+			}
+			for _, id := range []LogID{newLog, legacy, staged} {
+				if left := tableKeys(t, stg, logPrefix(id)); len(left) != 0 {
+					t.Fatalf("records %q of the dropped log %v remain", left, id)
+				}
+			}
+			if got, err := (GetRequest{ID: testLog, From: 0, Limit: 3}).read(stg); err != nil || len(got.([]Entry)) != 3 {
+				t.Fatalf("entries of the kept log = %v, %v; want 3", got, err)
+			}
+		})
+	}
+}
+
+func TestChain_DropDatabase_Faults(t *testing.T) {
+	setup := func(t *testing.T) (*Chain, storage.Storage) {
+		t.Helper()
+		c, stg := mustCreate(t, true)
+		mustAppend(t, c, stg, 0, 3)
+		c.BeginUpdate()
+		return c, stg
+	}
+	drop := func(c *Chain, r storage.Reader, w Writer) error {
+		_, err := c.DropDatabase(r, w, testLog.TenantID, testLog.Database, "inc-new")
+		return err
+	}
+	t.Run("entry delete", func(t *testing.T) {
+		c, stg := setup(t)
+		if err := drop(c, stg, failingWriter{Writer: stg, failDelete: entryPrefix(testLog)}); !errors.As(err, new(*TableWriteError)) {
+			t.Fatalf("DropDatabase = %v; want TableWriteError", err)
+		}
+	})
+	t.Run("completion delete", func(t *testing.T) {
+		c, stg := setup(t)
+		if err := drop(c, stg, failingWriter{Writer: stg, failDelete: logHeadKey(testLog)}); !errors.As(err, new(*TableWriteError)) {
+			t.Fatalf("DropDatabase = %v; want TableWriteError", err)
+		}
+	})
+	t.Run("malformed descriptor", func(t *testing.T) {
+		c, stg := setup(t)
+		if err := stg.Set(descriptorKey(testLog), []byte("{")); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+		if err := drop(c, stg, stg); !errors.As(err, new(*CorruptTableError)) {
+			t.Fatalf("DropDatabase = %v; want CorruptTableError", err)
+		}
+	})
+	t.Run("descriptor read", func(t *testing.T) {
+		c, stg := setup(t)
+		if err := drop(c, getFailReader{Reader: stg, prefix: descriptorKey(testLog)}, stg); !errors.As(err, new(*TableReadError)) {
+			t.Fatalf("DropDatabase = %v; want TableReadError", err)
+		}
+	})
+	t.Run("iterator", func(t *testing.T) {
+		c, stg := setup(t)
+		if err := drop(c, logIterFailReader{Reader: stg}, stg); !errors.As(err, new(*TableReadError)) {
+			t.Fatalf("DropDatabase = %v; want TableReadError", err)
+		}
+	})
+}
+
+// TestChain_DropDatabase_SkipsTheAuditInstance pins that dropping the audit
+// database keeps the tenant's audit instance and drops its other logs.
+func TestChain_DropDatabase_SkipsTheAuditInstance(t *testing.T) {
+	stg := memory.NewStorage()
+	c := NewChain()
+	audit := AuditLogID(testLog.TenantID)
+	other := LogID{TenantID: testLog.TenantID, Database: AuditDatabase, Log: "other"}
+	for _, id := range []LogID{audit, other} {
+		if err := c.Create(stg, id, testDescriptor(true)); err != nil {
+			t.Fatalf("Create %v: %v", id, err)
+		}
+		if _, err := c.AppendEntries(stg, id, entries(0, 2)); err != nil {
+			t.Fatalf("AppendEntries %v: %v", id, err)
+		}
+	}
+	kept := tableKeys(t, stg, logPrefix(audit))
+	for commands := 0; ; commands++ {
+		if commands > 10 {
+			t.Fatal("DropDatabase did not converge")
+		}
+		got, err := c.DropDatabase(stg, stg, testLog.TenantID, AuditDatabase, "")
+		if err != nil {
+			t.Fatalf("DropDatabase: %v", err)
+		}
+		if got == 0 {
+			break
+		}
+	}
+	if got := tableKeys(t, stg, logPrefix(audit)); len(kept) == 0 || !reflect.DeepEqual(got, kept) {
+		t.Fatalf("audit instance records = %q; want %q", got, kept)
+	}
+	if left := tableKeys(t, stg, logPrefix(other)); len(left) != 0 {
+		t.Fatalf("records %q of the dropped log remain", left)
+	}
+}
+
+// TestIncarnationRequest_HidesAnotherIncarnationOnEveryRead pins that every
+// read naming a log answers LogNotFoundError for another incarnation's log
+// and answers as the plain read for the log's own incarnation.
+func TestIncarnationRequest_HidesAnotherIncarnationOnEveryRead(t *testing.T) {
+	stg := memory.NewStorage()
+	c := NewChain()
+	k := mustKey(t, SignatureEd25519)
+	desc := keyedDescriptor(t, k)
+	desc.Incarnation = "inc-old"
+	if err := c.CreateWithKey(stg, testLog, desc, k); err != nil {
+		t.Fatalf("CreateWithKey: %v", err)
+	}
+	if _, err := c.AppendEntries(stg, testLog, entries(0, 2)); err != nil {
+		t.Fatalf("AppendEntries: %v", err)
+	}
+	reads := map[string]Request{
+		"head":        HeadRequest{ID: testLog},
+		"get":         GetRequest{ID: testLog, From: 0, Limit: 1},
+		"inclusion":   InclusionRequest{ID: testLog, Index: 0, Size: 2},
+		"consistency": ConsistencyRequest{ID: testLog, Size1: 1, Size2: 2},
+		"descriptor":  DescriptorRequest{ID: testLog},
+		"key":         KeyRequest{ID: testLog, Version: k.Version},
+	}
+	for name, req := range reads {
+		t.Run(name, func(t *testing.T) {
+			if _, err := (IncarnationRequest{Request: req, Incarnation: "inc-new"}).read(stg); !errors.As(err, new(*LogNotFoundError)) {
+				t.Fatalf("read under another incarnation = %v; want LogNotFoundError", err)
+			}
+			if _, err := (IncarnationRequest{Request: req, Incarnation: "inc-old"}).read(stg); err != nil {
+				t.Fatalf("read under the log's incarnation: %v", err)
+			}
+		})
+	}
+	absent := LogID{TenantID: testLog.TenantID, Database: testLog.Database, Log: "absent"}
+	if _, err := (IncarnationRequest{Request: HeadRequest{ID: absent}, Incarnation: "inc-old"}).read(stg); !errors.As(err, new(*LogNotFoundError)) {
+		t.Fatalf("read of a missing log = %v; want LogNotFoundError", err)
+	}
+	// A request naming no log (here a nested IncarnationRequest) passes
+	// straight to its own read.
+	nested := IncarnationRequest{Request: IncarnationRequest{Request: DescriptorRequest{ID: testLog}, Incarnation: "inc-old"}, Incarnation: "inc-new"}
+	if got, err := nested.read(stg); err != nil || got.(*Descriptor).Incarnation != "inc-old" {
+		t.Fatalf("nested read = %#v, %v; want the inc-old descriptor", got, err)
+	}
+	if err := stg.Set(descriptorKey(testLog), []byte("{")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if _, err := (IncarnationRequest{Request: ListRequest{TenantID: testLog.TenantID, Database: testLog.Database}, Incarnation: "inc-old"}).read(stg); err == nil {
+		t.Fatal("list over a malformed descriptor succeeded")
 	}
 }
 

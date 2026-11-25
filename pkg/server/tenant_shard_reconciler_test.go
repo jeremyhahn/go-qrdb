@@ -24,6 +24,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal/clustersealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
@@ -375,14 +377,9 @@ func awaitSubscribed(t *testing.T, kv *watchablePlacementKV) {
 // awaitCondition polls cond until it holds or reconcileConvergeBound passes,
 // and reports which.
 func awaitCondition(cond func() bool) bool {
-	deadline := time.Now().Add(reconcileConvergeBound)
-	for !cond() {
-		if time.Now().After(deadline) {
-			return false
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	return true
+	// The callers phrase their own failure, so the quiet reporter only keeps
+	// the deadline from writing a second one.
+	return assert.Eventually(quietReporter{}, cond, reconcileConvergeBound, 5*time.Millisecond)
 }
 
 // reconcilePasses reports how many reconcile passes factory has observed.

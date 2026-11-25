@@ -53,6 +53,7 @@ type AuthMiddleware struct {
 	methods       map[string]struct{}
 	authorizer    auth.Authorizer
 	users         user.UserServicer
+	groups        GroupResolver
 	usersFallback user.UserServicer
 	audit         audit.Logger
 
@@ -460,7 +461,17 @@ func (m *AuthMiddleware) authenticate(ctx context.Context) (context.Context, *au
 	for _, authn := range m.authenticators {
 		id, err := authn.Authenticate(ctx)
 		if err != nil {
-			lastErr = err
+			// A decline (isChainDecline) never overwrites an earlier method's
+			// error: an mTLS revocation-lookup failure
+			// (*auth.RevocationCheckError, retryable 503) must not become a
+			// 401 because a later method -- the peer-credential authenticator
+			// on every non-Unix request, say -- had nothing to check. Any
+			// other error replaces lastErr, and a decline replaces an
+			// earlier decline, so when every method declines the answer is
+			// still the last decline (auth.ErrUnauthenticated).
+			if lastErr == nil || !isChainDecline(err) || isChainDecline(lastErr) {
+				lastErr = err
+			}
 			continue
 		}
 		identity = id
@@ -480,6 +491,15 @@ func (m *AuthMiddleware) authenticate(ctx context.Context) (context.Context, *au
 	}
 
 	return m.finalizeIdentity(ctx, identity, method)
+}
+
+// isChainDecline reports whether err is an authenticator's decline -- "no
+// credential of my kind on this request" -- rather than a verdict on a
+// credential it was given: auth.ErrUnauthenticated, or auth.ErrNoPeerCertificate
+// (no client certificate on the connection). authenticate never lets a decline
+// replace an earlier method's error.
+func isChainDecline(err error) bool {
+	return errors.Is(err, auth.ErrUnauthenticated) || errors.Is(err, auth.ErrNoPeerCertificate)
 }
 
 // tenantIAMSealedMetadataKey marks an identity whose tenant's IAM store was
@@ -505,15 +525,23 @@ func IdentityIAMSealed(identity *auth.Identity) bool {
 // assignments from the user store, enforces the user-enabled check, the
 // account's mTLS certificate enrolment (checkCertBinding) and its
 // permitted-method policy (checkAuthMethod), then binds the identity and its
-// tenant into the returned context. The base identity's
-// Roles are overwritten with the store's RoleIDs: roles are ALWAYS resolved
-// from the authorization store, never trusted from the identity's origin (a
-// certificate, a token, or -- critically -- a forwarded on-behalf assertion).
+// tenant into the returned context.
 //
-// When no user store is configured the base identity is used as-is. A missing
-// user proceeds without enrichment (empty roles -> default-deny at authorize);
-// a transient store failure returns StoreUnavailableError so clients retry
-// rather than being denied with stale/empty roles.
+// Roles (the record's RoleIDs), RoleBindings and Attributes come ONLY from
+// the user record the identity binds to (SPEC authz-claim-roles): whatever
+// the identity's origin carried -- an authenticator, a token's claims, a
+// certificate or, critically, a forwarded on-behalf assertion -- is
+// discarded before anything else. A subject with no record, a tenant whose
+// IAM is sealed and a node with no user store configured all leave the
+// identity with none of them: RBAC default-denies it and only the
+// IdentityGated surface stays reachable. A peer credential
+// (auth.MethodPeerCred) is the exception: its mapped account must resolve, so
+// a missing account, or no user store at all, is refused with
+// auth.ErrPeerCredentialAccountMissing (checkUnresolvedPeerCred), and a
+// tenant whose IAM is sealed refuses it with the retryable sealed answer
+// instead of admitting it unenriched (checkSealedPeerCred). A transient
+// store failure returns StoreUnavailableError so clients retry rather than
+// being denied with stale/empty roles.
 func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Identity, method authMethod) (context.Context, *auth.Identity, error) {
 	// A node-sanctioned service principal is granted to in-process callers
 	// only (auth.NewServicePrincipal, reached through sdk/go/node
@@ -587,12 +615,17 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 		return ctx, nil, err
 	}
 
-	// RoleBindings and Attributes are user-record state: the user store is
-	// their ONLY source. Clear whatever the authenticator carried in, before
+	// Roles (the record's RoleIDs), RoleBindings and Attributes are
+	// user-record state: the user store is their ONLY source (SPEC
+	// authz-claim-roles). Clear whatever the authenticator carried in, before
 	// anything else, so every path below -- found, not found, tenant sealed,
 	// and no user store at all -- starts from none: a binding withdrawn from
 	// the record, never on it, or asserted by an authenticator with no record
 	// behind it cannot reach the authorizer.
+	// A role list read from a token's claims is never an authorization
+	// source.
+	identity.Roles = nil
+	identity.Groups = nil
 	identity.RoleBindings = nil
 	identity.Attributes = nil
 	// TenantOwner likewise has one source, decideTenantOwner below; no
@@ -622,7 +655,6 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 	// here would refuse a holder legitimately claiming its own share before
 	// decide() is ever reached, which is the bug this fixes.
 	if auth.IsHolderIdentity(identity) {
-		identity.Roles = nil
 		if err := m.decideTenantOwner(ctx, identity); err != nil {
 			return ctx, nil, err
 		}
@@ -642,6 +674,9 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 			// bootstrap endpoints (tenant barrier init, officer claims),
 			// which is exactly the surface a sealed tenant may reach.
 			if errors.Is(err, tenant.ErrTenantSealed) {
+				if rerr := checkSealedPeerCred(method, err); rerr != nil {
+					return ctx, nil, rerr
+				}
 				if identity.Metadata == nil {
 					identity.Metadata = make(map[string]string)
 				}
@@ -664,6 +699,9 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 			// certificate naming no account is refused.
 			var unf *user.UserNotFoundError
 			if errors.As(err, &unf) {
+				if rerr := checkUnresolvedPeerCred(method); rerr != nil {
+					return ctx, nil, rerr
+				}
 				if rerr := checkUnresolvedCertLogin(ctx, identity, method, m.bindingPolicy); rerr != nil {
 					return ctx, nil, rerr
 				}
@@ -749,7 +787,16 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 			// RoleBindings and Attributes are overwritten from the store's
 			// current state, never merged, so a withdrawal on the record
 			// takes effect here.
-			identity.Roles = u.RoleIDs
+			// Group-derived roles join the record's own: a member holds
+			// every role of every group it belongs to that still resolves
+			// (see effectiveRoles). Groups are records too, so roles still
+			// come only from go-qrdb's own state.
+			roles, gerr := m.effectiveRoles(ctx, u)
+			if gerr != nil {
+				return ctx, nil, gerr
+			}
+			identity.Roles = roles
+			identity.Groups = slices.Clone(u.GroupIDs)
 			identity.RoleBindings = convertRoleBindings(u.RoleBindings)
 
 			// Attributes stays separate from Metadata (see
@@ -759,6 +806,10 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 			// record's map.
 			identity.Attributes = maps.Clone(u.Attributes)
 		}
+	} else if rerr := checkUnresolvedPeerCred(method); rerr != nil {
+		// No user store: a peer credential's mapped account cannot be
+		// resolved, so the caller is refused rather than admitted unresolved.
+		return ctx, nil, rerr
 	} else if rerr := checkUnresolvedCertLogin(ctx, identity, method, m.bindingPolicy); rerr != nil {
 		// No user store: no account can be resolved, so under the
 		// "required" posture no certificate login can show an enrolment.
@@ -1380,6 +1431,39 @@ func checkAuthMethod(u *user.User, method authMethod) error {
 		return nil
 	}
 	return CheckAuthMethod(u, method.name)
+}
+
+// checkUnresolvedPeerCred refuses a peer-credential login whose mapped
+// account did not resolve: the account does not exist (never created, or
+// deleted) or no user store is configured to resolve it. A peer credential
+// names a local OS principal, not an account; the configured mapping is what
+// turns it into one, so an identity whose account is absent has not
+// identified anyone and is refused with auth.ErrPeerCredentialAccountMissing
+// (UNAUTHENTICATED) rather than admitted unresolved, where an ABAC
+// subject.authenticated allow could still grant it. Every other method keeps
+// the unresolved-account rule of finalizeIdentity. An account that cannot be
+// looked up because its tenant's IAM is sealed is checkSealedPeerCred's case.
+func checkUnresolvedPeerCred(method authMethod) error {
+	if method.known && method.name == auth.MethodPeerCred {
+		return auth.ErrPeerCredentialAccountMissing
+	}
+	return nil
+}
+
+// checkSealedPeerCred refuses a peer-credential login whose tenant's IAM is
+// sealed (sealed is the lookup's tenant.ErrTenantSealed). The mapped account
+// cannot be read, so it cannot be shown to exist, be enabled or permit the
+// peer-credential method; admitting the identity unenriched, as the sealed
+// window admits every other method, would let a mapping to a deleted,
+// disabled or mTLS-only account reach the sealed-window barrier status and
+// unseal fallback. It is answered with *StoreUnavailableError wrapping the
+// sealed error, the retryable sealed answer (pkg/api/errclass), never an
+// admission. Every other method keeps the sealed-window behaviour.
+func checkSealedPeerCred(method authMethod, sealed error) error {
+	if method.known && method.name == auth.MethodPeerCred {
+		return &StoreUnavailableError{Err: sealed}
+	}
+	return nil
 }
 
 // CheckAuthMethod enforces u's permitted-authentication-method policy

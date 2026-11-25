@@ -187,11 +187,7 @@ func (t *Transport) Connect(ctx context.Context) error {
 		if err == nil {
 			return nil
 		}
-		// An attempt the bound itself cut short says nothing about the
-		// server; the failure before it does.
-		if last == nil || !boundSpent(cctx) {
-			last = err
-		}
+		last = lastConnectFailure(last, err, boundSpent(cctx))
 		if !bounded || !retryableConnect(err) || t.closed.Load() {
 			return err
 		}
@@ -258,6 +254,23 @@ func retryableConnect(err error) bool {
 	}
 	var alpn *alpnMismatchError
 	return !errors.As(err, &alpn)
+}
+
+// lastConnectFailure returns the failure Connect reports as its last
+// attempt's, given the one held so far (nil before the first), the newest
+// attempt's error, and whether the caller's bound is spent. An attempt the
+// bound itself cut short says nothing about the server, so once a failure is
+// held it does not replace it: its error wraps context.DeadlineExceeded or
+// context.Canceled (the deadline or cancel can hit the attempt a moment
+// before the context reports Done), or the bound was already spent.
+func lastConnectFailure(last, err error, spent bool) error {
+	if last == nil {
+		return err
+	}
+	if spent || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return last
+	}
+	return err
 }
 
 // boundSpent reports whether ctx's bound has ended: ctx is done, or its

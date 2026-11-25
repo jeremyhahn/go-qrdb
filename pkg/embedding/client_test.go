@@ -332,9 +332,10 @@ func TestEmbed_APIKeyHeader_OmittedWhenEmpty(t *testing.T) {
 
 func TestEmbed_CancelledContext(t *testing.T) {
 	_, baseURL := embeddingServer(t, func(w http.ResponseWriter, r *http.Request) {
-		// Slow handler that won't complete before cancellation.
-		time.Sleep(500 * time.Millisecond)
-		w.Write(makeEmbeddingResponse("m", 4, 1))
+		// Handler that never answers: the client's context is canceled
+		// before the call, so the request either never arrives or is
+		// abandoned, and the handler returns once the request goes away.
+		<-r.Context().Done()
 	})
 
 	c := newTestClient(t, baseURL)

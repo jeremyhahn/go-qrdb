@@ -20,15 +20,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-// TestTransportImplementsDatabaseScoper asserts the MCP transport satisfies
-// the DatabaseScoper interface so Client.DatabaseScoped dispatches to it.
-func TestTransportImplementsDatabaseScoper(t *testing.T) {
-	var tr any = &Transport{}
-	if _, ok := tr.(transport.DatabaseScoper); !ok {
-		t.Fatal("MCP Transport does not implement transport.DatabaseScoper")
-	}
-}
-
 // TestWithDatabaseSetsScope verifies WithDatabase records the target database
 // and that scoping to the default "system" database (or empty string) yields
 // an unscoped clone.

@@ -252,7 +252,7 @@ func TestE2E_ListTenants_HappyPath(t *testing.T) {
 			Tenants: []*pb.TenantResponse{{Id: "t1"}, {Id: "t2"}},
 		})
 	})
-	resp, err := tr.ListTenants(context.Background())
+	resp, err := tr.ListTenants(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("ListTenants: %v", err)
 	}

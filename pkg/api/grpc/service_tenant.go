@@ -105,7 +105,7 @@ func (s *qrdbServiceServer) TenantGet(ctx context.Context, req *pb.TenantGetRequ
 
 // TenantList returns metadata for every tenant to a caller holding
 // tenants:list:cross, and for the caller's own tenant only to anyone else.
-func (s *qrdbServiceServer) TenantList(ctx context.Context, _ *emptypb.Empty) (*pb.TenantListResponse, error) {
+func (s *qrdbServiceServer) TenantList(ctx context.Context, req *pb.TenantListRequest) (*pb.TenantListResponse, error) {
 	if s.tenantSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "tenant"})
 	}
@@ -120,6 +120,11 @@ func (s *qrdbServiceServer) TenantList(ctx context.Context, _ *emptypb.Empty) (*
 		if tenants, err = s.authMW.FilterTenantList(ctx, tenants); err != nil {
 			return nil, authmw.GRPCError(err, codes.PermissionDenied)
 		}
+	}
+	// The status filter runs after the visibility narrowing, so it never
+	// widens what the caller sees.
+	if tenants, err = tenant.FilterByStatus(tenants, tenant.Status(req.GetStatus())); err != nil {
+		return nil, mapServiceError(err)
 	}
 
 	pbTenants := make([]*pb.TenantResponse, len(tenants))

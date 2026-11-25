@@ -21,6 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -249,6 +250,8 @@ func TestStoreResolver_FenceTargetRoutesEachIsolationMode(t *testing.T) {
 	raftKV := newMockKVService()
 	hosts := &stubTenantServices{svcs: &DatabaseServices{KV: volumeKV}}
 	raft := &stubRaftFence{svcs: &DatabaseServices{KV: raftKV}}
+	barrierKV := newMockKVService()
+	barrier := &stubBarrierFence{kv: barrierKV}
 
 	tests := []struct {
 		name            string
@@ -272,6 +275,11 @@ func TestStoreResolver_FenceTargetRoutesEachIsolationMode(t *testing.T) {
 			wantKV:          raftKV,
 			wantDedicated:   true,
 			wantPerDatabase: true,
+		},
+		{
+			name:     "barrier isolation: the system store, where its data is served",
+			resolver: &storeResolver{hosts: hosts, raft: raft, barrier: barrier, tenantSvc: &isolatedTenantServicer{isolation: tenant.IsolationBarrier}, systemTenant: tenantid.System},
+			tenantID: "acme",
 		},
 		{
 			name:     "prefix isolation: the system store",
@@ -307,6 +315,91 @@ func TestStoreResolver_FenceTargetRoutesEachIsolationMode(t *testing.T) {
 				t.Fatal("FenceTarget returned the wrong store")
 			}
 		})
+	}
+}
+
+// stubBarrierFence is a homeFenceSource whose every tenant's home group
+// resolves to kv, or err; it records the database it was asked for.
+type stubBarrierFence struct {
+	kv   *mockKVService
+	err  error
+	asks []string
+}
+
+func (s *stubBarrierFence) Services(_ context.Context, _, db string) (*DatabaseServices, error) {
+	s.asks = append(s.asks, db)
+	if s.err != nil {
+		return nil, s.err
+	}
+	return &DatabaseServices{KV: s.kv}, nil
+}
+
+// TestStoreResolver_LogFenceTargetBarrierTenantUsesItsHomeGroup pins where a
+// barrier tenant's named database's logs are fenced: in the home group they
+// are proposed to (go-qrdb#1655), for any of its databases, a barrier
+// database among them; and nowhere of their own where it has no home group.
+func TestStoreResolver_LogFenceTargetBarrierTenantUsesItsHomeGroup(t *testing.T) {
+	homeKV := newMockKVService()
+	barrierTenant := &isolatedTenantServicer{isolation: tenant.IsolationBarrier}
+	for _, db := range []string{"orders", "sealed-ledger"} {
+		home := &stubBarrierFence{kv: homeKV}
+		r := &storeResolver{barrier: home, tenantSvc: barrierTenant, systemTenant: tenantid.System}
+		store, ok, err := r.LogFenceTarget(context.Background(), "acme", db, "inc-1")
+		if err != nil {
+			t.Fatalf("%s: LogFenceTarget: %v", db, err)
+		}
+		if !ok || store.PerDatabase || store.KV != service.ReclaimKV(homeKV) {
+			t.Fatalf("%s: (ok, perDatabase, home) = (%v, %v, %v), want the shared home group", db, ok, store.PerDatabase, store.KV == service.ReclaimKV(homeKV))
+		}
+		if len(home.asks) != 1 || home.asks[0] != database.TenantHomeName {
+			t.Fatalf("%s: resolved %v, want the home group %q", db, home.asks, database.TenantHomeName)
+		}
+	}
+
+	t.Run("no home group: no log marker", func(t *testing.T) {
+		for _, r := range []*storeResolver{
+			{tenantSvc: barrierTenant, systemTenant: tenantid.System},
+			{barrier: &stubBarrierFence{err: ErrRaftDatabaseUnknown}, tenantSvc: barrierTenant, systemTenant: tenantid.System},
+		} {
+			_, ok, err := r.LogFenceTarget(context.Background(), "acme", "orders", "inc-1")
+			if err != nil || ok {
+				t.Fatalf("(ok, err) = (%v, %v), want no log marker", ok, err)
+			}
+		}
+	})
+
+	t.Run("other isolations: no log marker", func(t *testing.T) {
+		for _, iso := range []tenant.IsolationType{tenant.IsolationPrefix, tenant.IsolationRaft, tenant.IsolationVolume} {
+			r := &storeResolver{barrier: &stubBarrierFence{kv: homeKV}, tenantSvc: &isolatedTenantServicer{isolation: iso}, systemTenant: tenantid.System}
+			_, ok, err := r.LogFenceTarget(context.Background(), "acme", "orders", "inc-1")
+			if err != nil || ok {
+				t.Fatalf("%s: (ok, err) = (%v, %v), want no log marker", iso, ok, err)
+			}
+		}
+	})
+
+	t.Run("a sealed home group is unavailable, not absent", func(t *testing.T) {
+		r := &storeResolver{barrier: &stubBarrierFence{err: tenant.ErrTenantSealed}, tenantSvc: barrierTenant, systemTenant: tenantid.System}
+		_, ok, err := r.LogFenceTarget(context.Background(), "acme", "orders", "inc-1")
+		if !ok || !errors.Is(err, tenant.ErrTenantSealed) {
+			t.Fatalf("(ok, err) = (%v, %v), want (true, ErrTenantSealed)", ok, err)
+		}
+	})
+}
+
+// TestStoreResolver_FenceTargetBarrierTenantUsesTheSystemStore: a barrier
+// tenant's database data is served from the system store and guarded there
+// (restServiceRegistry.resolveShared, sharedStoreFence), so its data marker
+// stays in the system store even when the tenant has a home group.
+func TestStoreResolver_FenceTargetBarrierTenantUsesTheSystemStore(t *testing.T) {
+	home := &stubBarrierFence{kv: newMockKVService()}
+	r := &storeResolver{barrier: home, tenantSvc: &isolatedTenantServicer{isolation: tenant.IsolationBarrier}, systemTenant: tenantid.System}
+	_, dedicated, err := r.FenceTarget(context.Background(), "acme", "orders", "inc-1")
+	if err != nil || dedicated {
+		t.Fatalf("(dedicated, err) = (%v, %v), want the system store", dedicated, err)
+	}
+	if len(home.asks) != 0 {
+		t.Fatalf("resolved %v, want no home-group lookup for the data marker", home.asks)
 	}
 }
 

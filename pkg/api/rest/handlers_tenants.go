@@ -71,7 +71,9 @@ type createTenantRequest struct {
 
 	// SOUsername is the tenant's security officer, optional. SOUsername,
 	// exactly one of SOCSRPEM and SOCertPEM, and SOPin are given together
-	// or not at all; the SO differs from the admin by name and by key.
+	// or not at all. Under strict separation of duties the SO differs from
+	// the admin by name and by key; otherwise the admin may be named the
+	// SO, by name and key together.
 	SOUsername string `json:"so_username,omitempty"`
 	// SOCSRPEM is the SO's certificate signing request, signed as
 	// AdminCSRPEM is.
@@ -355,6 +357,10 @@ func (s *Server) handleListTenants(w http.ResponseWriter, r *http.Request) {
 			writeAuthzErrorJSON(w, err)
 			return
 		}
+	}
+	if tenants, err = tenant.FilterByStatus(tenants, tenant.Status(r.URL.Query().Get("status"))); err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
 	}
 
 	resp := make([]*tenantResponse, len(tenants))

@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
 )
 
@@ -47,8 +48,11 @@ func TestPortHold_TakesThePortFromAHolderItCannotReach(t *testing.T) {
 	h := holdPort(port)
 	t.Cleanup(h.release)
 	// Let await dial, be refused and find the port still taken, so the
-	// holder lets go only after the guard has had to fall back on polling.
-	time.Sleep(4 * portHoldRetryInterval)
+	// holder lets go only after the guard has had to fall back on polling:
+	// two failed poll ticks are the observable proof it did, and retried.
+	require.Eventually(t, func() bool { return h.polls.Load() >= 2 },
+		10*time.Second, portHoldRetryInterval/2,
+		"the guard never fell back on polling for port %d", port)
 	select {
 	case <-h.armed:
 		t.Fatalf("the guard reported port %d armed while another socket had it bound", port)

@@ -181,6 +181,9 @@ func (s *Server) handleCreateRole(ctx context.Context, payload []byte) ([]byte, 
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	if err := s.authMW.AuthorizeSOExclusive(ctx, req.TenantID, "create role"); err != nil {
+		return nil, err
+	}
 	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.RolesWriteTenant)
 	if oerr != nil {
 		return nil, oerr
@@ -308,7 +311,7 @@ func (s *Server) handleListOwnPermissions(ctx context.Context, _ []byte) ([]byte
 		return nil, &ServiceNotConfiguredError{Service: "role"}
 	}
 
-	perms, err := role.ListOwnPermissions(ctx, s.roleSvc)
+	perms, err := role.ListOwnPermissions(ctx, s.roleSvc, s.authMW.StrictSeparation())
 	if err != nil {
 		return nil, err
 	}
@@ -409,6 +412,9 @@ func (s *Server) handleReconcileRoles(ctx context.Context, payload []byte) ([]by
 		}
 	}
 
+	if err := s.authMW.AuthorizeSOExclusive(ctx, req.TenantID, "reconcile built-in roles"); err != nil {
+		return nil, err
+	}
 	report, err := s.roleSvc.ReconcileBuiltInRoles(ctx, req.TenantID)
 	if err != nil {
 		return nil, err
@@ -433,6 +439,9 @@ func (s *Server) handleReconcileRolesAllTenants(ctx context.Context, _ []byte) (
 		return nil, &ServiceNotConfiguredError{Service: "tenant"}
 	}
 
+	if err := s.authMW.AuthorizeSOExclusive(ctx, "", "reconcile built-in roles in every tenant"); err != nil {
+		return nil, err
+	}
 	report, err := role.ReconcileAllTenants(ctx, s.roleSvc, s.tenantSvc, s.authMW.OperatorAccessGate(permission.RolesReconcileAll))
 	if err != nil {
 		return nil, err

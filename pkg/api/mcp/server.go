@@ -38,6 +38,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/clientlimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
+	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
@@ -68,6 +69,7 @@ type Server struct {
 	ragSvc       service.RAGServicer
 	userSvc      user.UserServicer
 	roleSvc      role.RoleServicer
+	groupSvc     group.GroupServicer
 	certProv     cert.CertProvider
 	certEnroll   service.CertEnrollmentServicer
 	invitations  service.InvitationServicer
@@ -434,6 +436,14 @@ func WithRAG(svc service.RAGServicer) ServerOption {
 func WithUserService(svc user.UserServicer) ServerOption {
 	return func(s *Server) {
 		s.userSvc = svc
+	}
+}
+
+// WithGroupService registers the IAM group tools on the MCP server (with a
+// user service).
+func WithGroupService(svc group.GroupServicer) ServerOption {
+	return func(s *Server) {
+		s.groupSvc = svc
 	}
 }
 
@@ -872,6 +882,9 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	}
 	if s.roleSvc != nil && s.userSvc != nil {
 		s.addTools(roleTools(s.roleSvc, s.userSvc, s.authMW)...)
+	}
+	if s.groupSvc != nil && s.userSvc != nil {
+		s.addTools(groupTools(s.groupSvc, s.userSvc, s.roleSvc, s.authMW)...)
 	}
 	if s.roleSvc != nil && s.tenantSvc != nil {
 		s.addTools(roleReconcileAllTools(s.authMW, s.roleSvc, s.tenantSvc)...)

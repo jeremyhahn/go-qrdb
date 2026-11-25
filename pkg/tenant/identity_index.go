@@ -54,6 +54,9 @@ const (
 
 	// IdentityRole is the kind for pkg/role records.
 	IdentityRole IdentityKind = "role"
+
+	// IdentityGroup is the kind for pkg/group records.
+	IdentityGroup IdentityKind = "group"
 )
 
 // identityIndexKeyPrefix is the reserved keyspace the index occupies WITHIN the

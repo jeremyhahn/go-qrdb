@@ -45,6 +45,7 @@ import type {
     DaemonClient,
     DatabaseClient,
     EmbeddedServerClient,
+    GroupClient,
     IndexClient,
     InvitationClient,
     KVClient,
@@ -108,6 +109,12 @@ import type {
     MintJoinTokenResponse,
     CreateNamespaceResponse,
     CreateRoleRequest,
+    CreateGroupRequest,
+    Group,
+    GroupMember,
+    ListGroupsRequest,
+    ListGroupsResponse,
+    UpdateGroupRequest,
     CreateUserRequest,
     DatabaseInfo,
     InsertDocumentRequest,
@@ -257,6 +264,17 @@ import type {
 } from './types.js';
 import type { AuditFilter, AuditPage } from './audit.js';
 import { NotImplementedError } from './errors.js';
+import {
+    createGroupWire,
+    groupFromWire,
+    groupMemberFromWire,
+    groupPageFromWire,
+    listGroupsWire,
+    updateGroupWire,
+    type GroupMemberWire,
+    type GroupWire,
+    type ListGroupsWire,
+} from './group-wire.js';
 
 import {
     ceremonyOfficerWire,
@@ -379,6 +397,7 @@ interface WailsBindings {
         UserBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         InvitationBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         RoleBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
+        GroupBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         CertBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         CollectionBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         DatabaseBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
@@ -1155,6 +1174,51 @@ export class WailsClient implements Client {
             },
             listPermissions: async (): Promise<ListPermissionsResponse> => {
                 return b.ListPermissions() as Promise<ListPermissionsResponse>;
+            },
+        };
+    }
+
+    /**
+     * @inheritdoc
+     *
+     * GroupBinding takes the Go transport group types, whose JSON keys are
+     * camelCase with Go-style ID suffixes (tenantID, roleIDs): requests are
+     * built in that wire form and sent verbatim (never snake-cased), and
+     * responses are mapped exactly as the REST client maps them.
+     */
+    get groups(): GroupClient {
+        const b = wrapBindings(getBindings().main.GroupBinding);
+        return {
+            create: async (req: CreateGroupRequest): Promise<Group> => {
+                return groupFromWire(await b.Create(createGroupWire(req)) as GroupWire);
+            },
+            get: async (id: string): Promise<Group> => {
+                return groupFromWire(await b.Get(id) as GroupWire);
+            },
+            getByName: async (name: string, tenantId?: string): Promise<Group> => {
+                const wire: Record<string, unknown> = { name };
+                if (tenantId !== undefined) wire['tenantID'] = tenantId;
+                return groupFromWire(await b.GetByName(wire) as GroupWire);
+            },
+            update: async (req: UpdateGroupRequest): Promise<Group> => {
+                const wire = { ...updateGroupWire(req), id: req.id };
+                return groupFromWire(await b.Update(wire) as GroupWire);
+            },
+            delete: async (id: string): Promise<void> => {
+                await b.Delete(id);
+            },
+            list: async (req?: ListGroupsRequest): Promise<ListGroupsResponse> => {
+                return groupPageFromWire(await b.List(listGroupsWire(req)) as ListGroupsWire);
+            },
+            addMember: async (groupId: string, userId: string): Promise<void> => {
+                await b.AddMember(userId, groupId);
+            },
+            removeMember: async (groupId: string, userId: string): Promise<void> => {
+                await b.RemoveMember(userId, groupId);
+            },
+            members: async (groupId: string): Promise<readonly GroupMember[]> => {
+                const resp = await b.Members(groupId) as { members?: readonly GroupMemberWire[] | null };
+                return (resp?.members ?? []).map(groupMemberFromWire);
             },
         };
     }

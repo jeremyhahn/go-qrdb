@@ -1325,18 +1325,6 @@ func TestFilteredPartition_Key(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Interface compliance
-// ---------------------------------------------------------------------------
-
-func TestRelationalTable_ImplementsInterfaces(t *testing.T) {
-	var _ sqle.Table = (*RelationalTable)(nil)
-	var _ sqle.PrimaryKeyTable = (*RelationalTable)(nil)
-	var _ sqle.StatisticsTable = (*RelationalTable)(nil)
-	var _ sqle.IndexAddressableTable = (*RelationalTable)(nil)
-	var _ sqle.IndexedTable = (*RelationalTable)(nil)
-}
-
-// ---------------------------------------------------------------------------
 // Test-only stubs
 // ---------------------------------------------------------------------------
 

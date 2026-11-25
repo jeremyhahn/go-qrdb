@@ -473,12 +473,50 @@ func TestEmbeddedListTenants_NarrowedToOwnTenantWithoutCrossGrant(t *testing.T) 
 	}
 	tr := newExtTransport(t, WithTenantService(svc), WithAuthMiddleware(newGrantingAuthMW(permission.TenantsList)))
 
-	resp, err := tr.ListTenants(identityCtx("acme", "member"))
+	resp, err := tr.ListTenants(identityCtx("acme", "member"), nil)
 	if err != nil {
 		t.Fatalf("ListTenants: %v", err)
 	}
 	if len(resp.Tenants) != 1 || resp.Tenants[0].ID != "acme" {
 		t.Errorf("Tenants = %+v, want only acme's own record", resp.Tenants)
+	}
+}
+
+// TestListTenants_StatusFilter proves the status filter runs after the
+// own-tenant narrowing: a caller without tenants:list:cross filtering for
+// another tenant's status gets an empty list, never that tenant.
+func TestListTenants_StatusFilter(t *testing.T) {
+	svc := &mockTenantService{
+		listFn: func(context.Context) ([]tenant.TenantInfo, error) {
+			return []tenant.TenantInfo{
+				{ID: "acme", Status: tenant.StatusActive},
+				{ID: "globex", Status: tenant.StatusSuspended},
+			}, nil
+		},
+	}
+	tr := newExtTransport(t, WithTenantService(svc), WithAuthMiddleware(newGrantingAuthMW(permission.TenantsList)))
+	ctx := identityCtx("acme", "member")
+
+	resp, err := tr.ListTenants(ctx, &transport.ListTenantsRequest{Status: transport.TenantStatusSuspended})
+	if err != nil {
+		t.Fatalf("ListTenants(suspended): %v", err)
+	}
+	if len(resp.Tenants) != 0 {
+		t.Fatalf("Tenants = %+v, want none (globex is not the caller's)", resp.Tenants)
+	}
+
+	resp, err = tr.ListTenants(ctx, &transport.ListTenantsRequest{Status: transport.TenantStatusActive})
+	if err != nil {
+		t.Fatalf("ListTenants(active): %v", err)
+	}
+	if len(resp.Tenants) != 1 || resp.Tenants[0].ID != "acme" {
+		t.Fatalf("Tenants = %+v, want only acme", resp.Tenants)
+	}
+
+	_, err = tr.ListTenants(ctx, &transport.ListTenantsRequest{Status: "deleted"})
+	var ie *tenant.InvalidStatusError
+	if !errors.As(err, &ie) {
+		t.Fatalf("err = %T(%v), want *tenant.InvalidStatusError", err, err)
 	}
 }
 
@@ -491,7 +529,7 @@ func TestEmbeddedListTenants_CrossGrantSeesEveryTenant(t *testing.T) {
 	tr := newExtTransport(t, WithTenantService(svc),
 		WithAuthMiddleware(newGrantingAuthMW(permission.TenantsList, permission.TenantsListCross)))
 
-	resp, err := tr.ListTenants(identityCtx(tenantid.System, "admin"))
+	resp, err := tr.ListTenants(identityCtx(tenantid.System, "admin"), nil)
 	if err != nil {
 		t.Fatalf("ListTenants: %v", err)
 	}

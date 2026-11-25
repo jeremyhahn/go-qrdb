@@ -169,14 +169,6 @@ func TestDatabase_Backend(t *testing.T) {
 	}
 }
 
-func TestDatabase_Backend_NotNil(t *testing.T) {
-	db := newTestDatabase("backend-notnull", BackendMemory)
-
-	if db.Backend() == nil {
-		t.Error("Backend() returned nil, want non-nil Backend")
-	}
-}
-
 func TestDatabase_Status(t *testing.T) {
 	db := newTestDatabase("status-db", BackendMemory)
 

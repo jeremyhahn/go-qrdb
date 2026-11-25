@@ -405,7 +405,7 @@ func TestE2E_ListTenants_UnmarshalError(t *testing.T) {
 	srv.SetResponder("tenant.List", func(_ []byte) (uint16, []byte) {
 		return wire.StatusOK, garbageProto
 	})
-	if _, err := tr.ListTenants(context.Background()); err == nil {
+	if _, err := tr.ListTenants(context.Background(), nil); err == nil {
 		t.Fatal("expected unmarshal error")
 	}
 }

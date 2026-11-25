@@ -225,8 +225,9 @@ var (
 	// ErrSecretNotFound is returned when a named secret is not found.
 	ErrSecretNotFound = errors.New("qrdb/seal: secret not found")
 
-	// ErrInvalidSecretName is returned when a secret name is empty.
-	ErrInvalidSecretName = errors.New("qrdb/seal: secret name must not be empty")
+	// ErrInvalidSecretName is returned when a seal-store secret name is not
+	// one opaque path segment.
+	ErrInvalidSecretName = errors.New(`qrdb/seal: secret name must not be empty, "." or "..", and must not contain '/', '\' or control characters`)
 
 	// ErrResealFailed is returned when re-sealing a secret fails.
 	ErrResealFailed = errors.New("qrdb/seal: reseal failed")
@@ -619,6 +620,38 @@ type UnsealStrategyMismatchError struct {
 	// Requested is the strategy the caller asked to unseal with.
 	Requested StrategyID
 }
+
+// ErrUnsealFailed is the class of every VerifyCredentials failure in which
+// the strategy could not unseal the root key for a reason other than a
+// refused credential: an enclave or hardware open failure, an unavailable
+// strategy, a corrupt envelope. It is a server-side fault, never a wrong
+// password, so a caller must not answer it with ErrCredentialMismatch's
+// "credentials do not match". Match it with errors.Is; the concrete error
+// is an *UnsealError carrying the strategy and the cause.
+var ErrUnsealFailed = errors.New("qrdb/seal: strategy failed to unseal the root key")
+
+// UnsealError is the error VerifyCredentials returns when the persisted
+// strategy's UnsealRootKey fails for a reason other than a refused
+// credential. errors.Is(err, ErrUnsealFailed) holds, and errors.Is and
+// errors.As reach Err, the strategy's own error.
+type UnsealError struct {
+	// Strategy is the ID of the strategy whose UnsealRootKey failed.
+	Strategy string
+	// Err is the strategy's error.
+	Err error
+}
+
+// Error implements error.
+func (e *UnsealError) Error() string {
+	return fmt.Sprintf("qrdb/seal: strategy %q failed to unseal the root key: %v", e.Strategy, e.Err)
+}
+
+// Unwrap returns the strategy's error.
+func (e *UnsealError) Unwrap() error { return e.Err }
+
+// Is reports target == ErrUnsealFailed, so the class matches without the
+// cause having to.
+func (e *UnsealError) Is(target error) bool { return target == ErrUnsealFailed }
 
 // Error returns a human-readable description.
 func (e *UnsealStrategyMismatchError) Error() string {

@@ -20,6 +20,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
@@ -60,17 +62,14 @@ func TestRaftPromoter_PromoteObserverCarriesItsIdentity(t *testing.T) {
 	// one silent, and the leader steps down when its quorum check fires.
 	// Replica 2 having applied the entry that admitted it proves the leader
 	// replicates to it.
-	for {
-		if m, err := follower.ShardMembership(shardID); err == nil {
-			if _, admitted := m.Observers[2]; admitted {
-				break
-			}
+	require.Eventually(t, func() bool {
+		m, err := follower.ShardMembership(shardID)
+		if err != nil {
+			return false
 		}
-		if ctx.Err() != nil {
-			t.Fatalf("observer replica 2 never applied its own admission: %v", ctx.Err())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		_, admitted := m.Observers[2]
+		return admitted
+	}, raftharness.Bound, 10*time.Millisecond, "observer replica 2 never applied its own admission")
 
 	if err := newRaftPromoter(leader).PromoteObserver(ctx, shardID, 2, c.Addrs[1]); err != nil {
 		t.Fatalf("PromoteObserver: %v", err)

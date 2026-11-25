@@ -756,6 +756,55 @@ service QRDBService {
         option (qrdb.v1.permission) = "roles:list";
     }
 
+    // -----------------------------------------------------------------------
+    // IAM groups: a member holds the roles of each of its groups.
+    // -----------------------------------------------------------------------
+
+    // CreateGroup creates a new IAM group.
+    rpc CreateGroup(CreateGroupRequest) returns (GroupResponse) {
+        option (qrdb.v1.permission) = "groups:create";
+    }
+
+    // GetGroup retrieves a group by ID.
+    rpc GetGroup(GetGroupRequest) returns (GroupResponse) {
+        option (qrdb.v1.permission) = "groups:read";
+    }
+
+    // GetGroupByName retrieves a group by tenant-scoped name.
+    rpc GetGroupByName(GetGroupByNameRequest) returns (GroupResponse) {
+        option (qrdb.v1.permission) = "groups:read";
+    }
+
+    // UpdateGroup changes a group's name, description or role set.
+    rpc UpdateGroup(UpdateGroupRequest) returns (GroupResponse) {
+        option (qrdb.v1.permission) = "groups:update";
+    }
+
+    // DeleteGroup removes a group from every member, then the group.
+    rpc DeleteGroup(DeleteGroupRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "groups:delete";
+    }
+
+    // ListGroups returns a paginated list of a tenant's groups.
+    rpc ListGroups(ListGroupsRequest) returns (ListGroupsResponse) {
+        option (qrdb.v1.permission) = "groups:list";
+    }
+
+    // AddGroupMember adds a user to a group.
+    rpc AddGroupMember(GroupMemberRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "groups:add_member";
+    }
+
+    // RemoveGroupMember removes a user from a group.
+    rpc RemoveGroupMember(GroupMemberRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "groups:remove_member";
+    }
+
+    // ListGroupMembers returns the users that are members of a group.
+    rpc ListGroupMembers(ListGroupMembersRequest) returns (ListGroupMembersResponse) {
+        option (qrdb.v1.permission) = "groups:read";
+    }
+
     // AssignRole assigns a role to a user.
     rpc AssignRole(AssignRoleRequest) returns (google.protobuf.Empty) {
         option (qrdb.v1.permission) = "roles:assign";
@@ -1213,8 +1262,9 @@ service QRDBService {
         option (qrdb.v1.permission) = "tenants:read";
     }
 
-    // TenantList returns metadata for all registered tenants.
-    rpc TenantList(google.protobuf.Empty) returns (TenantListResponse) {
+    // TenantList returns metadata for the tenants the caller may list,
+    // optionally narrowed to one status.
+    rpc TenantList(TenantListRequest) returns (TenantListResponse) {
         option (qrdb.v1.permission) = "tenants:list";
     }
 
@@ -3701,6 +3751,90 @@ message RoleResponse {
     repeated string retired_permissions = 8;
 }
 
+// CreateGroupRequest creates an IAM group. Every role must be a role of the
+// group's tenant.
+message CreateGroupRequest {
+    string tenant_id = 1;
+    string name = 2;
+    string description = 3;
+    repeated string role_ids = 4;
+}
+
+// GetGroupRequest retrieves a group by ID.
+message GetGroupRequest {
+    string id = 1;
+}
+
+// GetGroupByNameRequest retrieves a group by tenant-scoped name.
+message GetGroupByNameRequest {
+    string tenant_id = 1;
+    string name = 2;
+}
+
+// UpdateGroupRequest changes a group. An empty name keeps the name; an unset
+// description keeps the description; role_ids replace the role set only when
+// set_role_ids is true (so the role set can be cleared).
+message UpdateGroupRequest {
+    string id = 1;
+    string name = 2;
+    optional string description = 3;
+    repeated string role_ids = 4;
+    bool set_role_ids = 5;
+}
+
+// DeleteGroupRequest deletes a group by ID.
+message DeleteGroupRequest {
+    string id = 1;
+}
+
+// ListGroupsRequest lists a tenant's groups.
+message ListGroupsRequest {
+    string tenant_id = 1;
+    int32 page = 2;
+    int32 page_size = 3;
+}
+
+// ListGroupsResponse is a page of groups.
+message ListGroupsResponse {
+    repeated GroupResponse groups = 1;
+    int32 total = 2;
+    bool has_more = 3;
+}
+
+// GroupMemberRequest names a user and a group.
+message GroupMemberRequest {
+    uint64 user_id = 1;
+    string group_id = 2;
+}
+
+// ListGroupMembersRequest lists the members of a group.
+message ListGroupMembersRequest {
+    string group_id = 1;
+}
+
+// ListGroupMembersResponse carries the members of a group.
+message ListGroupMembersResponse {
+    repeated GroupMember members = 1;
+}
+
+// GroupMember is one member of a group.
+message GroupMember {
+    uint64 user_id = 1;
+    string username = 2;
+    string tenant_id = 3;
+}
+
+// GroupResponse is an IAM group.
+message GroupResponse {
+    string id = 1;
+    string tenant_id = 2;
+    string name = 3;
+    string description = 4;
+    repeated string role_ids = 5;
+    string created_at = 6;
+    string updated_at = 7;
+}
+
 // PermissionCategory groups related permissions under a display name.
 message PermissionCategory {
     string name = 1;
@@ -4885,6 +5019,17 @@ message CeremonyInitializeRequest {
     // passphrase, and a Go string is immutable and can never be wiped from
     // memory after use the way a []byte can (go-qrdb#560 review item 7).
     bytes secret = 13;
+    // so_username names the system tenant's Security Officer first boot
+    // enrols (go-qrdb#1128), with exactly one of so_csr_pem (signed under
+    // the system tenant) and so_cert_pem (adopted; verified against
+    // admin_cert_pool_pem through so_chain_pem). Its PIN is so_pin. It is
+    // optional in both separation-of-duties postures: without an SO a strict
+    // node refuses only the SO-exclusive operations, and a standard node lets
+    // its admin perform them.
+    string so_username = 14;
+    string so_csr_pem = 15;
+    string so_cert_pem = 16;
+    string so_chain_pem = 17;
 }
 
 // CeremonyInitializeResponse returns the result of ceremony initialization.
@@ -4896,7 +5041,7 @@ message CeremonyInitializeResponse {
     string ca_cert_pem = 2;
     string tls_cert_pem = 3;
     reserved 4, 5;
-    reserved "so_cert_pem", "so_key_pem";
+    reserved "so_key_pem";
     string state = 6;
     int32 share_count = 7;
     repeated CeremonyHolderCert holders = 8;
@@ -4907,6 +5052,10 @@ message CeremonyInitializeResponse {
     // item 7).
     bytes admin_key_pem = 10;
     string admin_credential_source = 11;
+    // so_cert_pem is the system SO's issued or adopted certificate, set
+    // when the request named one. Field 4, an earlier SO certificate,
+    // stays reserved.
+    string so_cert_pem = 12;
 }
 
 // CeremonyStatusResponse describes the current ceremony state.
@@ -5057,9 +5206,10 @@ message TenantCreateRequest {
     string admin_chain_pem = 10;
     // trust_anchors_pem registers the tenant's trust anchors with it.
     string trust_anchors_pem = 11;
-    // so_username is the tenant's security officer, optional: a second
-    // principal, distinct from the admin by name and by key, holding the
-    // tenant's so role alone. so_username, exactly one of so_csr_pem and
+    // so_username is the tenant's security officer, optional: under strict
+    // separation of duties a second principal, distinct from the admin by
+    // name and by key; in the standard posture it may be the admin itself,
+    // by name and key together; holding the tenant's so role alone. so_username, exactly one of so_csr_pem and
     // so_cert_pem, and so_pin are given together or not at all.
     string so_username = 12;
     // so_csr_pem is the SO's CSR, signed as admin_csr_pem is.
@@ -5104,7 +5254,16 @@ message TenantGetRequest {
     string id = 1;
 }
 
-// TenantListResponse returns all tenants.
+// TenantListRequest filters the tenant listing. An empty status lists every
+// tenant the caller may list; "active", "suspended" or "disabled" lists only
+// the tenants in that status; any other value is refused with
+// INVALID_ARGUMENT. Deleted tenants are not a status: they are listed by
+// TenantListDeleted.
+message TenantListRequest {
+    string status = 1;
+}
+
+// TenantListResponse returns the listed tenants.
 message TenantListResponse {
     repeated TenantResponse tenants = 1;
 }

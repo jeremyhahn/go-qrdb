@@ -430,9 +430,13 @@ tenant:
   `featuregate.VerifiableLogAudit` is enabled for the group,
   `ReplicatedLogger.Emit` proposes each event as `OpVerifiableLog` with the
   trusted `AuditAppend` sub-type (`protocol.VerifiableLogSubtypeAuditAppend`)
-  to it, and `OpAuditAppend` before; a host that gates nothing keeps
-  `OpAuditAppend`. Only the replicated logger proposes that sub-type: a
-  generic `Append` to the instance is refused with `vlog.ReservedLogError`.
+  to it, and `OpAuditAppend` before. A standalone node's system shard gates
+  nothing (one binary, every replica is this process), so in a `qrdb_vlog`
+  build its trail is this instance from the first event the binary writes,
+  continuous with the `OpAuditAppend` records an earlier binary left; a
+  build without `qrdb_vlog` keeps `OpAuditAppend`. Only the replicated
+  logger proposes that sub-type: a generic `Append` to the instance is
+  refused with `vlog.ReservedLogError`.
   The first such append creates the instance's descriptor with `TreeStart`
   *S₀*, the event's sequence, so leaf 0 carries the pre-switch `PrevHash` and
   the tree commits to the whole earlier chain. Every append still sets
@@ -631,7 +635,12 @@ descriptor, a head, its entries, its Merkle tree nodes and its checkpoints,
 keyed by tenant, database and log name. `vlog.IsTableKey` matches both
 prefixes, so every reserved-key refusal and the replica hash cover the second
 table exactly as they cover this one, and `Chain.Restore` rebuilds both
-together: a malformed record in either fails the restore.
+together: a malformed record in either fails the restore. A log's descriptor
+records its database's incarnation only once `featuregate.VerifiableLogDrop`
+is active on its group, so a replica that predates the field never persists
+other descriptor bytes than its peers; a log without one is legacy and
+belongs to whichever database holds its name, for reads, lists, writes and a
+drop alike.
 
 ### The hash chain stays linear under Raft because it is assigned at apply time
 

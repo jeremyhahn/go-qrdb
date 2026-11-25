@@ -761,6 +761,31 @@ func TestHandleListTenants_Success(t *testing.T) {
 	}
 }
 
+func TestHandleListTenants_StatusFilter(t *testing.T) {
+	svc := &mockTenantService{
+		listTenantsFn: func(_ context.Context) ([]tenant.TenantInfo, error) {
+			return []tenant.TenantInfo{
+				{ID: "t-active", Status: tenant.StatusActive},
+				{ID: "t-suspended", Status: tenant.StatusSuspended},
+			}, nil
+		},
+	}
+	srv := newTenantServer(svc)
+
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, httptest.NewRequest(http.MethodGet, "/v1/tenants/list?status=suspended", nil))
+	assertStatus(t, rec, http.StatusOK)
+	var resp listTenantsResponse
+	decodeJSON(t, rec, &resp)
+	if resp.Total != 1 || len(resp.Tenants) != 1 || resp.Tenants[0].ID != "t-suspended" {
+		t.Fatalf("resp = total %d %v, want only t-suspended", resp.Total, resp.Tenants)
+	}
+
+	rec = httptest.NewRecorder()
+	srv.dispatch(rec, httptest.NewRequest(http.MethodGet, "/v1/tenants/list?status=deleted", nil))
+	assertStatus(t, rec, http.StatusBadRequest)
+}
+
 func TestHandleListTenants_Empty(t *testing.T) {
 	svc := &mockTenantService{
 		listTenantsFn: func(_ context.Context) ([]tenant.TenantInfo, error) {

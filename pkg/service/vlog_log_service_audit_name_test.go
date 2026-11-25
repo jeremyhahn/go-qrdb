@@ -110,7 +110,7 @@ func TestLogService_Append_RefusesTheHomeGroupAuditInstance(t *testing.T) {
 		return nil, errors.New("unexpected read")
 	}
 	homes := &fakeHomeGroups{host: &perFeatureHost{mockHost: homeInner, on: auditActive()}}
-	logs := NewSystemShardLogResolver(system.host, 1, isolatedTenantsLookup())
+	logs := NewSystemShardLogResolver(system.host, 1, isolatedTenantsLookup(), nil)
 	logs.SetHomeGroupSource(homes, newMemRouteStore())
 	svc, err := NewLogService(LogServiceConfig{Resolver: logs, Databases: noDatabases(t), Signers: &staticSignerProvider{}})
 	if err != nil {

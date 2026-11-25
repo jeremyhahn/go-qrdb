@@ -97,8 +97,12 @@ reconciled independently, the system tenant first. A sealed tenant is skipped
 with reason `sealed`, a tenant that refuses the call with reason `refused`. A
 tenant that fails is reported in `failed` and the pass continues, so the call
 itself succeeds. It carries the cross-tenant permission `roles:reconcile_all`,
-which only the system tenant's built-in Admin holds. A caller bound to any other
-tenant is refused with 403 / `PermissionDenied`. A node without a tenant service
+which the system tenant's built-in Admin role holds in the standard posture
+and the system SO alone holds under strict separation. A caller
+bound to any other tenant is refused with 403 / `PermissionDenied`. Under
+strict separation of duties both the single-tenant and the all-tenants
+reconcile run only as an SO, and the system Admin is refused them with 403 /
+`PermissionDenied`. A node without a tenant service
 answers 501 / `Unimplemented`, and its MCP server does not list the tool. QUIC
 carries the request and response as protobuf
 (`ReconcileBuiltInRolesAllTenantsResponse`).
@@ -107,6 +111,17 @@ The bootstrap problem that `roles:create` avoids for the single-tenant verb
 applies here once: a system Admin role stored before `roles:reconcile_all`
 existed lacks it. The single-tenant reconcile of the system tenant, which needs
 only `roles:create`, grants it. Run that first.
+
+Under strict separation of duties (below), `CreateRole` and
+`ReconcileBuiltInRoles` additionally run only as a **separate Security
+Officer** of the tenant they act on: a caller holding that tenant's `so` role
+and not its `admin` role. The tenant Admin, which holds `roles:create`, is
+refused with `SORoleRequiredError`; an account left holding both `so` and
+`admin` from the standard posture is refused with `SORoleConflictError`; a
+caller of another tenant, the `system` tenant's included, is refused with
+`SORoleRequiredError`. The check runs on every transport after the route's own
+permission check. In the standard posture `roles:create` alone decides, as
+before.
 
 **Permission catalog.** `ListPermissionCatalog` takes no request and answers
 every registered permission with its resource, action and scope, sorted by
@@ -167,6 +182,48 @@ IDs. `sdk.SystemRoleID(tenantID, name)` returns one role's ID, and
 `sdk.SystemRoleID(tenantID, name)`. Each role has exactly one canonical
 (UUIDv8) ID; there is no legacy UUIDv5 alias. An empty tenant ID means the
 system tenant, and each call returns a fresh map the caller may change.
+
+## Capability matrix — IAM groups
+
+A group (`pkg/group`) is a named set of roles of one tenant; a member holds
+the group's roles in addition to its own. The roles are unioned in when the
+identity is bound, on every request, so a membership or group change applies
+from the member's next request. The group is not a scope of its own: only
+roles of the group's tenant, and only users of that tenant, take part.
+
+| Capability | REST | gRPC / Unix | QUIC | MCP tool | Embedded (`Client.Groups()`) | `scp` permission |
+|---|---|---|---|---|---|---|
+| Create group | `POST /groups` (201) | `CreateGroup` | `group.Create` | `qrdb_group_create` | `CreateGroup` | `groups:create` |
+| Get group | `GET /groups/{id}` | `GetGroup` | `group.Get` | `qrdb_group_get` | `GetGroup` | `groups:read` |
+| Get group by name | `GET /groups/by-name?tenantID=&name=` | `GetGroupByName` | `group.GetByName` | `qrdb_group_get_by_name` | `GetGroupByName` | `groups:read` |
+| Update group | `PUT /groups/{id}` | `UpdateGroup` | `group.Update` | `qrdb_group_update` | `UpdateGroup` | `groups:update` |
+| Delete group (members first) | `DELETE /groups/{id}` (204) | `DeleteGroup` | `group.Delete` | `qrdb_group_delete` | `DeleteGroup` | `groups:delete` |
+| List groups | `GET /groups/list?tenantID=&page=&pageSize=` | `ListGroups` | `group.List` | `qrdb_group_list` | `ListGroups` | `groups:list` |
+| Add member | `POST /groups/members/add` (204) | `AddGroupMember` | `group.AddMember` | `qrdb_group_add_member` | `AddGroupMember` | `groups:add_member` |
+| Remove member | `POST /groups/members/remove` (204) | `RemoveGroupMember` | `group.RemoveMember` | `qrdb_group_remove_member` | `RemoveGroupMember` | `groups:remove_member` |
+| List members | `GET /groups/members?groupID=` | `ListGroupMembers` | `group.ListMembers` | `qrdb_group_list_members` | `ListGroupMembers` | `groups:read` |
+
+The JSON body of a group on REST, QUIC and MCP is
+`{"id", "tenantID", "name", "description", "roleIDs", "createdAt",
+"updatedAt"}`; a member is `{"userID", "username", "tenantID"}`; a membership
+write is `{"userID", "groupID"}`. `userID` is the uint64 user ID as a decimal
+JSON string (`"userID":"18446744073709551557"`) on REST, QUIC, MCP and the
+desktop bindings, so a JavaScript client never rounds an ID above 2^53-1; a
+JSON number is refused as a malformed request (REST 400). gRPC `user_id` is
+a uint64 field, which protojson also renders as a string. An update sets only the fields it carries:
+REST and QUIC `roleIDs` replaces the role set when present (`[]` clears it),
+gRPC sets `role_ids` when `set_role_ids` is true, and the MCP `role_ids`
+argument is comma-separated (empty clears).
+
+The guards are the role guards (`pkg/auth/middleware/role_assignment.go`):
+giving a group roles at create, or adding roles at update, requires the
+caller to be allowed to assign each one, as `AssignRole` does; adding a
+member requires that for every role the group carries; under strict
+separation only the tenant's Security Officer may put the `so` role on a
+group or take it from a member through one. Every verb acts in the caller's
+own tenant unless the caller is of the system tenant, as the role verbs do.
+The built-in `so` role holds every `groups:*` verb, `admin` all but
+`groups:delete`, and `auditor` `groups:list` and `groups:read`.
 
 ## Capability matrix — stored ABAC policies
 
@@ -908,7 +965,12 @@ scoped to any other tenant counts for nothing. `roles:assign`/`roles:unassign`
 alone, as the tenant Admin holds them, is refused with `SORoleRequiredError`
 before anything is written, and so is the `system` tenant's Security Officer
 or another tenant's. A write that leaves the user's Security Officer standing
-as it was is not affected. Outside strict separation of duties the `so` role
+as it was is not affected. Under the same posture no account holds the `so`
+role together with the `admin` role of its tenant (the `system` Admin for a
+`system`-tenant account): any role write that leaves its target holding both
+is refused with `SORoleConflictError`, whoever the caller, and a Security
+Officer that itself holds both may not grant or revoke `so` either. Outside
+strict separation of duties the `so` role
 is granted and revoked like any other, by a caller holding
 `roles:assign`/`roles:unassign`, the tenant Admin included. A tenant's first
 Security Officer is enrolled by
@@ -916,9 +978,18 @@ tenant create's optional `so_*` fields
 ([../multi-tenancy/api.md](../multi-tenancy/api.md)), not by a role write.
 
 An embedder reads the posture its node resolved with
-`node.Node.StrictSeparation()` (`true` under strict separation). The
+`node.Node.StrictSeparation()` (`true` under strict separation), and tells
+the two refusals apart through `sdk/go` alone: `sdk.SORoleRequiredError` (the
+caller does not hold `so`) and `sdk.SORoleConflictError` (the write or the
+caller combines `so` with `admin`), both 403 / PermissionDenied. The
 resolution itself is `sdk.ResolveStrictSeparation(configured bool) bool`:
 FIPS 140-3 mode answers `true`, and otherwise `configured` decides. The
+setting `auth.separation_of_duties` is system-wide (every tenant shares the
+node's posture), read at first boot and at every start, and defaults to off
+(the standard posture) unless FIPS 140-3 mode forces it on. go-quicbaas is
+the embedder this seam serves: it reads the posture through
+`node.Node.StrictSeparation()` and matches the refusals as
+`sdk.SORoleRequiredError` and `sdk.SORoleConflictError`. The
 posture last recorded is the cluster record `__sys:cluster/separation_of_duties`
 (`strict` or `standard`). When a start or first boot resolves a posture that
 differs from the record, or no posture is recorded, the record is written
@@ -987,6 +1058,8 @@ of its own, and the listing never contains one.
 | Disabled user | 401 | `UNAUTHENTICATED` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | Granting or revoking the tenant's `so` role by a caller that is not that tenant's own Security Officer (`SORoleRequiredError`) | 403 | `PERMISSION_DENIED` |
+| Under strict separation: a role write leaving a user holding both `so` and `admin` of its tenant, or a grant, revocation, `CreateRole` or `ReconcileBuiltInRoles` by a caller holding both (`SORoleConflictError`) | 403 | `PERMISSION_DENIED` |
+| Under strict separation: `CreateRole` or `ReconcileBuiltInRoles` by a caller that is not the target tenant's own Security Officer, the tenant Admin included (`SORoleRequiredError`) | 403 | `PERMISSION_DENIED` |
 | Granting or revoking the `so` role when the tenant's `so` role cannot be looked up (`SORoleUnresolvedError`) | 503 | `UNAVAILABLE` |
 | Role-assignment write names a role that does not exist, or belongs to another tenant | 400 | `INVALID_ARGUMENT` |
 | `roleBindings` entry naming a tenant other than the user's own, system-tenant users included (`user.RoleBindingTenantError`) | 400 | `INVALID_ARGUMENT` |
@@ -1004,6 +1077,10 @@ of its own, and the listing never contains one.
 | Redeemed key already bound to an account of the tenant | 409 | `ALREADY_EXISTS` |
 | Re-inviting an account that already holds a credential or is not pending | 409 | `FAILED_PRECONDITION` |
 | Re-inviting an account while a concurrent re-invite or redemption of it commits first (`invite.ErrReissueConflict`; retry) | 409 | `ABORTED` |
+| Group not found, or of another tenant (`group.GroupNotFoundError`) | 404 | `NOT_FOUND` |
+| Group name already used in the tenant (`group.GroupNameTakenError`) | 409 | `ALREADY_EXISTS` |
+| Group role that is not a role of the group's tenant (`group.RoleNotInTenantError`), or a malformed group request (`group.ValidationError`) | 400 | `INVALID_ARGUMENT` |
+| Group verb on a node with no group service, or a user store that cannot hold memberships (`user.GroupMembershipUnsupportedError`) | 501 | `UNIMPLEMENTED` |
 
 ## Pagination
 

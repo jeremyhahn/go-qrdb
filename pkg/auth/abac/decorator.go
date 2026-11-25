@@ -180,6 +180,14 @@ func (d *Decorator) Reload(policies []*Policy) error {
 // own handling. The target tenant is exposed to condition expressions as
 // request.tenant.
 //
+// The owner of the object the operation acts on, when the embedder's store
+// put one on ctx with auth.WithResourceOwner, is exposed as resource.owner
+// (request key ResourceOwnerContextKey) and drives the built-in boolean
+// subject.owns_resource: true only when the identity has a bound account
+// (UserID != 0) and that owner is non-empty and equals
+// auth.UserSubject(UserID), false otherwise (fail closed). A certificate
+// holder or service identity, whose Subject is a name, never owns an object.
+//
 // The subject carries two attribute namespaces that are never merged:
 // identity.Metadata (authentication-derived — certificate fields, token
 // claims, the middleware's own sentinels) becomes subject.Attributes, and
@@ -198,9 +206,13 @@ func (d *Decorator) Authorize(ctx context.Context, identity *auth.Identity, reso
 		// The ID is the Subject, a resolved account's immutable user id; the
 		// Name is the account name, which a rename changes.
 		subject.ID = identity.Subject
+		// UserID is the bound account (0 for a holder or service identity);
+		// subject.owns_resource reads it, not ID.
+		subject.UserID = identity.UserID
 		subject.Name = identity.AccountName()
 		subject.TenantID = identity.TenantID
 		subject.Roles = identity.Roles
+		subject.Groups = identity.Groups
 		subject.Attributes = stringMapToAttributes(identity.Metadata)
 		subject.UserAttributes = stringMapToAttributes(identity.Attributes)
 	}
@@ -210,6 +222,12 @@ func (d *Decorator) Authorize(ctx context.Context, identity *auth.Identity, reso
 		Action:   action,
 		Resource: resource,
 		Context:  map[string]interface{}{"tenant": target},
+	}
+	// The object owner the embedder's store put on ctx (server-side, never
+	// from a caller-written field) is resource.owner and drives
+	// subject.owns_resource.
+	if owner, ok := auth.ResourceOwnerFromContext(ctx); ok {
+		req.Context[ResourceOwnerContextKey] = owner
 	}
 
 	// Evaluate the target tenant's policies plus the system tenant's

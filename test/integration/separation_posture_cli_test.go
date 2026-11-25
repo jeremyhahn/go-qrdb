@@ -25,7 +25,13 @@ package integration_test
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"log/slog"
 	"os"
@@ -35,11 +41,16 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/wiring"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/node"
 )
@@ -87,6 +98,37 @@ func createPostureTenant(t *testing.T, n *multiProtoNode, proto multiProtocol, p
 	}
 	pt.adminUser = pt.userID(t, id+"-admin")
 	pt.soUser = pt.userID(t, soName)
+	return pt
+}
+
+// createPostureTenantWithoutSO creates a tenant over proto as the system
+// admin with createPostureTenant's flags but no --so-* flags: the SO is
+// optional in both postures. The tenant has no SO, so soConn is the admin's
+// login and soUser is empty.
+func createPostureTenantWithoutSO(t *testing.T, n *multiProtoNode, proto multiProtocol, prefix string) *postureTenant {
+	t.Helper()
+	id := fmt.Sprintf("%s-%s-%d", prefix, proto.name, time.Now().UnixNano())
+	adminCSR := tenantSOCSR(t, n, proto, id+"-admin")
+	outDir := t.TempDir()
+	if out, err := runCLIProto(t, n, proto, "tenant", "create",
+		"--id", id, "--name", id, "--isolation-type", "prefix",
+		"--admin-username", id+"-admin", "--admin-csr", filepath.Join(adminCSR, "csr.pem"),
+		"--out", outDir,
+	); err != nil {
+		t.Fatalf("[%s] tenant create without an SO: %v\noutput: %s", proto.name, err, out)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "so-cert.pem")); err == nil {
+		t.Fatalf("[%s] tenant create without an SO wrote an SO certificate", proto.name)
+	}
+	pt := &postureTenant{
+		id:        id,
+		adminConn: tenantCLIArgsForProto(n, proto, filepath.Join(outDir, "admin-cert.pem"), filepath.Join(adminCSR, "key.pem")),
+		soRole:    role.SystemRoleID(id, role.RoleNameSO),
+		cli:       n.cli,
+		proto:     proto,
+	}
+	pt.soConn = pt.adminConn
+	pt.adminUser = pt.userID(t, id+"-admin")
 	return pt
 }
 
@@ -170,6 +212,19 @@ func TestSeparationPosture_CLI_StrictRefusesAdmin_PerProtocol(t *testing.T) {
 				t.Fatalf("[%s] the SO lost the so role to a refused revocation", proto.name)
 			}
 
+			// The SO cannot make the Admin an SO either: no principal holds
+			// both roles under strict separation.
+			if out, err := runQRDB(t, pt.cli, pt.soConn, "roles", "assign", "--user", pt.adminUser, "--role", pt.soRole); err == nil {
+				t.Fatalf("[%s] strict separation: the SO granted the so role to the Admin: %s", proto.name, out)
+			}
+			if pt.holdsSO(t, pt.adminUser) {
+				t.Fatalf("[%s] the Admin account holds the so role after the SO's refused grant", proto.name)
+			}
+
+			// roles:create and the built-in role reconcile are SO-exclusive.
+			pt.soExclusiveOps(t, "admin", pt.adminConn, true)
+			pt.soExclusiveOps(t, "so", pt.soConn, false)
+
 			// Control: the SO grants and revokes the so role.
 			uma := pt.createUser(t, pt.id+"-uma")
 			if out, err := runQRDB(t, pt.cli, pt.soConn, "roles", "assign", "--user", uma, "--role", pt.soRole); err != nil {
@@ -182,6 +237,149 @@ func TestSeparationPosture_CLI_StrictRefusesAdmin_PerProtocol(t *testing.T) {
 				t.Fatalf("[%s] %s holds the so role after the SO revoked it", proto.name, uma)
 			}
 		})
+	}
+}
+
+// TestSeparationPosture_CLI_SystemSO_PerProtocol drives the system SO a
+// strict node's ceremony enrolled (#1128) over every transport: it creates
+// a system role and runs the system tenant's built-in role reconcile, each
+// of which strict separation refuses the system Admin, and proves the
+// all-tenants reconcile (roles:reconcile_all), the system Admin's in the
+// standard posture, SO-only here: the system Admin is refused it and the
+// system SO runs it.
+func TestSeparationPosture_CLI_SystemSO_PerProtocol(t *testing.T) {
+	t.Parallel()
+	n := startStrictSeparationNode(t)
+	if n.systemSOCert == "" {
+		t.Fatal("the strict node enrolled no system SO")
+	}
+	for _, proto := range multiProtocols {
+		t.Run(proto.name, func(t *testing.T) {
+			pt := createPostureTenant(t, n, proto, "sso", false)
+			soConn := tenantCLIArgsForProto(n, proto, n.systemSOCert, n.systemSOKey)
+			denied := func(caller, name, out string, err error) {
+				t.Helper()
+				requireSORefusal(t, proto.name, name+" as the system "+caller, out, err)
+			}
+			ops := func(caller string) map[string][]string {
+				return map[string][]string{
+					"roles create": {"roles", "create", "--name", pt.id + "-" + caller + "-sysauditor",
+						"--permissions", "audit:read", "--tenant-id", "system"},
+					// The per-tenant reconcile is the caller's own tenant's.
+					"roles reconcile --tenant": {"roles", "reconcile", "--tenant", "system"},
+				}
+			}
+			for name, args := range ops("admin") {
+				out, err := runCLIProto(t, n, proto, args...)
+				denied("Admin", name, out, err)
+			}
+			for name, args := range ops("so") {
+				if out, err := runQRDB(t, n.cli, soConn, args...); err != nil {
+					t.Fatalf("[%s] %s as the system SO: %v\noutput: %s", proto.name, name, err, out)
+				}
+			}
+
+			// The all-tenants pass, which reaches pt's, is the system
+			// Admin's in the standard posture; under strict separation it
+			// is the system SO's only: the Admin is refused and the SO runs
+			// it.
+			allTenants := []string{"roles", "reconcile", "--all-tenants"}
+			out, err := runCLIProto(t, n, proto, allTenants...)
+			denied("Admin", "roles reconcile --all-tenants", out, err)
+			if out, err := runQRDB(t, n.cli, soConn, allTenants...); err != nil {
+				t.Fatalf("[%s] roles reconcile --all-tenants as the system SO: %v\noutput: %s", proto.name, err, out)
+			}
+		})
+	}
+}
+
+// TestSeparationPosture_CLI_StrictWithoutSO_PerProtocol drives, over every
+// transport, a strict daemon whose ceremony named no SO, and a tenant
+// created on it with no SO (#1129): the SO is optional in both postures, so
+// both boot and serve, and strict separation keeps the SO-exclusive
+// operations to an SO, so the system Admin and the tenant Admin are each
+// refused them with the typed SO refusal.
+func TestSeparationPosture_CLI_StrictWithoutSO_PerProtocol(t *testing.T) {
+	t.Parallel()
+	n := startStrictSeparationNodeWithoutSO(t)
+	if n.systemSOCert != "" {
+		t.Fatal("the strict node without an SO enrolled a system SO")
+	}
+	for _, proto := range multiProtocols {
+		t.Run(proto.name, func(t *testing.T) {
+			assertNoSystemSOHolder(t, n, proto)
+			ops := map[string][]string{
+				"roles create": {"roles", "create", "--name", fmt.Sprintf("nso-%s-%d-sysauditor", proto.name, time.Now().UnixNano()),
+					"--permissions", "audit:read", "--tenant-id", "system"},
+				"roles reconcile --tenant":      {"roles", "reconcile", "--tenant", "system"},
+				"roles reconcile --all-tenants": {"roles", "reconcile", "--all-tenants"},
+			}
+			for name, args := range ops {
+				out, err := runCLIProto(t, n, proto, args...)
+				requireSORefusal(t, proto.name, name+" as the system Admin of a node without an SO", out, err)
+			}
+
+			pt := createPostureTenantWithoutSO(t, n, proto, "nso")
+			pt.soExclusiveOps(t, "admin", pt.adminConn, true)
+		})
+	}
+}
+
+// assertNoSystemSOHolder asks the node itself, over the CLI on proto, who
+// holds the system tenant's SO role, and fails if anyone does or if a user
+// named as one of the harness's system SOs exists: a strict daemon booted
+// without an SO must have none (docs/SPEC.md: the SO is optional).
+func assertNoSystemSOHolder(t *testing.T, n *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+	soRoleID := role.SystemRoleID("system", role.RoleNameSO)
+	out, err := runCLIProto(t, n, proto, "--output", "json", "users", "list", "--tenant-id", "system")
+	if err != nil {
+		t.Fatalf("[%s] users list --tenant-id system: %v\noutput: %s", proto.name, err, out)
+	}
+	var users userListCLIJSON
+	if jerr := json.Unmarshal([]byte(out), &users); jerr != nil {
+		t.Fatalf("[%s] decode users list JSON: %v\noutput: %s", proto.name, jerr, out)
+	}
+	if users.HasMore {
+		t.Fatalf("[%s] users list --tenant-id system is paged; the no-SO check needs every user: %s", proto.name, out)
+	}
+	for _, u := range users.Users {
+		if u.Username == systemSOUsername || u.Username == systemSOUser {
+			t.Errorf("[%s] the strict node without an SO lists the system SO user %q", proto.name, u.Username)
+		}
+		for _, id := range u.RoleIDs {
+			if id == soRoleID {
+				t.Errorf("[%s] the strict node without an SO has an SO holder: user %q holds the so role", proto.name, u.Username)
+			}
+		}
+	}
+}
+
+// TestSeparationPosture_EmbeddedStrictBootsWithoutSO boots an embedded node
+// under strict separation with no system SO: first boot succeeds and enrols
+// none, since the SO is optional in both postures (SPEC row 124).
+func TestSeparationPosture_EmbeddedStrictBootsWithoutSO(t *testing.T) {
+	cfg := qrdbconfig.DefaultConfig()
+	cfg.Raft.DataDir = t.TempDir()
+	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendPebble)}}
+	cfg.Protocols.REST, cfg.Protocols.GRPC, cfg.Protocols.QUIC = false, false, false
+	cfg.Protocols.Unix, cfg.Protocols.MCP = false, false
+	cfg.Auth.SeparationOfDuties = true
+	n, err := node.NewStandaloneNode(context.Background(), cfg, nil)
+	if err != nil {
+		t.Fatalf("NewStandaloneNode: %v", err)
+	}
+	defer func() { _ = n.Close() }()
+	svcs := n.Services()
+	result, err := n.FirstBoot(context.Background(), firstboot.Dependencies{
+		Tenants: svcs.Tenant, Users: n.UserService(), Roles: svcs.Role, RoleResolver: svcs.Role,
+		Logger: slog.New(slog.DiscardHandler), SeparationOfDuties: true,
+	})
+	if err != nil {
+		t.Fatalf("strict first boot without an SO = %v, want success", err)
+	}
+	if result.SOCreated {
+		t.Fatal("strict first boot enrolled an SO it was not given")
 	}
 }
 
@@ -211,7 +409,55 @@ func TestSeparationPosture_CLI_StandardAdminHoldingSO_PerProtocol(t *testing.T) 
 			if pt.holdsSO(t, uma) {
 				t.Fatalf("[%s] %s holds the so role after the revocation", proto.name, uma)
 			}
+			pt.soExclusiveOps(t, "admin", pt.adminConn, false)
+
+			// In the standard posture the all-tenants built-in role
+			// reconcile (roles:reconcile_all) is the system Admin's.
+			if out, err := runCLIProto(t, n, proto, "roles", "reconcile", "--all-tenants"); err != nil {
+				t.Fatalf("[%s] standard posture: roles reconcile --all-tenants as the system Admin: %v\noutput: %s", proto.name, err, out)
+			}
 		})
+	}
+}
+
+// soExclusiveOps runs the SO-exclusive role operations, roles create and
+// roles reconcile, as the caller conn names, and asserts each is refused as a
+// permission denial (refused) or succeeds.
+func (pt *postureTenant) soExclusiveOps(t *testing.T, caller string, conn []string, refused bool) {
+	t.Helper()
+	// The role carries audit:read, which the SO role holds: a grantor may
+	// grant only permissions it holds (#1278), so a permission outside the
+	// caller's holdings would be refused whatever the posture.
+	ops := map[string][]string{
+		"roles create":    {"roles", "create", "--name", pt.id + "-" + caller + "-auditor", "--permissions", "audit:read", "--tenant-id", pt.id},
+		"roles reconcile": {"roles", "reconcile", "--tenant", pt.id},
+	}
+	for name, args := range ops {
+		out, err := runQRDB(t, pt.cli, conn, args...)
+		if !refused {
+			if err != nil {
+				t.Fatalf("[%s] %s as %s: %v\noutput: %s", pt.proto.name, name, caller, err, out)
+			}
+			continue
+		}
+		requireSORefusal(t, pt.proto.name, name+" as "+caller, out, err)
+	}
+}
+
+// requireSORefusal asserts that what was refused with the typed SO refusal
+// every transport carries (auth.SORoleRequiredError's "SO role required" or
+// auth.SORoleConflictError's "separation of duties: ..."), not merely with a
+// non-zero exit or some other permission denial: a refusal for another
+// reason (a grantor's holdings, a missing permission) would pass a looser
+// check with the SO gate removed.
+func requireSORefusal(t *testing.T, proto, what, out string, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("[%s] strict separation: %s ran: %s", proto, what, out)
+	}
+	lower := strings.ToLower(out)
+	if !strings.Contains(lower, "so role required") && !strings.Contains(lower, "separation of duties") {
+		t.Fatalf("[%s] %s must be refused with the typed SO refusal, got: %s", proto, what, out)
 	}
 }
 
@@ -287,7 +533,7 @@ func mustReadFile(t *testing.T, path string) string {
 // startPostureNode starts an embedded standalone node over dataDir under the
 // given auth.separation_of_duties, runs first boot, and answers it with its
 // audit log.
-func startPostureNode(t *testing.T, dataDir string, separation bool) (*node.Node, audit.AuditLogger) {
+func startPostureNode(t *testing.T, dataDir string, separation, enrollSO bool) (*node.Node, audit.AuditLogger) {
 	t.Helper()
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.DataDir = dataDir
@@ -296,19 +542,74 @@ func startPostureNode(t *testing.T, dataDir string, separation bool) (*node.Node
 	cfg.Protocols.Unix, cfg.Protocols.MCP = false, false
 	cfg.Auth.SeparationOfDuties = separation
 	trail := audit.NewRingBuffer(64)
-	n, err := node.NewStandaloneNode(context.Background(), cfg, []server.ServerOption{server.WithAuditLogger(trail)})
+	opts := []server.ServerOption{server.WithAuditLogger(trail)}
+	if enrollSO {
+		// The SO PIN store first boot commits the enrolled SO's PIN to,
+		// as cmd/qrdbd passes it.
+		soPINs, err := auth.NewSOAuthenticator(kvstore.NewMemoryKVStore(), trail, slog.New(slog.DiscardHandler))
+		if err != nil {
+			t.Fatalf("NewSOAuthenticator: %v", err)
+		}
+		opts = append(opts, server.WithSOAuthenticator(soPINs))
+	}
+	n, err := node.NewStandaloneNode(context.Background(), cfg, opts)
 	if err != nil {
 		t.Fatalf("NewStandaloneNode: %v", err)
 	}
 	svcs := n.Services()
-	if _, err := n.FirstBoot(context.Background(), firstboot.Dependencies{
+	deps := firstboot.Dependencies{
 		Tenants: svcs.Tenant, Users: n.UserService(), Roles: svcs.Role, RoleResolver: svcs.Role,
 		Logger: slog.New(slog.DiscardHandler),
-	}); err != nil {
+	}
+	// The SO is optional in both postures; the start that turns strict
+	// enrolls one here, and a later strict start carries that enrollment,
+	// as a composer reading the consumed pending SO record does.
+	if separation {
+		if enrollSO {
+			postureSO(t, cfg.Auth.EffectiveClusterTrustDomain(), n, &deps)
+		}
+	}
+	result, err := n.FirstBoot(context.Background(), deps)
+	if err != nil {
 		_ = n.Close()
 		t.Fatalf("FirstBoot: %v", err)
 	}
+	if enrollSO && !result.SOCreated {
+		_ = n.Close()
+		t.Fatal("FirstBoot did not create the system SO")
+	}
 	return n, trail
+}
+
+// postureSO sets deps to enroll a system SO from a fresh CSR, signed by a
+// test CA under trustDomain and bound to the SO's account on n.
+func postureSO(t *testing.T, trustDomain string, n *node.Node, deps *firstboot.Dependencies) {
+	t.Helper()
+	ca, _ := ceremonytest.NewCA(t, "posture-so-ca")
+	signer, err := ceremony.NewAdminCSRSigner(ca, trustDomain)
+	if err != nil {
+		t.Fatalf("NewAdminCSRSigner: %v", err)
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: "officer"}}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin, err := secure.NewSecret(context.Background(), []byte("posture-so-pin"))
+	if err != nil {
+		t.Fatalf("NewSecret: %v", err)
+	}
+	t.Cleanup(pin.Destroy)
+	deps.Signer = signer
+	deps.Binder = firstboot.UserCertBinder{Users: n.UserService()}
+	deps.SO = &firstboot.SOConfig{
+		Username: "officer",
+		CSRPEM:   pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}),
+		PIN:      pin,
+	}
 }
 
 // embeddedPostureChanges answers the posture-change events in trail.
@@ -328,7 +629,7 @@ func embeddedPostureChanges(t *testing.T, trail audit.AuditLogger) []audit.Audit
 func TestSeparationPosture_EmbeddedRestartFlip(t *testing.T) {
 	dataDir := t.TempDir()
 
-	first, trail := startPostureNode(t, dataDir, false)
+	first, trail := startPostureNode(t, dataDir, false, false)
 	if first.StrictSeparation() {
 		t.Fatal("StrictSeparation() = true under the standard posture")
 	}
@@ -339,7 +640,7 @@ func TestSeparationPosture_EmbeddedRestartFlip(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	flipped, trail := startPostureNode(t, dataDir, true)
+	flipped, trail := startPostureNode(t, dataDir, true, true)
 	if !flipped.StrictSeparation() {
 		t.Fatal("StrictSeparation() = false after a restart under strict separation")
 	}
@@ -354,7 +655,7 @@ func TestSeparationPosture_EmbeddedRestartFlip(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	same, trail := startPostureNode(t, dataDir, true)
+	same, trail := startPostureNode(t, dataDir, true, false)
 	defer func() { _ = same.Close() }()
 	if !same.StrictSeparation() {
 		t.Fatal("StrictSeparation() = false after an unchanged restart")

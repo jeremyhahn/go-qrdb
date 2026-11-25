@@ -157,6 +157,9 @@ func AttachTenantHomes(n *Node, services TenantHomeServices, served ...tenant.St
 	if !attachHomeSource(n, homes, served) {
 		return false
 	}
+	// A barrier tenant's and a barrier database's verifiable logs are
+	// applied in the same barrier-sealed groups.
+	n.logGroups.attach(services)
 	// An isolated tenant's audit trail and verifiable logs apply in its
 	// home group (architecture.md decision S9). A barrier tenant's audit
 	// route is recorded on the system shard, so a chain already there stays
@@ -208,7 +211,13 @@ func AttachLocalTenantHomes(n *Node, registry *seal.BarrierRegistry, gate tenant
 	if err != nil {
 		return false
 	}
-	return attachHomeSource(n, homes, served)
+	if !attachHomeSource(n, homes, served) {
+		return false
+	}
+	// The same barriers serve each isolated tenant's verifiable logs, in
+	// their own keyspace (service.BarrierLogKeyspace).
+	n.logGroups.attachLocal(registry, gate)
+	return true
 }
 
 // attachHomeSource attaches source to n's store resolver and to every served
@@ -229,7 +238,18 @@ func attachHomeSource(n *Node, source tenant.HomeStoreSource, served []tenant.St
 			other.SetHomeStoreSource(source)
 		}
 	}
+	// A tenant caller's named credentials live in its home store too, so a
+	// rotation policy or claim is one record for every node.
+	if creds, ok := n.Credential.(tenantHomesSetter); ok {
+		creds.SetTenantHomes(source)
+	}
 	return true
+}
+
+// tenantHomesSetter is the credential service's attach point for the tenant
+// home stores (service.CredentialService.SetTenantHomes).
+type tenantHomesSetter interface {
+	SetTenantHomes(src tenant.HomeStoreSource)
 }
 
 // HomeStore implements tenant.HomeStoreSource. It fails, and the resolver

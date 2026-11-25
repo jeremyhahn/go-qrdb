@@ -37,7 +37,7 @@ func roleTools(roleSvc role.RoleServicer, userSvc user.UserServicer, authMW *aut
 		{
 			Tool:    toolRoleCreate(),
 			Perm:    permission.RolesCreate,
-			Handler: handleRoleCreate(roleSvc),
+			Handler: handleRoleCreate(roleSvc, authMW),
 		},
 		{
 			Tool:    toolRoleGet(),
@@ -90,7 +90,7 @@ func roleTools(roleSvc role.RoleServicer, userSvc user.UserServicer, authMW *aut
 			// own effective permissions, which role.ListOwnPermissions
 			// resolves in the caller's own tenant.
 			Perm:    permission.IdentityGated,
-			Handler: handlePermissionsOwn(roleSvc),
+			Handler: handlePermissionsOwn(roleSvc, authMW),
 		},
 		{
 			Tool:    toolPermissionsCatalog(),
@@ -112,7 +112,7 @@ func roleTools(roleSvc role.RoleServicer, userSvc user.UserServicer, authMW *aut
 			// seeded before it existed, so nobody could hold the grant needed
 			// to repair that absence.
 			Perm:    permission.RolesCreate,
-			Handler: handleRoleReconcile(roleSvc),
+			Handler: handleRoleReconcile(roleSvc, authMW),
 		},
 	})
 }
@@ -129,9 +129,13 @@ func toolRoleReconcile() mcp.Tool {
 
 // handleRoleReconcile returns a tool handler that delegates to
 // roleSvc.ReconcileBuiltInRoles.
-func handleRoleReconcile(roleSvc role.RoleServicer) mcpserver.ToolHandlerFunc {
+func handleRoleReconcile(roleSvc role.RoleServicer, authMW *authmw.AuthMiddleware) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		report, err := roleSvc.ReconcileBuiltInRoles(ctx, mcp.ParseString(req, "tenant_id", ""))
+		tenantID := mcp.ParseString(req, "tenant_id", "")
+		if err := authMW.AuthorizeSOExclusive(ctx, tenantID, "reconcile built-in roles"); err != nil {
+			return nil, &ToolError{Tool: "qrdb_role_reconcile_builtin", Err: err}
+		}
+		report, err := roleSvc.ReconcileBuiltInRoles(ctx, tenantID)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_role_reconcile_builtin", Err: err}
 		}
@@ -153,7 +157,7 @@ func roleReconcileAllTools(authMW *authmw.AuthMiddleware, roleSvc role.RoleServi
 		{
 			Tool:    toolRoleReconcileAllTenants(),
 			Perm:    permission.RolesReconcileAll,
-			Handler: handleRoleReconcileAllTenants(roleSvc, tenants, authMW.OperatorAccessGate(permission.RolesReconcileAll)),
+			Handler: handleRoleReconcileAllTenants(authMW, roleSvc, tenants, authMW.OperatorAccessGate(permission.RolesReconcileAll)),
 		},
 	}
 }
@@ -170,8 +174,11 @@ func toolRoleReconcileAllTenants() mcp.Tool {
 // role.ReconcileAllTenants.
 // Each target tenant passes gate, the operator-access decision of the other
 // cross-tenant identity tools (withOperatorTenant), before its roles are read.
-func handleRoleReconcileAllTenants(roleSvc role.RoleServicer, tenants role.TenantLister, gate role.TenantGate) mcpserver.ToolHandlerFunc {
+func handleRoleReconcileAllTenants(authMW *authmw.AuthMiddleware, roleSvc role.RoleServicer, tenants role.TenantLister, gate role.TenantGate) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if err := authMW.AuthorizeSOExclusive(ctx, "", "reconcile built-in roles in every tenant"); err != nil {
+			return nil, &ToolError{Tool: "qrdb_role_reconcile_builtin_all_tenants", Err: err}
+		}
 		report, err := role.ReconcileAllTenants(ctx, roleSvc, tenants, gate)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_role_reconcile_builtin_all_tenants", Err: err}
@@ -209,7 +216,7 @@ func toolRoleCreate() mcp.Tool {
 
 // handleRoleCreate returns a tool handler that delegates to
 // roleSvc.CreateRole.
-func handleRoleCreate(roleSvc role.RoleServicer) mcpserver.ToolHandlerFunc {
+func handleRoleCreate(roleSvc role.RoleServicer, authMW *authmw.AuthMiddleware) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		name := mcp.ParseString(req, "name", "")
 		if name == "" {
@@ -225,10 +232,15 @@ func handleRoleCreate(roleSvc role.RoleServicer) mcpserver.ToolHandlerFunc {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 
+		tenantID := mcp.ParseString(req, "tenant_id", "")
+		if err := authMW.AuthorizeSOExclusive(ctx, tenantID, "create role"); err != nil {
+			return nil, &ToolError{Tool: "qrdb_role_create", Err: err}
+		}
+
 		r, createErr := roleSvc.CreateRole(ctx, &role.CreateRoleRequest{
 			ID:          mcp.ParseString(req, "id", ""),
 			Name:        name,
-			TenantID:    mcp.ParseString(req, "tenant_id", ""),
+			TenantID:    tenantID,
 			Permissions: perms,
 		})
 		if createErr != nil {
@@ -629,9 +641,9 @@ func toolPermissionsOwn() mcp.Tool {
 
 // handlePermissionsOwn returns a tool handler that delegates to
 // role.ListOwnPermissions.
-func handlePermissionsOwn(roleSvc role.RoleServicer) mcpserver.ToolHandlerFunc {
+func handlePermissionsOwn(roleSvc role.RoleServicer, authMW *authmw.AuthMiddleware) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		perms, err := role.ListOwnPermissions(ctx, roleSvc)
+		perms, err := role.ListOwnPermissions(ctx, roleSvc, authMW.StrictSeparation())
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_permissions_own", Err: err}
 		}

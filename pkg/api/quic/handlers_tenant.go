@@ -125,10 +125,16 @@ func (s *Server) handleTenantGet(ctx context.Context, payload []byte) ([]byte, e
 
 // handleTenantList returns metadata for every tenant to a caller holding
 // tenants:list:cross, and for the caller's own tenant only to anyone else
-// (authmw.FilterTenantList).
-func (s *Server) handleTenantList(ctx context.Context, _ []byte) ([]byte, error) {
+// (authmw.FilterTenantList), narrowed to the payload's status when it names
+// one (tenant.FilterByStatus). An empty payload is an empty request.
+func (s *Server) handleTenantList(ctx context.Context, payload []byte) ([]byte, error) {
 	if s.tenantSvc == nil {
 		return nil, &ServiceNotConfiguredError{Service: "tenant"}
+	}
+
+	var req pb.TenantListRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
 	}
 
 	tenants, err := s.tenantSvc.ListTenants(ctx)
@@ -139,6 +145,9 @@ func (s *Server) handleTenantList(ctx context.Context, _ []byte) ([]byte, error)
 		if tenants, err = s.authMW.FilterTenantList(ctx, tenants); err != nil {
 			return nil, err
 		}
+	}
+	if tenants, err = tenant.FilterByStatus(tenants, tenant.Status(req.GetStatus())); err != nil {
+		return nil, err
 	}
 
 	pbTenants := make([]*pb.TenantResponse, len(tenants))

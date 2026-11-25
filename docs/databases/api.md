@@ -491,17 +491,28 @@ private key is never in an answer. A rotation racing another is a conflict.
 
 Both are refused, before the provider is asked, while the
 `verifiable-log-keys` feature is not yet active on every replica of the
-tenant's group (`LogFeatureNotActiveError`). Every log call is refused for a
-barrier-enabled database (`BarrierDatabaseLogNotSupportedError`), and, on a
-node without tenant home groups (standalone), for a barrier-isolated tenant
-(`BarrierTenantLogNotSupportedError`), sealed or not: their logs and keys would
-be stored under the system barrier rather than their own. On a node with home
-groups, an isolated tenant's logs apply in its home group and are served
-([architecture.md](architecture.md), "Isolation"). An audit-instance write to
-a home group while `verifiable-log-audit` is not yet active on every replica
-is refused as unavailable (`AuditHomeNotActiveError`). Both refusals are
-`Unimplemented` on every transport: `501 Not Implemented` over REST,
-`UNIMPLEMENTED` over gRPC.
+tenant's group (`LogFeatureNotActiveError`). A barrier-isolated tenant's logs
+and keys are in its own barrier-sealed home group ([architecture.md](architecture.md),
+"Isolation"). While that barrier is sealed every log call is refused with the
+tenant's sealed error. On a standalone node they are in the tenant's own
+standalone barrier store. A node with neither refuses with
+`BarrierStoreUnavailableError`, `Unavailable` on every transport:
+`503 Service Unavailable` over REST, `UNAVAILABLE` over gRPC.
+An audit-instance write to a home group while `verifiable-log-audit` is not
+yet active on every replica is refused as unavailable
+(`AuditHomeNotActiveError`): `503 Service Unavailable` over REST,
+`UNAVAILABLE` over gRPC.
+
+A log in a barrier-enabled database lives where its tenant's logs do: in the
+Raft group the tenant resolves to, or the node's local store on a standalone
+node. Each entry body and software key is sealed under the database's barrier
+key before it is proposed, so the group holds only ciphertext of it, while the
+leaf hash commits to the plaintext. While the database is sealed every
+log call that names it is refused with `BarrierSealedError`: `Unavailable` on
+every transport, `503 Service Unavailable` over REST, `UNAVAILABLE` over gRPC.
+After the unseal the log is served unchanged. A legacy barrier record on a
+`raft` database, whose data is not served from the store the barrier wraps, is
+refused with `BarrierOffDataPathError`: `Unprocessable` on every transport.
 
 ## Verifiable-log payloads over QUIC and MCP
 
@@ -549,6 +560,7 @@ allow it `FailedPrecondition`.
 | A create or barrier update carrying a secret, an unseal, or a holder's quorum submission, on a connection without TLS or redirected to `http` | not sent | not sent — the SDK returns `sdk.BarrierSecretRequiresTLSError`, naming the transport and the kind of secret, never its value |
 | A REST or MCP create, barrier update, unseal or quorum submission carrying a secret, redirected (307 or 308) to a host other than the one it was sent to | not sent — the SDK returns `sdk.BarrierSecretForeignHostError`, naming the transport, the kind of secret and both hosts, never its value. A redirect to the same host is followed | not applicable — gRPC and Unix do not redirect |
 | Operating on a sealed database | 503 | `UNAVAILABLE` |
+| A kv key in, or a delete range over, a barrier database's reserved verifiable-log keyspace | 400 | `INVALID_ARGUMENT` — `service.ReservedKeyError` |
 | Operating on a database whose drop is in flight | 409 | `ABORTED` — `database.DroppingError` |
 | A second `DROP DATABASE` for the same database while one is already running on this node | 409 | `ABORTED` — `database.DropInProgressError` |
 | A write that was accepted before a drop and reached the store after it | 409 | `ABORTED` — `database.DroppingError`; nothing was written |

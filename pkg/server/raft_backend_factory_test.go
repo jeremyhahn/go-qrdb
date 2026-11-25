@@ -20,7 +20,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -297,7 +296,8 @@ func TestRaftBackendFactory_ReattachPersistence(t *testing.T) {
 }
 
 // writeAndAwaitLogRange writes n KV entries through svcs and returns the
-// shard's log range: it polls for up to wait until the first index rises above
+// shard's log range: it reads the range once, then, for a positive wait, polls
+// for up to wait until the first index rises above
 // one, so a shard that does not compact reports its uncompacted range rather
 // than failing here.
 func writeAndAwaitLogRange(ctx context.Context, t *testing.T, host *quicraft.Host, svcs *DatabaseServices, shardID uint64, n int, wait time.Duration) quicraft.LogRange {
@@ -307,19 +307,27 @@ func writeAndAwaitLogRange(ctx context.Context, t *testing.T, host *quicraft.Hos
 			t.Fatalf("KV.Put %d: %v", i, err)
 		}
 	}
-	var lr quicraft.LogRange
+	// One unconditional synchronous read, so a zero wait still observes the
+	// shard's range rather than a zero value.
+	lr, err := host.LogRange(shardID)
+	if err != nil {
+		t.Fatalf("LogRange: %v", err)
+	}
+	if wait <= 0 || lr.FirstIndex > 1 {
+		return lr
+	}
+	// Poll until the first index rises above one or wait ends; a shard that
+	// never compacts reports its uncompacted range and the caller judges it.
 	deadline := time.Now().Add(wait)
-	for {
-		var err error
-		lr, err = host.LogRange(shardID)
-		if err != nil {
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for lr.FirstIndex <= 1 && time.Now().Before(deadline) {
+		<-ticker.C
+		if lr, err = host.LogRange(shardID); err != nil {
 			t.Fatalf("LogRange: %v", err)
 		}
-		if lr.FirstIndex > 1 || time.Now().After(deadline) {
-			return lr
-		}
-		time.Sleep(20 * time.Millisecond)
 	}
+	return lr
 }
 
 // TestRaftBackendFactory_WithSnapshotSettings_CompactsLog proves a dedicated
@@ -373,7 +381,12 @@ func TestRaftBackendFactory_DefaultSnapshotSettings_KeepsLog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Services: %v", err)
 	}
-	if lr := writeAndAwaitLogRange(ctx, t, host, svcs, shardID, 100, 0); lr.FirstIndex > 1 {
+	const written = 100
+	lr := writeAndAwaitLogRange(ctx, t, host, svcs, shardID, written, 0)
+	if lr.LastIndex < written {
+		t.Fatalf("log range = [%d, %d]: the read must cover the %d written entries", lr.FirstIndex, lr.LastIndex, written)
+	}
+	if lr.FirstIndex > 1 {
 		t.Fatalf("log range = [%d, %d]: the default cadence compacted a hundred-entry log", lr.FirstIndex, lr.LastIndex)
 	}
 }
@@ -660,14 +673,9 @@ func TestRaftBackendFactory_OnlineBackupRestore_RF1Success(t *testing.T) {
 	// warm-up window getWhenReadable tolerates for KV reads elsewhere in this
 	// file. Poll rather than assume the very first attempt lands after
 	// waitForShardServingWithin merely observes a leader ID.
-	restoreDeadline := time.Now().Add(15 * time.Second)
-	for {
-		err = online.RestoreShardOnline(ctx, shardID, data)
-		if err == nil || !strings.Contains(err.Error(), "read index not ready") || time.Now().After(restoreDeadline) {
-			break
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
+	err = retryWhileReadIndexNotReady(func() error {
+		return online.RestoreShardOnline(ctx, shardID, data)
+	})
 	if err != nil {
 		t.Fatalf("RestoreShardOnline: %v", err)
 	}

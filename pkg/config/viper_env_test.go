@@ -132,6 +132,66 @@ func TestSealShareTTL_InvalidRejected(t *testing.T) {
 	}
 }
 
+// TestSealCredentialRotationCheckPeriod_DefaultAndOverride verifies that
+// seal.credential_rotation_check_period defaults to one minute and that a
+// file value overrides it.
+func TestSealCredentialRotationCheckPeriod_DefaultAndOverride(t *testing.T) {
+	cfg, err := Load(writeMinimalConfig(t, "logging:\n  level: info\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	d, err := cfg.Seal.CredentialRotationCheckPeriodDuration()
+	if err != nil {
+		t.Fatalf("CredentialRotationCheckPeriodDuration: %v", err)
+	}
+	if d != time.Minute {
+		t.Errorf("default credential_rotation_check_period = %s, want 1m0s", d)
+	}
+
+	cfg, err = Load(writeMinimalConfig(t, "seal:\n  credential_rotation_check_period: 10s\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	d, err = cfg.Seal.CredentialRotationCheckPeriodDuration()
+	if err != nil {
+		t.Fatalf("CredentialRotationCheckPeriodDuration: %v", err)
+	}
+	if d != 10*time.Second {
+		t.Errorf("file credential_rotation_check_period = %s, want 10s", d)
+	}
+}
+
+// TestSealCredentialRotationCheckPeriod_InvalidRejected verifies that a
+// malformed or non-positive period is a *ValidationError naming the field.
+func TestSealCredentialRotationCheckPeriod_InvalidRejected(t *testing.T) {
+	for _, period := range []string{"not-a-duration", "0s", "-1m"} {
+		_, err := Load(writeMinimalConfig(t, "seal:\n  enabled: true\n  strategy: passphrase\n  credential_rotation_check_period: "+period+"\n"))
+		var verr *ValidationError
+		if !errors.As(err, &verr) || verr.Field != "seal.credential_rotation_check_period" {
+			t.Fatalf("period %q: err = %v, want a ValidationError on seal.credential_rotation_check_period", period, err)
+		}
+	}
+}
+
+// TestSealCredentialRotationCheckPeriodDuration_HandBuilt pins the accessor
+// on a configuration built without Load, the path the server's rotation
+// scheduler falls back to the default on: unset is the 1m default, and a
+// zero, negative or unparsable period is a ValidationError, never a
+// non-positive period a ticker would panic on.
+func TestSealCredentialRotationCheckPeriodDuration_HandBuilt(t *testing.T) {
+	got, err := SealConfig{}.CredentialRotationCheckPeriodDuration()
+	if err != nil || got != time.Minute {
+		t.Fatalf("unset: got %v, %v; want 1m, nil", got, err)
+	}
+	for _, period := range []string{"0", "0s", "-30s", "every minute"} {
+		got, err := SealConfig{CredentialRotationCheckPeriod: period}.CredentialRotationCheckPeriodDuration()
+		var verr *ValidationError
+		if !errors.As(err, &verr) || verr.Field != "seal.credential_rotation_check_period" || got > 0 {
+			t.Fatalf("period %q: got %v, %v; want a ValidationError on seal.credential_rotation_check_period", period, got, err)
+		}
+	}
+}
+
 // TestSealDrainTimeout_DefaultAndOverride covers the seal.drain_timeout
 // plumbing: the 10s default when unset, a YAML override, and a
 // QRDB_SEAL_DRAIN_TIMEOUT env override.

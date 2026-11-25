@@ -271,6 +271,11 @@ type StorageBarrier struct {
 	// held, before it waits for it. A test seam only: nil in production.
 	rootKeyUnsealWaiting func()
 
+	// guardPlaintextDropped, when set, is handed each decrypted copy a
+	// guarded write compared, once it has been wiped. A test seam only:
+	// nil in production.
+	guardPlaintextDropped func([]byte)
+
 	// quorumState holds the share-holder quorum rounds and the holder
 	// verifier (see quorum.go).
 	quorumState
@@ -782,8 +787,11 @@ func (b *StorageBarrier) GetMasterKey(ctx context.Context) ([]byte, error) {
 // if the persisted blob is missing or unreadable, ErrStrategyNotFound if
 // the persisted strategy is not registered, ErrCredentialMismatch if creds
 // does not unseal the matching key (including when the strategy itself
-// refuses creds outright), or any error encountered loading the persisted
-// blob.
+// refuses creds outright: ErrDecryptionFailed, ErrInvalidCredentials or an
+// invalid passphrase), an *UnsealError (errors.Is ErrUnsealFailed) wrapping
+// the strategy's error when UnsealRootKey fails for any other reason (an
+// enclave or hardware open failure is not a wrong credential), or any error
+// encountered loading the persisted blob.
 //
 // An open barrier whose persisted root key names StrategyNone returns nil:
 // the none (plaintext) strategy holds no root key and takes no secret, so
@@ -1304,12 +1312,8 @@ func (b *StorageBarrier) CompareAndDelete(ctx context.Context, key string, expec
 	if stored == nil {
 		return false, nil
 	}
-	plaintext, derr := b.barrier.Decrypt(nil, stored)
-	if derr != nil {
-		return false, &GetError{Key: key, Err: derr}
-	}
-	if !bytes.Equal(plaintext, expected) {
-		return false, nil
+	if same, gerr := b.storedEquals(key, stored, expected); gerr != nil || !same {
+		return false, gerr
 	}
 	// b.base is typed StorageBackend, which guardedDeleteBackend's doc comment
 	// (and storageBackendImpliesGuardedDelete) establishes it always
@@ -1352,12 +1356,8 @@ func (b *StorageBarrier) CompareAndSwap(ctx context.Context, key string, expecte
 		// A swap does not create. See kvstore.AtomicKVStore.CompareAndSwap.
 		return false, nil
 	}
-	plaintext, derr := b.barrier.Decrypt(nil, stored)
-	if derr != nil {
-		return false, &GetError{Key: key, Err: derr}
-	}
-	if !bytes.Equal(plaintext, expected) {
-		return false, nil
+	if same, gerr := b.storedEquals(key, stored, expected); gerr != nil || !same {
+		return false, gerr
 	}
 	guarded, ok := b.base.(guardedSwapBackend)
 	if !ok {
@@ -1386,6 +1386,23 @@ type guardedBatchBackend interface {
 // at a time can leave a prefix of them behind, and checking the guards before
 // writing reopens the window they exist to close.
 var ErrGuardedBatchUnsupported = errors.New("seal: storage backend has no guarded batch")
+
+// storedEquals reports whether the ciphertext stored at key decrypts to
+// expected. The decrypted copy is only compared: it is wiped before
+// storedEquals returns, whichever way the comparison goes, so a guarded
+// write leaves no plaintext of the value it was guarded on.
+func (b *StorageBarrier) storedEquals(key string, stored, expected []byte) (bool, error) {
+	plaintext, err := b.barrier.Decrypt(nil, stored)
+	if err != nil {
+		return false, &GetError{Key: key, Err: err}
+	}
+	same := bytes.Equal(plaintext, expected)
+	secure.Wipe(plaintext)
+	if b.guardPlaintextDropped != nil {
+		b.guardPlaintextDropped(plaintext)
+	}
+	return same, nil
+}
 
 // PutAllIfAllUnchanged encrypts every write and applies them atomically, only
 // while every guard's key still holds its expected PLAINTEXT. A nil
@@ -1428,12 +1445,8 @@ func (b *StorageBarrier) PutAllIfAllUnchanged(ctx context.Context, guards []kvst
 		if stored == nil {
 			return false, nil
 		}
-		plaintext, derr := b.barrier.Decrypt(nil, stored)
-		if derr != nil {
-			return false, &GetError{Key: g.Key, Err: derr}
-		}
-		if !bytes.Equal(plaintext, g.Value) {
-			return false, nil
+		if same, gerr := b.storedEquals(g.Key, stored, g.Value); gerr != nil || !same {
+			return false, gerr
 		}
 		baseGuards[i] = kvstore.Guard{Key: g.Key, Value: stored}
 	}

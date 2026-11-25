@@ -43,6 +43,33 @@ func TestManager_Drop_FencesTheStoreBeforeReclaiming(t *testing.T) {
 	assert.Equal(t, []string{"fence", "reclaim"}, events[len(events)-2:])
 }
 
+// recordingLogReclaimer records every DatabaseLogReclaimer call as
+// tenant/database/incarnation.
+type recordingLogReclaimer struct{ calls [][3]string }
+
+func (r *recordingLogReclaimer) DropDatabaseLogs(_ context.Context, tenantID, database, incarnation string) error {
+	r.calls = append(r.calls, [3]string{tenantID, database, incarnation})
+	return nil
+}
+
+// TestManager_Drop_ReclaimLogsOfAnUntenantedDatabase proves a drop of a
+// database with no tenant still runs the wired log reclaimer: the log service
+// keeps that database's logs under the system tenant, so skipping it left
+// them behind for a re-created database of the same name to collide with.
+func TestManager_Drop_ReclaimLogsOfAnUntenantedDatabase(t *testing.T) {
+	mgr, _ := newReclaimManager(t, "orders")
+	db, err := mgr.Get("orders")
+	require.NoError(t, err)
+	require.Empty(t, db.TenantID())
+	incarnation := db.Incarnation()
+	r := &recordingLogReclaimer{}
+	mgr.SetLogReclaimer(r)
+
+	require.NoError(t, mgr.Drop(context.Background(), "orders"))
+
+	assert.Equal(t, [][3]string{{"", "orders", incarnation}}, r.calls)
+}
+
 // A fence write that reports failure fails the drop before anything is
 // reclaimed. The failure does not mean the fence is absent -- a proposal can
 // commit and still report an error -- so the rollback clears it anyway, and

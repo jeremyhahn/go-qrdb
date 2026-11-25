@@ -16,6 +16,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
@@ -96,19 +99,12 @@ func TestRetrieveCredentialBuffer_Manual_BlocksUntilSubmitted(t *testing.T) {
 	}
 
 	// Wait until every retriever has registered, then submit.
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
 		svc.waitersMu.Lock()
 		n := len(svc.waiters["late"])
 		svc.waitersMu.Unlock()
-		if n == waiters {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("only %d of %d waiters registered", n, waiters)
-		}
-		time.Sleep(time.Millisecond)
-	}
+		assert.Equalf(c, waiters, n, "only %d of %d waiters registered", n, waiters)
+	}, 5*time.Second, time.Millisecond)
 	if err := svc.SubmitCredential(ctx, "late", []byte("delivered")); err != nil {
 		t.Fatalf("SubmitCredential: %v", err)
 	}

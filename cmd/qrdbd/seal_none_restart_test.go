@@ -87,3 +87,29 @@ func TestUnsealNoneBarrier_AlreadyUnsealedIsNoop(t *testing.T) {
 	require.NoError(t, unsealNoneBarrier(context.Background(), sub.SealBarrier))
 	require.False(t, sub.SealBarrier.IsSealed())
 }
+
+// TestUnsealNoneBarrier_StandingSOIntentKeepsBarrierSealedAcrossRestart pins
+// go-qrdb#1129's round-5 finding on the real none-strategy boot path: a
+// process that dies between barrier init and the system SO record write
+// leaves the SO intent standing, and the restart must not auto-unseal into a
+// first boot without the SO. Once the retried ceremony records the SO and
+// clears the intent, the next boot unseals itself again.
+func TestUnsealNoneBarrier_StandingSOIntentKeepsBarrierSealedAcrossRestart(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	first := bootSealSubsystem(t, dir, string(seal.StrategyNone))
+	require.NoError(t, first.SealBarrier.MarkSystemSOIntent(ctx))
+	require.NoError(t, first.SealBarrier.Initialize(ctx, seal.Credentials{}))
+	require.NoError(t, first.Close()) // crash before the SO record write
+
+	restarted := bootSealSubsystem(t, dir, string(seal.StrategyNone))
+	require.True(t, restarted.SealBarrier.IsSealed(), "a standing SO intent must keep the none barrier sealed")
+	pending, err := restarted.SealBarrier.SystemSOIntent(ctx)
+	require.NoError(t, err)
+	require.True(t, pending)
+
+	require.NoError(t, restarted.SealBarrier.ClearSystemSOIntent(ctx))
+	require.NoError(t, restarted.Close())
+	recovered := bootSealSubsystem(t, dir, string(seal.StrategyNone))
+	require.False(t, recovered.SealBarrier.IsSealed(), "with the intent cleared the none barrier unseals itself")
+}

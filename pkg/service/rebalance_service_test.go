@@ -35,17 +35,6 @@ import (
 // NewRebalanceService
 // ---------------------------------------------------------------------------
 
-func TestRebalanceService_NewRebalanceService_ReturnsNonNil(t *testing.T) {
-	svc := NewRebalanceService(&mockHost{})
-	if svc == nil {
-		t.Fatal("expected non-nil RebalanceService")
-	}
-}
-
-func TestRebalanceService_NewRebalanceService_ImplementsInterface(t *testing.T) {
-	_ = RebalanceServicer(NewRebalanceService(&mockHost{}))
-}
-
 // ---------------------------------------------------------------------------
 // GetShardStats: success
 // ---------------------------------------------------------------------------

@@ -399,6 +399,10 @@ func (s *qrdbServiceServer) CreateRole(ctx context.Context, req *pb.CreateRoleRe
 		perms[i] = permission.Permission(p)
 	}
 
+	if err := s.authMW.AuthorizeSOExclusive(ctx, req.GetTenantId(), "create role"); err != nil {
+		return nil, mapServiceError(err)
+	}
+
 	r, err := s.roleSvc.CreateRole(ctx, &role.CreateRoleRequest{
 		ID:          req.GetId(),
 		Name:        req.GetName(),
@@ -667,7 +671,7 @@ func (s *qrdbServiceServer) ListOwnPermissions(ctx context.Context, _ *emptypb.E
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "role"})
 	}
 
-	perms, err := role.ListOwnPermissions(ctx, s.roleSvc)
+	perms, err := role.ListOwnPermissions(ctx, s.roleSvc, s.authMW.StrictSeparation())
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -734,6 +738,10 @@ func (s *qrdbServiceServer) ReconcileBuiltInRoles(ctx context.Context, req *pb.R
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "role"})
 	}
 
+	if err := s.authMW.AuthorizeSOExclusive(ctx, req.GetTenantId(), "reconcile built-in roles"); err != nil {
+		return nil, mapServiceError(err)
+	}
+
 	report, err := s.roleSvc.ReconcileBuiltInRoles(ctx, req.GetTenantId())
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -773,6 +781,9 @@ func (s *qrdbServiceServer) ReconcileBuiltInRolesAllTenants(ctx context.Context,
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "tenant"})
 	}
 
+	if err := s.authMW.AuthorizeSOExclusive(ctx, "", "reconcile built-in roles in every tenant"); err != nil {
+		return nil, mapServiceError(err)
+	}
 	report, err := role.ReconcileAllTenants(ctx, s.roleSvc, s.tenantSvc, s.authMW.OperatorAccessGate(permission.RolesReconcileAll))
 	if err != nil {
 		return nil, mapServiceError(err)

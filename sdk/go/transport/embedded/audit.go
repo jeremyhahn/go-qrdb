@@ -60,9 +60,6 @@ func (c *auditClient) EmitAudit(ctx context.Context, ev transport.AuditEvent) er
 	if err != nil {
 		return err
 	}
-	if c.transport.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	if c.transport.auditLogger == nil {
 		return &MissingAuditLoggerError{}
 	}
@@ -90,9 +87,6 @@ func (c *auditClient) QueryAudit(ctx context.Context, f transport.AuditFilter) (
 	}
 	if err := c.transport.authorize(ctx, "AuditClient.QueryAudit"); err != nil {
 		return nil, err
-	}
-	if c.transport.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 
 	var logger audit.AuditLogger
@@ -145,9 +139,6 @@ func (c *auditClient) VerifyChain(ctx context.Context) (*transport.AuditVerifyRe
 	if err := c.transport.authorize(ctx, "AuditClient.VerifyChain"); err != nil {
 		return nil, err
 	}
-	if c.transport.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if c.transport.auditLogger == nil {
 		return nil, &MissingAuditLoggerError{}
 	}
@@ -171,9 +162,6 @@ func (c *auditClient) VerifyReplicatedChain(ctx context.Context, tenantID string
 	}
 	if err := c.transport.authorize(ctx, "AuditClient.VerifyReplicatedChain"); err != nil {
 		return nil, err
-	}
-	if c.transport.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if c.transport.replicatedAudit == nil {
 		return nil, &MissingAuditLoggerError{}

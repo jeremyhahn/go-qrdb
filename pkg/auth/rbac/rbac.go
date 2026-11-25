@@ -53,6 +53,7 @@ package rbac
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -277,6 +278,66 @@ func (a *RBACAuthorizer) holdsSystemRole(ctx context.Context, identity *auth.Ide
 	return a.roleIDsHoldSystemRole(ctx, identity.Roles, identity.TenantID, roleName)
 }
 
+// holdsSOWithAdmin reports whether identity holds the SO role and the Admin
+// role together, counting both its home-tenant Roles and its own
+// RoleBindings for its home tenant (homeBoundRoleIDs). Strict separation of
+// duties (docs/SPEC.md, separation-of-duties) forbids such a combined
+// principal in every tenant, so Authorize refuses it outright: an account a
+// standard posture named both SO and Admin stays unusable after a strict
+// restart whichever tenant it lives in, without a boot-time scan of every
+// tenant.
+//
+// The invariant is a property of the principal, not of the call: it reads
+// the home-tenant bindings whatever tenant the request targets. Reading only
+// the target-scoped bindings (boundRoleIDs) would see none on a request
+// against another tenant, and a system identity holding Admin in Roles and
+// the system SO by binding would pass there.
+//
+// It also returns the tenant whose SO and Admin roles are combined: the
+// identity's home tenant.
+func holdsSOWithAdmin(identity *auth.Identity) (bool, string) {
+	// SO and Admin are the built-in roles, matched by their canonical
+	// (persisted) IDs only: a tenant may give a custom role the
+	// caller-supplied ID "so" or "admin", and holding it holds no built-in
+	// role, so the assignment gate's combinations are not refused here.
+	home := tenantid.Normalize(identity.TenantID)
+	homeBound := homeBoundRoleIDs(identity)
+	viaBinding := false
+	isSO := hasCanonicalSystemRole(identity.Roles, identity.TenantID, role.RoleNameSO)
+	if !isSO && hasCanonicalSystemRole(homeBound, home, role.RoleNameSO) {
+		isSO, viaBinding = true, true
+	}
+	if !isSO {
+		return false, ""
+	}
+	isAdmin := hasCanonicalSystemRole(identity.Roles, identity.TenantID, role.RoleNameAdmin)
+	if !isAdmin && hasCanonicalSystemRole(homeBound, home, role.RoleNameAdmin) {
+		isAdmin, viaBinding = true, true
+	}
+	if !isAdmin {
+		return false, ""
+	}
+	if viaBinding {
+		return true, home
+	}
+	return true, identity.TenantID
+}
+
+// homeBoundRoleIDs returns the RoleID of every identity.RoleBindings entry
+// naming the identity's own (home) tenant, whatever tenant the current
+// request targets. It serves the SO/Admin invariant only; permission
+// resolution keeps boundRoleIDs, which scopes bindings to the target tenant.
+func homeBoundRoleIDs(identity *auth.Identity) []string {
+	home := tenantid.Normalize(identity.TenantID)
+	var out []string
+	for _, b := range identity.RoleBindings {
+		if b.TenantID == home {
+			out = append(out, b.RoleID)
+		}
+	}
+	return out
+}
+
 // roleIDsHoldSystemRole reports whether roleIDs — all belonging to tenantID —
 // includes the named system role of tenantID, by role name or by the
 // canonical identifier. It is holdsSystemRole's tenant-parameterized core,
@@ -295,6 +356,20 @@ func (a *RBACAuthorizer) roleIDsHoldSystemRole(_ context.Context, roleIDs []stri
 		}
 	}
 	return false, nil
+}
+
+// hasCanonicalSystemRole reports whether roleIDs, all belonging to tenantID,
+// include the named built-in role of tenantID by its canonical identifier,
+// the ID the role store persists it under. Unlike roleIDsHoldSystemRole it
+// never matches the bare role name, which a custom role may carry as its ID.
+func hasCanonicalSystemRole(roleIDs []string, tenantID, roleName string) bool {
+	canonical := role.SystemRoleID(tenantID, roleName)
+	for _, r := range roleIDs {
+		if r == canonical {
+			return true
+		}
+	}
+	return false
 }
 
 // boundRoleIDs returns the RoleID of every identity.RoleBindings entry whose
@@ -557,11 +632,29 @@ func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 			Reason:   "share-holder certificates cannot be used to log in",
 		}
 	}
-	// Captured BEFORE any tenant rebind below: boundRoleIDs and the SO/
+	// Captured BEFORE any tenant rebind below: boundRoleIDs and the
 	// permission resolution below both need the call's ORIGINAL target
 	// tenant, and every entry boundRoleIDs returns belongs to it.
 	target := tenant.FromContext(ctx)
 	bound := boundRoleIDs(ctx, identity)
+
+	// Strict separation of duties: a principal holding SO together with
+	// Admin is refused every permission, in every tenant, before any grant
+	// is considered (see holdsSOWithAdmin).
+	if a.strictSoD {
+		if combined, conflictTenant := holdsSOWithAdmin(identity); combined {
+			// Carry the typed refusal so the transports report
+			// SO_ROLE_CONFLICT with its tenant and the SDK's errors.As
+			// check holds for a combined caller refused here.
+			return &PermissionDeniedError{
+				Resource: resource,
+				Action:   action,
+				Subject:  identity.Subject,
+				Reason:   "strict separation of duties: a principal holding the SO role together with Admin is refused",
+				Cause:    &auth.SORoleConflictError{TenantID: conflictTenant},
+			}
+		}
+	}
 
 	// SO deny-list check (FIPS 140-3 AS10.03): must precede any other
 	// admission so that a malicious or erroneous grant cannot override it.
@@ -647,6 +740,32 @@ func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 	}
 
 	required := permission.Permission(resource + ":" + action)
+
+	// Strict separation of duties: the SO holds the strict-only
+	// SO-exclusive grants (permission.StrictSOGrants, the built-in role
+	// reconcile across every tenant), which are the Admin's in the standard
+	// posture. Additive, and only for the exact permission requested; the
+	// scope gate below still confines a cross-scope one to the system SO.
+	//
+	// A positive grant matches the built-in SO by its persisted (canonical)
+	// ID only, held directly or through a RoleBinding: a tenant may give a
+	// custom role the caller-supplied ID "so", and holding it is not
+	// holding the SO, so it must not earn an SO-exclusive grant (Codex r2
+	// P1 on #1129). The deny-list above keeps the alias: denying more is
+	// safe, granting more is not.
+	grants := role.StrictSOGrants(a.strictSoD, identity.Roles, identity.TenantID)
+	if len(grants) == 0 && len(bound) > 0 {
+		grants = role.StrictSOGrants(a.strictSoD, bound, target)
+	}
+	if slices.Contains(grants, required) {
+		merged := make(map[permission.Permission]struct{}, len(permSet)+1)
+		for p := range permSet {
+			merged[p] = struct{}{}
+		}
+		merged[required] = struct{}{}
+		permSet = merged
+	}
+
 	if !permission.Granted(permSet, required) {
 		return &PermissionDeniedError{
 			Resource: resource,

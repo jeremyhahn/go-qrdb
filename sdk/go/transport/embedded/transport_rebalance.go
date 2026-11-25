@@ -46,9 +46,6 @@ func (t *Transport) GetShardStats(ctx context.Context, shardID uint64) (*transpo
 	if err := t.authorize(ctx, "GetShardStats"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.rebalanceSvc == nil {
 		return nil, &NilServiceError{Service: "RebalanceServicer"}
 	}
@@ -75,9 +72,6 @@ func (t *Transport) CreateRebalancePlan(ctx context.Context, req *transport.Reba
 	}
 	if err := t.authorize(ctx, "CreateRebalancePlan"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.rebalanceSvc == nil {
 		return nil, &NilServiceError{Service: "RebalanceServicer"}
@@ -130,9 +124,6 @@ func (t *Transport) ExecuteRebalance(ctx context.Context, plan *transport.Rebala
 	if err := t.authorize(ctx, "ExecuteRebalance"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.rebalanceSvc == nil {
 		return nil, &NilServiceError{Service: "RebalanceServicer"}
 	}
@@ -179,9 +170,6 @@ func (t *Transport) GetImbalanceReport(ctx context.Context) (*transport.Imbalanc
 	}
 	if err := t.authorize(ctx, "GetImbalanceReport"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.rebalanceSvc == nil {
 		return nil, &NilServiceError{Service: "RebalanceServicer"}
