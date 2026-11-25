@@ -398,7 +398,7 @@ read-only module cache, so it still proves the image builds offline; a bridge
 stage takes a writable copy of it. Only the nightly schedule on `main` saves
 an entry (`actions/cache/save` under `CI_CACHE_SAVE` on a hosted runner; a
 push to `main` runs on the self-hosted pool, whose caches live on
-`/mnt/raid0`, #1597; the combined `actions/cache` action, which saves on
+the CI_CACHE_ROOT directory (runner host env file), #1597; the combined `actions/cache` action, which saves on
 every event, is refused), so a pull request reads `main`'s cache and never
 writes one; GitHub evicts the least recently used
 entries past the repository's 10 GB. Each leg has its own key, so legs never
@@ -598,15 +598,28 @@ is not a feature's.
 aggregate over its legs, `failure` when any leg fails, so one failed leg turns
 the gate red; `ci_tiers_test.go` runs the gate's script with a failed, a
 cancelled and a skipped leg. The job is in the full tier (architecture.md, "CI
-tiers"): every leg shares its full-tier `if:`, so a plain pull request skips
-them together and `ci-gate` excuses that skip; a push to `main`, the nightly
-schedule, a dispatch or a `ci:full` pull request runs all of them from its next push, update-branch or dispatch (a label change alone starts no run).
+tiers"): every leg shares its full-tier `if:`, so a docs-only pull request or a
+`workflow_dispatch` off `main` skips them together and `ci-gate` excuses that
+skip; a push to `main`, the nightly schedule, a dispatch on `main` and every
+non-draft pull request that is not docs-only run all of them (ci-template
+v1.41; `ci:full` selects no tier).
 No leg starts before `docker-build`, `test-typescript` and `preflight` have
 passed: the job needs those three, as does `integration-standalone`, and not
 `lint`, `lint-gates`, `image` or the unit-suite jobs, so the legs start once the images are built and run beside
 those jobs' checks; `ci-gate` still fails the run on any red check. The label goes on once, when the pull
 request is green on the PR tier and ready to merge (architecture.md, "CI
 tiers").
+
+The `row` job (Row [one SPEC row per pull request], ci-template v1.55, ruling
+1136) is in `ci-gate`'s needs as a `pull` job: it runs on a ready pull request
+only, and `ci-gate` excuses its skip off `pull_request` alone. It passes a
+pull request whose head branch is `row/<n>-*` when issue #n is named in a
+`docs/SPEC.md` table row on the base commit (a ROADMAP.md mention does not
+count), one labelled `ci`, `main-fix` or `std`, or one from a `merge-train/`
+branch; anything else is red. It reads the base, never the head, so a row
+lands in SPEC through its own docs pull request first.
+`.github/workflows/testdata/row-job-tests.py`, run in preflight, holds the
+cases.
 
 Each shard runs on its own GitHub-hosted `ubuntu-latest` runner, as the
 image job and the standalone and soak jobs do.

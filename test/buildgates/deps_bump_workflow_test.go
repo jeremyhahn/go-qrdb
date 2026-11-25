@@ -75,11 +75,108 @@ gh api "repos/$REPO/commits/$c" --jq .commit.verification.verified
 	}
 }
 
+// depsBumpLabelCall is the call that labels the bump PR for review.
+const depsBumpLabelCall = `gh api "repos/$REPO/issues/$PR/labels"`
+
+// depsBumpOpenedLine is the line the PR step prints once this run opened the PR.
+const depsBumpOpenedLine = `echo "opened #$PR"`
+
+// depsBumpBranchEnd matches an else or fi line, which ends the shell branch
+// the opened line sits in.
+var depsBumpBranchEnd = regexp.MustCompile(`(?m)^\s*(else|elif|fi)\b`)
+
+// depsBumpRouteProblems lists the ways deps-bump.yml leaves the maintenance
+// row (owner ruling 1234, #1708): dependency changes land from the row branch
+// row/1708-maintenance, no ci/* branch lives outside it, and the coordinator
+// owns the row PR's draft state and labels, so the workflow labels only a PR
+// it opened itself.
+func depsBumpRouteProblems(src string) []string {
+	var p []string
+	if !strings.Contains(src, "\n  BRANCH: row/1708-maintenance\n") {
+		p = append(p, "the env does not set BRANCH: row/1708-maintenance")
+	}
+	if strings.Contains(src, "ci/deps-bump") {
+		p = append(p, "still names ci/deps-bump, a branch outside the maintenance row")
+	}
+	if !strings.Contains(src, "Refs #1708.") {
+		p = append(p, "the PR body lacks the line \"Refs #1708.\"")
+	}
+	if strings.Contains(src, "Closes #1708") {
+		p = append(p, "the PR body closes #1708, the standing maintenance row")
+	}
+	switch n := strings.Count(src, depsBumpLabelCall); {
+	case n == 0:
+		p = append(p, "has no label call for a PR it opened")
+	case n > 1:
+		p = append(p, "has more than one label call")
+	default:
+		opened := strings.Index(src, depsBumpOpenedLine)
+		label := strings.Index(src, depsBumpLabelCall)
+		if opened < 0 || label < opened || depsBumpBranchEnd.MatchString(src[opened:label]) {
+			p = append(p, "the label call is not inside the branch that opened the PR: an already open row PR must not be labelled")
+		}
+	}
+	return p
+}
+
+func TestDepsBumpWorkflowUsesTheMaintenanceRow(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join(repoRoot(t), ".github", "workflows", depsBumpWorkflowName))
+	if err != nil {
+		t.Fatalf("read %s: %v", depsBumpWorkflowName, err)
+	}
+	if p := depsBumpRouteProblems(string(b)); len(p) != 0 {
+		t.Fatalf("%s:\n  %s", depsBumpWorkflowName, strings.Join(p, "\n  "))
+	}
+}
+
+func TestDepsBumpRouteProblems_CanFail(t *testing.T) {
+	good := `env:
+  BRANCH: row/1708-maintenance
+  PR_TITLE: 'Maintenance row: dependency and CI upkeep (#1708)'
+jobs:
+  run: |
+          if [ -z "$PR" ]; then
+            body=$(printf '%s\n\n%s\n' 'The bump.' 'Refs #1708.')
+            if PR=$(gh api "repos/$REPO/pulls" --jq .number); then
+              echo "opened #$PR"
+              gh api "repos/$REPO/issues/$PR/labels" -f 'labels[]=code-review' -f 'labels[]=task:ready' >/dev/null
+            else
+              echo "found #$PR"
+            fi
+          fi
+          echo "number=$PR" >> "$GITHUB_OUTPUT"
+`
+	if p := depsBumpRouteProblems(good); len(p) != 0 {
+		t.Fatalf("good workflow flagged: %v", p)
+	}
+	label := "              " + depsBumpLabelCall + " -f 'labels[]=code-review' -f 'labels[]=task:ready' >/dev/null\n"
+	for name, tc := range map[string]struct{ from, to, want string }{
+		"old BRANCH":          {"BRANCH: row/1708-maintenance", "BRANCH: ci/deps-bump", "BRANCH: row/1708-maintenance"},
+		"names ci/*":          {"Refs #1708.')", "Refs #1708.') # was ci/deps-bump", "ci/deps-bump"},
+		"no Refs line":        {"'Refs #1708.'", "'See the row.'", "Refs #1708."},
+		"Closes row":          {"'Refs #1708.'", "'Refs #1708.' 'Closes #1708'", "closes #1708"},
+		"unconditional label": {label, "", "inside the branch that opened"},
+		"no label call":       {label, "", "no label call"},
+		"two label calls":     {label, label + label, "more than one"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			src := strings.Replace(good, tc.from, tc.to, 1)
+			if name == "unconditional label" {
+				src = strings.Replace(src, "          echo \"number=$PR\"", strings.TrimPrefix(label, "    ")+"          echo \"number=$PR\"", 1)
+			}
+			p := depsBumpRouteProblems(src)
+			if !strings.Contains(strings.Join(p, "\n"), tc.want) {
+				t.Fatalf("want a problem naming %q, got %v", tc.want, p)
+			}
+		})
+	}
+}
+
 // depsBumpPRStep is the name of deps-bump.yml's PR-opening step.
 const depsBumpPRStep = "- name: Open the PR and label it"
 
 // depsBumpRecoveryProblems lists where deps-bump.yml can strand
-// ci/deps-bump: a failed PR create leaves a branch with no open PR, which
+// row/1708-maintenance: a failed PR create leaves a branch with no open PR, which
 // the base step refuses on every later run. The commit step records a branch
 // it created in GITHUB_ENV; the PR step catches a failed create, looks up an
 // open PR for the branch, and only when there is none and this run created
@@ -175,7 +272,7 @@ func TestDepsBumpRecoveryProblems_CanFail(t *testing.T) {
 const depsBumpBaseStep = "- name: Find the base commit"
 
 // depsBumpBranchDeleteProblems lists where deps-bump.yml's base step can
-// delete ci/deps-bump with unmerged commits on it: the delete must follow a
+// delete row/1708-maintenance with unmerged commits on it: the delete must follow a
 // read of the branch tip, the last merged PR's head and the compare status,
 // and a guard that refuses (exit 1) unless the head is the tip or the tip
 // is in main (behind or identical).
@@ -256,7 +353,7 @@ func TestDepsBumpBranchDeleteProblems_CanFail(t *testing.T) {
 }
 
 // depsBumpCommitStep is the commit step's name in deps-bump.yml.
-const depsBumpCommitStep = "      - name: Commit to ci/deps-bump\n"
+const depsBumpCommitStep = "      - name: Commit to the maintenance row branch\n"
 
 // depsBumpStepScript returns the dedented `run: |` script of the step that
 // starts with header.
@@ -303,7 +400,7 @@ exit 2
 // TestDepsBumpCommitStepDeletesCreatedBranchOnFailure runs the commit step
 // with a mocked gh: when the signed-commit check fails, by an API error or
 // an unverified commit, the step exits non-zero and deletes the branch it
-// created, so ci/deps-bump is not left to strand the next daily run.
+// created, so row/1708-maintenance is not left to strand the next daily run.
 func TestDepsBumpCommitStepDeletesCreatedBranchOnFailure(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join(repoRoot(t), ".github", "workflows", depsBumpWorkflowName))
 	if err != nil {
@@ -314,7 +411,7 @@ func TestDepsBumpCommitStepDeletesCreatedBranchOnFailure(t *testing.T) {
 	if err != nil {
 		t.Skip("no bash")
 	}
-	const del = "api -X DELETE repos/o/r/git/refs/heads/ci/deps-bump"
+	const del = "api -X DELETE repos/o/r/git/refs/heads/row/1708-maintenance"
 	for name, tc := range map[string]struct {
 		verified, exists string
 		wantOK, wantDel  bool
@@ -350,7 +447,7 @@ func TestDepsBumpCommitStepDeletesCreatedBranchOnFailure(t *testing.T) {
 			cmd.Dir = dir
 			cmd.Env = []string{
 				"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"),
-				"REPO=o/r", "BRANCH=ci/deps-bump", "BASE_SHA=abc123", "CHANGED=go.mod",
+				"REPO=o/r", "BRANCH=row/1708-maintenance", "BASE_SHA=abc123", "CHANGED=go.mod",
 				"RUNNER_TEMP=" + dir, "GITHUB_ENV=" + filepath.Join(dir, "github.env"),
 				"GH_LOG=" + log, "GH_VERIFIED=" + tc.verified, "GH_BRANCH_EXISTS=" + tc.exists,
 			}
