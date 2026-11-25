@@ -166,6 +166,75 @@ func TestTenantHostRegistry_MigrateEncryption_RecodesStandaloneHomeRecords(t *te
 	}
 }
 
+// TestTenantHostRegistry_MigrateEncryption_CarriesVerifiableLogs pins that a
+// standalone tenant's verifiable logs -- their entries, tree state and
+// signing keys, kept in the barrier's own backend under
+// service.BarrierLogKeyspace beside the home store -- read back under the
+// adopted root key through the tenant's new barrier, and that the migration
+// leaves no staged copy behind.
+func TestTenantHostRegistry_MigrateEncryption_CarriesVerifiableLogs(t *testing.T) {
+	ctx := context.Background()
+	reg, hostReg, _ := migrateTestTenant(t, "vt")
+	if _, err := hostReg.Services(ctx, "vt"); err != nil {
+		t.Fatalf("Services(pre-migrate): %v", err)
+	}
+	tb, err := reg.GetTenant("vt")
+	if err != nil {
+		t.Fatalf("GetTenant(pre-migrate): %v", err)
+	}
+	kv, err := seal.NewTenantBarrierKVStore(tb)
+	if err != nil {
+		t.Fatalf("NewTenantBarrierKVStore(pre-migrate): %v", err)
+	}
+	prefix := service.BarrierLogKeyspace + "/"
+	records := map[string]string{
+		prefix + "app/releases/entry/0": "entry-0",
+		prefix + "app/releases/entry/1": "entry-1",
+		prefix + "app/releases/tree":    "tree-state",
+		prefix + "app/releases/key":     "signing-key",
+	}
+	for k, v := range records {
+		if err := kv.Put(ctx, k, []byte(v)); err != nil {
+			t.Fatalf("Put(%q): %v", k, err)
+		}
+	}
+
+	opts := seal.MigrationOptions{
+		TargetStrategy: seal.StrategyPassphrase,
+		Mechanism:      seal.MechanismSwap,
+		Availability:   seal.AvailabilityQuiesced,
+		Credentials:    seal.MustCredentials(ctx, []byte("tenant-migrate-pw")),
+	}
+	if err := hostReg.MigrateEncryption(ctx, "vt", opts); err != nil {
+		t.Fatalf("MigrateEncryption: %v", err)
+	}
+
+	keyed, err := reg.GetTenant("vt")
+	if err != nil {
+		t.Fatalf("GetTenant(post-migrate): %v", err)
+	}
+	if keyed == tb {
+		t.Fatal("the migration installed no new tenant barrier")
+	}
+	kv, err = seal.NewTenantBarrierKVStore(keyed)
+	if err != nil {
+		t.Fatalf("NewTenantBarrierKVStore(post-migrate): %v", err)
+	}
+	for k, v := range records {
+		got, err := kv.Get(ctx, k)
+		if err != nil || string(got) != v {
+			t.Fatalf("Get(%q) through the new barrier = %q, %v; want %q", k, got, err, v)
+		}
+	}
+	staged, err := keyed.Barrier().List(ctx, keyed.Barrier().RootKeyPath()+migrateStagingSuffix+"/vlog-records/")
+	if err != nil {
+		t.Fatalf("List(staging): %v", err)
+	}
+	if len(staged) != 0 {
+		t.Fatalf("migration left %d staged log records behind: %v", len(staged), staged)
+	}
+}
+
 // TestTenantHostRegistry_MigrateEncryption_NoneToShamir proves the Shamir
 // target migration produces a GENUINE M-of-N Shamir barrier — not a silently
 // mislabeled passphrase barrier — and that it survives the full lifecycle: the

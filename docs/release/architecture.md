@@ -154,6 +154,15 @@ qrdbd and the headless qrdb CLI twice:
 - **Integrity is `SHA256SUMS`,** over every binary, attached with them. The
   release carries no separate signature; the signed tag is the provenance of
   the tree the binaries were built from.
+- **Every artifact is checked before it publishes.** `make
+  check-release-artifacts` runs last in both `release-artifacts` and
+  `release-cross`: each binary x platform x variant exists, its recorded
+  `GOOS`/`GOARCH` (`go version -m`) and ELF machine match its name, it was
+  built with `CGO_ENABLED=0`, `-trimpath` and every release tag, the `-fips`
+  variant records `GOFIPS140=latest` and the plain one none, and (for
+  `release-artifacts`) `SHA256SUMS` lists exactly the artifacts and verifies.
+  It reports every finding and refuses a goarch it has no ELF machine for, so
+  CI's full tier and `release.yml` fail on a mislabelled binary.
 - **CI cross-builds arm64 in the full tier.** On a push to `main`, a
   `workflow_dispatch` on `main` or a non-draft pull request, the `image` job runs
   `make release-cross PLATFORM=linux/arm64` in the toolchain image beside its

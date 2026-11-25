@@ -17,14 +17,24 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"slices"
 	"testing"
 
 	"github.com/transparency-dev/merkle/proof"
 	"github.com/transparency-dev/merkle/rfc6962"
 
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
@@ -83,5 +93,153 @@ func TestLogService_ReadsTheAuditInstance(t *testing.T) {
 		if id != vlog.AuditLogID("acme") {
 			t.Fatalf("read routed to %v, want the caller's own audit instance", id)
 		}
+	}
+}
+
+// barrierHomeGroup is a barrier tenant's home group: a state-machine-backed
+// host that applies every OpVerifiableLog command with the same
+// statemachine.ApplyVerifiableLog both state-machine families run, over one
+// store and one vlog.Chain, and answers vlog reads from that store.
+func barrierHomeGroup(t *testing.T) *perFeatureHost {
+	t.Helper()
+	store := memory.NewStorage()
+	t.Cleanup(func() { _ = store.Close() })
+	logs := vlog.NewChain()
+	inner := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, cmd []byte) (sm.Result, error) {
+			if len(cmd) == 0 || cmd[0] != protocol.OpVerifiableLog {
+				t.Fatalf("home group got opcode %v, want OpVerifiableLog", cmd)
+			}
+			logs.BeginUpdate()
+			return statemachine.ApplyVerifiableLog(logs, store, store, cmd[1:])
+		},
+		syncReadFn: func(_ context.Context, _ uint64, q interface{}) (interface{}, error) {
+			req, ok := q.(vlog.Request)
+			if !ok {
+				t.Fatalf("home group read %T, want a vlog.Request", q)
+			}
+			return vlog.Read(store, req)
+		},
+	}
+	return &perFeatureHost{mockHost: inner, on: map[feature.Feature]bool{
+		featuregate.AuditAppend:        true,
+		featuregate.VerifiableLog:      true,
+		featuregate.VerifiableLogKeys:  true,
+		featuregate.VerifiableLogAudit: true,
+	}}
+}
+
+// untouchedSystemShard is the system shard a barrier tenant's audit trail
+// must never reach: it counts every proposal and read.
+func untouchedSystemShard() (*mockHost, *int) {
+	calls := 0
+	return &mockHost{
+		syncProposeFn: func(context.Context, uint64, []byte) (sm.Result, error) {
+			calls++
+			return sm.Result{}, nil
+		},
+		syncReadFn: func(context.Context, uint64, interface{}) (interface{}, error) {
+			calls++
+			return nil, nil
+		},
+	}, &calls
+}
+
+// TestLogService_ReadsABarrierTenantsAuditInstanceWhereItsLoggerWrites: the
+// replicated audit logger writes a barrier tenant's events to the system
+// shard, as on main, and the log service reads, lists and proves the audit
+// instance through the same audit resolver, so the head and proof it serves
+// are of the records the logger wrote; the tenant's home group is never
+// consulted for its audit trail.
+func TestLogService_ReadsABarrierTenantsAuditInstanceWhereItsLoggerWrites(t *testing.T) {
+	system := barrierHomeGroup(t)
+	home, homeCalls := untouchedSystemShard()
+	lookup := &fakeIsolationLookup{tenants: map[string]*tenant.TenantInfo{
+		"vault": {ID: "vault", IsolationType: tenant.IsolationBarrier},
+	}}
+	auditResolver := NewSystemShardAuditResolver(system, 1, lookup)
+	logResolver := NewSystemShardLogResolver(system, 1, lookup,
+		&fakeLogGroups{host: home, homes: map[string]uint64{"vault": 9}})
+	logger := NewReplicatedLogger(auditResolver)
+	ctx := tenant.WithTenantID(context.Background(), "vault")
+	for _, action := range []string{"a", "b"} {
+		ev := fixedAuditEvent("vault")
+		ev.Action = action
+		if err := logger.Emit(ctx, ev); err != nil {
+			t.Fatalf("Emit(%s): %v", action, err)
+		}
+	}
+
+	svc, err := NewLogService(LogServiceConfig{Resolver: logResolver, AuditResolver: auditResolver, Databases: noDatabases(t)})
+	if err != nil {
+		t.Fatalf("NewLogService: %v", err)
+	}
+	ref := LogRef{Database: vlog.AuditDatabase, Log: vlog.AuditLog}
+	head, err := svc.Head(ctx, &HeadRequest{LogRef: ref})
+	if err != nil || head.Head.Size != 2 {
+		t.Fatalf("Head = %+v, %v; want the 2 audited events", head, err)
+	}
+	got, err := svc.GetEntries(ctx, &GetEntriesRequest{LogRef: ref, From: 1, Limit: 1})
+	if err != nil || len(got.Entries) != 1 || got.Entries[0].Index != 1 {
+		t.Fatalf("GetEntries(1) = %+v, %v; want entry 1", got, err)
+	}
+	leaf := got.Entries[0]
+	resp, err := svc.ProveInclusion(ctx, &InclusionRequest{LogRef: ref, Index: leaf.Index, Size: head.Head.Size})
+	if err != nil {
+		t.Fatalf("ProveInclusion: %v", err)
+	}
+	if err := proof.VerifyInclusion(rfc6962.DefaultHasher, leaf.Index, head.Head.Size,
+		rfc6962.DefaultHasher.HashLeaf(leaf.Body), resp.Hashes, head.Head.Root); err != nil {
+		t.Fatalf("VerifyInclusion: %v", err)
+	}
+	if _, err := svc.Append(ctx, &AppendRequest{LogRef: ref, Entries: [][]byte{[]byte("forged")}}); !errors.As(err, new(*vlog.ReservedLogError)) {
+		t.Fatalf("Append(audit) = %v, want *vlog.ReservedLogError", err)
+	}
+	if *homeCalls != 0 {
+		t.Fatalf("the home group saw %d audit calls, want none: the logger writes the system shard", *homeCalls)
+	}
+	// Listing the system database also reads the home group, which holds
+	// the tenant's other system logs; the audit log comes from the shard.
+	home.syncReadFn = func(context.Context, uint64, interface{}) (interface{}, error) {
+		return []vlog.LogID{{TenantID: "vault", Database: vlog.AuditDatabase, Log: "releases"}}, nil
+	}
+	listed, err := svc.ListLogs(ctx, &ListLogsRequest{Database: vlog.AuditDatabase})
+	if err != nil {
+		t.Fatalf("ListLogs: %v", err)
+	}
+	if !slices.Contains(listed.Logs, vlog.AuditLogID("vault")) || len(listed.Logs) != 2 {
+		t.Fatalf("ListLogs = %v, want %v and system/releases", listed.Logs, vlog.AuditLogID("vault"))
+	}
+}
+
+// TestLogService_SealedBarrierTenantKeepsItsAuditTrailOnTheSystemShard: as
+// on main, a barrier tenant's audit trail is on the system shard, outside
+// its barrier, so sealing the barrier neither loses an audit event nor
+// hides the trail; the tenant's own logs, in its home group, refuse with
+// tenant.ErrTenantSealed.
+func TestLogService_SealedBarrierTenantKeepsItsAuditTrailOnTheSystemShard(t *testing.T) {
+	system := barrierHomeGroup(t)
+	lookup := &fakeIsolationLookup{tenants: map[string]*tenant.TenantInfo{
+		"vault": {ID: "vault", IsolationType: tenant.IsolationBarrier},
+	}}
+	auditResolver := NewSystemShardAuditResolver(system, 1, lookup)
+	logResolver := NewSystemShardLogResolver(system, 1, lookup,
+		&fakeLogGroups{sealed: map[string]bool{"vault": true}})
+	logger := NewReplicatedLogger(auditResolver)
+	ctx := tenant.WithTenantID(context.Background(), "vault")
+	if err := logger.Emit(ctx, fixedAuditEvent("vault")); err != nil {
+		t.Fatalf("Emit = %v, want the event on the system shard", err)
+	}
+	svc, err := NewLogService(LogServiceConfig{Resolver: logResolver, AuditResolver: auditResolver, Databases: noDatabases(t)})
+	if err != nil {
+		t.Fatalf("NewLogService: %v", err)
+	}
+	ref := LogRef{Database: vlog.AuditDatabase, Log: vlog.AuditLog}
+	if head, err := svc.Head(ctx, &HeadRequest{LogRef: ref}); err != nil || head.Head.Size != 1 {
+		t.Fatalf("Head(audit) = %+v, %v; want the 1 audited event", head, err)
+	}
+	own := LogRef{Database: "orders", Log: "ledger"}
+	if _, err := svc.Head(ctx, &HeadRequest{LogRef: own}); !errors.Is(err, tenant.ErrTenantSealed) {
+		t.Fatalf("Head(own log) = %v, want tenant.ErrTenantSealed", err)
 	}
 }
