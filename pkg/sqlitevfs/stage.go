@@ -75,6 +75,10 @@ func (t *Txn) commitStaged(ctx context.Context, reads []ReadCheck, metaValue []b
 		chunk = make(map[string][]byte)
 		chunkKeys = nil
 		chunkBytes = 0
+		if t.held {
+			// Renews the lease each chunk and refuses the publish once it was lost.
+			return s.writer.Check(ctx, s.lockKey, t.token)
+		}
 		return nil
 	}
 	for _, pgno := range pgnos {

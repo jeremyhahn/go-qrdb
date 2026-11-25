@@ -62,6 +62,8 @@ type stagingBackend struct {
 	failStageAfter int
 	// onPublish, when set, runs at the start of every Publish call.
 	onPublish func()
+	// onStage, when set, runs after every staging commit lands.
+	onStage func()
 }
 
 func newStagingBackend(t *testing.T) *stagingBackend {
@@ -89,6 +91,9 @@ func (b *stagingBackend) Commit(ctx context.Context, reads []ReadCheck, puts map
 	b.stageCommits++
 	for k := range puts {
 		b.stageKeys = append(b.stageKeys, []byte(k))
+	}
+	if b.onStage != nil {
+		b.onStage()
 	}
 	return rev, nil
 }
@@ -1544,6 +1549,41 @@ func TestWriterLeaseLostFailsCommit(t *testing.T) {
 	}
 	if got := readAll(t, begin(t, sb)); !bytes.Equal(got, pageOf(0x01)) {
 		t.Fatal("a commit without its lease changed the pages")
+	}
+	other := beginReserved(t, sb)
+	if err := other.Rollback(t.Context()); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+}
+
+func TestWriterLeaseLostDuringStagingFailsPublish(t *testing.T) {
+	b := newStagingBackend(t)
+	locker := newMemLocker()
+	sa := newLockedStore(t, b, locker, "a")
+	sb := newLockedStore(t, b, locker, "b")
+	seeded := beginReserved(t, sa)
+	writePages(t, seeded, 0x01)
+	before := commit(t, seeded)
+
+	txn := beginReserved(t, sa)
+	writePages(t, txn, 0x07, 0x08, 0x09)
+	b.onStage = func() { locker.expire(sa.lockKey) }
+	if _, err := txn.Commit(t.Context()); !errors.Is(err, ErrBusy) {
+		t.Fatalf("Commit after the lease expired during staging err = %v, want ErrBusy", err)
+	}
+	b.onStage = nil
+	if b.stageCommits == 0 {
+		t.Fatal("the commit never staged, so the lease never expired during staging")
+	}
+	if b.publishes != 0 {
+		t.Fatalf("a commit whose lease expired during staging published %d times", b.publishes)
+	}
+	assertNoStageKeyLive(t, b)
+	if got := readAll(t, begin(t, sb)); !bytes.Equal(got, pageOf(0x01)) {
+		t.Fatal("a commit whose lease expired during staging changed the pages")
+	}
+	if revOf(t, b) < before {
+		t.Fatalf("revision %d went below the seeded %d", revOf(t, b), before)
 	}
 	other := beginReserved(t, sb)
 	if err := other.Rollback(t.Context()); err != nil {
