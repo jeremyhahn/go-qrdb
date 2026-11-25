@@ -104,7 +104,7 @@ whatever that webview happens to be rendering at the time.
 
 ## Standalone node
 
-A standalone node is engine-direct: writes are applied immediately to an in-memory or on-disk MVCC/KV engine under a `LocalBackend`. No quicraft host is created, no `StartShard` is called, and no Raft WAL or nodehost directory is written.
+A standalone node is engine-direct: writes are applied immediately to an MVCC engine over an in-memory or on-disk storage backend under a `LocalBackend` (`lifecycle.NewLocalEngine`). No quicraft host is created, no `StartShard` is called, and no Raft WAL or nodehost directory is written.
 
 ### Minimal (memory backend)
 
