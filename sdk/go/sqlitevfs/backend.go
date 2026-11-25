@@ -40,17 +40,21 @@ type kvAdapter struct {
 	c transport.MVCCClient
 }
 
-// GetAtRevision reads key at revision; an absent key or revision is the
-// server's not-found error, so the backend reads it as not found.
+// GetAtRevision reads key at revision as a one-key range [key, key+"\x00"),
+// whose bounds every transport carries as bytes, so a page key that is not
+// valid UTF-8 reads back exactly. An absent key is the server's not-found
+// error, so the backend reads it as not found.
 func (a kvAdapter) GetAtRevision(ctx context.Context, key string, revision int64) (*service.KeyValue, error) {
-	got, err := a.c.GetAtRevision(ctx, key, revision)
+	start := []byte(key)
+	end := append([]byte(key), 0)
+	resp, err := a.c.Range(ctx, start, end, transport.RangeOptions{Revision: revision, Limit: 1})
 	if err != nil {
 		return nil, readError(err, key, revision)
 	}
-	if got == nil {
+	if resp == nil || len(resp.Kvs) == 0 || resp.Kvs[0] == nil {
 		return nil, &service.KeyNotFoundError{Key: key}
 	}
-	return toKeyValue(got), nil
+	return toKeyValue(resp.Kvs[0]), nil
 }
 
 // Range reads [start, end) with the server's range options carried on the

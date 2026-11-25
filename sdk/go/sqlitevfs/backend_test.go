@@ -20,6 +20,7 @@ import (
 	"errors"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
@@ -140,11 +141,58 @@ type failingMVCC struct {
 	moveErr error
 }
 
-func (f *failingMVCC) GetAtRevision(ctx context.Context, key string, rev int64, opts ...transport.ReadOption) (*transport.MVCCKeyValue, error) {
+func (f *failingMVCC) Range(ctx context.Context, start, end []byte, rangeOpts transport.RangeOptions, opts ...transport.ReadOption) (*transport.RangeResponse, error) {
 	if f.getErr != nil {
 		return nil, f.getErr
 	}
-	return f.MVCCClient.GetAtRevision(ctx, key, rev, opts...)
+	return f.MVCCClient.Range(ctx, start, end, rangeOpts, opts...)
+}
+
+// textOnlyMVCC fails the test when a key that is not valid UTF-8 reaches
+// GetAtRevision, whose protobuf request carries the key as a string.
+type textOnlyMVCC struct {
+	transport.MVCCClient
+	t *testing.T
+}
+
+func (m *textOnlyMVCC) GetAtRevision(ctx context.Context, key string, rev int64, opts ...transport.ReadOption) (*transport.MVCCKeyValue, error) {
+	if !utf8.ValidString(key) {
+		m.t.Errorf("GetAtRevision called with non-UTF-8 key %q", key)
+	}
+	return m.MVCCClient.GetAtRevision(ctx, key, rev, opts...)
+}
+
+func TestClientBackend_PageKeyIsBinarySafe(t *testing.T) {
+	ctx := t.Context()
+	mvcc, txn, _ := newClient(t)
+	b := newBackend(t, &textOnlyMVCC{MVCCClient: mvcc, t: t}, txn)
+	puts := make(map[string][]byte)
+	var keys [][]byte
+	for i, pgno := range []uint32{128, 0x80808080} {
+		key, err := sqlitevfs.PageKey("app.db", pgno)
+		if err != nil {
+			t.Fatalf("PageKey(%d): %v", pgno, err)
+		}
+		keys = append(keys, key)
+		puts[string(key)] = bytes.Repeat([]byte{byte(0xa0 + i)}, pageSize)
+	}
+	rev, err := b.Commit(ctx, nil, puts, nil)
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	for _, key := range keys {
+		value, found, err := b.GetAt(ctx, key, rev)
+		if err != nil || !found || !bytes.Equal(value, puts[string(key)]) {
+			t.Fatalf("GetAt(%q) = %d bytes, %v, %v; want the written page", key, len(value), found, err)
+		}
+	}
+	absent, err := sqlitevfs.PageKey("app.db", 129)
+	if err != nil {
+		t.Fatalf("PageKey(129): %v", err)
+	}
+	if value, found, err := b.GetAt(ctx, absent, rev); err != nil || found || value != nil {
+		t.Fatalf("GetAt(absent) = %q, %v, %v; want not found", value, found, err)
+	}
 }
 
 func (f *failingMVCC) MovePrefix(ctx context.Context, req *transport.MovePrefixRequest) (int64, error) {
