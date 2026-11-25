@@ -17,6 +17,7 @@ package vector
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"maps"
 	"strconv"
@@ -37,6 +38,7 @@ const (
 	kvNamespacePrefix = "ns/"
 	kvVectorPrefix    = "v/"
 	kvIDPrefix        = "id/"
+	kvGenPrefix       = "gen/"
 	kvIDHexLen        = 16
 )
 
@@ -75,6 +77,8 @@ func NewKVVectorStorage(kv kvstore.KVStore) (*KVVectorStorage, error) {
 func kvNamespaceKey(namespace string) string { return kvNamespacePrefix + namespace }
 
 func kvIDKey(namespace string) string { return kvIDPrefix + namespace }
+
+func kvGenKey(namespace string) string { return kvGenPrefix + namespace }
 
 func kvVectorNSPrefix(namespace string) string { return kvVectorPrefix + namespace + "/" }
 
@@ -132,7 +136,10 @@ func (s *KVVectorStorage) UpsertVector(ctx context.Context, namespace string, ve
 	if vec.ID == 0 {
 		return ErrInvalidID
 	}
-	return s.putVector(ctx, namespace, vec)
+	if err := s.putVector(ctx, namespace, vec); err != nil {
+		return err
+	}
+	return s.advance(ctx, namespace)
 }
 
 // GetVector retrieves a vector by ID.
@@ -173,7 +180,10 @@ func (s *KVVectorStorage) DeleteVector(ctx context.Context, namespace string, id
 	if !ok {
 		return ErrVectorNotFound
 	}
-	return s.kv.Delete(ctx, key)
+	if err := s.kv.Delete(ctx, key); err != nil {
+		return err
+	}
+	return s.advance(ctx, namespace)
 }
 
 // BatchUpsertVectors validates every vector, then writes each one.
@@ -197,7 +207,7 @@ func (s *KVVectorStorage) BatchUpsertVectors(ctx context.Context, namespace stri
 			return err
 		}
 	}
-	return nil
+	return s.advance(ctx, namespace)
 }
 
 // BatchDeleteVectors deletes every vector named in ids; a missing ID is not
@@ -214,7 +224,7 @@ func (s *KVVectorStorage) BatchDeleteVectors(ctx context.Context, namespace stri
 			return err
 		}
 	}
-	return nil
+	return s.advance(ctx, namespace)
 }
 
 // scanVectors returns every vector of namespace with an ID >= fromID that
@@ -356,6 +366,9 @@ func (s *KVVectorStorage) CreateNamespace(ctx context.Context, info *NamespaceIn
 	if err := s.kv.Put(ctx, kvIDKey(info.Name), encodeID(0)); err != nil {
 		return err
 	}
+	if err := s.kv.Put(ctx, kvGenKey(info.Name), encodeID(0)); err != nil {
+		return err
+	}
 	infoCopy := *info
 	return s.putNamespace(ctx, &infoCopy)
 }
@@ -410,6 +423,9 @@ func (s *KVVectorStorage) DeleteNamespace(ctx context.Context, namespace string)
 		}
 	}
 	if err := s.kv.Delete(ctx, kvIDKey(namespace)); err != nil {
+		return err
+	}
+	if err := s.kv.Delete(ctx, kvGenKey(namespace)); err != nil {
 		return err
 	}
 	return s.kv.Delete(ctx, kvNamespaceKey(namespace))
@@ -479,8 +495,12 @@ func (s *KVVectorStorage) GetStats(ctx context.Context, namespace string) (*Name
 // counter is persisted, so a second KVVectorStorage over the same store
 // never hands out an ID twice.
 func (s *KVVectorStorage) allocate(namespace string, count uint64) (uint64, error) {
-	ctx := context.Background()
-	key := kvIDKey(namespace)
+	return s.increment(context.Background(), kvIDKey(namespace), count)
+}
+
+// increment adds count to the counter stored under key and returns the new
+// value; a missing counter is ErrNamespaceNotFound.
+func (s *KVVectorStorage) increment(ctx context.Context, key string, count uint64) (uint64, error) {
 	if atomicKV, ok := s.kv.(kvstore.AtomicKVStore); ok {
 		for {
 			cur, err := atomicKV.Get(ctx, key)
@@ -520,6 +540,31 @@ func (s *KVVectorStorage) allocate(namespace string, count uint64) (uint64, erro
 		return 0, err
 	}
 	return last + count, nil
+}
+
+// advance moves namespace's write generation past a write that has landed.
+func (s *KVVectorStorage) advance(ctx context.Context, namespace string) error {
+	_, err := s.increment(ctx, kvGenKey(namespace), 1)
+	if errors.Is(err, ErrNamespaceNotFound) {
+		return nil
+	}
+	return err
+}
+
+// Generation returns namespace's write generation, which every vector write
+// and delete advances after it lands.
+func (s *KVVectorStorage) Generation(ctx context.Context, namespace string) (uint64, error) {
+	if err := s.checkOpenCtx(ctx); err != nil {
+		return 0, err
+	}
+	raw, err := s.kv.Get(ctx, kvGenKey(namespace))
+	if err != nil {
+		return 0, err
+	}
+	if raw == nil {
+		return 0, ErrNamespaceNotFound
+	}
+	return decodeID(raw)
 }
 
 // NextID allocates the next unique ID for a registered namespace.

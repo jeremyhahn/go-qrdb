@@ -94,6 +94,8 @@ type vectorService struct {
 	routed     vector.Storage
 	homeMu     sync.Mutex
 	homeStores map[string]*tenantVectorHome
+	// homeGens records, under indexMu, the home-store write generation each cached home-namespace index reflects.
+	homeGens map[string]homeIndexGeneration
 
 	// nsLocksMu guards nsLocks, the per-composite-namespace lock registry
 	// backing LockVectorNamespaceWrite/LockVectorNamespaceReclaim. Vector
@@ -809,8 +811,12 @@ func (v *vectorService) loadNamespaces() error {
 // ensureHNSWIndex ensures that an HNSW index exists for the given namespace.
 func (v *vectorService) ensureHNSWIndex(ctx context.Context, namespace string) (interfaces.HNSWIndex, error) {
 	// A cached index is served only to a tenant its home store admits, as an uncached one is.
-	if _, err := v.storageForNamespace(ctx, namespace); err != nil {
+	st, err := v.storageForNamespace(ctx, namespace)
+	if err != nil {
 		return nil, err
+	}
+	if home, ok := st.(generationStorage); ok && st != v.storage {
+		return v.homeIndex(ctx, home, namespace)
 	}
 	return v.ensureHNSWIndexFrom(ctx, v.routed, namespace)
 }
@@ -826,38 +832,9 @@ func (v *vectorService) ensureHNSWIndexFrom(ctx context.Context, st vector.Stora
 		return index, nil
 	}
 
-	// Index doesn't exist, check if namespace exists in storage
-	info, err := st.GetNamespaceInfo(ctx, namespace)
+	newIndex, loaded, err := v.buildHNSWIndex(ctx, st, namespace, false)
 	if err != nil {
 		return nil, err
-	}
-
-	if err := checkStoredGeometry(namespace, info); err != nil {
-		return nil, err
-	}
-
-	newIndex, err := v.newNamespaceIndex(info, nil)
-	if err != nil {
-		return nil, &api.OperationFailedError{Operation: "create namespace index", Cause: err}
-	}
-
-	// Load all vectors from storage into the index
-	vectors, err := st.ScanNamespace(ctx, namespace, nil)
-	if err != nil {
-		v.logger.WithFields(map[string]interface{}{
-			"namespace": namespace,
-			"error":     err,
-		}).Warn("failed to scan vectors for HNSW index rebuild")
-	} else {
-		for _, vec := range vectors {
-			if err := newIndex.Insert(vec.ID, vec.Embedding); err != nil {
-				v.logger.WithFields(map[string]interface{}{
-					"namespace": namespace,
-					"vector_id": vec.ID,
-					"error":     err,
-				}).Warn("failed to insert vector into HNSW index")
-			}
-		}
 	}
 
 	// Store the index (check again in case another goroutine created it)
@@ -871,10 +848,51 @@ func (v *vectorService) ensureHNSWIndexFrom(ctx context.Context, st vector.Stora
 
 	v.logger.WithFields(map[string]interface{}{
 		"namespace": namespace,
-		"vectors":   len(vectors),
+		"vectors":   loaded,
 	}).Info("lazily created index for namespace")
 
 	return newIndex, nil
+}
+
+// buildHNSWIndex builds namespace's index from the vectors st holds and
+// reports how many it loaded; strict fails the build when the scan fails.
+func (v *vectorService) buildHNSWIndex(ctx context.Context, st vector.Storage, namespace string, strict bool) (interfaces.HNSWIndex, int, error) {
+	info, err := st.GetNamespaceInfo(ctx, namespace)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	if err := checkStoredGeometry(namespace, info); err != nil {
+		return nil, 0, err
+	}
+
+	newIndex, err := v.newNamespaceIndex(info, nil)
+	if err != nil {
+		return nil, 0, &api.OperationFailedError{Operation: "create namespace index", Cause: err}
+	}
+
+	// Load all vectors from storage into the index
+	vectors, err := st.ScanNamespace(ctx, namespace, nil)
+	if err != nil {
+		v.logger.WithFields(map[string]interface{}{
+			"namespace": namespace,
+			"error":     err,
+		}).Warn("failed to scan vectors for HNSW index rebuild")
+		if strict {
+			return nil, 0, err
+		}
+		return newIndex, 0, nil
+	}
+	for _, vec := range vectors {
+		if err := newIndex.Insert(vec.ID, vec.Embedding); err != nil {
+			v.logger.WithFields(map[string]interface{}{
+				"namespace": namespace,
+				"vector_id": vec.ID,
+				"error":     err,
+			}).Warn("failed to insert vector into HNSW index")
+		}
+	}
+	return newIndex, len(vectors), nil
 }
 
 // =============================================================================

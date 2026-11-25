@@ -18,6 +18,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -117,6 +118,75 @@ func (v *vectorService) storageForNamespace(ctx context.Context, scoped string) 
 	return v.storageFor(ctx, tenantID)
 }
 
+// generationStorage is a vector store that counts each namespace's writes,
+// so a node can tell its cached index from one a write elsewhere outdated.
+type generationStorage interface {
+	vector.Storage
+	Generation(ctx context.Context, namespace string) (uint64, error)
+}
+
+// homeIndexGeneration is the home-store write generation a cached index
+// reflects.
+type homeIndexGeneration struct {
+	index interfaces.HNSWIndex
+	gen   uint64
+}
+
+// homeIndex returns scoped's index for a tenant whose vectors live in home,
+// rebuilt from home when a write has advanced the namespace's generation past
+// the cached one, on this node or another replica of the home.
+func (v *vectorService) homeIndex(ctx context.Context, home generationStorage, scoped string) (interfaces.HNSWIndex, error) {
+	gen, err := home.Generation(ctx, scoped)
+	if err != nil {
+		return nil, err
+	}
+	v.indexMu.RLock()
+	index, cached := v.hnswIndexes[scoped]
+	seen, known := v.homeGens[scoped]
+	v.indexMu.RUnlock()
+	if cached && known && seen.index == index && seen.gen == gen {
+		return index, nil
+	}
+	built, _, err := v.buildHNSWIndex(ctx, home, scoped, true)
+	if err != nil {
+		return nil, err
+	}
+	v.indexMu.Lock()
+	defer v.indexMu.Unlock()
+	if cur, ok := v.hnswIndexes[scoped]; ok {
+		if seen, known := v.homeGens[scoped]; known && seen.index == cur && seen.gen >= gen {
+			return cur, nil
+		}
+	}
+	if v.homeGens == nil {
+		v.homeGens = make(map[string]homeIndexGeneration)
+	}
+	v.hnswIndexes[scoped] = built
+	v.homeGens[scoped] = homeIndexGeneration{index: built, gen: gen}
+	return built, nil
+}
+
+// noteHomeWrite moves the cached index's generation past this node's own
+// write, which the caller applies to that index next, when no other write
+// came between; otherwise the next search rebuilds the index.
+func (v *vectorService) noteHomeWrite(ctx context.Context, st vector.Storage, scoped string) {
+	home, ok := st.(generationStorage)
+	if !ok || st == v.storage {
+		return
+	}
+	gen, err := home.Generation(ctx, scoped)
+	if err != nil {
+		return
+	}
+	v.indexMu.Lock()
+	defer v.indexMu.Unlock()
+	seen, known := v.homeGens[scoped]
+	if known && seen.index == v.hnswIndexes[scoped] && seen.gen+1 == gen {
+		seen.gen = gen
+		v.homeGens[scoped] = seen
+	}
+}
+
 // tenantRoutedVectorStorage is the vector.Storage the service's request paths
 // use: each call goes to the store of the namespace's tenant.
 type tenantRoutedVectorStorage struct {
@@ -130,7 +200,11 @@ func (r *tenantRoutedVectorStorage) UpsertVector(ctx context.Context, namespace 
 	if err != nil {
 		return err
 	}
-	return st.UpsertVector(ctx, namespace, vec)
+	if err := st.UpsertVector(ctx, namespace, vec); err != nil {
+		return err
+	}
+	r.v.noteHomeWrite(ctx, st, namespace)
+	return nil
 }
 
 func (r *tenantRoutedVectorStorage) GetVector(ctx context.Context, namespace string, id uint64) (*vector.VectorValue, error) {
@@ -146,7 +220,11 @@ func (r *tenantRoutedVectorStorage) DeleteVector(ctx context.Context, namespace 
 	if err != nil {
 		return err
 	}
-	return st.DeleteVector(ctx, namespace, id)
+	if err := st.DeleteVector(ctx, namespace, id); err != nil {
+		return err
+	}
+	r.v.noteHomeWrite(ctx, st, namespace)
+	return nil
 }
 
 func (r *tenantRoutedVectorStorage) BatchUpsertVectors(ctx context.Context, namespace string, vecs []*vector.VectorValue) error {
@@ -154,7 +232,11 @@ func (r *tenantRoutedVectorStorage) BatchUpsertVectors(ctx context.Context, name
 	if err != nil {
 		return err
 	}
-	return st.BatchUpsertVectors(ctx, namespace, vecs)
+	if err := st.BatchUpsertVectors(ctx, namespace, vecs); err != nil {
+		return err
+	}
+	r.v.noteHomeWrite(ctx, st, namespace)
+	return nil
 }
 
 func (r *tenantRoutedVectorStorage) BatchDeleteVectors(ctx context.Context, namespace string, ids []uint64) error {

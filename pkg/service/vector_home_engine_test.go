@@ -104,6 +104,52 @@ func TestVectorService_CachedSearchRunsTheHomeCheck(t *testing.T) {
 	require.ErrorAs(t, err, &homeErr, "a cached search by ID for a refused tenant")
 }
 
+// TestVectorHome_ReplicaSearchSeesWritesFromAnotherNode: two nodes serve one
+// replicated home; a search on one node, after it cached the namespace's
+// index, sees the vectors the other node wrote and not those it deleted.
+func TestVectorHome_ReplicaSearchSeesWritesFromAnotherNode(t *testing.T) {
+	homes := newFakeVectorHomes()
+	nodeA, _ := newHomedVectorService(t, homes)
+	nodeB, _ := newHomedVectorService(t, homes)
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+
+	_, err := nodeA.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: "docs", Dimension: 2, DistanceMetric: "cosine"})
+	require.NoError(t, err)
+	_, err = nodeA.UpsertVector(ctx, &UpsertVectorRequest{Namespace: "docs", ID: 1, Vector: []float32{0, 1}})
+	require.NoError(t, err)
+
+	search := &SearchSimilarRequest{Namespace: "docs", QueryVector: []float32{1, 0}, K: 1}
+	res, err := nodeB.SearchSimilar(ctx, search)
+	require.NoError(t, err)
+	require.Len(t, res.Results, 1)
+	require.Equal(t, uint64(1), res.Results[0].ID)
+
+	_, err = nodeA.UpsertVector(ctx, &UpsertVectorRequest{Namespace: "docs", ID: 2, Vector: []float32{1, 0}})
+	require.NoError(t, err)
+	res, err = nodeB.SearchSimilar(ctx, search)
+	require.NoError(t, err)
+	require.Len(t, res.Results, 1)
+	require.Equal(t, uint64(2), res.Results[0].ID, "node B sees the vector node A wrote")
+
+	_, err = nodeA.DeleteVector(ctx, &DeleteVectorRequest{Namespace: "docs", ID: 2})
+	require.NoError(t, err)
+	res, err = nodeB.SearchSimilar(ctx, search)
+	require.NoError(t, err)
+	require.Len(t, res.Results, 1)
+	require.Equal(t, uint64(1), res.Results[0].ID, "node B no longer finds the vector node A deleted")
+
+	_, err = nodeB.UpsertVector(ctx, &UpsertVectorRequest{Namespace: "docs", ID: 3, Vector: []float32{1, 0.1}})
+	require.NoError(t, err)
+	res, err = nodeB.SearchSimilar(ctx, search)
+	require.NoError(t, err)
+	require.Len(t, res.Results, 1)
+	require.Equal(t, uint64(3), res.Results[0].ID, "a node sees its own write")
+	res, err = nodeA.SearchSimilar(ctx, search)
+	require.NoError(t, err)
+	require.Len(t, res.Results, 1)
+	require.Equal(t, uint64(3), res.Results[0].ID, "node A sees the vector node B wrote")
+}
+
 func TestVectorService_PrefixTenantStaysNodeWide(t *testing.T) {
 	homes := newFakeVectorHomes()
 	svc, nodeWide := newHomedVectorService(t, homes)
