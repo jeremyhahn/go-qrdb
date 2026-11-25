@@ -321,6 +321,10 @@ func (c *MoveStoreCloser) reopen(ctx context.Context, tenantID string) error {
 				if err := c.hosts.Close(tenantID); err != nil {
 					return fail(err)
 				}
+				if err := c.barriers.CloseVolumeTenant(ctx, tenantID); err != nil {
+					return fail(err)
+				}
+				barrierOpen = false
 			}
 			c.mu.Lock()
 			if c.closedHost == nil {
