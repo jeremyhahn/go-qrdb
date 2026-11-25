@@ -318,6 +318,49 @@ func TestStoreResolver_FenceTargetRoutesEachIsolationMode(t *testing.T) {
 	}
 }
 
+// stubRaftGroupFence is a raft fence source that hosts the listed
+// tenant/database pairs in their own groups.
+type stubRaftGroupFence struct {
+	*stubRaftFence
+	groups map[string]bool
+}
+
+func (s *stubRaftGroupFence) HostsDatabase(tenantID, db string) bool {
+	return s.groups[tenantID+"/"+db]
+}
+
+func TestStoreResolver_SystemTenantRaftDatabaseFencesOwnGroup(t *testing.T) {
+	raftKV := newMockKVService()
+	raft := &stubRaftGroupFence{
+		stubRaftFence: &stubRaftFence{svcs: &DatabaseServices{KV: raftKV}},
+		groups:        map[string]bool{tenantid.System + "/orders": true},
+	}
+	ctx := context.Background()
+
+	t.Run("raft: a system database with its own group fences that group", func(t *testing.T) {
+		r := &storeResolver{raft: raft, tenantSvc: &isolatedTenantServicer{isolation: tenant.IsolationPrefix}, systemTenant: tenantid.System}
+		store, dedicated, err := r.FenceTarget(ctx, tenantid.System, "orders", "")
+		if err != nil || !dedicated || !store.PerDatabase || store.KV != service.ReclaimKV(raftKV) {
+			t.Fatalf("(dedicated, perDatabase, group) = (%v, %v, %v) err=%v, want the database's own group",
+				dedicated, store.PerDatabase, store.KV == service.ReclaimKV(raftKV), err)
+		}
+	})
+	t.Run("raft: a system database without its own group keeps the system store", func(t *testing.T) {
+		r := &storeResolver{raft: raft, tenantSvc: &isolatedTenantServicer{isolation: tenant.IsolationPrefix}, systemTenant: tenantid.System}
+		store, dedicated, err := r.FenceTarget(ctx, tenantid.System, "ledger", "")
+		if err != nil || dedicated || store.PerDatabase {
+			t.Fatalf("(dedicated, perDatabase) = (%v, %v) err=%v, want the system store", dedicated, store.PerDatabase, err)
+		}
+	})
+	t.Run("standalone: no raft source keeps the system store", func(t *testing.T) {
+		r := &storeResolver{tenantSvc: &isolatedTenantServicer{isolation: tenant.IsolationPrefix}, systemTenant: tenantid.System}
+		store, dedicated, err := r.FenceTarget(ctx, tenantid.System, "orders", "")
+		if err != nil || dedicated || store.PerDatabase {
+			t.Fatalf("(dedicated, perDatabase) = (%v, %v) err=%v, want the system store", dedicated, store.PerDatabase, err)
+		}
+	})
+}
+
 // stubBarrierFence is a homeFenceSource whose every tenant's home group
 // resolves to kv, or err; it records the database it was asked for.
 type stubBarrierFence struct {

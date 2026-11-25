@@ -232,7 +232,14 @@ func (r *storeResolver) fenceTarget(ctx context.Context, tenantID, db, incarnati
 	if store, ok, err := r.materializedFenceTarget(tenantID, db, incarnation); ok {
 		return store, true, err
 	}
-	if r.tenantSvc == nil || tenantID == "" || tenantID == r.systemTenant {
+	if tenantID != "" && tenantID == r.systemTenant {
+		// A system database with its own Raft group is fenced in that group.
+		if groups, ok := r.raft.(raftGroupSource); ok && groups != nil && groups.HostsDatabase(tenantID, db) {
+			return r.raftFenceTarget(ctx, tenantID, db, incarnation, tenant.IsolationPrefix)
+		}
+		return service.FenceStore{}, false, nil
+	}
+	if r.tenantSvc == nil || tenantID == "" {
 		return service.FenceStore{}, false, nil
 	}
 	info, err := r.tenantSvc.GetTenant(ctx, tenantID)
