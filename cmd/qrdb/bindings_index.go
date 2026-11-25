@@ -30,7 +30,8 @@ type IndexCreateParams struct {
 	Numeric   bool   `json:"numeric"`
 	// CaseInsensitive folds string values on write and lookup; the Wails
 	// client sends it as case_insensitive, the name transport.IndexConfig uses.
-	CaseInsensitive bool `json:"case_insensitive"`
+	CaseInsensitive bool   `json:"case_insensitive"`
+	KeyPrefix       string `json:"key_prefix"`
 }
 
 // IndexBinding exposes secondary index management to the Wails frontend.
@@ -62,6 +63,7 @@ func (b *IndexBinding) Create(database string, params IndexCreateParams) error {
 		Sparse:          params.Sparse,
 		Numeric:         params.Numeric,
 		CaseInsensitive: params.CaseInsensitive,
+		KeyPrefix:       params.KeyPrefix,
 	}
 	if err := cl.Index().IndexCreate(context.Background(), params.Name, params.FieldName, cfg); err != nil {
 		b.logger.Error("Create failed", "name", params.Name, "error", err)

@@ -4778,8 +4778,12 @@ type IndexCreateRequest struct {
 	// a case-SENSITIVE index -- the behaviour requests predating it were
 	// created under (go-qrdb#34).
 	CaseInsensitive bool `protobuf:"varint,6,opt,name=case_insensitive,json=caseInsensitive,proto3" json:"case_insensitive,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// key_prefix is the key scope the index covers, relative to the namespace
+	// the server gives the index name: only keys under it are indexed, and a
+	// unique index is unique only among them. Empty covers every key.
+	KeyPrefix     string `protobuf:"bytes,7,opt,name=key_prefix,json=keyPrefix,proto3" json:"key_prefix,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *IndexCreateRequest) Reset() {
@@ -4852,6 +4856,13 @@ func (x *IndexCreateRequest) GetCaseInsensitive() bool {
 		return x.CaseInsensitive
 	}
 	return false
+}
+
+func (x *IndexCreateRequest) GetKeyPrefix() string {
+	if x != nil {
+		return x.KeyPrefix
+	}
+	return ""
 }
 
 // IndexDropRequest removes a secondary index.
@@ -36595,7 +36606,7 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x0fLockListRequest\x12\x16\n" +
 	"\x06prefix\x18\x01 \x01(\tR\x06prefix\";\n" +
 	"\x10LockListResponse\x12'\n" +
-	"\x05locks\x18\x01 \x03(\v2\x11.qrdb.v1.LockInfoR\x05locks\"\xbc\x01\n" +
+	"\x05locks\x18\x01 \x03(\v2\x11.qrdb.v1.LockInfoR\x05locks\"\xdb\x01\n" +
 	"\x12IndexCreateRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n" +
 	"\n" +
@@ -36603,7 +36614,9 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x06unique\x18\x03 \x01(\bR\x06unique\x12\x16\n" +
 	"\x06sparse\x18\x04 \x01(\bR\x06sparse\x12\x18\n" +
 	"\anumeric\x18\x05 \x01(\bR\anumeric\x12)\n" +
-	"\x10case_insensitive\x18\x06 \x01(\bR\x0fcaseInsensitive\"&\n" +
+	"\x10case_insensitive\x18\x06 \x01(\bR\x0fcaseInsensitive\x12\x1d\n" +
+	"\n" +
+	"key_prefix\x18\a \x01(\tR\tkeyPrefix\"&\n" +
 	"\x10IndexDropRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"H\n" +
 	"\x11IndexQueryRequest\x12\x1d\n" +
