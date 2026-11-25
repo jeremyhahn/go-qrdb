@@ -3044,8 +3044,8 @@ func TestNewServer_AllOptions(t *testing.T) {
 func TestMvccTools_ReturnsCorrectCount(t *testing.T) {
 	svc := newMockMVCCService()
 	tools := mvccTools(svc)
-	if len(tools) != 7 {
-		t.Errorf("expected 7 mvcc tools, got %d", len(tools))
+	if len(tools) != 8 {
+		t.Errorf("expected 8 mvcc tools, got %d", len(tools))
 	}
 }
 
