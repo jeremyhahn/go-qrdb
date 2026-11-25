@@ -123,6 +123,7 @@ var refusalErrors = map[string]func(md map[string]string) error{
 	vlog.ReasonExpireNotAllowed: func(md map[string]string) error {
 		return vlog.ExpireNotAllowedFromMetadata(md)
 	},
+	ReasonEmbeddedOnly: EmbeddedOnlyFromMetadata,
 }
 
 // RefusalError returns the typed error a structured refusal names, or nil

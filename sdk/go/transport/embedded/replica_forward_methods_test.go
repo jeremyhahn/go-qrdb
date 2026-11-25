@@ -15,6 +15,8 @@
 package embedded
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
@@ -29,9 +31,15 @@ import (
 // every family replica_forward_methods.go generates a forwarding method
 // for, so each one's "forwardTo sees the refusal and forwards" branch is
 // reachable without a family-specific registry.
-type allRefusingRegistry struct{}
+type allRefusingRegistry struct {
+	// err, when set, replaces the not-a-replica refusal with a plain error.
+	err error
+}
 
-func (allRefusingRegistry) refusal(tenantID, db string) *placement.NotAReplicaError {
+func (r allRefusingRegistry) refusal(tenantID, db string) error {
+	if r.err != nil {
+		return r.err
+	}
 	return &placement.NotAReplicaError{TenantID: tenantID, Database: db, ShardID: 9, NodeID: "node-c",
 		LeaderReplicaID: 1, Replicas: []placement.Replica{{ReplicaID: 1, NodeID: "node-a"}}}
 }
@@ -130,12 +138,31 @@ func allFamiliesForwardingScope(t *testing.T, fwd ReplicaForwarder) *forwardingS
 func TestForwardingScope_EveryDataPlaneMethodForwards(t *testing.T) {
 	fwd := &recordingForwarder{status: 200}
 	fs := allFamiliesForwardingScope(t, fwd)
-	ctx := acmeCtx()
+	cases := dataPlaneCases(fs, acmeCtx())
+	for _, tc := range cases {
+		before := len(fwd.calls)
+		_ = tc.call()
+		if after := len(fwd.calls); after != before+1 {
+			t.Errorf("%s: forwarder reached %d time(s), want exactly 1 more (before=%d, after=%d)",
+				tc.name, after-before, before, after)
+			continue
+		}
+		last := fwd.calls[len(fwd.calls)-1]
+		if last.database != "orders" || last.caller != alice {
+			t.Errorf("%s: forwarded on %q as %+v, want orders as alice", tc.name, last.database, last.caller)
+		}
+	}
+}
 
-	cases := []struct {
-		name string
-		call func() error
-	}{
+// dataPlaneCase calls one forwardingScope method.
+type dataPlaneCase struct {
+	name string
+	call func() error
+}
+
+// dataPlaneCases is one call per data-plane method of fs.
+func dataPlaneCases(fs *forwardingScope, ctx context.Context) []dataPlaneCase {
+	return []dataPlaneCase{
 		{"Exists", func() error { _, err := fs.Exists(ctx, "k1"); return err }},
 		{"List", func() error { _, err := fs.List(ctx, "k1"); return err }},
 		{"Scan", func() error { _, err := fs.Scan(ctx, "k1"); return err }},
@@ -217,18 +244,38 @@ func TestForwardingScope_EveryDataPlaneMethodForwards(t *testing.T) {
 		{"ListDocuments", func() error { _, err := fs.ListDocuments(ctx, transport.ListDocumentsRequest{}); return err }},
 		{"UpdateDocument", func() error { return fs.UpdateDocument(ctx, transport.UpdateDocumentRequest{}) }},
 	}
+}
 
-	for _, tc := range cases {
-		before := len(fwd.calls)
+func TestForwardingScope_NonRefusalErrorsStayLocal(t *testing.T) {
+	fwd := &recordingForwarder{status: 200}
+	tr, err := New(newMockKVService(), &mockAdminService{},
+		WithMVCCService(newMockMVCCService()),
+		WithTransactionService(&mockTxService{}),
+		WithBatchService(&fullBatchService{}),
+		WithLeaseService(&mockLeaseService{}),
+		WithIndexService(&mockIndexService{}),
+		WithTimeSeriesService(&mockTSService{}),
+		WithVectorService(&mockVectorService{}),
+		WithCollectionService(&mockCollectionService{}),
+		WithLockService(&mockLockService{}),
+		WithServiceRegistry(allRefusingRegistry{err: errors.New("database unavailable")}),
+		WithReplicaForwarding(fwd, fixedCaller{id: alice}),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	scoped, err := tr.WithDatabase("orders")
+	if err != nil {
+		t.Fatalf("WithDatabase: %v", err)
+	}
+	fs, ok := scoped.(*forwardingScope)
+	if !ok {
+		t.Fatalf("scoped transport is %T, want *forwardingScope", scoped)
+	}
+	for _, tc := range dataPlaneCases(fs, acmeCtx()) {
 		_ = tc.call()
-		if after := len(fwd.calls); after != before+1 {
-			t.Errorf("%s: forwarder reached %d time(s), want exactly 1 more (before=%d, after=%d)",
-				tc.name, after-before, before, after)
-			continue
-		}
-		last := fwd.calls[len(fwd.calls)-1]
-		if last.database != "orders" || last.caller != alice {
-			t.Errorf("%s: forwarded on %q as %+v, want orders as alice", tc.name, last.database, last.caller)
+		if n := len(fwd.calls); n != 0 {
+			t.Fatalf("%s: forwarder reached %d time(s) on a non-refusal error, want 0", tc.name, n)
 		}
 	}
 }

@@ -94,9 +94,6 @@ func (t *Transport) policyReady(ctx context.Context, method string, nilRequest b
 	if err := t.authorize(ctx, method); err != nil {
 		return ctx, err
 	}
-	if t.closed.Load() {
-		return ctx, &transport.ClosedError{}
-	}
 	if t.policySvc == nil {
 		return ctx, &NilServiceError{Service: "PolicyServicer"}
 	}

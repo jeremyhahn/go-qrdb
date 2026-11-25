@@ -278,28 +278,3 @@ func TestMCPVectorExtras_AfterClose(t *testing.T) {
 // ===========================================================================
 // transport_seal_store.go — NotImplemented stubs
 // ===========================================================================
-
-func TestMCPSealStore_NotImplemented(t *testing.T) {
-	tr := &Transport{config: &transport.Config{}}
-	var nie *transport.NotImplementedError
-	ctx := context.Background()
-
-	if err := tr.SealStorePut(ctx, &transport.SealStorePutRequest{}); !errors.As(err, &nie) {
-		t.Errorf("SealStorePut: %v", err)
-	}
-	if _, err := tr.SealStoreGet(ctx, &transport.SealStoreGetRequest{}); !errors.As(err, &nie) {
-		t.Errorf("SealStoreGet: %v", err)
-	}
-	if err := tr.SealStoreDelete(ctx, &transport.SealStoreDeleteRequest{}); !errors.As(err, &nie) {
-		t.Errorf("SealStoreDelete: %v", err)
-	}
-	if _, err := tr.SealStoreList(ctx); !errors.As(err, &nie) {
-		t.Errorf("SealStoreList: %v", err)
-	}
-	if err := tr.SealStoreReseal(ctx, &transport.SealStoreResealRequest{}); !errors.As(err, &nie) {
-		t.Errorf("SealStoreReseal: %v", err)
-	}
-	if _, err := tr.SealStoreStatus(ctx); !errors.As(err, &nie) {
-		t.Errorf("SealStoreStatus: %v", err)
-	}
-}

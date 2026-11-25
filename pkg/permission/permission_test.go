@@ -565,7 +565,7 @@ func TestAll_TotalCount(t *testing.T) {
 	//   custody is initialized = 376.
 	// + 1 cluster join-token minting perm (cluster:join_token) = 377 total.
 	// + 1 seal:store_manage, the generic secret store a seal strategy keeps
-	//   for its own state (embedded-SDK-only; no network route) = 378 total.
+	//   for its own state (served on every transport) = 378 total.
 	// + certs:generate retired for certs:issue (no client key is generated
 	//   server-side any more; net 0), + certs:enroll + trust_anchors:add/
 	//   list/remove (net +4) = 382 total.
