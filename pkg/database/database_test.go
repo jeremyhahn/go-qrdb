@@ -17,6 +17,7 @@ package database
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
@@ -495,5 +496,31 @@ func TestDatabase_Info_ReportsDroppingOverStatus(t *testing.T) {
 	info = db.Info()
 	if info.Status != StatusOpen {
 		t.Errorf("Info().Status = %q after clearing the fence, want %q", info.Status, StatusOpen)
+	}
+}
+
+// TestDatabase_Info_RefreshesRecordedRaftReplicaNodes pins that Info names a
+// raft binding's current replicas even when the binding already records
+// nodes, and leaves the recorded binding untouched.
+func TestDatabase_Info_RefreshesRecordedRaftReplicaNodes(t *testing.T) {
+	db := newTestDatabase("info-replicas-db", BackendMemory)
+	db.binding = &DatabaseBinding{Kind: BindingRaft, Nodes: []string{"node-a"}}
+	current := []string{"node-b", "node-c"}
+	db.bindingNodes = func() []string { return current }
+
+	if got := db.Info().Binding.Nodes; !reflect.DeepEqual(got, current) {
+		t.Fatalf("Info().Binding.Nodes = %v, want %v", got, current)
+	}
+	current = []string{"node-c"}
+	if got := db.Info().Binding.Nodes; !reflect.DeepEqual(got, current) {
+		t.Fatalf("Info().Binding.Nodes after a placement change = %v, want %v", got, current)
+	}
+	if got := db.binding.Nodes; !reflect.DeepEqual(got, []string{"node-a"}) {
+		t.Errorf("the recorded binding's nodes = %v, want them unchanged", got)
+	}
+
+	current = nil
+	if got := db.Info().Binding.Nodes; !reflect.DeepEqual(got, []string{"node-a"}) {
+		t.Errorf("Info().Binding.Nodes with no placement = %v, want the recorded nodes", got)
 	}
 }

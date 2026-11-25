@@ -451,7 +451,7 @@ func (d *Database) Info() DatabaseInfo {
 		OwnerNode:    d.ownerNode,
 		Binding:      d.binding,
 	}
-	if d.binding != nil && len(d.binding.Nodes) == 0 && d.bindingNodes != nil {
+	if d.binding != nil && d.bindingNodes != nil {
 		if nodes := d.bindingNodes(); len(nodes) > 0 {
 			b := *d.binding
 			b.Nodes = nodes
