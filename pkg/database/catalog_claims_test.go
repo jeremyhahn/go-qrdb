@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -170,11 +171,11 @@ func claimExists(t *testing.T, system kvstore.KVStore, tenantID, incarnation, na
 	return ok
 }
 
-// putClaim writes a root claim by hand, as a crash after the claim put (or
-// before the claim delete) leaves it.
+// putClaim writes a root claim by hand, as a crash after the claim put
+// leaves it once the claim is older than pendingClaimReapAge.
 func putClaim(t *testing.T, system kvstore.KVStore, meta DatabaseMeta) {
 	t.Helper()
-	claim, err := rootClaim(meta)
+	claim, err := rootClaim(meta, claimPending, time.Now().Add(-2*pendingClaimReapAge))
 	if err != nil {
 		t.Fatalf("rootClaim: %v", err)
 	}
@@ -578,5 +579,116 @@ func TestManager_CreateCommitThenTimeoutSettledReleasesTheClaim(t *testing.T) {
 	}
 	if len(leftover) != 0 {
 		t.Fatalf("root claims after the settled create = %v, want none", leftover)
+	}
+}
+
+// recordHookStore is a home store that runs before ahead of the write of
+// the record at key.
+type recordHookStore struct {
+	*kvstore.MemoryKVStore
+	key    string
+	before func()
+}
+
+func (s *recordHookStore) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	if key == s.key && s.before != nil {
+		before := s.before
+		s.before = nil
+		before()
+	}
+	return s.MemoryKVStore.PutIfAbsent(ctx, key, value)
+}
+
+// The store-level catalog is the one standalone and raft nodes share, so this covers both modes.
+func TestKVCatalog_ReapKeepsOtherCatalogsPendingClaim(t *testing.T) {
+	ctx := context.Background()
+	system := kvstore.NewMemoryKVStore()
+	home := &recordHookStore{MemoryKVStore: kvstore.NewMemoryKVStore(), key: CatalogKey("iso", "app")}
+	homes := &sealableHomes{
+		isolatedHomes: isolatedHomes{homes: map[string]kvstore.KVStore{"iso": home}},
+		sealed:        map[string]bool{},
+	}
+	catA, err := NewKVCatalog(system, homes)
+	if err != nil {
+		t.Fatalf("NewKVCatalog A: %v", err)
+	}
+	catB, err := NewKVCatalog(system, homes)
+	if err != nil {
+		t.Fatalf("NewKVCatalog B: %v", err)
+	}
+	if err := catA.Create(ctx, DatabaseMeta{TenantID: "iso", Name: "other", Incarnation: "o1", Backend: BackendMemory}); err != nil {
+		t.Fatalf("Create other: %v", err)
+	}
+	reaped := false
+	home.before = func() {
+		if !claimExists(t, system, "iso", "i1", "app") {
+			t.Fatal("setup: A's claim is not written before its record")
+		}
+		if _, err := catB.readAndReapTenant(ctx, "iso"); err != nil {
+			t.Fatalf("B reap: %v", err)
+		}
+		if err := catB.reapTenantHome(ctx, "iso", home); err != nil {
+			t.Fatalf("B drop reap: %v", err)
+		}
+		if !claimExists(t, system, "iso", "i1", "app") {
+			t.Fatal("B's reap freed the pending claim of A's create in flight")
+		}
+		reaped = true
+	}
+	if err := catA.Create(ctx, DatabaseMeta{TenantID: "iso", Name: "app", Incarnation: "i1", Backend: BackendMemory}); err != nil {
+		t.Fatalf("Create app: %v", err)
+	}
+	if !reaped {
+		t.Fatal("setup: B's reap did not run inside A's create")
+	}
+	if !claimExists(t, system, "iso", "i1", "app") {
+		t.Fatal("B's reap freed the claim of A's create in flight")
+	}
+	homes.sealed["iso"] = true
+	roots, err := catB.ListRoots(ctx)
+	if err != nil {
+		t.Fatalf("ListRoots: %v", err)
+	}
+	found := false
+	for _, r := range roots {
+		if r.TenantID == "iso" && r.Name == "app" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("ListRoots = %v, want the sealed tenant's app root", roots)
+	}
+}
+
+// TestKVCatalog_ReapDeletesOnlyAgedPendingOrCommittedClaims pins the reap
+// rule: a committed claim with no record goes at once, a pending one only
+// once it is older than pendingClaimReapAge.
+func TestKVCatalog_ReapDeletesOnlyAgedPendingOrCommittedClaims(t *testing.T) {
+	ctx := context.Background()
+	cat, system := newTestCatalog(t, &isolatedHomes{homes: map[string]kvstore.KVStore{"iso": kvstore.NewMemoryKVStore()}})
+	put := func(name, state string, at time.Time) {
+		claim, err := rootClaim(DatabaseMeta{TenantID: "iso", Name: name, Incarnation: name + "-1", Backend: BackendMemory}, state, at)
+		if err != nil {
+			t.Fatalf("rootClaim: %v", err)
+		}
+		if err := system.Put(ctx, rootClaimKey("iso", name+"-1", name), claim); err != nil {
+			t.Fatalf("Put claim: %v", err)
+		}
+	}
+	now := time.Now()
+	put("fresh", claimPending, now)
+	put("aged", claimPending, now.Add(-2*pendingClaimReapAge))
+	put("done", claimCommitted, now)
+	if _, err := cat.ListAll(ctx); err != nil {
+		t.Fatalf("ListAll: %v", err)
+	}
+	if !claimExists(t, system, "iso", "fresh-1", "fresh") {
+		t.Fatal("the reap freed a fresh pending claim")
+	}
+	if claimExists(t, system, "iso", "aged-1", "aged") {
+		t.Fatal("the reap kept an aged pending claim with no record")
+	}
+	if claimExists(t, system, "iso", "done-1", "done") {
+		t.Fatal("the reap kept a committed claim with no record")
 	}
 }

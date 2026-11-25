@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -97,16 +98,74 @@ func rootClaimIndexedKey(tenantID string) string {
 }
 
 // rootClaim is the placement-only projection of meta a root claim stores.
-func rootClaim(meta DatabaseMeta) ([]byte, error) {
-	return json.Marshal(DatabaseMeta{
-		TenantID:    meta.TenantID,
-		Name:        meta.Name,
-		Incarnation: meta.Incarnation,
-		Backend:     meta.Backend,
-		Protocol:    meta.Protocol,
-		Mode:        meta.Mode,
-		DataDir:     meta.DataDir,
+func rootClaim(meta DatabaseMeta, state string, claimedAt time.Time) ([]byte, error) {
+	return json.Marshal(rootClaimRecord{
+		DatabaseMeta: DatabaseMeta{
+			TenantID:    meta.TenantID,
+			Name:        meta.Name,
+			Incarnation: meta.Incarnation,
+			Backend:     meta.Backend,
+			Protocol:    meta.Protocol,
+			Mode:        meta.Mode,
+			DataDir:     meta.DataDir,
+		},
+		State:     state,
+		ClaimedAt: claimedAt.UTC(),
 	})
+}
+
+// Root claim states: Create writes a claim pending and marks it committed
+// once its record is written; indexRootClaims writes committed claims.
+const (
+	claimPending   = "pending"
+	claimCommitted = "committed"
+)
+
+// pendingClaimReapAge is how old a pending claim with no record must be
+// before the reaper frees it, so a create in flight in another process
+// keeps its claim between its claim put and its record put.
+const pendingClaimReapAge = 10 * time.Minute
+
+// rootClaimRecord is the stored form of a root claim: the claimed
+// record's root fields, its state and its creation time.
+type rootClaimRecord struct {
+	DatabaseMeta
+	State     string    `json:"claim_state"`
+	ClaimedAt time.Time `json:"claimed_at"`
+}
+
+func decodeRootClaim(key string, data []byte) (rootClaimRecord, error) {
+	var claim rootClaimRecord
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&claim); err != nil {
+		return rootClaimRecord{}, &CatalogReadError{Key: key, Err: err}
+	}
+	if claim.State != claimPending && claim.State != claimCommitted {
+		return rootClaimRecord{}, &CatalogReadError{Key: key, Err: fmt.Errorf("unknown root claim state %q", claim.State)}
+	}
+	return claim, nil
+}
+
+// scanRootClaims decodes every root claim under prefix in the system store.
+func (c *KVCatalog) scanRootClaims(ctx context.Context, prefix string) ([]DatabaseMeta, error) {
+	var metas []DatabaseMeta
+	err := c.system.Scan(ctx, prefix, func(key string, value []byte) error {
+		claim, err := decodeRootClaim(key, value)
+		if err != nil {
+			return err
+		}
+		metas = append(metas, claim.DatabaseMeta)
+		return nil
+	})
+	if err != nil {
+		var readErr *CatalogReadError
+		if errors.As(err, &readErr) {
+			return nil, err
+		}
+		return nil, &CatalogReadError{Key: prefix, Err: err}
+	}
+	return metas, nil
 }
 
 // Catalog is the replicated record of every database: what Manager reads to
@@ -203,13 +262,11 @@ type KVCatalog struct {
 	system kvstore.AtomicKVStore
 	homes  CatalogHomes
 
-	// claimLocks holds one mutex per tenant. Create holds it across the
-	// root claim put and the record put, and the stale-claim reaper holds
-	// it across its record read and claim scan, so in this process the
-	// reaper never sees a claim before its record. A second process
-	// writing the same tenant home is not covered: the reaper there may
-	// free the claim of a create in flight here, and a claim either
-	// process leaves only over-reserves its root until the next reap.
+	// claimLocks holds one mutex per tenant, serializing this process's
+	// creates and reaps of a tenant. Across processes a create's claim is
+	// pending until its record is written, and the reaper re-reads a
+	// claim's record before freeing it, so no reaper frees the claim of a
+	// create in flight elsewhere.
 	claimMu    sync.Mutex
 	claimLocks map[string]*sync.Mutex
 }
@@ -253,7 +310,7 @@ func (c *KVCatalog) releaseClaim(ctx context.Context, claimKey string) error {
 // delete. records must be the tenant home's records read under the claim
 // lock, which the caller holds. A sealed tenant is never reaped: its home
 // is unreadable.
-func (c *KVCatalog) reapStaleClaims(ctx context.Context, tenantID string, records []DatabaseMeta) error {
+func (c *KVCatalog) reapStaleClaims(ctx context.Context, tenantID string, store kvstore.KVStore, records []DatabaseMeta) error {
 	type claimID struct{ incarnation, name string }
 	live := make(map[claimID]struct{}, len(records))
 	for _, meta := range records {
@@ -262,17 +319,23 @@ func (c *KVCatalog) reapStaleClaims(ctx context.Context, tenantID string, record
 	type staleClaim struct {
 		key   string
 		value []byte
+		claim rootClaimRecord
 	}
 	var stale []staleClaim
+	now := time.Now()
 	prefix := RootClaimKeyPrefix + tenantid.Normalize(tenantID) + "/"
 	err := c.system.Scan(ctx, prefix, func(key string, value []byte) error {
-		claim, err := decodeCatalogRecord(key, value)
+		claim, err := decodeRootClaim(key, value)
 		if err != nil {
 			return err
 		}
-		if _, ok := live[claimID{claim.Incarnation, claim.Name}]; !ok {
-			stale = append(stale, staleClaim{key: key, value: bytes.Clone(value)})
+		if _, ok := live[claimID{claim.Incarnation, claim.Name}]; ok {
+			return nil
 		}
+		if claim.State == claimPending && now.Sub(claim.ClaimedAt) < pendingClaimReapAge {
+			return nil
+		}
+		stale = append(stale, staleClaim{key: key, value: bytes.Clone(value), claim: claim})
 		return nil
 	})
 	if err != nil {
@@ -282,9 +345,25 @@ func (c *KVCatalog) reapStaleClaims(ctx context.Context, tenantID string, record
 		}
 		return &CatalogWriteError{Key: prefix, Err: err}
 	}
-	for _, claim := range stale {
-		if _, err := c.system.CompareAndDelete(ctx, claim.key, claim.value); err != nil {
-			return &CatalogWriteError{Key: claim.key, Err: err}
+	for _, s := range stale {
+		// The records snapshot may predate a record another process wrote
+		// since; re-read it before freeing its claim.
+		recordKey := CatalogKey(tenantID, s.claim.Name)
+		data, err := store.Get(ctx, recordKey)
+		if err != nil {
+			return &CatalogWriteError{Key: s.key, Err: &CatalogReadError{Key: recordKey, Err: err}}
+		}
+		if data != nil {
+			recorded, err := decodeCatalogRecord(recordKey, data)
+			if err != nil {
+				return &CatalogWriteError{Key: s.key, Err: err}
+			}
+			if recorded.Incarnation == s.claim.Incarnation {
+				continue
+			}
+		}
+		if _, err := c.system.CompareAndDelete(ctx, s.key, s.value); err != nil {
+			return &CatalogWriteError{Key: s.key, Err: err}
 		}
 	}
 	return nil
@@ -299,7 +378,7 @@ func (c *KVCatalog) reapTenantHome(ctx context.Context, tenantID string, store k
 	if err != nil {
 		return err
 	}
-	return c.reapStaleClaims(ctx, tenantID, records)
+	return c.reapStaleClaims(ctx, tenantID, store, records)
 }
 
 // readAndReapTenant lists an isolated tenant's records from its readable
@@ -309,11 +388,15 @@ func (c *KVCatalog) reapTenantHome(ctx context.Context, tenantID string, store k
 func (c *KVCatalog) readAndReapTenant(ctx context.Context, tenantID string) ([]DatabaseMeta, error) {
 	unlock := c.lockClaims(tenantID)
 	defer unlock()
-	metas, err := c.ListTenant(ctx, tenantID)
+	store, err := c.store(ctx, tenantID)
 	if err != nil {
 		return nil, err
 	}
-	if err := c.reapStaleClaims(ctx, tenantID, metas); err != nil {
+	metas, err := scanCatalog(ctx, store, CatalogKeyPrefix+tenantid.Normalize(tenantID)+"/")
+	if err != nil {
+		return nil, err
+	}
+	if err := c.reapStaleClaims(ctx, tenantID, store, metas); err != nil {
 		return nil, err
 	}
 	read := func() ([]DatabaseMeta, error) { return metas, nil }
@@ -429,6 +512,7 @@ func (c *KVCatalog) Create(ctx context.Context, meta DatabaseMeta) error {
 	// the claim; a claim a crash leaves is reaped by the next read of the
 	// tenant's records (reapStaleClaims).
 	claimKey := ""
+	var claimValue []byte
 	if inHome {
 		// The home is readable now: claim the records it already holds
 		// (once per tenant), so the tenant is indexed when it seals.
@@ -438,18 +522,19 @@ func (c *KVCatalog) Create(ctx context.Context, meta DatabaseMeta) error {
 		if err := c.indexRootClaims(ctx, meta.TenantID, existing); err != nil {
 			return err
 		}
-		claim, err := rootClaim(meta)
+		pending, err := rootClaim(meta, claimPending, time.Now())
 		if err != nil {
 			return &CatalogWriteError{Key: key, Err: err}
 		}
-		// Hold the claim lock across the claim put and the record put, so
-		// the reaper never sees this claim without its record.
+		// The claim is written pending: a reaper in any process keeps a
+		// pending claim with no record until pendingClaimReapAge passes.
 		unlock := c.lockClaims(meta.TenantID)
 		defer unlock()
 		claimKey = rootClaimKey(meta.TenantID, meta.Incarnation, meta.Name)
-		if err := c.system.Put(ctx, claimKey, claim); err != nil {
+		if err := c.system.Put(ctx, claimKey, pending); err != nil {
 			return &CatalogWriteError{Key: claimKey, Err: err}
 		}
+		claimValue = pending
 	}
 	stored, err := store.PutIfAbsent(ctx, key, data)
 	if err != nil {
@@ -473,6 +558,30 @@ func (c *KVCatalog) Create(ctx context.Context, meta DatabaseMeta) error {
 			}
 		}
 		return &AlreadyExistsError{Name: meta.Name}
+	}
+	if claimKey != "" {
+		return c.commitClaim(ctx, meta, claimKey, claimValue)
+	}
+	return nil
+}
+
+// commitClaim marks the pending claim of a written record committed. A
+// claim a reaper freed meanwhile is written again, committed, since the
+// record now holds its root.
+func (c *KVCatalog) commitClaim(ctx context.Context, meta DatabaseMeta, claimKey string, pending []byte) error {
+	committed, err := rootClaim(meta, claimCommitted, time.Now())
+	if err != nil {
+		return &CatalogWriteError{Key: claimKey, Err: err}
+	}
+	swapped, err := c.system.CompareAndSwap(ctx, claimKey, pending, committed)
+	if err != nil {
+		return &CatalogWriteError{Key: claimKey, Err: err}
+	}
+	if swapped {
+		return nil
+	}
+	if _, err := c.system.PutIfAbsent(ctx, claimKey, committed); err != nil {
+		return &CatalogWriteError{Key: claimKey, Err: err}
 	}
 	return nil
 }
@@ -669,7 +778,7 @@ func (c *KVCatalog) ListRoots(ctx context.Context) ([]DatabaseMeta, error) {
 		if !indexed {
 			return nil, &CatalogStoreError{TenantID: skipped.TenantID, Err: skipped.Err}
 		}
-		claims, err := scanCatalog(ctx, c.system, RootClaimKeyPrefix+tenantid.Normalize(skipped.TenantID)+"/")
+		claims, err := c.scanRootClaims(ctx, RootClaimKeyPrefix+tenantid.Normalize(skipped.TenantID)+"/")
 		if err != nil {
 			return nil, err
 		}
@@ -745,7 +854,7 @@ func (c *KVCatalog) indexRootClaims(ctx context.Context, tenantID string, record
 		return err
 	}
 	for _, meta := range metas {
-		claim, err := rootClaim(meta)
+		claim, err := rootClaim(meta, claimCommitted, time.Now())
 		if err != nil {
 			return &CatalogWriteError{Key: CatalogKey(meta.TenantID, meta.Name), Err: err}
 		}
