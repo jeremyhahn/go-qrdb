@@ -262,9 +262,9 @@ path.
   `backup-restore` (`.github/workflows/ci.yml`), required by `ci-gate` in CI's full tier: on
   every push to `main`, every dispatch on `main`, and every non-draft pull
   request that is not docs-only.
-- **Cloud destinations**: the Azure and GCS `backup.destination` paths run
-  against in-process stubs in `sdk/go/node` under the build tags `azureblob`
-  and `gcpstorage` via `make test-objstore-cloud`, which CI runs in the `sdk`
+- **Cloud destinations**: the Azure, GCS and S3 `backup.destination` paths
+  run against in-process stubs in `sdk/go/node` under the build tags
+  `azureblob`, `gcpstorage` and `awss3` via `make test-objstore-cloud`, which CI runs in the `sdk`
   leg of the `test-sdk` job.
 
 ## Observability
