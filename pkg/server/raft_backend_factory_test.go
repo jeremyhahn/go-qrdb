@@ -1366,6 +1366,109 @@ func TestRaftBackendFactory_DedicatedWAL_NoMuxRefusesToStart(t *testing.T) {
 	}
 }
 
+// isolationByTenant returns a TenantIsolationLookup that serves the given map.
+func isolationByTenant(m map[string]tenant.IsolationType) TenantIsolationLookup {
+	return func(_ context.Context, id string) (tenant.IsolationType, error) {
+		iso, ok := m[id]
+		if !ok {
+			return "", errors.New("tenant not found: " + id)
+		}
+		return iso, nil
+	}
+}
+
+func TestRaftBackendFactory_VolumeTenantGroupLogUnderTenantRoot(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("volume tenant gets a dedicated WAL without opting in", func(t *testing.T) {
+		host, mux := newSharedTestHostWithMux(t)
+		reg := newVolumePooledRegistry(t)
+		src := newFakeRaftInfoSource()
+		f := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg, src, volTestLogger(),
+			WithMultiplexLogDB(mux),
+			WithTenantIsolation(isolationByTenant(map[string]tenant.IsolationType{
+				"vt": tenant.IsolationVolume, "bt": tenant.IsolationBarrier, "pt": tenant.IsolationPrefix,
+			})))
+		t.Cleanup(func() { _ = f.CloseAll() })
+
+		dataRoot, tb := registerVolumeTenant(t, reg, "vt")
+		const shardID = uint64(2200)
+		src.add("vt", "app", shardID, dataRoot)
+		if _, err := f.Services(ctx, "vt", "app"); err != nil {
+			t.Fatalf("Services(vt): %v", err)
+		}
+		if !mux.IsDedicated(shardID) {
+			t.Fatalf("volume tenant shard %d must run on a dedicated WAL", shardID)
+		}
+		if mux.BarrierForShard(shardID) != tb.Barrier().EpochBarrier() {
+			t.Fatalf("volume tenant shard %d must seal its WAL with the tenant barrier", shardID)
+		}
+		walDir := filepath.Join(dataRoot, "databases", "app", "wal")
+		if fi, err := os.Stat(walDir); err != nil || !fi.IsDir() {
+			t.Fatalf("dedicated WAL dir %q must exist under the tenant root: %v", walDir, err)
+		}
+
+		bRoot, _ := registerVolumeTenant(t, reg, "bt")
+		const bShard = uint64(2201)
+		src.add("bt", "app", bShard, bRoot)
+		if _, err := f.Services(ctx, "bt", "app"); err != nil {
+			t.Fatalf("Services(bt): %v", err)
+		}
+		if mux.IsDedicated(bShard) {
+			t.Fatalf("barrier tenant shard %d must stay on the shared WAL", bShard)
+		}
+
+		const pShard = uint64(2202)
+		src.add("pt", "app", pShard, t.TempDir())
+		if _, err := f.Services(ctx, "pt", "app"); err != nil {
+			t.Fatalf("Services(pt): %v", err)
+		}
+		if mux.IsDedicated(pShard) {
+			t.Fatalf("prefix tenant shard %d must stay on the shared WAL", pShard)
+		}
+	})
+
+	t.Run("volume tenant without a multiplex refuses to start", func(t *testing.T) {
+		host, _ := newSharedTestHost(t)
+		reg := newVolumePooledRegistry(t)
+		src := newFakeRaftInfoSource()
+		f := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg, src, volTestLogger(),
+			WithTenantIsolation(isolationByTenant(map[string]tenant.IsolationType{"vn": tenant.IsolationVolume})))
+		t.Cleanup(func() { _ = f.CloseAll() })
+
+		dataRoot, _ := registerVolumeTenant(t, reg, "vn")
+		const shardID = uint64(2210)
+		src.add("vn", "app", shardID, dataRoot)
+		_, err := f.Services(ctx, "vn", "app")
+		var unavailable *database.TenantWALUnavailableError
+		if !errors.As(err, &unavailable) || unavailable.TenantID != "vn" {
+			t.Fatalf("Services = %v; want a TenantWALUnavailableError for vn", err)
+		}
+		if n := len(f.ListStarted()); n != 0 {
+			t.Fatalf("%d shards started; the volume tenant must not fall back to the shared WAL", n)
+		}
+	})
+
+	t.Run("isolation lookup error fails the start", func(t *testing.T) {
+		host, mux := newSharedTestHostWithMux(t)
+		reg := newVolumePooledRegistry(t)
+		src := newFakeRaftInfoSource()
+		f := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg, src, volTestLogger(),
+			WithMultiplexLogDB(mux), WithTenantIsolation(isolationByTenant(nil)))
+		t.Cleanup(func() { _ = f.CloseAll() })
+
+		dataRoot, _ := registerVolumeTenant(t, reg, "ve")
+		const shardID = uint64(2220)
+		src.add("ve", "app", shardID, dataRoot)
+		if _, err := f.Services(ctx, "ve", "app"); err == nil {
+			t.Fatalf("Services succeeded; an isolation lookup error must fail the start")
+		}
+		if n := len(f.ListStarted()); n != 0 {
+			t.Fatalf("%d shards started after an isolation lookup error", n)
+		}
+	})
+}
+
 // TestRaftBackendFactory_DedicatedWAL_NotOptedIn proves that with a multiplex
 // wired, a database that did NOT opt in keeps using the shared WAL: the shard is
 // not registered as dedicated and no per-shard WAL directory is created. This is

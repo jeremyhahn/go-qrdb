@@ -1183,6 +1183,16 @@ func (f *RaftBackendFactory) planStart(ctx context.Context, tenantID, db string,
 		// The per-tenant-KEY WAL needs a tenant key; a prefix tenant has none.
 		dedicatedWAL = false
 	}
+	if !nodeScoped && f.isolation != nil {
+		// A volume tenant's group log always lives under its own key and root.
+		iso, ierr := f.isolation(ctx, tenantID)
+		if ierr != nil {
+			return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "isolation-lookup", Err: ierr}
+		}
+		if iso == tenant.IsolationVolume {
+			dedicatedWAL = true
+		}
+	}
 
 	local := map[uint64]string{f.localReplicaID: f.localRaftAddr}
 	plan := &shardStartPlan{
