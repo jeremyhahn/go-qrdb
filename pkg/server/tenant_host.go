@@ -564,9 +564,8 @@ func newDataPlaneCreateFunc(tb *seal.TenantBarrier, lessor *lease.Lessor, hub *w
 // buildDataPlaneServices binds the full data-plane service set to a single
 // shard on the given host and watch hub. It mirrors the core binding block of
 // lifecycle.BuildServices for the system shard and is shared by the per-tenant
-// volume Host and the dedicated per-database raft shards. Vector storage is
-// intentionally omitted: it requires a separate per-tenant Pebble vector store
-// rather than the Raft state machine, which is out of scope here.
+// volume Host and the dedicated per-database raft shards. The set carries no
+// vector service; a dedicated raft shard adds its own on first resolution.
 //
 // importSessionCfg bounds a chunked import session on this shard
 // (config.ImportSession, "import_session:" in YAML); the zero value

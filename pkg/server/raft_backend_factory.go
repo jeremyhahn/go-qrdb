@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -37,6 +38,7 @@ import (
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -149,6 +151,13 @@ type raftShard struct {
 	lessor    *lease.Lessor
 	services  *DatabaseServices
 	cancel    context.CancelFunc
+	// vector is the shard's own vector service, built on the first
+	// resolution once the shard serves reads; closeVector stops it.
+	vectorMu      sync.Mutex
+	vector        service.VectorServicer
+	vectorBundle  *DatabaseServices
+	closeVector   func() error
+	vectorStopped bool
 
 	// dedicatedWAL is the per-tenant-KEY WAL store registered in the shared
 	// host's multiplex for this shard (4d Option C), or nil when the shard uses
@@ -704,12 +713,11 @@ func NewRaftBackendFactoryFromManager(
 // only ever compare the cache's latest entry against itself, which can
 // never observe a mismatch no matter how stale the ORIGINAL caller's
 // resolution was. The comparison was briefly added for this reason before
-// the review that caught it, and the real reason it is unneeded is simpler:
-// a dedicated-raft database's DatabaseServices never carries a Vector field
-// (RaftBackendFactory.services builds none), so the stale-vector-handle
-// scenario RefuseIfDropping was written to guard against cannot occur on
-// this path at all. See the analogous, and reachable, fix on the
-// shared-store side instead (restServiceRegistry.refuseIfDropping).
+// the review that caught it, and it is unneeded for a further reason: a
+// dedicated-raft database's vector service is bound to its own shard ID, so
+// a vector handle resolved before a drop proposes into that shard, never
+// into a successor's. See the shared-store side instead
+// (restServiceRegistry.refuseIfDropping).
 func refusalForCached(db string, rs *raftShard, pInfo *placement.Placement, infoOK bool) error {
 	if infoOK {
 		return refusalFromPlacement(db, pInfo)
@@ -781,7 +789,7 @@ func (f *RaftBackendFactory) cachedServices(key raftShardKey, rs *raftShard, hon
 			return nil, false, err
 		}
 	}
-	return rs.services, false, nil
+	return f.withVector(rs), false, nil
 }
 
 // forgetLocked drops key's shard, if cached, from the cache and advances
@@ -895,11 +903,9 @@ func (f *RaftBackendFactory) retireShard(rs *raftShard) {
 // fence guard into the database's own shard, which refuses them at apply
 // time. It exists for the vector view's check-before-write fence
 // (databaseFence), built unconditionally by resolve's IsolationRaft branch
-// for symmetry with every other branch -- but RaftBackendFactory.services
-// never populates DatabaseServices.Vector, so no dedicated-raft database
-// ever actually resolves a vector handle for this check to run against.
-// This function is kept for that symmetry and because a future Vector field
-// on this path is plausible, not because it is reachable today.
+// for every branch: a dedicated-raft database's bundle carries its own
+// vector service (newRaftShardVector), and this check runs before each of
+// its writes.
 //
 // A database this factory has never resolved at all reports no refusal:
 // there is nothing cached to check staleness against, and the NEXT
@@ -1022,7 +1028,7 @@ func (f *RaftBackendFactory) services(ctx context.Context, tenantID, db string, 
 			switch {
 			case again:
 			case err == nil:
-				return rs.services, nil
+				return f.withVector(rs), nil
 			case !forceJoin && plan.isObserver && !plan.join && errors.Is(err, quicraft.ErrNonVotingRoleInMembers):
 				// An ObserverReady replica with NO persisted shard state: its
 				// prior join bootstrap was wiped (demotion purge racing a
@@ -1804,6 +1810,12 @@ func (f *RaftBackendFactory) stopShard(rs *raftShard) error {
 	if err := f.host.StopShard(rs.shardID); err != nil {
 		return &RaftBackendError{TenantID: rs.tenantID, Database: rs.database, Op: "stop-shard", Err: err}
 	}
+	rs.vectorMu.Lock()
+	if rs.closeVector != nil {
+		_ = rs.closeVector()
+	}
+	rs.vector, rs.vectorBundle, rs.closeVector, rs.vectorStopped = nil, nil, nil, true
+	rs.vectorMu.Unlock()
 	if rs.dedicatedWAL != nil && f.walMux != nil {
 		if detached, ok := f.walMux.Unregister(rs.shardID); ok && detached != nil {
 			if err := detached.Close(); err != nil {
@@ -1819,6 +1831,55 @@ func (f *RaftBackendFactory) stopShard(rs *raftShard) error {
 		slog.Uint64("shard_id", rs.shardID),
 		slog.Bool("dedicated_wal", rs.dedicatedWAL != nil))
 	return nil
+}
+
+// newRaftShardVector builds a raft database's own vector service: every
+// write is an OpVector* proposal into the database's group and every read an
+// engine lookup through host, as a local binding's vector service does over
+// its binding store. The returned close stops the service.
+func newRaftShardVector(host service.Host, shardID uint64) (service.VectorServicer, func() error, error) {
+	l, err := logger.New(logger.LogConfig{Level: "warn", Format: "json", Output: "stderr"})
+	if err != nil {
+		return nil, nil, err
+	}
+	svc, err := service.NewVectorService(nil, logger.NewAdapter(l), service.WithVectorApplyHost(host, shardID))
+	if err != nil {
+		return nil, nil, err
+	}
+	closeFn := func() error {
+		if c, ok := svc.(io.Closer); ok {
+			return c.Close()
+		}
+		return nil
+	}
+	return svc, closeFn, nil
+}
+
+// withVector returns rs's services with its own vector service, building
+// that service on the first call. A build that fails leaves the bundle
+// without one and is retried on the next call.
+func (f *RaftBackendFactory) withVector(rs *raftShard) *DatabaseServices {
+	rs.vectorMu.Lock()
+	defer rs.vectorMu.Unlock()
+	if rs.vector == nil && !rs.vectorStopped {
+		vec, closeVec, err := newRaftShardVector(f.adapter, rs.shardID)
+		if err != nil {
+			f.logger.Warn("dedicated raft database vector service unavailable",
+				slog.String("tenant", rs.tenantID), slog.String("database", rs.database),
+				slog.Uint64("shard_id", rs.shardID), slog.Any("error", err))
+			return rs.services
+		}
+		rs.vector, rs.closeVector = vec, closeVec
+	}
+	if rs.vector == nil {
+		return rs.services
+	}
+	if rs.vectorBundle == nil {
+		out := *rs.services
+		out.Vector = rs.vector
+		rs.vectorBundle = &out
+	}
+	return rs.vectorBundle
 }
 
 // shardOwner returns the (tenantID, database) pair owning the locally started
