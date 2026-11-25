@@ -1021,7 +1021,9 @@ func (s *DatabaseService) checkCreatedAdoptsNoLogs(ctx context.Context, tenantID
 	}
 	rbCtx, cancel := database.DropRollbackContext(withRetainedDatabaseLogs(ctx))
 	defer cancel()
-	s.rollBackCreate(rbCtx, db, err)
+	if rbErr := s.rollBackCreate(rbCtx, db, err); rbErr != nil {
+		return errors.Join(err, rbErr)
+	}
 	return err
 }
 
