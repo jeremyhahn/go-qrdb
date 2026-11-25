@@ -1804,6 +1804,7 @@ test-ci-image: ## Test the CI image hand-off (save, load, GHCR push)
 test-in-toolchain-image: ## Test that no stage container outlives its script
 	@./scripts/in-toolchain-image_test.sh
 	@./scripts/ci-cache-dir_test.sh
+	@./scripts/ci-sweep-volumes_test.sh
 
 .PHONY: check-tool-versions
 check-tool-versions:
