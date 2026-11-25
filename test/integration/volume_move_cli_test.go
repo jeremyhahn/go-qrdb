@@ -968,6 +968,100 @@ func TestVolumePool_CLI_MoveTenant_ThreeNode_RestartWhileSettling(t *testing.T) 
 	}
 }
 
+// startVolumeMoveStandaloneNode starts a standalone-mode node (no Raft group)
+// with the two volume pools of the move fixture.
+func startVolumeMoveStandaloneNode(t *testing.T) (*multiProtoNode, volumeMovePoolDirs) {
+	t.Helper()
+	dirs := volumeMovePoolDirs{def: t.TempDir(), second: t.TempDir()}
+	extra := strings.TrimPrefix(volumeMoveYAML(dirs.def, dirs.second), "seal:\n  enabled: true\n  strategy: passphrase\n")
+	n := startStandaloneModeNodeWithConfig(t, "pebble", extra)
+	for _, pool := range []string{"default", "second"} {
+		createVolumePoolCLI(t, n.cli, n.cliArgsFor(multiProtocols[0]), pool)
+	}
+	return n, dirs
+}
+
+// volumeMoveStandaloneStartAgain restarts a stopped standalone node, unseals
+// it and waits until every transport serves.
+func volumeMoveStandaloneStartAgain(t *testing.T, n *multiProtoNode, prefix string) {
+	t.Helper()
+	n.proc = startNode(t, n.bin, n.startArgs, prefix)
+	waitForBarrierStatusReachable(t, n.ca, n.restPort, 90*time.Second)
+	n.unsealOrDumpCluster(t)
+	waitForAdmin(t, n.ca.Pool, n.restPort, 90*time.Second)
+	for _, proto := range multiProtocols {
+		waitForCLIProtoReady(t, n, proto, 60*time.Second)
+	}
+}
+
+// volumeMoveStandaloneSettling waits until the move of tenantID has its copy
+// recorded and its step settling (true), or the move ended first (false).
+func volumeMoveStandaloneSettling(t *testing.T, node *multiProtoNode, proto multiProtocol, tenantID string) bool {
+	t.Helper()
+	settling := false
+	var out string
+	var err error
+	if !pollUntil(volumeMoveDeadline, 10*time.Millisecond, func() bool {
+		out, err = runCLIProto(t, node, proto, "--output", "json", "volume-pool", "get-move", tenantID)
+		if err != nil {
+			return volumeMoveIsNoMove(out)
+		}
+		var m cliVolumePoolMoveJSON
+		if json.Unmarshal([]byte(out), &m) != nil {
+			return false
+		}
+		if m.State == "copying" && m.StepNode != "" && slices.Contains(m.NodesCopied, m.StepNode) {
+			settling = true
+			return true
+		}
+		return false
+	}) {
+		t.Fatalf("[%s] move of %s neither settled nor ended within %s; last get-move (err=%v): %s", proto.name, tenantID, volumeMoveDeadline, err, out)
+	}
+	return settling
+}
+
+func TestVolumePool_CLI_MoveTenant_StandaloneRestartWhileSettling(t *testing.T) {
+	t.Parallel()
+	node, dirs := startVolumeMoveStandaloneNode(t)
+
+	for _, proto := range multiProtocols {
+		hit := false
+		for attempt := 0; attempt < volumeMoveCancelAttempts && !hit; attempt++ {
+			mt := seedVolumeMoveTenant(t, node, proto, "vss", attempt)
+			if out, err := runCLIProto(t, node, proto, "--output", "json", "volume-pool", "move-tenant", mt.tenantID, "--to", "second"); err != nil {
+				t.Fatalf("[%s] volume-pool move-tenant: %v\noutput: %s", proto.name, err, out)
+			}
+			if !volumeMoveStandaloneSettling(t, node, proto, mt.tenantID) {
+				volumeMoveClusterWaitGone(t, node, proto, mt.tenantID)
+				continue
+			}
+			hit = true
+
+			node.stop(t)
+			volumeMoveStandaloneStartAgain(t, node, fmt.Sprintf("[vmove-standalone-settle-%s] ", strings.ToLower(proto.name)))
+
+			volumeMoveClusterWaitGone(t, node, proto, mt.tenantID)
+			if pool := volumeMoveTenantPool(t, node, proto, mt.tenantID); pool != "second" {
+				t.Fatalf("[%s] after a restart while settling, tenant %s is on pool %q, want second", proto.name, mt.tenantID, pool)
+			}
+			volumeMoveExpectValue(t, node, proto, mt, mt.key, mt.value)
+			afterKey, afterValue := "after", "after-the-settle-restart-"+mt.tenantID
+			if out, err := runQRDB(t, node.cli, mt.conn, "--database", mt.dbName, "kv", "put", afterKey, afterValue); err != nil {
+				t.Fatalf("[%s] tenant kv put after the restart: %v\noutput: %s", proto.name, err, out)
+			}
+			volumeMoveExpectValue(t, node, proto, mt, afterKey, afterValue)
+			volumeMoveExpectValue(t, node, proto, mt, mt.key, mt.value)
+			if _, err := os.Stat(filepath.Join(dirs.def, mt.tenantID)); !os.IsNotExist(err) {
+				t.Fatalf("[%s] the completed move of %s left its source directory (stat err=%v)", proto.name, mt.tenantID, err)
+			}
+		}
+		if !hit {
+			t.Fatalf("[%s] no move of %d tenants was seen with a copy step settling", proto.name, volumeMoveCancelAttempts)
+		}
+	}
+}
+
 // volumeMoveClusterSettlingNode polls get-move until the move of tenantID
 // shows a settling copy step (state copying, stepNode already in nodesCopied)
 // and returns the fixture index of that step's node, or -1 once the move has

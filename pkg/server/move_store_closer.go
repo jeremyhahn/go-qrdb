@@ -314,6 +314,21 @@ func (c *MoveStoreCloser) reopen(ctx context.Context, tenantID string) error {
 		if err != nil {
 			return fail(fmt.Errorf("move: resolve the host of tenant %s: %w", tenantID, err))
 		}
+		if hosted {
+			// A Host started before this reopen (at boot) was built from the
+			// root the assignment named, not the authoritative one: rebuild it.
+			if c.hosts.Started(tenantID) {
+				if err := c.hosts.Close(tenantID); err != nil {
+					return fail(err)
+				}
+			}
+			c.mu.Lock()
+			if c.closedHost == nil {
+				c.closedHost = map[string]bool{}
+			}
+			c.closedHost[tenantID] = true
+			c.mu.Unlock()
+		}
 		host = hosted
 	}
 	if !barrierOpen {

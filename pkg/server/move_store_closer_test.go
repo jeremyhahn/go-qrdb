@@ -576,6 +576,21 @@ func TestMoveStoreCloser_ResumedSettleAttachesVolumeTenantHost(t *testing.T) {
 	}
 }
 
+func TestMoveStoreCloser_ResumedSettleRebuildsStartedVolumeTenantHost(t *testing.T) {
+	for _, mode := range []string{"standalone", "raft"} {
+		t.Run(mode, func(t *testing.T) {
+			hosts := &fakeMoveHosts{started: map[string]bool{"acme": true}, volume: map[string]bool{"acme": true}}
+			c := resumedVolumeCloser(t, mode, hosts)
+			if err := c.OpenTenantStores(context.Background(), "acme"); err != nil {
+				t.Fatalf("open: %v", err)
+			}
+			if want := []string{"close acme", "attach acme"}; !reflect.DeepEqual(hosts.calls, want) {
+				t.Fatalf("host calls = %v, want %v", hosts.calls, want)
+			}
+		})
+	}
+}
+
 func TestMoveStoreCloser_ResumedSettleUnopenableHostStaysPending(t *testing.T) {
 	for _, mode := range []string{"standalone", "raft"} {
 		t.Run(mode, func(t *testing.T) {
