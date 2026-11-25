@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"testing"
 	"time"
@@ -526,6 +527,37 @@ func TestGroupStore_TenantIsolationAndPagination(t *testing.T) {
 	var nf *GroupNotFoundError
 	if _, err := f.groups.GetGroup(tenant.WithTenantID(ctx, "acme"), foreign.ID); !errors.As(err, &nf) {
 		t.Fatalf("acme read other tenant's group: %v", err)
+	}
+}
+
+func TestListGroups_HugePageAndPageSizeReturnEmptyPage(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	for i := range 3 {
+		if _, err := f.groups.CreateGroup(ctx, &CreateGroupRequest{TenantID: "acme", Name: fmt.Sprintf("g%d", i)}); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+	}
+	for _, tc := range []struct {
+		name           string
+		page, pageSize int
+	}{
+		{"huge page", math.MaxInt, 2},
+		{"huge page size", 2, math.MaxInt},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := f.groups.ListGroups(ctx, &ListGroupsRequest{TenantID: "acme", Page: tc.page, PageSize: tc.pageSize})
+			if err != nil {
+				t.Fatalf("list: %v", err)
+			}
+			if len(resp.Groups) != 0 || resp.Total != 3 || resp.HasMore {
+				t.Fatalf("got %d groups total %d hasMore %v, want empty page of 3", len(resp.Groups), resp.Total, resp.HasMore)
+			}
+		})
+	}
+	resp, err := f.groups.ListGroups(ctx, &ListGroupsRequest{TenantID: "acme", Page: 1, PageSize: math.MaxInt})
+	if err != nil || len(resp.Groups) != 3 || resp.HasMore {
+		t.Fatalf("first page with huge page size = %+v, %v", resp, err)
 	}
 }
 

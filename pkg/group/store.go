@@ -558,8 +558,11 @@ func (s *kvGroupStore) ListGroups(ctx context.Context, req *ListGroupsRequest) (
 	}
 	sort.Strings(ids)
 	total := len(ids)
-	start := min((page-1)*pageSize, total)
-	end := min(start+pageSize, total)
+	start := total
+	if total > 0 && page-1 <= (total-1)/pageSize {
+		start = (page - 1) * pageSize
+	}
+	end := start + min(pageSize, total-start)
 	groups := make([]*Group, 0, end-start)
 	for _, id := range ids[start:end] {
 		g, err := s.GetGroup(ctx, id)
