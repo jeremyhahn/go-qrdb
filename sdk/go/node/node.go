@@ -3133,6 +3133,11 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 	if err != nil {
 		return nil, err
 	}
+	if dataDir != "" {
+		if err := lifecycle.ClaimRunMode(dataDir, capabilities.ModeStandalone); err != nil {
+			return nil, err
+		}
+	}
 
 	// Build the seal subsystem BEFORE data-plane storage so that, once
 	// unsealed, the data-plane PebbleDB can be opened on top of encfs. The
@@ -3360,6 +3365,9 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 	dataDir := cfg.Raft.DataDir
 	if dataDir == "" {
 		dataDir = "./data"
+	}
+	if err := lifecycle.ClaimRunMode(dataDir, capabilities.ModeRaft); err != nil {
+		return nil, err
 	}
 	if err := n.resolveClusterIdentity(ctx, cfg, members, dataDir); err != nil {
 		return nil, err
