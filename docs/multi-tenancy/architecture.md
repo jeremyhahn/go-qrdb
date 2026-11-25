@@ -344,7 +344,10 @@ nothing left to name it.
 
 Plus the secondary-index catalog and the vector namespaces, which are
 namespaces of their own rather than ranges of keys and are enumerated
-separately.
+separately. An isolated tenant's vector namespaces live in its home store
+under `__vector/`; the reclamation lists and deletes them through the vector
+service as that tenant, so they are removed from the home store and nothing
+of theirs is in the node-local vector store.
 
 The **system tenant is refused**: `system/` holds the bootstrap database and
 every system identity record, so a reclamation that accepted it would empty
@@ -490,7 +493,8 @@ include a tier is refused without consulting counters at all.
 The tenant comes from **the authenticated mTLS identity**, never from a request
 field. The database is selected separately by `X-QRDB-Database` (or its
 per-transport equivalent). Keyspace and vector namespaces are tenant-partitioned
-on top of that. Detail: [scoping.md](../scoping.md).
+on top of that: a prefix tenant's vector namespaces carry its tenant prefix in
+the node-local vector store, and an isolated tenant's live in its home store. Detail: [scoping.md](../scoping.md).
 
 ### Every data-plane surface resolves per `(tenant, database)`
 
@@ -844,6 +848,14 @@ weakens that promise:
   plaintext**, and they carry usernames, email addresses, certificate
   thumbprints, role names and credential lookup hashes. The home store holds
   these records instead.
+- **Vectors.** The node-local vector store holds every prefix tenant's
+  namespaces under the system encryptor. An isolated tenant's vector
+  namespaces, records and metadata are in its home store instead, under
+  `__vector/` (`service.SetTenantHomeResolver`, attached by
+  `pkg/server/lifecycle` in standalone and raft mode alike). A tenant whose
+  home cannot be resolved, sealed included, is refused with
+  `service.TenantVectorHomeError`; its vectors never fall back to the
+  node-local store.
 - **Seal metadata.** The tenant's SO PIN commitment (`__sys:so-pin-commit/`)
   is in the system store, outside every tenant barrier.
 - **Routing.** A global identity index in the system tenant maps every user id

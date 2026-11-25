@@ -758,8 +758,10 @@ Invariants:
     guard. The collection services the registry caches per database are
     keyed by that guard too, so a name dropped and created again never
     reuses a collection service built for the earlier incarnation.
-  - **Two writes are not Raft proposals.** Vector writes go to a node-local
-    vector store and are refused by a check made before the write, which
+  - **Two writes are not Raft proposals.** Vector writes go through the
+    vector storage interface (the node-local vector store for a prefix
+    tenant, the home store's `__vector/` range for an isolated tenant), carry
+    no write guard, and are refused by a check made before the write, which
     leaves a window between check and write. A database with a dedicated
     local store (an explicit data directory) is written directly; its drop
     closes and removes the whole store, so a late write has no keyspace to
@@ -1372,7 +1374,7 @@ by an operator command with a conflict policy.
 |---|---|---|
 | The shared system shard (raft mode) or the node's single local store (standalone), under `<tenant>/<db>/` and inside the `ts:` / `idx:metric:` / `retention:` prefixes | KV, MVCC, SQL catalog and rows, sequences and generation keys, collections, secondary index entries, time-series points and metric index and retention | relocated per database into its binding |
 | A volume tenant's shared shard, under `<tenant>/<db>/` | the same | relocated per database into its binding |
-| The node-local vector store at `{DataDir}/vector` | every tenant's vector namespaces, records and metadata | imported per `(tenant, database)` |
+| The node-local vector store at `{DataDir}/vector` | every prefix tenant's vector namespaces, records and metadata, and those an isolated tenant wrote before its vectors moved to its home store | imported per `(tenant, database)` |
 
 **Relocation of one database**:
 

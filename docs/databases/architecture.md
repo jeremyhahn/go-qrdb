@@ -62,10 +62,10 @@ node-level settings decide instead.
 
 | Path | What serves the data plane | Engines served | Honours the database's `backend`? |
 |---|---|---|---|
-| Prefix or barrier tenant, no per-database barrier | the shared system shard, under a `<tenant>/<db>/` key prefix | all except vector (vector goes to the node-local store below) | **no** — the node's `--sm` / `raft.sm_type` in raft mode, or the node's single local store in standalone mode |
+| Prefix or barrier tenant, no per-database barrier | the shared system shard, under a `<tenant>/<db>/` key prefix | all except vector (a prefix tenant's vectors go to the node-local store below, a barrier tenant's to its home store) | **no** — the node's `--sm` / `raft.sm_type` in raft mode, or the node's single local store in standalone mode |
 | Prefix or barrier tenant, database with its own barrier and an explicit data directory | the database's own store, opened by `database.Manager` | **KV and collections only**; MVCC, batch, transactions, leases, watches, indexes, time series and vector are absent, so the SQL surface and sequences are too | partly — memory, file and pebble are opened; nothing else is |
-| Volume tenant | one Raft shard on a per-tenant host, shared by all of the tenant's databases under the `<tenant>/<db>/` prefix | all except vector | **no** |
-| Raft tenant | a dedicated Raft group per database on the system host | all except vector | forced to `raft` |
+| Volume tenant | one Raft shard on a per-tenant host, shared by all of the tenant's databases under the `<tenant>/<db>/` prefix | all except vector (vectors go to the tenant's home store) | **no** |
+| Raft tenant | a dedicated Raft group per database on the system host | all except vector (vectors go to the tenant's home store) | forced to `raft` |
 
 Supporting facts:
 
@@ -98,10 +98,17 @@ Supporting facts:
   the first database's setting is applied to every database on the node
   (`cmd/qrdbd` start path, `sdk/go/node.resolveBackend`).
 - SQL `CREATE DATABASE` hardcodes `backend: pebble` (`pkg/sql/provider`), and the daemon's `--sql-database` auto-provisioning derives the backend from `--sm`.
-- **Vector** is one node-local Pebble store at `{DataDir}/vector`, shared by
-  every tenant and every database on the node, encrypted under the system
-  encryptor, and isolated only by a key prefix on the namespace name
-  (`pkg/server/lifecycle`). It is not replicated: the vector state machines in
+- **Vector** for a prefix tenant and the system tenant is one node-local
+  Pebble store at `{DataDir}/vector`, shared by every such tenant and every
+  database on the node, encrypted under the system encryptor, and isolated
+  only by a key prefix on the namespace name (`pkg/server/lifecycle`). An
+  isolated tenant's (barrier, volume or raft) vectors are in its home store
+  instead, under `__vector/` (`vector.KVVectorStorage` over the home store,
+  chosen per request by `service.SetTenantHomeResolver`), in standalone and
+  raft mode alike; in raft mode that home store is the tenant's Raft-replicated
+  home group. A tenant whose home cannot be resolved, sealed included, is
+  refused and never falls back to the node-local store. The node-local store
+  is not replicated: the vector state machines in
   `pkg/statemachine` and the reserved vector shard are never started, and no
   production path gives the vector service a Raft node. The per-tenant volume
   host, the dedicated-raft bundles and the dedicated-store bundle carry no
@@ -653,7 +660,9 @@ pass-through views of a dedicated-raft database. The default database
 carries no guard: it cannot be dropped.
 
 Two writes are not Raft proposals and so cannot carry the guard. **Vector
-writes** go to a node-local vector store: they are refused by a check made
+writes** go through the vector storage interface, to the node-local vector
+store for a prefix tenant and to the home store for an isolated tenant,
+neither of which carries a write guard: they are refused by a check made
 before the write, which leaves a window between the check and the write.
 This holds on every host, clustered ones included: no composition gives the
 vector service a Raft node, so the isolation epoch guard of a strict
@@ -803,7 +812,7 @@ reclaimed only the first would leave every document behind:
 | `ts:<tenant>/<db>/…`, metric-index and retention records | time-series points, metric index, retention policies | tenant and database, inside the series prefixes, because it is the metric NAME that is namespaced |
 | `<tenant>/<db>/__sys:collections/…`, `<tenant>/<db>/__col:…` | collection catalog entries and documents | tenant and database — the collection surface is resolved per (tenant, database) like every other engine |
 | secondary index catalog | index names under `<tenant>/<db>/` | a namespace of its own inside the state machine, not reached by deleting keys |
-| vector namespaces | namespaces under `<tenant>/<db>/` | the node-local vector store, likewise not reached by deleting keys |
+| vector namespaces | namespaces under `<tenant>/<db>/` | the node-local vector store for a prefix tenant, the `__vector/` range of the home store for an isolated tenant; likewise not reached by deleting keys |
 
 **Everything in that table is scoped by tenant**, and that is a property to
 keep rather than an accident of how it was written. A drop is reachable by any
@@ -879,8 +888,9 @@ store instead of walking it (see "Drop under a binding").
   the leak on its own. Reading a database's configuration is not the same
   privilege as holding the secret that admits a node to its group.
 - **Target design: a tenant's data is encrypted under the tenant's key on every
-  engine.** The node-local vector store under the system encryptor is the case
-  this closes.
+  engine.** The node-local vector store under the system encryptor, which
+  still holds every prefix tenant's vectors, is the case this closes; an
+  isolated tenant's vectors are already in its home store.
 
 ## Shamir custody of a database barrier
 
