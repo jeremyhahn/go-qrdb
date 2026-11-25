@@ -124,8 +124,8 @@ func (s *sqliteRestoreMVCC) RestoreToRevision(ctx context.Context, req *service.
 			result.Conflicts = append(result.Conflicts, other.Conflicts...)
 		}
 	}
-	var kv sqlitevfs.ServiceKV = s.kv
-	var txn sqlitevfs.ServiceTxn = s.txn
+	kv := s.kv
+	txn := s.txn
 	if s.gate != nil {
 		kv = sqliteGatedKV{ServiceKV: s.kv, mover: s}
 		txn = sqliteGatedServiceTxn{inner: s.txn, gate: s.gate}
