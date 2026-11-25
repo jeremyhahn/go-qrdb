@@ -37,9 +37,6 @@ func (t *Transport) StateHashes(ctx context.Context, shardIDs []uint64) (*transp
 	if err := t.authorize(ctx, "StateHashes"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	hasher, ok := t.adminSvc.(service.ReplicaStateHasher)
 	if !ok {
 		return nil, &transport.CapabilityUnsupportedError{Message: (&service.ReplicaStateHashesUnsupportedError{}).Error()}

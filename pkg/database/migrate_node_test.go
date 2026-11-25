@@ -15,6 +15,7 @@
 package database
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -556,6 +557,114 @@ func TestNodeStoreMigration_RecodeFailureRollsBack(t *testing.T) {
 	// The source canonical root key is still none (commit never reached).
 	if got := source.Status().Strategy; got != seal.StrategyNone {
 		t.Fatalf("source strategy = %q, want none after rollback", got)
+	}
+}
+
+// TestNodeStoreMigration_RecordsReencryptedAndRetired: records kept in the
+// barrier's own backend (the seal store's secrets) are staged, committed and
+// then retired with the stores, so they read back under the adopted keyed
+// root key and the staging keyspace is left empty.
+func TestNodeStoreMigration_RecordsReencryptedAndRetired(t *testing.T) {
+	ctx := context.Background()
+	const passphrase = "records-pass"
+	sealBackend := seal.NewMemoryBackend()
+	source := initNoneBarrier(t, sealBackend, "root-key")
+	target := initKeyedBarrier(t, sealBackend, "root-key.migrating", passphrase)
+
+	rec := seal.StagedRecords{Prefix: "records/", StagingPrefix: "records.migrating/"}
+	secrets := map[string]string{"records/alpha": "secret-alpha", "records/beta": "secret-beta"}
+	for k, v := range secrets {
+		if err := source.Put(ctx, k, []byte(v)); err != nil {
+			t.Fatalf("Put %s: %v", k, err)
+		}
+	}
+	dir := t.TempDir() + "/pebble"
+	writeStore(t, dir, atrest.New(source), map[string]string{"k": "v"})
+
+	retired := 0
+	mig := &NodeStoreMigration{
+		Source:        source,
+		Target:        target,
+		StoreDirs:     []string{dir},
+		Logger:        reencTestLogger(),
+		Records:       []seal.StagedRecords{rec},
+		RetireRecords: func(context.Context) error { retired++; return nil },
+	}
+	opts := seal.MigrationOptions{
+		TargetStrategy: seal.StrategyPassphrase,
+		Mechanism:      seal.MechanismSwap,
+		Availability:   seal.AvailabilityQuiesced,
+		Credentials:    seal.MustCredentials(context.Background(), []byte(passphrase)),
+	}
+	if err := mig.Run(ctx, opts); err != nil {
+		t.Fatalf("migration Run: %v", err)
+	}
+	if retired != 1 {
+		t.Fatalf("RetireRecords ran %d times, want 1", retired)
+	}
+	reopened := initReopenKeyed(t, sealBackend, "root-key", passphrase)
+	for k, v := range secrets {
+		got, err := reopened.Get(ctx, k)
+		if err != nil || string(got) != v {
+			t.Fatalf("keyed Get %s = %q, %v; want %q", k, got, err, v)
+		}
+		raw, err := sealBackend.Get(ctx, k)
+		if err != nil {
+			t.Fatalf("backend Get %s: %v", k, err)
+		}
+		if bytes.Contains(raw, []byte(v)) {
+			t.Fatalf("record %s is still plaintext in the backend", k)
+		}
+	}
+	if staged, err := sealBackend.List(ctx, rec.StagingPrefix); err != nil || len(staged) != 0 {
+		t.Fatalf("staging keyspace = %v, %v; want empty", staged, err)
+	}
+}
+
+// TestNodeStoreMigration_RecordsRollBackOnFailure: a store that fails its
+// recode rolls the migration back with the live records still readable
+// under the source and nothing staged, and nothing retired.
+func TestNodeStoreMigration_RecordsRollBackOnFailure(t *testing.T) {
+	ctx := context.Background()
+	sealBackend := seal.NewMemoryBackend()
+	source := initNoneBarrier(t, sealBackend, "root-key")
+	target := initKeyedBarrier(t, sealBackend, "root-key.migrating", "pw")
+
+	rec := seal.StagedRecords{Prefix: "records/", StagingPrefix: "records.migrating/"}
+	if err := source.Put(ctx, "records/alpha", []byte("secret-alpha")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	badDir := filepath.Join(t.TempDir(), "not-a-store")
+	if err := os.WriteFile(badDir, []byte("x"), 0o600); err != nil {
+		t.Fatalf("seed bad store: %v", err)
+	}
+	retired := 0
+	mig := &NodeStoreMigration{
+		Source:        source,
+		Target:        target,
+		StoreDirs:     []string{badDir},
+		Logger:        reencTestLogger(),
+		Records:       []seal.StagedRecords{rec},
+		RetireRecords: func(context.Context) error { retired++; return nil },
+	}
+	opts := seal.MigrationOptions{
+		TargetStrategy: seal.StrategyPassphrase,
+		Mechanism:      seal.MechanismSwap,
+		Availability:   seal.AvailabilityQuiesced,
+		Credentials:    seal.MustCredentials(context.Background(), []byte("pw")),
+	}
+	var dirErr *MigrateStoreDirError
+	if err := mig.Run(ctx, opts); !errors.As(err, &dirErr) {
+		t.Fatalf("err = %v, want *MigrateStoreDirError", err)
+	}
+	if retired != 0 {
+		t.Fatalf("RetireRecords ran %d times after a rollback, want 0", retired)
+	}
+	if got, err := source.Get(ctx, "records/alpha"); err != nil || string(got) != "secret-alpha" {
+		t.Fatalf("source Get = %q, %v; want the live record", got, err)
+	}
+	if staged, err := sealBackend.List(ctx, rec.StagingPrefix); err != nil || len(staged) != 0 {
+		t.Fatalf("staging keyspace = %v, %v; want empty", staged, err)
 	}
 }
 

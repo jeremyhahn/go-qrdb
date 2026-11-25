@@ -38,9 +38,6 @@ func (t *Transport) CredentialSubmit(ctx context.Context, req *transport.Credent
 	if err := t.authorize(ctx, "CredentialSubmit"); err != nil {
 		return err
 	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	if t.credentialSvc == nil {
 		return &NilServiceError{Service: "CredentialServicer"}
 	}
@@ -56,9 +53,6 @@ func (t *Transport) CredentialStrategy(ctx context.Context) (*transport.Credenti
 	}
 	if err := t.authorize(ctx, "CredentialStrategy"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.credentialSvc == nil {
 		return nil, &NilServiceError{Service: "CredentialServicer"}
@@ -82,9 +76,6 @@ func (t *Transport) CredentialDelete(ctx context.Context, name string) error {
 	if err := t.authorize(ctx, "CredentialDelete"); err != nil {
 		return err
 	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	if t.credentialSvc == nil {
 		return &NilServiceError{Service: "CredentialServicer"}
 	}
@@ -101,9 +92,6 @@ func (t *Transport) CredentialList(ctx context.Context, _ *transport.CredentialL
 	}
 	if err := t.authorize(ctx, "CredentialList"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.credentialSvc == nil {
 		return nil, &NilServiceError{Service: "CredentialServicer"}
@@ -127,9 +115,6 @@ func (t *Transport) CredentialRotate(ctx context.Context, req *transport.Credent
 	}
 	if err := t.authorize(ctx, "CredentialRotate"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.credentialSvc == nil {
 		return nil, &NilServiceError{Service: "CredentialServicer"}
@@ -165,9 +150,6 @@ func (t *Transport) CredentialListVersions(ctx context.Context, req *transport.C
 	}
 	if err := t.authorize(ctx, "CredentialListVersions"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.credentialSvc == nil {
 		return nil, &NilServiceError{Service: "CredentialServicer"}
@@ -209,9 +191,6 @@ func (t *Transport) CredentialGCExpired(ctx context.Context, req *transport.Cred
 	}
 	if err := t.authorize(ctx, "CredentialGCExpired"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.credentialSvc == nil {
 		return nil, &NilServiceError{Service: "CredentialServicer"}
@@ -339,9 +318,6 @@ func (t *Transport) CredentialStore(ctx context.Context, name string, value []by
 	if err := t.authorize(ctx, "CredentialStore"); err != nil {
 		return err
 	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	if t.credentialSvc == nil {
 		return &NilServiceError{Service: "CredentialServicer"}
 	}
@@ -358,9 +334,6 @@ func (t *Transport) CredentialRetrieveBuffer(ctx context.Context, name string) (
 	}
 	if err := t.authorize(ctx, "CredentialRetrieveBuffer"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.credentialSvc == nil {
 		return nil, &NilServiceError{Service: "CredentialServicer"}
@@ -379,9 +352,6 @@ func (t *Transport) CredentialRetrieveVersionBuffer(ctx context.Context, req *tr
 	}
 	if err := t.authorize(ctx, "CredentialRetrieveVersionBuffer"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.credentialSvc == nil {
 		return nil, &NilServiceError{Service: "CredentialServicer"}

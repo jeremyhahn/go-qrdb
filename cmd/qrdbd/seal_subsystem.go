@@ -32,6 +32,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealretire"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
@@ -52,6 +53,11 @@ type sealSubsystem struct {
 	// format-version sentinel). It is plaintext by design because it
 	// must be readable BEFORE the barrier is unsealed.
 	SealStore *pebblestore.PebbleStorage
+
+	// SealStoreRetirer retires SealStore's plaintext history after an
+	// enable-encryption replaces its records (WAL recycling off, obsolete
+	// logs and tables deleted).
+	SealStoreRetirer *sealretire.Retirer
 
 	// SealBarrier is the unsealable storage barrier. Callers MUST check
 	// SealBarrier.IsSealed() before any operation that requires the
@@ -127,7 +133,7 @@ func initSealSubsystem(f *startFlags, sigCtx context.Context, complianceAudit au
 	// so an unsynced write can be lost on crash even though it appeared to
 	// succeed — orphaning every file the lost root key had encrypted. See
 	// the equivalent comment in sdk/go/node's buildNodeSealSubsystem.
-	sealStore, err := pebblestore.New(&pebblestore.Config{DataDir: sealDataDir, SyncWrites: true})
+	sealStore, sealRetirer, err := sealretire.Open(sealDataDir, nil)
 	if err != nil {
 		return nil, &SealStorageError{Err: err}
 	}
@@ -159,9 +165,13 @@ func initSealSubsystem(f *startFlags, sigCtx context.Context, complianceAudit au
 		filepath.Join(f.dataDir, "vector"),
 		filepath.Join(f.dataDir, "wal"),
 	}
-	if rerr := database.RecoverInterruptedMigration(sigCtx, sealBackend, barrierCfg.RootKeyPath, sysStoreDirs); rerr != nil {
-		slog.Warn("system encryption-migration crash recovery failed; manual reconcile may be required",
-			slog.Any("error", rerr))
+	// A committed journal that names the seal-store keyspace means the
+	// recovery rolls the re-encrypted seal-store records forward; the
+	// plaintext versions they replace are then retired from the store's
+	// files under a durable marker (recoverSystemMigration).
+	if rerr := recoverSystemMigration(sigCtx, sealBackend, sealRetirer, barrierCfg.RootKeyPath, sysStoreDirs); rerr != nil {
+		_ = sealStore.Close()
+		return nil, &SealBarrierError{Err: rerr}
 	}
 
 	// The system barrier resolves its strategies through the same registry an
@@ -322,6 +332,7 @@ func initSealSubsystem(f *startFlags, sigCtx context.Context, complianceAudit au
 
 	return &sealSubsystem{
 		SealStore:         sealStore,
+		SealStoreRetirer:  sealRetirer,
 		SealBarrier:       sealBarrier,
 		CredCoreSvc:       credCoreSvc,
 		BarrierRegistry:   barrierRegistry,
@@ -330,6 +341,47 @@ func initSealSubsystem(f *startFlags, sigCtx context.Context, complianceAudit au
 		PINBackend:        pinBackend,
 		SealDataDir:       sealDataDir,
 	}, nil
+}
+
+// recoverSystemMigration is the boot-time reconcile of a system-scope
+// enable-encryption interrupted by a crash (see initSealSubsystem). A
+// committed journal without its staging root key is refused. A committed
+// journal naming the seal store marks a plaintext retirement owed BEFORE
+// database.RecoverInterruptedMigration rolls the records forward and clears
+// the journal; then any owed retirement runs, and a failure is returned with
+// the marker kept, so the next boot retries. A failed journal read or a
+// failed recovery is returned too, and stops the boot: the journal survives
+// it, and the next boot retries the roll-forward.
+func recoverSystemMigration(ctx context.Context, backend seal.StorageBackend, retirer *sealretire.Retirer, rootKeyPath string, storeDirs []string) error {
+	// Only an absent journal (nil, nil) means no pending migration: a failed
+	// read must stop the boot, or a second read inside the recovery could
+	// roll a committed seal-store migration forward with no retirement
+	// marker written first.
+	pending, lerr := seal.LoadMigrationJournalFrom(ctx, backend, rootKeyPath)
+	if lerr != nil {
+		return fmt.Errorf("read the system encryption-migration journal: %w", lerr)
+	}
+	if err := refuseCommittedJournalWithoutStagingRoot(ctx, backend, rootKeyPath, pending); err != nil {
+		return err
+	}
+	if pending != nil && pending.Committed() && sealretire.JournalNamesSealStore(pending) {
+		if err := retirer.Mark(); err != nil {
+			return err
+		}
+	}
+	// A failed recovery stops the boot: past root-key adoption, a committed
+	// journal and staged old values left behind would replay over any later
+	// seal-store write at the next restart. The journal survives the
+	// failure, so the next boot retries the roll-forward. That includes a
+	// staging root key that the guard above read but the roll-forward cannot
+	// (database.ErrMigrationStagingRootUnreadable): nothing is touched then.
+	if rerr := database.RecoverInterruptedMigration(ctx, backend, rootKeyPath, storeDirs); rerr != nil {
+		return fmt.Errorf("recover the interrupted system encryption migration: %w", rerr)
+	}
+	if err := retirer.RetirePending(ctx); err != nil {
+		return fmt.Errorf("retire the seal store's plaintext history: %w", err)
+	}
+	return nil
 }
 
 // unsealNoneBarrier opens a barrier whose persisted root key names the none

@@ -203,7 +203,48 @@ type Transport struct {
 	// without monkey-patching. Defaults to time.Now().UTC at New.
 	nowFunc func() time.Time
 
+	// closed is this transport's own closed flag: Close sets it, and a
+	// database-scoped clone has its own.
 	closed atomic.Bool
+
+	// life is the lifecycle a transport shares with every database-scoped
+	// clone made from it (cloneShared copies the pointer). Closing the
+	// transport New built refuses every clone through gate and drains the
+	// seal-store calls already admitted, so a client retained across a
+	// node's data-plane teardown cannot keep writing through the old
+	// barrier. Nil (a struct-literal Transport in a test) gates nothing.
+	life *lifecycle
+
+	// scopedClone marks a database-scoped clone: its Close closes only
+	// itself, never the shared lifecycle of the transport it came from.
+	scopedClone bool
+}
+
+// lifecycle is the closed state a transport shares with its database-scoped
+// clones. enter admits a call while the lifecycle is open; shut closes it and
+// waits until every admitted call has released.
+type lifecycle struct {
+	closed atomic.Bool
+	mu     sync.RWMutex
+}
+
+// enter admits one call. The caller must invoke release when the call is
+// done. Once shut has begun it returns *transport.ClosedError.
+func (l *lifecycle) enter() (release func(), err error) {
+	l.mu.RLock()
+	if l.closed.Load() {
+		l.mu.RUnlock()
+		return nil, &transport.ClosedError{}
+	}
+	return l.mu.RUnlock, nil
+}
+
+// shut takes the write lock, which waits out every admitted call, then marks
+// the lifecycle closed.
+func (l *lifecycle) shut() {
+	l.mu.Lock()
+	l.closed.Store(true)
+	l.mu.Unlock()
 }
 
 // Option configures an embedded transport.
@@ -389,6 +430,7 @@ func New(kvSvc service.KVServicer, adminSvc service.AdminServicer, opts ...Optio
 		adminSvc:      adminSvc,
 		loginSessions: newLoginSessionStore(),
 		nowFunc:       func() time.Time { return time.Now().UTC() },
+		life:          &lifecycle{},
 	}
 	for _, opt := range opts {
 		opt(t)
@@ -424,23 +466,35 @@ func (t *Transport) admitWatch(svc service.WatchServicer) service.WatchServicer 
 // Connect is a no-op for embedded transports since the service layer
 // is already available in-process.
 func (t *Transport) Connect(_ context.Context) error {
-	if t.closed.Load() {
+	if t.isClosed() {
 		return &transport.ClosedError{}
 	}
 	return nil
 }
 
 // Close marks the transport as closed. Subsequent operations will
-// return ClosedError.
+// return ClosedError. Closing a transport New built also closes the
+// lifecycle it shares with every database-scoped clone made from it: each
+// clone refuses every later call with ClosedError, and Close returns only
+// after the seal-store calls already admitted through any of them have
+// finished. Closing a database-scoped clone closes only that clone.
 func (t *Transport) Close() error {
 	t.closed.Store(true)
+	if !t.scopedClone && t.life != nil {
+		t.life.shut()
+	}
 	return nil
 }
 
-// Healthy returns true when the transport is open. For embedded
-// transports, the service layer is always reachable if not closed.
+// Healthy returns true when the transport is open. It is false once this
+// transport or the root it was scoped from is closed.
 func (t *Transport) Healthy(_ context.Context) bool {
-	return !t.closed.Load()
+	return !t.isClosed()
+}
+
+// isClosed reports whether this transport or the root it was scoped from is closed.
+func (t *Transport) isClosed() bool {
+	return t.closed.Load() || (t.life != nil && t.life.closed.Load())
 }
 
 // Request dispatches a generic request to the appropriate service method
@@ -450,9 +504,6 @@ func (t *Transport) Request(ctx context.Context, method string, req, resp any) e
 	ctx, err := t.admit(ctx, "Request")
 	if err != nil {
 		return err
-	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
 	}
 
 	handler, ok := requestHandlers[method]
@@ -674,9 +725,6 @@ func (t *Transport) Put(ctx context.Context, key string, value []byte, opts ...t
 	if err := t.authorize(ctx, "Put"); err != nil {
 		return err
 	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	if mode, ok := resolveWriteMode(opts); ok {
 		return translateError(t.kvSvc.PutWithMode(ctx, key, value, mode))
 	}
@@ -692,9 +740,6 @@ func (t *Transport) Get(ctx context.Context, key string, opts ...transport.ReadO
 	}
 	if err := t.authorize(ctx, "Get"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if ro, ok := resolveReadConsistency(opts); ok {
 		data, err := t.kvSvc.GetWithConsistency(ctx, key, ro)
@@ -720,9 +765,6 @@ func (t *Transport) Delete(ctx context.Context, key string, opts ...transport.Wr
 	if err := t.authorize(ctx, "Delete"); err != nil {
 		return err
 	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	if mode, ok := resolveWriteMode(opts); ok {
 		return translateError(t.kvSvc.DeleteWithMode(ctx, key, mode))
 	}
@@ -742,9 +784,6 @@ func (t *Transport) PutIfAbsent(ctx context.Context, key string, value []byte) (
 	if err := t.authorize(ctx, "PutIfAbsent"); err != nil {
 		return false, err
 	}
-	if t.closed.Load() {
-		return false, &transport.ClosedError{}
-	}
 	stored, err := t.kvSvc.PutIfAbsent(ctx, key, value)
 	return stored, translateError(err)
 }
@@ -759,9 +798,6 @@ func (t *Transport) CompareAndDelete(ctx context.Context, key string, expected [
 	}
 	if err := t.authorize(ctx, "CompareAndDelete"); err != nil {
 		return false, err
-	}
-	if t.closed.Load() {
-		return false, &transport.ClosedError{}
 	}
 	deleted, err := t.kvSvc.CompareAndDelete(ctx, key, expected)
 	return deleted, translateError(err)
@@ -779,9 +815,6 @@ func (t *Transport) CompareAndSwap(ctx context.Context, key string, expected, ne
 	if err := t.authorize(ctx, "CompareAndSwap"); err != nil {
 		return false, err
 	}
-	if t.closed.Load() {
-		return false, &transport.ClosedError{}
-	}
 	swapped, err := t.kvSvc.CompareAndSwap(ctx, key, expected, next)
 	return swapped, translateError(err)
 }
@@ -795,9 +828,6 @@ func (t *Transport) List(ctx context.Context, prefix string, opts ...transport.R
 	}
 	if err := t.authorize(ctx, "List"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if ro, ok := resolveReadConsistency(opts); ok {
 		keys, err := t.kvSvc.ListWithConsistency(ctx, prefix, ro)
@@ -823,9 +853,6 @@ func (t *Transport) Scan(ctx context.Context, prefix string, opts ...transport.R
 	if err := t.authorize(ctx, "Scan"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if ro, ok := resolveReadConsistency(opts); ok {
 		data, err := t.kvSvc.ScanWithConsistency(ctx, prefix, ro)
 		if err != nil {
@@ -849,9 +876,6 @@ func (t *Transport) Exists(ctx context.Context, key string, opts ...transport.Re
 	}
 	if err := t.authorize(ctx, "Exists"); err != nil {
 		return false, err
-	}
-	if t.closed.Load() {
-		return false, &transport.ClosedError{}
 	}
 	if ro, ok := resolveReadConsistency(opts); ok {
 		exists, err := t.kvSvc.ExistsWithConsistency(ctx, key, ro)
@@ -884,9 +908,6 @@ func (t *Transport) Health(ctx context.Context) (*transport.HealthResponse, erro
 	// Health needs no identity on every transport (REST's /health is
 	// server.publicIf with no permission at all), but it is not the unseal
 	// call, so the gate above refuses it while sealed.
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	status, err := t.adminSvc.Health(ctx)
 	if err != nil {
 		return nil, translateError(err)
@@ -906,9 +927,6 @@ func (t *Transport) Status(ctx context.Context) (*transport.StatusResponse, erro
 	}
 	if err := t.authorize(ctx, "Status"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	info, err := t.adminSvc.Status(ctx)
 	if err != nil {
@@ -933,9 +951,6 @@ func (t *Transport) Peers(ctx context.Context) (*transport.PeersResponse, error)
 	}
 	if err := t.authorize(ctx, "Peers"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	info, err := t.adminSvc.Peers(ctx)
 	if err != nil {
@@ -971,9 +986,6 @@ func (t *Transport) AddMember(ctx context.Context, shardID, replicaID uint64, ra
 	if err := t.authorize(ctx, "AddMember"); err != nil {
 		return err
 	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	return translateError(t.adminSvc.AddMember(ctx, shardID, replicaID, raftAddr, identity))
 }
 
@@ -985,9 +997,6 @@ func (t *Transport) RemoveMember(ctx context.Context, shardID, replicaID uint64)
 	}
 	if err := t.authorize(ctx, "RemoveMember"); err != nil {
 		return err
-	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
 	}
 	return translateError(t.adminSvc.RemoveMember(ctx, shardID, replicaID))
 }
@@ -1001,9 +1010,6 @@ func (t *Transport) PromoteMember(ctx context.Context, shardID, replicaID uint64
 	}
 	if err := t.authorize(ctx, "PromoteMember"); err != nil {
 		return err
-	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
 	}
 	promoter, ok := t.adminSvc.(service.MemberPromoter)
 	if !ok {
@@ -1022,9 +1028,6 @@ func (t *Transport) TransferLeadership(ctx context.Context, shardID, targetRepli
 	}
 	if err := t.authorize(ctx, "TransferLeadership"); err != nil {
 		return err
-	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
 	}
 	transferrer, ok := t.adminSvc.(service.LeaderTransferrer)
 	if !ok {
@@ -1050,9 +1053,6 @@ func (t *Transport) MintJoinToken(ctx context.Context, req *transport.MintJoinTo
 	}
 	if err := t.authorize(ctx, "MintJoinToken"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	minter, ok := t.adminSvc.(service.ClusterJoinTokenMinter)
 	if !ok {
@@ -1081,9 +1081,6 @@ func (t *Transport) AddObserverMember(ctx context.Context, shardID, replicaID ui
 	if err := t.authorize(ctx, "AddObserverMember"); err != nil {
 		return err
 	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	adder, ok := t.adminSvc.(service.ObserverMemberAdder)
 	if !ok {
 		return translateError(&service.ClusterJoinRequestReviewUnsupportedError{})
@@ -1103,9 +1100,6 @@ func (t *Transport) ListPendingJoinRequests(ctx context.Context) ([]*transport.P
 	}
 	if err := t.authorize(ctx, "ListPendingJoinRequests"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	reviewer, ok := t.adminSvc.(service.JoinRequestReviewer)
 	if !ok {
@@ -1140,9 +1134,6 @@ func (t *Transport) ApproveJoinRequest(ctx context.Context, id, nodeID string) e
 	if err := t.authorize(ctx, "ApproveJoinRequest"); err != nil {
 		return err
 	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	reviewer, ok := t.adminSvc.(service.JoinRequestReviewer)
 	if !ok {
 		return translateError(&service.ClusterJoinRequestReviewUnsupportedError{})
@@ -1159,9 +1150,6 @@ func (t *Transport) RejectJoinRequest(ctx context.Context, id, reason string) er
 	}
 	if err := t.authorize(ctx, "RejectJoinRequest"); err != nil {
 		return err
-	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
 	}
 	reviewer, ok := t.adminSvc.(service.JoinRequestReviewer)
 	if !ok {
@@ -1184,9 +1172,6 @@ func (t *Transport) RetireJoinIdentity(ctx context.Context, nodeID, reason strin
 	if err := t.authorize(ctx, "RetireJoinIdentity"); err != nil {
 		return err
 	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	retirer, ok := t.adminSvc.(service.JoinIdentityRetirer)
 	if !ok {
 		return translateError(&service.ClusterJoinTokenNotConfiguredError{})
@@ -1203,9 +1188,6 @@ func (t *Transport) RequestSnapshot(ctx context.Context, shardID uint64) error {
 	if err := t.authorize(ctx, "RequestSnapshot"); err != nil {
 		return err
 	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	return translateError(t.adminSvc.RequestSnapshot(ctx, shardID))
 }
 
@@ -1219,9 +1201,6 @@ func (t *Transport) Drain(ctx context.Context) error {
 	if err := t.authorize(ctx, "Drain"); err != nil {
 		return err
 	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	return translateError(t.adminSvc.Drain(ctx))
 }
 
@@ -1234,9 +1213,6 @@ func (t *Transport) Capabilities(ctx context.Context) (*transport.CapabilitiesRe
 	}
 	if err := t.authorize(ctx, "Capabilities"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	caps, err := t.adminSvc.Capabilities(ctx)
 	if err != nil {
@@ -1277,9 +1253,6 @@ func (t *Transport) StartShard(ctx context.Context, req *transport.StartShardReq
 	if err := t.authorize(ctx, "StartShard"); err != nil {
 		return err
 	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	svcReq := &service.StartShardRequest{
 		ShardID:   req.ShardID,
 		ReplicaID: req.ReplicaID,
@@ -1302,9 +1275,6 @@ func (t *Transport) StopShard(ctx context.Context, shardID uint64) error {
 	if err := t.authorize(ctx, "StopShard"); err != nil {
 		return err
 	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	if err := t.adminSvc.StopShard(ctx, shardID); err != nil {
 		return &transport.ShardStopError{ShardID: shardID, Err: err}
 	}
@@ -1320,9 +1290,6 @@ func (t *Transport) GetShardState(ctx context.Context, shardID uint64) (*transpo
 	}
 	if err := t.authorize(ctx, "GetShardState"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	resp, err := t.adminSvc.GetShardState(ctx, shardID)
 	if err != nil {
@@ -1346,9 +1313,6 @@ func (t *Transport) GetTopology(ctx context.Context) (*transport.TopologyRespons
 	}
 	if err := t.authorize(ctx, "GetTopology"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	resp, err := t.adminSvc.GetTopology(ctx)
 	if err != nil {
@@ -1380,9 +1344,6 @@ func (t *Transport) ReplicaStates(ctx context.Context, shardID uint64) (*transpo
 	}
 	if err := t.authorize(ctx, "ReplicaStates"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	reader, ok := t.adminSvc.(service.ReplicaStateReader)
 	if !ok {
@@ -1419,9 +1380,6 @@ func (t *Transport) PutWithLease(ctx context.Context, key string, value []byte, 
 	if err := t.authorize(ctx, "PutWithLease"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.mvccSvc == nil {
 		return nil, &NilServiceError{Service: "MVCCKVServicer"}
 	}
@@ -1449,9 +1407,6 @@ func (t *Transport) GetRevision(ctx context.Context, key string, opts ...transpo
 	}
 	if err := t.authorize(ctx, "GetRevision"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.mvccSvc == nil {
 		return nil, &NilServiceError{Service: "MVCCKVServicer"}
@@ -1481,9 +1436,6 @@ func (t *Transport) GetAtRevision(ctx context.Context, key string, revision int6
 	if err := t.authorize(ctx, "GetAtRevision"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.mvccSvc == nil {
 		return nil, &NilServiceError{Service: "MVCCKVServicer"}
 	}
@@ -1511,9 +1463,6 @@ func (t *Transport) Range(ctx context.Context, start, end []byte, rangeOpts tran
 	}
 	if err := t.authorize(ctx, "Range"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.mvccSvc == nil {
 		return nil, &NilServiceError{Service: "MVCCKVServicer"}
@@ -1550,9 +1499,6 @@ func (t *Transport) Compact(ctx context.Context, revision int64) error {
 	if err := t.authorize(ctx, "Compact"); err != nil {
 		return err
 	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	if t.mvccSvc == nil {
 		return &NilServiceError{Service: "MVCCKVServicer"}
 	}
@@ -1568,9 +1514,6 @@ func (t *Transport) CurrentRevision(ctx context.Context) (int64, error) {
 	}
 	if err := t.authorize(ctx, "CurrentRevision"); err != nil {
 		return 0, err
-	}
-	if t.closed.Load() {
-		return 0, &transport.ClosedError{}
 	}
 	if t.mvccSvc == nil {
 		return 0, &NilServiceError{Service: "MVCCKVServicer"}
@@ -1593,9 +1536,6 @@ func (t *Transport) RestoreToRevision(ctx context.Context, req *transport.Restor
 	}
 	if err := t.authorize(ctx, "RestoreToRevision"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.mvccSvc == nil {
 		return nil, &NilServiceError{Service: "MVCCKVServicer"}
@@ -1625,9 +1565,6 @@ func (t *Transport) ExecuteTransaction(ctx context.Context, req *transport.Trans
 	}
 	if err := t.authorize(ctx, "ExecuteTransaction"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.txSvc == nil {
 		return nil, &NilServiceError{Service: "TransactionServicer"}
@@ -1684,9 +1621,6 @@ func (t *Transport) ExecuteBatch(ctx context.Context, ops []transport.Op, opts .
 	if err := t.authorize(ctx, "ExecuteBatch"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.batchSvc == nil {
 		return nil, &NilServiceError{Service: "BatchServicer"}
 	}
@@ -1725,9 +1659,6 @@ func (t *Transport) ImportFile(ctx context.Context, filename string, data io.Rea
 	if err := t.authorize(ctx, "ImportFile"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.batchSvc == nil {
 		return nil, &NilServiceError{Service: "BatchServicer"}
 	}
@@ -1743,9 +1674,6 @@ func (t *Transport) ImportBegin(ctx context.Context, opts transport.ImportOption
 	}
 	if err := t.authorize(ctx, "ImportBegin"); err != nil {
 		return "", err
-	}
-	if t.closed.Load() {
-		return "", &transport.ClosedError{}
 	}
 	if t.batchSvc == nil {
 		return "", &NilServiceError{Service: "BatchServicer"}
@@ -1776,9 +1704,6 @@ func (t *Transport) ImportAppend(ctx context.Context, sessionID string, seq uint
 	if err := t.authorize(ctx, "ImportAppend"); err != nil {
 		return err
 	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	if t.batchSvc == nil {
 		return &NilServiceError{Service: "BatchServicer"}
 	}
@@ -1798,9 +1723,6 @@ func (t *Transport) ImportCommit(ctx context.Context, sessionID string) (*transp
 	}
 	if err := t.authorize(ctx, "ImportCommit"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.batchSvc == nil {
 		return nil, &NilServiceError{Service: "BatchServicer"}
@@ -1835,9 +1757,6 @@ func (t *Transport) ImportAbort(ctx context.Context, sessionID string) error {
 	}
 	if err := t.authorize(ctx, "ImportAbort"); err != nil {
 		return err
-	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
 	}
 	if t.batchSvc == nil {
 		return &NilServiceError{Service: "BatchServicer"}
@@ -1883,9 +1802,6 @@ func (t *Transport) Watch(ctx context.Context, key string, opts transport.WatchO
 	if err := t.authorize(ctx, "Watch"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.watchSvc == nil {
 		return nil, &NilServiceError{Service: "WatchServicer"}
 	}
@@ -1902,9 +1818,6 @@ func (t *Transport) WatchPrefix(ctx context.Context, prefix string, opts transpo
 	}
 	if err := t.authorize(ctx, "WatchPrefix"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.watchSvc == nil {
 		return nil, &NilServiceError{Service: "WatchServicer"}
@@ -2064,9 +1977,6 @@ func (t *Transport) LeaseGrant(ctx context.Context, ttl int64) (*transport.Lease
 	if err := t.authorize(ctx, "LeaseGrant"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.leaseSvc == nil {
 		return nil, &NilServiceError{Service: "LeaseServicer"}
 	}
@@ -2087,9 +1997,6 @@ func (t *Transport) LeaseRevoke(ctx context.Context, leaseID int64) error {
 	if err := t.authorize(ctx, "LeaseRevoke"); err != nil {
 		return err
 	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	if t.leaseSvc == nil {
 		return &NilServiceError{Service: "LeaseServicer"}
 	}
@@ -2105,9 +2012,6 @@ func (t *Transport) LeaseKeepAlive(ctx context.Context, leaseID int64) (*transpo
 	}
 	if err := t.authorize(ctx, "LeaseKeepAlive"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.leaseSvc == nil {
 		return nil, &NilServiceError{Service: "LeaseServicer"}
@@ -2129,9 +2033,6 @@ func (t *Transport) LeaseTimeToLive(ctx context.Context, leaseID int64) (*transp
 	if err := t.authorize(ctx, "LeaseTimeToLive"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.leaseSvc == nil {
 		return nil, &NilServiceError{Service: "LeaseServicer"}
 	}
@@ -2151,9 +2052,6 @@ func (t *Transport) LeaseList(ctx context.Context) ([]*transport.LeaseInfo, erro
 	}
 	if err := t.authorize(ctx, "LeaseList"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.leaseSvc == nil {
 		return nil, &NilServiceError{Service: "LeaseServicer"}
@@ -2179,9 +2077,6 @@ func (t *Transport) TSWrite(ctx context.Context, point *transport.TSDataPoint) e
 	if err := t.authorize(ctx, "TSWrite"); err != nil {
 		return err
 	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	if t.tsSvc == nil {
 		return &NilServiceError{Service: "TimeSeriesServicer"}
 	}
@@ -2199,9 +2094,6 @@ func (t *Transport) TSWriteBatch(ctx context.Context, points []transport.TSDataP
 	}
 	if err := t.authorize(ctx, "TSWriteBatch"); err != nil {
 		return err
-	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
 	}
 	if t.tsSvc == nil {
 		return &NilServiceError{Service: "TimeSeriesServicer"}
@@ -2228,9 +2120,6 @@ func (t *Transport) TSQuery(ctx context.Context, req *transport.TSQueryRequest) 
 	}
 	if err := t.authorize(ctx, "TSQuery"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.tsSvc == nil {
 		return nil, &NilServiceError{Service: "TimeSeriesServicer"}
@@ -2281,9 +2170,6 @@ func (t *Transport) TSAggregate(ctx context.Context, req *transport.TSAggregateR
 	if err := t.authorize(ctx, "TSAggregate"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.tsSvc == nil {
 		return nil, &NilServiceError{Service: "TimeSeriesServicer"}
 	}
@@ -2323,9 +2209,6 @@ func (t *Transport) TSWritePoint(ctx context.Context, point *transport.TSDataPoi
 	if err := t.authorize(ctx, "TSWritePoint"); err != nil {
 		return err
 	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	if t.tsSvc == nil {
 		return &NilServiceError{Service: "TimeSeriesServicer"}
 	}
@@ -2348,9 +2231,6 @@ func (t *Transport) TSRichQuery(ctx context.Context, req *transport.TSRichQueryR
 	}
 	if err := t.authorize(ctx, "TSRichQuery"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.tsSvc == nil {
 		return nil, &NilServiceError{Service: "TimeSeriesServicer"}
@@ -2396,9 +2276,6 @@ func (t *Transport) TSDeleteSeries(ctx context.Context, req *transport.TSDeleteR
 	if err := t.authorize(ctx, "TSDeleteSeries"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.tsSvc == nil {
 		return nil, &NilServiceError{Service: "TimeSeriesServicer"}
 	}
@@ -2431,9 +2308,6 @@ func (t *Transport) TSGetRetention(ctx context.Context, req *transport.TSGetRete
 	if err := t.authorize(ctx, "TSGetRetention"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.tsSvc == nil {
 		return nil, &NilServiceError{Service: "TimeSeriesServicer"}
 	}
@@ -2462,9 +2336,6 @@ func (t *Transport) TSSetRetention(ctx context.Context, req *transport.TSSetRete
 	if err := t.authorize(ctx, "TSSetRetention"); err != nil {
 		return err
 	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	if t.tsSvc == nil {
 		return &NilServiceError{Service: "TimeSeriesServicer"}
 	}
@@ -2487,9 +2358,6 @@ func (t *Transport) TSListMetrics(ctx context.Context, req *transport.TSListMetr
 	}
 	if err := t.authorize(ctx, "TSListMetrics"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.tsSvc == nil {
 		return nil, &NilServiceError{Service: "TimeSeriesServicer"}
@@ -2532,9 +2400,6 @@ func (t *Transport) CreateNamespace(ctx context.Context, req *transport.CreateNa
 	if err := t.authorize(ctx, "CreateNamespace"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.vectorSvc == nil {
 		return nil, &NilServiceError{Service: "VectorServicer"}
 	}
@@ -2569,9 +2434,6 @@ func (t *Transport) UpdateNamespace(ctx context.Context, req *transport.UpdateNa
 	if err := t.authorize(ctx, "UpdateNamespace"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.vectorSvc == nil {
 		return nil, &NilServiceError{Service: "VectorServicer"}
 	}
@@ -2602,9 +2464,6 @@ func (t *Transport) DeleteNamespace(ctx context.Context, req *transport.DeleteNa
 	if err := t.authorize(ctx, "DeleteNamespace"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.vectorSvc == nil {
 		return nil, &NilServiceError{Service: "VectorServicer"}
 	}
@@ -2631,9 +2490,6 @@ func (t *Transport) ListNamespaces(ctx context.Context, req *transport.ListNames
 	}
 	if err := t.authorize(ctx, "ListNamespaces"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.vectorSvc == nil {
 		return nil, &NilServiceError{Service: "VectorServicer"}
@@ -2663,9 +2519,6 @@ func (t *Transport) GetNamespaceInfo(ctx context.Context, req *transport.GetName
 	}
 	if err := t.authorize(ctx, "GetNamespaceInfo"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.vectorSvc == nil {
 		return nil, &NilServiceError{Service: "VectorServicer"}
@@ -2704,9 +2557,6 @@ func (t *Transport) UpsertVector(ctx context.Context, req *transport.UpsertVecto
 	if err := t.authorize(ctx, "UpsertVector"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.vectorSvc == nil {
 		return nil, &NilServiceError{Service: "VectorServicer"}
 	}
@@ -2737,9 +2587,6 @@ func (t *Transport) GetVector(ctx context.Context, req *transport.GetVectorReque
 	}
 	if err := t.authorize(ctx, "GetVector"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.vectorSvc == nil {
 		return nil, &NilServiceError{Service: "VectorServicer"}
@@ -2776,9 +2623,6 @@ func (t *Transport) DeleteVector(ctx context.Context, req *transport.DeleteVecto
 	if err := t.authorize(ctx, "DeleteVector"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.vectorSvc == nil {
 		return nil, &NilServiceError{Service: "VectorServicer"}
 	}
@@ -2805,9 +2649,6 @@ func (t *Transport) BatchUpsert(ctx context.Context, req *transport.BatchUpsertR
 	}
 	if err := t.authorize(ctx, "BatchUpsert"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.vectorSvc == nil {
 		return nil, &NilServiceError{Service: "VectorServicer"}
@@ -2840,9 +2681,6 @@ func (t *Transport) BatchDeleteVectors(ctx context.Context, req *transport.Batch
 	if err := t.authorize(ctx, "BatchDeleteVectors"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.vectorSvc == nil {
 		return nil, &NilServiceError{Service: "VectorServicer"}
 	}
@@ -2871,9 +2709,6 @@ func (t *Transport) ListVectors(ctx context.Context, req *transport.ListVectorsR
 	}
 	if err := t.authorize(ctx, "ListVectors"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.vectorSvc == nil {
 		return nil, &NilServiceError{Service: "VectorServicer"}
@@ -2909,9 +2744,6 @@ func (t *Transport) UpdateMetadata(ctx context.Context, req *transport.UpdateVec
 	if err := t.authorize(ctx, "UpdateMetadata"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.vectorSvc == nil {
 		return nil, &NilServiceError{Service: "VectorServicer"}
 	}
@@ -2943,9 +2775,6 @@ func (t *Transport) SearchSimilar(ctx context.Context, req *transport.SearchSimi
 	}
 	if err := t.authorize(ctx, "SearchSimilar"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.vectorSvc == nil {
 		return nil, &NilServiceError{Service: "VectorServicer"}
@@ -2982,9 +2811,6 @@ func (t *Transport) SearchByMetadata(ctx context.Context, req *transport.SearchB
 	if err := t.authorize(ctx, "SearchByMetadata"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.vectorSvc == nil {
 		return nil, &NilServiceError{Service: "VectorServicer"}
 	}
@@ -3019,9 +2845,6 @@ func (t *Transport) HybridSearch(ctx context.Context, req *transport.HybridSearc
 	}
 	if err := t.authorize(ctx, "HybridSearch"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.vectorSvc == nil {
 		return nil, &NilServiceError{Service: "VectorServicer"}
@@ -3062,9 +2885,6 @@ func (t *Transport) SearchByID(ctx context.Context, req *transport.SearchByIDReq
 	if err := t.authorize(ctx, "SearchByID"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.vectorSvc == nil {
 		return nil, &NilServiceError{Service: "VectorServicer"}
 	}
@@ -3102,9 +2922,6 @@ func (t *Transport) RebuildIndex(ctx context.Context, req *transport.RebuildInde
 	if err := t.authorize(ctx, "RebuildIndex"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.vectorSvc == nil {
 		return nil, &NilServiceError{Service: "VectorServicer"}
 	}
@@ -3138,9 +2955,6 @@ func (t *Transport) GetRebuildProgress(ctx context.Context, req *transport.GetRe
 	}
 	if err := t.authorize(ctx, "GetRebuildProgress"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.vectorSvc == nil {
 		return nil, &NilServiceError{Service: "VectorServicer"}
@@ -3177,9 +2991,6 @@ func (t *Transport) GetIndexStats(ctx context.Context, req *transport.GetIndexSt
 	if err := t.authorize(ctx, "GetIndexStats"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.vectorSvc == nil {
 		return nil, &NilServiceError{Service: "VectorServicer"}
 	}
@@ -3213,9 +3024,6 @@ func (t *Transport) CompactNamespace(ctx context.Context, req *transport.Compact
 	if err := t.authorize(ctx, "CompactNamespace"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.vectorSvc == nil {
 		return nil, &NilServiceError{Service: "VectorServicer"}
 	}
@@ -3246,9 +3054,6 @@ func (t *Transport) GetCompactionProgress(ctx context.Context, req *transport.Ge
 	}
 	if err := t.authorize(ctx, "GetCompactionProgress"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.vectorSvc == nil {
 		return nil, &NilServiceError{Service: "VectorServicer"}
