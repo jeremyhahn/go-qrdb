@@ -968,6 +968,84 @@ func TestVolumePool_CLI_MoveTenant_ThreeNode_RestartWhileSettling(t *testing.T) 
 	}
 }
 
+// TestVolumePool_CLI_MoveTenant_ThreeNode_SnapshotRelocated: a raft-mode
+// tenant's dedicated database shard runs on each node's shared Host. A
+// snapshot taken before the move names a file under the source pool; the
+// settle must re-snapshot the shard onto the destination, so once the move
+// retires the source copy and a replica restarts, the shard still recovers,
+// serves its rows, and snapshots and exports again.
+func TestVolumePool_CLI_MoveTenant_ThreeNode_SnapshotRelocated(t *testing.T) {
+	t.Parallel()
+	nodes, dirs := volumeMoveClusterStart(t)
+
+	// No t.Run per transport: the restarted node's process is owned by the
+	// test that starts it (see ThreeNode_ReplicaRestart).
+	for _, proto := range multiProtocols {
+		mt, conns := volumeMoveClusterSeed(t, nodes, proto, "vs")
+		raftDB := mt
+		raftDB.dbName = "snapdata-" + strings.TrimPrefix(mt.tenantID, "vs-")
+		if out, err := runQRDB(t, nodes[0].cli, mt.conn, "database", "create", raftDB.dbName, "--backend", "raft"); err != nil {
+			t.Fatalf("[%s] dedicated raft database create: %v\noutput: %s", proto.name, err, out)
+		}
+		volumeMoveClusterPut(t, nodes[0], proto, raftDB, mt.conn, raftDB.key, raftDB.value)
+		volumeMoveClusterExpectEverywhere(t, nodes, proto, raftDB, conns, raftDB.key, raftDB.value)
+		shardID := volumeMoveDatabaseShardID(t, nodes[0], proto, mt.conn, raftDB.dbName)
+		// Placement puts the shard on some of the nodes: snapshot it on each
+		// node that hosts a replica, and restart one of those after the move.
+		hosted := -1
+		for i, node := range nodes {
+			out, err := runCLIProtoRetryingAuthRefusal(t, node, proto, "admin", "snapshot", "--shard-id", shardID)
+			if err != nil && strings.Contains(out, "shard not found") {
+				continue
+			}
+			if err != nil {
+				t.Fatalf("[%s] node %d: admin snapshot of shard %s before the move: %v\noutput: %s", proto.name, i+1, shardID, err, out)
+			}
+			hosted = i
+		}
+		if hosted < 0 {
+			t.Fatalf("[%s] no node hosts a replica of shard %s", proto.name, shardID)
+		}
+
+		volumeMoveClusterStartMove(t, nodes[0], proto, mt.tenantID)
+		volumeMoveClusterWaitGone(t, nodes[0], proto, mt.tenantID)
+		volumeMoveClusterExpectDirs(t, proto, dirs, mt.tenantID, false, true)
+
+		nodes[hosted].restart(t, fmt.Sprintf("[vmove-snap-node3-%s] ", strings.ToLower(proto.name)))
+
+		volumeMoveClusterExpectEverywhere(t, nodes, proto, raftDB, conns, raftDB.key, raftDB.value)
+		volumeMoveClusterExpectEverywhere(t, nodes, proto, mt, conns, mt.key, mt.value)
+		if out, err := runCLIProtoRetryingAuthRefusal(t, nodes[hosted], proto, "admin", "snapshot", "--shard-id", shardID); err != nil {
+			t.Fatalf("[%s] restarted node: admin snapshot of shard %s after the move: %v\noutput: %s", proto.name, shardID, err, out)
+		}
+		dest := fmt.Sprintf("/backups/vmove-snap-%s-%d", strings.ToLower(proto.name), time.Now().UnixNano())
+		if out, err := runCLIProto(t, nodes[hosted], proto, "--output", "json", "backup", "create", "--destination", dest, "--encryption", "none"); err != nil {
+			t.Fatalf("[%s] restarted node: backup create exporting shard %s after the move: %v\noutput: %s", proto.name, shardID, err, out)
+		}
+	}
+}
+
+// volumeMoveDatabaseShardID returns the shard ID `database info` reports for
+// the tenant's database db.
+func volumeMoveDatabaseShardID(t *testing.T, node *multiProtoNode, proto multiProtocol, conn []string, db string) string {
+	t.Helper()
+	out, err := runQRDB(t, node.cli, conn, "--output", "json", "database", "info", db)
+	if err != nil {
+		t.Fatalf("[%s] database info %s: %v\noutput: %s", proto.name, db, err, out)
+	}
+	var info map[string]any
+	if jerr := json.Unmarshal([]byte(out), &info); jerr != nil {
+		t.Fatalf("[%s] decode `database info` JSON: %v\noutput: %s", proto.name, jerr, out)
+	}
+	for _, key := range []string{"shardId", "shard_id"} {
+		if id, ok := info[key].(float64); ok && id > 0 {
+			return fmt.Sprintf("%d", uint64(id))
+		}
+	}
+	t.Fatalf("[%s] database info %s names no shard ID: %s", proto.name, db, out)
+	return ""
+}
+
 // startVolumeMoveStandaloneNode starts a standalone-mode node (no Raft group)
 // with the two volume pools of the move fixture.
 func startVolumeMoveStandaloneNode(t *testing.T) (*multiProtoNode, volumeMovePoolDirs) {
