@@ -30,9 +30,7 @@ Serves **standard database operations**:
 - Collections and entity CRUD
 - Database management (create/list/delete; engines kv, timeseries, vector)
 - SQL (build-tag gated, `qrdb_sql`)
-- Timeseries and vector (build-tag gated; require the MVCC-capable engine,
-  so unavailable over the file/objstore backends — see the engine boundary
-  in `pkg/engine/kv_engine.go`)
+- Timeseries and vector (build-tag gated)
 
 Plus the **always-on security core** (below). What needs a cluster — etcd
 compatibility, cluster membership, rebalance, shard backup/restore — is
@@ -135,12 +133,10 @@ standalone node is engine-direct and single-process and has none, so it
 offers the guarantee outright. `sdk/go/node.buildEmbeddedOpts` wires
 `embedded.WithTransactionService` unconditionally.
 
-**The engine boundary.** Transactions require the MVCC-capable engine, which
-`NewLocalEngine` composes for the memory and pebble backends. The **file**
-and **objstore** backends compose the plain KV engine, which has no
-transaction opcode, so a transaction there fails with a typed
-`engine.UnsupportedOperationError`. This is an engine boundary, not a mode
-gate.
+**One engine on every backend.** `NewLocalEngine`
+(`pkg/server/lifecycle/local.go:177`) composes the MVCC engine
+(`engine.NewMVCCEngine`) over every local backend: memory, file, pebble and
+objstore. Transactions are served on all four.
 
 **Consumer-side fallbacks are not permitted.** A consumer must not
 substitute a process-local lock or any other consistency mechanism when a
@@ -153,7 +149,22 @@ same API, semantics and errors as raft mode, on every transport: the
 semantics a single process can give are raft mode's with one replica. They
 are composed over the same engine, lessor and watch hub as raft mode's MVCC
 state machine, and the standalone node runs the lease-expiry sweeper itself.
-Leases are durable in both modes, so a lock survives a restart. The same
-engine boundary applies: the file and objstore backends refuse these
-operations per call with a typed error. The normative contract is
+Leases are durable in both modes, so a lock survives a restart. Every local
+backend serves these families. The normative contract is
 [run-modes/](run-modes/).
+
+## Changing the mode of an existing data directory
+
+The mode is read at start; changing it is a restart. The two modes keep their
+data in different subdirectories of the data directory, and nothing checks
+which mode wrote the files already there:
+
+- Standalone (`lifecycle.NewLocalStorage`, `pkg/server/lifecycle/local.go:59`)
+  opens `pebble/` (pebble backend), `file/` (file backend) or `objstore/`
+  (objstore backend with the `local` provider and no `path` setting); the
+  memory backend opens nothing.
+- Raft (`buildHostConfig`, `cmd/qrdbd/start.go:4007`) opens `wal/` and
+  `nodehost/`.
+
+A node restarted in the other mode therefore starts without the keys written
+in the previous mode, and reports no error about them.
