@@ -16,6 +16,7 @@ package store
 
 import (
 	"github.com/cockroachdb/pebble/v2"
+	"github.com/cockroachdb/pebble/v2/vfs"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
@@ -47,6 +48,14 @@ func WithWALDir(dir string) Option {
 func WithMaxOpenFiles(n int) Option {
 	return func(o *pebble.Options) {
 		o.MaxOpenFiles = n
+	}
+}
+
+// WithMemFS runs the Pebble instance over a fresh in-memory filesystem, so
+// the state machine keeps nothing on disk. Pass it before WithEncryptor.
+func WithMemFS() Option {
+	return func(o *pebble.Options) {
+		o.FS = vfs.NewMem()
 	}
 }
 

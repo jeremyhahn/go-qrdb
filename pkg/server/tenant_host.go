@@ -134,7 +134,7 @@ func newTenantHost(ctx context.Context, tenantID, dataRoot string, tb *seal.Tena
 	// tenant DEK.
 	lessor := lease.NewLessor()
 	hub := watch.NewHub(watchHubOpts...)
-	createFn := newDataPlaneCreateFunc(tb, lessor, hub)
+	createFn := newDataPlaneCreateFunc(tb, lessor, hub, database.DefaultRaftStateStorage)
 
 	members := map[uint64]string{1: hostCfg.RaftAddress}
 	if err := host.StartShard(members, false, createFn, shardCfg); err != nil {
@@ -548,10 +548,14 @@ func pollShard(ctx context.Context, clock shardLeaderClock, what string, shardID
 // and watches are isolated from the system shard and from other tenants. It is
 // shared by the IsolationVolume per-tenant Host (tenant_host.go) and the
 // IsolationRaft dedicated shards on the shared host (raft_backend_factory.go).
-func newDataPlaneCreateFunc(tb *seal.TenantBarrier, lessor *lease.Lessor, hub *watch.Hub) sm.CreateFunc {
+func newDataPlaneCreateFunc(tb *seal.TenantBarrier, lessor *lease.Lessor, hub *watch.Hub, stateStorage database.BackendType) sm.CreateFunc {
 	enc := atrest.New(tb.Barrier())
+	var pebbleOpts []store.Option
+	if stateStorage == database.BackendMemory {
+		pebbleOpts = append(pebbleOpts, store.WithMemFS())
+	}
 	return store.NewMVCCCreateFuncWith(
-		[]store.Option{store.WithEncryptor(enc)},
+		append(pebbleOpts, store.WithEncryptor(enc)),
 		store.WithLessor(lessor),
 		// A registry of its own per state machine, so the many tenant and
 		// database groups on a node never share heads.

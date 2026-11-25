@@ -222,6 +222,10 @@ type raftDatabaseInfoSource interface {
 	// follower honors the same WAL routing the leader chose at create time.
 	dedicatedWAL(tenantID, db string) bool
 
+	// stateStorage returns the store the (tenant, db) database records for
+	// its group's state machine, or empty when it records none.
+	stateStorage(tenantID, db string) database.BackendType
+
 	// recordedIncarnation returns the incarnation the replicated catalog
 	// records for the (tenant, db) database, or ok=false when it records
 	// none. FenceServices reads it to refuse a shard the name resolves to
@@ -1072,6 +1076,9 @@ type shardStartPlan struct {
 	identities   map[uint64]string
 	dedicatedWAL bool
 	hadPlacement bool
+	// stateStorage is the store the database records for its group's
+	// state machine; empty runs it over the default.
+	stateStorage database.BackendType
 }
 
 // planStart resolves everything starting (tenantID, db)'s shard needs. The
@@ -1221,6 +1228,7 @@ func (f *RaftBackendFactory) planStart(ctx context.Context, tenantID, db string,
 		members:      local,
 		peers:        local,
 		dedicatedWAL: dedicatedWAL,
+		stateStorage: f.dbInfo.stateStorage(tenantID, db),
 	}
 	if pInfo != nil {
 		if localReplica, rOK := pInfo.ReplicaForNode(f.localRaftAddr); rOK {
@@ -1546,7 +1554,7 @@ func (f *RaftBackendFactory) startShardAsMember(plan *shardStartPlan) (*raftShar
 
 	lessor := lease.NewLessor()
 	hub := watch.NewHub(f.watchHubOpts...)
-	createFn := newDataPlaneCreateFunc(tb, lessor, hub)
+	createFn := newDataPlaneCreateFunc(tb, lessor, hub, plan.stateStorage)
 
 	// 4d Option C: when the database opted into a per-tenant-KEY WAL and the
 	// shared host carries a multiplex LogDB, open a dedicated single-barrier WAL
@@ -2008,6 +2016,21 @@ func (s *managerRaftInfoSource) dedicatedWAL(tenantID, db string) bool {
 	return dbase.Info().DedicatedWAL
 }
 
+func (s *managerRaftInfoSource) stateStorage(tenantID, db string) database.BackendType {
+	if s.manager == nil {
+		return ""
+	}
+	dbase, ok := s.manager.Local(db, tenantID)
+	if !ok {
+		return ""
+	}
+	info := dbase.Info()
+	if info.Raft != nil {
+		return info.Raft.StateStorage
+	}
+	return ""
+}
+
 func (s *managerRaftInfoSource) recordedIncarnation(ctx context.Context, tenantID, db string) (string, bool, error) {
 	if s.manager == nil {
 		return "", false, ErrRaftBackendUnavailable
@@ -2135,6 +2158,10 @@ func (s *placementRaftInfoSource) dedicatedWAL(tenantID, db string) bool {
 		return p.DedicatedWAL
 	}
 	return s.fallback.dedicatedWAL(tenantID, db)
+}
+
+func (s *placementRaftInfoSource) stateStorage(tenantID, db string) database.BackendType {
+	return s.fallback.stateStorage(tenantID, db)
 }
 
 // recordedIncarnation reads the catalog through the fallback: a placement

@@ -46,7 +46,7 @@ func TestNewDataPlaneCreateFunc_EveryStateMachineHasItsOwnLogs(t *testing.T) {
 	_, tb := registerVolumeTenant(t, newVolumePooledRegistry(t), "acme")
 	hub := watch.NewHub()
 	t.Cleanup(hub.Close)
-	storetest.RequireOwnLogsPerStateMachine(t, newDataPlaneCreateFunc(tb, lease.NewLessor(), hub))
+	storetest.RequireOwnLogsPerStateMachine(t, newDataPlaneCreateFunc(tb, lease.NewLessor(), hub), database.DefaultRaftStateStorage)
 }
 
 // TestNewDataPlaneCreateFunc_LogKeysSurviveSnapshotRestore pins that a barrier
@@ -62,7 +62,7 @@ func TestNewDataPlaneCreateFunc_LogKeysSurviveSnapshotRestore(t *testing.T) {
 	_, tb := registerVolumeTenant(t, newVolumePooledRegistry(t), "acme")
 	hub := watch.NewHub()
 	t.Cleanup(hub.Close)
-	createFn := newDataPlaneCreateFunc(tb, lease.NewLessor(), hub)
+	createFn := newDataPlaneCreateFunc(tb, lease.NewLessor(), hub, database.DefaultRaftStateStorage)
 
 	open := func(t *testing.T, shardID uint64, dir string) *store.MVCCStateMachine {
 		t.Helper()

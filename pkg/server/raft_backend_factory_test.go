@@ -88,6 +88,13 @@ type fakeRaftInfoSource struct {
 	incarnations   map[raftShardKey]string
 	dropped        map[raftShardKey]bool
 	incarnationErr error
+	// stateStorages, when set for a key, is the state storage the database
+	// records for its group.
+	stateStorages map[raftShardKey]database.BackendType
+}
+
+func (s *fakeRaftInfoSource) stateStorage(tenantID, db string) database.BackendType {
+	return s.stateStorages[raftShardKey{tenantID: tenantID, database: db}]
 }
 
 func newFakeRaftInfoSource() *fakeRaftInfoSource {
