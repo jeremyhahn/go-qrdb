@@ -10,13 +10,16 @@ package credentials
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"log/slog"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
@@ -26,16 +29,29 @@ import (
 //
 // A versioned credential at logical name "<name>" is laid out as:
 //
-//	credentials/<name>           — the current value (always the latest)
-//	credentials/<name>#meta      — JSON metadata (current version + grace history)
-//	credentials/<name>#v<N>      — historical value for version N (kept while
-//	                                in grace period; deleted by GC after expiry)
+//	credentials/<name>              — the current value (always the latest)
+//	credential-meta/<name>          — JSON metadata (current version + grace history)
+//	credential-versions/<e>/<N>     — historical value for version N (kept while
+//	                                   in grace period; deleted by GC after expiry)
+//	credential-staged/<e>/<N>       — a scheduled rotation's staged value for
+//	                                   version N, apart from the version records
+//
+// <e> is the name in unpadded URL-safe base64 and <N> the decimal version.
+// A name may be any non-empty string, so no record is told apart by a
+// character in its key: each kind has its own prefix, the value and metadata
+// keys end in the whole name, and the encoded name holds no '/', so the one
+// '/' after it separates it from the version. A key therefore names exactly
+// one (kind, name, version), and no name can produce another record's key.
 //
 // The plain "credentials/<name>" entry is the existing key the
 // non-versioned API has always used. Credentials originally written
 // before rotation existed look like "<name> at v1 with no recorded
-// metadata"; the first Rotate call promotes them by writing #meta.
+// metadata"; the first Rotate call promotes them by writing the metadata.
 
+// metaSuffix and versionPrefix are the suffixes the node-local legacy store
+// kept the metadata and version records under, after the name. Only the
+// migration reads that layout; it also names a migrated record's parts by
+// them.
 const (
 	metaSuffix    = "#meta"
 	versionPrefix = "#v"
@@ -84,6 +100,47 @@ type RotateOptions struct {
 	// Zero means "no grace": the old version is wiped immediately
 	// and only the new value is accessible.
 	GracePeriod time.Duration
+
+	// retainPrevious keeps the previously-current version with no grace
+	// deadline, for a scheduled rotation whose policy retains versions by
+	// count rather than by time.
+	retainPrevious bool
+
+	// importDigest, set by a migration import, is the digest of the legacy
+	// copy the new value comes from. It is recorded in the same metadata
+	// write that advances the version.
+	importDigest string
+
+	// schedule, set by a scheduled rotation, stages the new value before it
+	// becomes current and settles the claim in the same metadata write that
+	// advances the version.
+	schedule *scheduledRotation
+}
+
+// scheduledRotation carries a scheduled rotation's claim into the write that
+// completes it, and that write's result back out.
+type scheduledRotation struct {
+	claim *rotationClaim
+	now   time.Time
+	// resumed reports that the new value was read back from the staged
+	// version an earlier attempt left, which is therefore not staged again.
+	resumed bool
+	// staged is the version the value is staged for, as the metadata
+	// record names it. The rotation commits only while the record still
+	// does.
+	staged uint64
+	// next is the schedule's next due time once the write settles it.
+	next time.Time
+}
+
+// holds reports that meta still records this rotation: its claim, and
+// the operation the claim ran the value source for. Every landing write
+// clears RotationOp, so a replacement that lands while the claim is held
+// fences the claim's value out; a retried claim of the same rotation
+// keeps the operation and passes.
+func (r *scheduledRotation) holds(meta *credentialMeta) bool {
+	return meta.Claim != nil && meta.Claim.ID == r.claim.ID &&
+		meta.RotationOp != "" && meta.RotationOp == r.claim.Op
 }
 
 // RotateResult describes the rotation outcome.
@@ -106,7 +163,7 @@ type RotateResult struct {
 	GraceUntil time.Time
 }
 
-// credentialMeta is the on-disk JSON layout for the #meta sidecar.
+// credentialMeta is the on-disk JSON layout for the metadata record.
 type credentialMeta struct {
 	// CurrentVersion is the monotonic version of the value at
 	// credentials/<name>.
@@ -115,6 +172,37 @@ type credentialMeta struct {
 	// History records non-current versions that have been written.
 	// Entries are pruned when their grace period elapses.
 	History []credentialMetaEntry `json:"history,omitempty"`
+
+	// Policy is the credential's rotation policy, nil when none was set.
+	Policy *RotationPolicy `json:"rotation_policy,omitempty"`
+
+	// NextRotation is when an enabled Policy next falls due. Zero when
+	// no enabled policy is set.
+	NextRotation time.Time `json:"next_rotation,omitzero"`
+
+	// Claim is the lease of the scheduled rotation in progress, nil when
+	// none is. Only its holder invokes the rotation value source.
+	Claim *rotationClaim `json:"rotation_claim,omitempty"`
+
+	// RotationOp identifies the pending scheduled rotation's value-source
+	// operation, empty when none is pending. The first claim of the
+	// rotation writes it before the source runs, every later claim of the
+	// same rotation keeps it, and any version's landing write clears it,
+	// so a retry passes the source the operation it already performed.
+	RotationOp string `json:"rotation_op,omitempty"`
+
+	// PendingCleanup is the claim ID of a completed scheduled rotation
+	// whose retention cleanup (expired-version GC and the trim to
+	// RetainVersions) has not yet succeeded, empty when none is pending.
+	// Every later check retries the cleanup, without invoking the value
+	// source, until it succeeds.
+	PendingCleanup string `json:"pending_cleanup,omitempty"`
+
+	// Staged is the version a scheduled rotation's staged value is
+	// pending for, 0 when none is. Only the staged value the record names
+	// is resumed; every write of the current value clears it, so a value
+	// staged before a replacement is never replayed over it.
+	Staged uint64 `json:"staged,omitempty"`
 }
 
 type credentialMetaEntry struct {
@@ -134,6 +222,11 @@ type credentialMetaEntry struct {
 // enumerate (current strategies all can; reserved for future HSM-only
 // strategies).
 func (s *CredentialService) ListCredentials(ctx context.Context) ([]string, error) {
+	release, err := s.ensureMigrated(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	switch s.strategy {
 	case StrategyManual:
 		s.mu.RLock()
@@ -159,6 +252,17 @@ func (s *CredentialService) ListCredentials(ctx context.Context) ([]string, erro
 // If the credential does not exist yet RotateCredential behaves
 // identically to StoreCredential and returns NewVersion == 1.
 func (s *CredentialService) RotateCredential(ctx context.Context, name string, opts RotateOptions) (*RotateResult, error) {
+	release, err := s.ensureMigrated(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	return s.rotateCredential(ctx, name, opts)
+}
+
+// rotateCredential is RotateCredential for a caller that is already
+// admitted, such as RotateDue.
+func (s *CredentialService) rotateCredential(ctx context.Context, name string, opts RotateOptions) (*RotateResult, error) {
 	if err := validateName(name); err != nil {
 		return nil, err
 	}
@@ -201,12 +305,17 @@ func (s *CredentialService) RotateCredential(ctx context.Context, name string, o
 // period has elapsed (GC may or may not have reaped the storage yet —
 // either way the caller is denied).
 func (s *CredentialService) RetrieveCredentialVersionBuffer(ctx context.Context, name string, version uint64) (*secure.Buffer, error) {
+	release, err := s.ensureMigrated(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if err := validateName(name); err != nil {
 		return nil, err
 	}
 
 	if version == 0 {
-		return s.RetrieveCredentialBuffer(ctx, name)
+		return s.retrieveCredentialBuffer(ctx, name)
 	}
 
 	switch s.strategy {
@@ -225,6 +334,11 @@ func (s *CredentialService) RetrieveCredentialVersionBuffer(ctx context.Context,
 //
 // Returns ErrCredentialNotFound when name does not exist.
 func (s *CredentialService) ListCredentialVersions(ctx context.Context, name string) ([]CredentialVersion, error) {
+	release, err := s.ensureMigrated(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if err := validateName(name); err != nil {
 		return nil, err
 	}
@@ -247,6 +361,17 @@ func (s *CredentialService) ListCredentialVersions(ctx context.Context, name str
 // and invoke this per name on whatever cadence matches their grace
 // granularity (typically once per minute).
 func (s *CredentialService) GCExpiredVersions(ctx context.Context, name string) (int, error) {
+	release, err := s.ensureMigrated(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer release()
+	return s.gcExpiredVersions(ctx, name)
+}
+
+// gcExpiredVersions is GCExpiredVersions for a caller that is already
+// admitted, such as RotateDue's cleanup.
+func (s *CredentialService) gcExpiredVersions(ctx context.Context, name string) (int, error) {
 	if err := validateName(name); err != nil {
 		return 0, err
 	}
@@ -471,86 +596,283 @@ func (s *CredentialService) gcManual(name string) int {
 // =============================================================================
 
 func (s *CredentialService) listBarrier(ctx context.Context) ([]string, error) {
-	keys, err := s.barrier.List(ctx, credentialPrefix)
+	keys, err := s.store.List(ctx, credentialPrefix)
 	if err != nil {
 		return nil, &OperationError{Op: "list barrier", Cause: err}
 	}
 	names := make([]string, 0, len(keys))
 	for _, k := range keys {
-		name := strings.TrimPrefix(k, credentialPrefix)
-		// Skip metadata + historical-version sidecars; only
-		// surface logical names.
-		if strings.Contains(name, "#") {
-			continue
-		}
-		names = append(names, name)
+		// Only values live under the prefix, so every key is a name.
+		names = append(names, strings.TrimPrefix(k, credentialPrefix))
 	}
 	sortStrings(names)
 	return names, nil
 }
 
+// rotateBarrier lands a rotation in one guarded batch: the retained copy of
+// the previous version, the new current value and the metadata record are
+// written together, and only while the metadata record and the current
+// value are still exactly what the rotation read. A refused batch means
+// another writer got there first; the rotation reads again and re-applies.
+// A manual rotation then numbers its versions from the fresh record. A
+// scheduled one goes on only while the record still carries its claim and
+// still names its staged version, and otherwise returns
+// ErrRotationClaimLost having written nothing.
 func (s *CredentialService) rotateBarrier(ctx context.Context, name string, opts RotateOptions) (*RotateResult, error) {
-	meta, err := s.loadBarrierMeta(ctx, name)
-	if err != nil {
-		return nil, err
-	}
-
-	prevValue, prevExists, err := s.loadBarrierCurrent(ctx, name)
-	if err != nil {
-		return nil, err
-	}
-	prevVersion := meta.CurrentVersion
-	if prevExists && prevVersion == 0 {
-		// Legacy promotion: existing untracked value is v1.
-		prevVersion = 1
-		meta.CurrentVersion = 1
-	}
-	newVersion := prevVersion + 1
-	if !prevExists && prevVersion == 0 {
-		newVersion = 1
-	}
-
-	now := time.Now().UTC()
-	var graceUntil time.Time
-	if prevExists && opts.GracePeriod > 0 {
-		graceUntil = now.Add(opts.GracePeriod)
-		if err := s.barrier.Put(ctx, versionKey(name, prevVersion), prevValue); err != nil {
-			return nil, &OperationError{Op: "write grace version", Cause: err}
+	sched := opts.schedule
+	if sched != nil && !sched.resumed {
+		if err := s.stageScheduled(ctx, name, sched, opts.NewValue); err != nil {
+			return nil, err
 		}
-		meta.History = append(meta.History, credentialMetaEntry{
-			Version:    prevVersion,
-			CreatedAt:  now,
-			GraceUntil: graceUntil,
-		})
 	}
+	for range rotationMetaRetries {
+		meta, rawMeta, err := s.readBarrierMeta(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		prevValue, prevExists, err := s.loadBarrierCurrent(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		prevVersion, newVersion := rotationVersions(meta.CurrentVersion, prevExists)
+		// A scheduled commit is fenced on its claim and its staged
+		// version: when the claim is gone (the credential was deleted) or
+		// replaced, or a rotation or a stored value since took the staged
+		// version's place, nothing is written, so a deleted credential's
+		// records are never recreated. Any landing write since also ended
+		// the claim's operation, which the fence checks too.
+		if sched != nil && (!prevExists || !sched.holds(meta) ||
+			meta.Staged != sched.staged || newVersion != sched.staged) {
+			secure.Wipe(prevValue)
+			s.abandonScheduled(ctx, name, sched.staged)
+			return nil, &OperationError{Op: "commit rotation", Cause: ErrRotationClaimLost}
+		}
 
-	if err := s.barrier.Put(ctx, credentialPrefix+name, opts.NewValue); err != nil {
-		return nil, &OperationError{Op: "write current", Cause: err}
-	}
-	meta.CurrentVersion = newVersion
-	if err := s.writeBarrierMeta(ctx, name, meta); err != nil {
-		return nil, err
-	}
-
-	// Wipe in-memory copy of the previous value once it is on disk
-	// (or once we've decided not to keep it).
-	if prevExists {
+		now := time.Now().UTC()
+		var graceUntil time.Time
+		if opts.GracePeriod > 0 {
+			graceUntil = now.Add(opts.GracePeriod)
+		}
+		guards := []kvstore.Guard{{Key: metaKey(name), Value: rawMeta}, {Key: credentialPrefix + name}}
+		if prevExists {
+			guards[1].Value = prevValue
+		}
+		var writes []kvstore.KV
+		if prevExists && (opts.GracePeriod > 0 || opts.retainPrevious) {
+			writes = append(writes, kvstore.KV{Key: versionKey(name, prevVersion), Value: prevValue})
+			meta.History = append(meta.History, credentialMetaEntry{
+				Version:    prevVersion,
+				CreatedAt:  now,
+				GraceUntil: graceUntil,
+			})
+		}
+		// The version fields are applied to the record as it stands at
+		// the read the batch is guarded on, so a policy change or claim
+		// made before it survives. A scheduled rotation settles its claim
+		// and schedule in the same write.
+		meta.CurrentVersion = newVersion
+		meta.Staged = 0
+		// Any landed version ends the pending scheduled rotation's
+		// operation: the next one must not recover a value issued for a
+		// rotation this version superseded.
+		meta.RotationOp = ""
+		if sched != nil {
+			sched.settle(meta)
+		}
+		nextMeta, err := json.Marshal(meta)
+		if err != nil {
+			secure.Wipe(prevValue)
+			return nil, &OperationError{Op: "encode meta", Cause: err}
+		}
+		// newVersion becomes current, so a value staged for it is spent,
+		// whichever rotation staged it. It is deleted in the guarded batch:
+		// a delete after the commit could remove a value a recreated
+		// credential has since staged under the same version.
+		writes = append(writes,
+			kvstore.KV{Key: credentialPrefix + name, Value: opts.NewValue},
+			kvstore.KV{Key: metaKey(name), Value: nextMeta},
+			kvstore.KV{Key: stagedKey(name, newVersion), Delete: true})
+		// An import writes its copy's record in the same batch, guarded
+		// absent: a service derived for another request shares no lock
+		// with this one, so only this guard refuses a second commit of a
+		// copy another import committed since the caller's own check.
+		if opts.importDigest != "" {
+			k := importKey(name, opts.importDigest)
+			guards = append(guards, kvstore.Guard{Key: k})
+			writes = append(writes, kvstore.KV{Key: k, Value: []byte(strconv.FormatUint(newVersion, 10))})
+		}
+		applied, err := s.store.PutAllIfAllUnchanged(ctx, guards, writes)
+		// The in-memory copy of the previous value is wiped once it is on
+		// disk, or once this attempt is over.
 		secure.Wipe(prevValue)
+		if err != nil {
+			return nil, &OperationError{Op: "commit rotation", Cause: err}
+		}
+		if !applied {
+			if opts.importDigest != "" {
+				done, err := s.getOptional(ctx, importKey(name, opts.importDigest))
+				if err != nil {
+					return nil, &OperationError{Op: "read migration import", Cause: err}
+				}
+				if done != nil {
+					return nil, errAlreadyImported
+				}
+			}
+			continue
+		}
+		s.logger.Debug("credential rotated",
+			slog.String("name", name),
+			slog.String("strategy", StrategyBarrier),
+			slog.Uint64("previous_version", prevVersion),
+			slog.Uint64("new_version", newVersion),
+			slog.Duration("grace_period", opts.GracePeriod))
+
+		return &RotateResult{
+			Name:            name,
+			PreviousVersion: prevVersion,
+			NewVersion:      newVersion,
+			GraceUntil:      graceUntil,
+		}, nil
 	}
+	return nil, &OperationError{Op: "commit rotation", Cause: ErrRotationMetaContended}
+}
 
-	s.logger.Debug("credential rotated",
+// stageScheduled persists a scheduled rotation's new value before it
+// becomes current: the staged value and the metadata record naming its
+// version are written in one batch, guarded on the metadata as read. The
+// staged value is the evidence a later attempt resumes from instead of
+// invoking the value source again, and only the version the metadata names
+// is ever resumed. It is keyed apart from the version records, so the
+// delete that spends it cannot remove a version a rotation retained. A
+// claim that is gone or replaced stages nothing.
+func (s *CredentialService) stageScheduled(ctx context.Context, name string, sched *scheduledRotation, value []byte) error {
+	for range rotationMetaRetries {
+		meta, rawMeta, err := s.readBarrierMeta(ctx, name)
+		if err != nil {
+			return err
+		}
+		// The claim alone does not fence a replacement: a stored value or
+		// manual rotation that landed while the source ran keeps the claim
+		// but ends the operation the source ran for, so its value is stale.
+		if !sched.holds(meta) {
+			return &OperationError{Op: "stage rotation", Cause: ErrRotationClaimLost}
+		}
+		current, exists, err := s.loadBarrierCurrent(ctx, name)
+		if err != nil {
+			return err
+		}
+		secure.Wipe(current)
+		_, next := rotationVersions(meta.CurrentVersion, exists)
+		meta.Staged = next
+		nextMeta, err := json.Marshal(meta)
+		if err != nil {
+			return &OperationError{Op: "encode meta", Cause: err}
+		}
+		applied, err := s.store.PutAllIfAllUnchanged(ctx,
+			[]kvstore.Guard{{Key: metaKey(name), Value: rawMeta}},
+			[]kvstore.KV{{Key: stagedKey(name, next), Value: value}, {Key: metaKey(name), Value: nextMeta}})
+		if err != nil {
+			return &OperationError{Op: "stage rotation", Cause: err}
+		}
+		if applied {
+			sched.staged = next
+			return nil
+		}
+	}
+	return &OperationError{Op: "stage rotation", Cause: ErrRotationMetaContended}
+}
+
+// storeBarrier writes the credential's current value in one batch guarded
+// on the metadata record as read. A record naming a pending scheduled
+// rotation, by its operation ID or by a staged value, is written in the same
+// batch with both cleared, and the staged value is deleted by it: the stored
+// value supersedes that rotation, so the next scheduled rotation starts a
+// new operation, invokes its value source again and retains the stored
+// value, and an idempotent source cannot replay the superseded operation's
+// value over it. The current version is not advanced.
+func (s *CredentialService) storeBarrier(ctx context.Context, name string, value []byte) error {
+	for range rotationMetaRetries {
+		meta, rawMeta, err := s.readBarrierMeta(ctx, name)
+		if err != nil {
+			return err
+		}
+		writes := []kvstore.KV{{Key: credentialPrefix + name, Value: value}}
+		if staged := meta.Staged; staged != 0 || meta.RotationOp != "" {
+			meta.Staged = 0
+			meta.RotationOp = ""
+			nextMeta, err := json.Marshal(meta)
+			if err != nil {
+				return &OperationError{Op: "encode meta", Cause: err}
+			}
+			writes = append(writes, kvstore.KV{Key: metaKey(name), Value: nextMeta})
+			if staged != 0 {
+				writes = append(writes, kvstore.KV{Key: stagedKey(name, staged), Delete: true})
+			}
+		}
+		applied, err := s.store.PutAllIfAllUnchanged(ctx, []kvstore.Guard{{Key: metaKey(name), Value: rawMeta}}, writes)
+		if err != nil {
+			return err
+		}
+		if applied {
+			return nil
+		}
+	}
+	return &OperationError{Op: "store credential", Cause: ErrRotationMetaContended}
+}
+
+// abandonScheduled removes the value staged for version by a scheduled
+// rotation that will not commit it, unless the metadata record still names
+// it. A staged value the record does not name is never resumed; one left by
+// a failed delete is reaped by the scheduled cleanup or the credential's
+// delete.
+func (s *CredentialService) abandonScheduled(ctx context.Context, name string, version uint64) {
+	// The delete is guarded on the metadata read that found the version
+	// unnamed: a credential deleted and recreated since may have staged
+	// the same version, and its staged value must survive.
+	for range rotationMetaRetries {
+		meta, rawMeta, err := s.readBarrierMeta(ctx, name)
+		if err != nil {
+			s.logger.Warn("abandoned staged rotation value left behind",
+				slog.String("name", name),
+				slog.Uint64("version", version),
+				slog.String("error", err.Error()))
+			return
+		}
+		if meta.Staged == version {
+			return
+		}
+		applied, err := s.store.PutAllIfAllUnchanged(ctx,
+			[]kvstore.Guard{{Key: metaKey(name), Value: rawMeta}},
+			[]kvstore.KV{{Key: stagedKey(name, version), Delete: true}})
+		if err != nil {
+			s.logger.Warn("abandoned staged rotation value left behind",
+				slog.String("name", name),
+				slog.Uint64("version", version),
+				slog.String("error", err.Error()))
+			return
+		}
+		if applied {
+			return
+		}
+	}
+	s.logger.Warn("abandoned staged rotation value left behind",
 		slog.String("name", name),
-		slog.String("strategy", StrategyBarrier),
-		slog.Uint64("previous_version", prevVersion),
-		slog.Uint64("new_version", newVersion),
-		slog.Duration("grace_period", opts.GracePeriod))
+		slog.Uint64("version", version),
+		slog.String("error", ErrRotationMetaContended.Error()))
+}
 
-	return &RotateResult{
-		Name:            name,
-		PreviousVersion: prevVersion,
-		NewVersion:      newVersion,
-		GraceUntil:      graceUntil,
-	}, nil
+// rotationVersions returns the version a rotation retires and the one it
+// writes, given the record's current version and whether a current value
+// exists. An existing untracked value is v1.
+func rotationVersions(current uint64, exists bool) (prev, next uint64) {
+	prev = current
+	if exists && prev == 0 {
+		prev = 1
+	}
+	if !exists && prev == 0 {
+		return 0, 1
+	}
+	return prev, prev + 1
 }
 
 func (s *CredentialService) retrieveBarrierVersion(ctx context.Context, name string, version uint64) (*secure.Buffer, error) {
@@ -564,17 +886,17 @@ func (s *CredentialService) retrieveBarrierVersion(ctx context.Context, name str
 		if version != 1 {
 			return nil, ErrVersionNotFound
 		}
-		value, err := s.barrier.Get(ctx, credentialPrefix+name)
+		value, err := s.store.Get(ctx, credentialPrefix+name)
 		if err != nil {
-			return nil, ErrCredentialNotFound
+			return nil, readFailure("retrieve version", err, ErrCredentialNotFound)
 		}
 		return bufferFromHeap(value)
 	}
 
 	if version == meta.CurrentVersion {
-		value, err := s.barrier.Get(ctx, credentialPrefix+name)
+		value, err := s.store.Get(ctx, credentialPrefix+name)
 		if err != nil {
-			return nil, ErrCredentialNotFound
+			return nil, readFailure("retrieve version", err, ErrCredentialNotFound)
 		}
 		return bufferFromHeap(value)
 	}
@@ -586,9 +908,9 @@ func (s *CredentialService) retrieveBarrierVersion(ctx context.Context, name str
 		if !h.GraceUntil.IsZero() && now.After(h.GraceUntil) {
 			return nil, ErrVersionExpired
 		}
-		value, err := s.barrier.Get(ctx, versionKey(name, version))
+		value, err := s.store.Get(ctx, versionKey(name, version))
 		if err != nil {
-			return nil, ErrVersionExpired
+			return nil, readFailure("retrieve version", err, ErrVersionExpired)
 		}
 		return bufferFromHeap(value)
 	}
@@ -596,7 +918,7 @@ func (s *CredentialService) retrieveBarrierVersion(ctx context.Context, name str
 }
 
 func (s *CredentialService) listVersionsBarrier(ctx context.Context, name string) ([]CredentialVersion, error) {
-	_, exists, err := s.loadBarrierCurrent(ctx, name)
+	exists, err := s.barrierExists(ctx, name)
 	if err != nil {
 		return nil, err
 	}
@@ -635,121 +957,254 @@ func (s *CredentialService) listVersionsBarrier(ctx context.Context, name string
 	return out, nil
 }
 
-// deleteBarrierVersionKeys deletes every historical version key named in
-// entries from the barrier store. It returns the number of keys removed
-// before any error, so a caller can report partial progress. Shared by
-// gcBarrier (which reaps only expired entries) and deleteBarrierAll (which
-// tears down the full history on an explicit delete).
-func (s *CredentialService) deleteBarrierVersionKeys(ctx context.Context, name string, entries []credentialMetaEntry) (int, error) {
-	removed := 0
-	for _, h := range entries {
-		if err := s.barrier.Delete(ctx, versionKey(name, h.Version)); err != nil {
-			return removed, &OperationError{Op: fmt.Sprintf("delete v%d", h.Version), Cause: err}
+func (s *CredentialService) gcBarrier(ctx context.Context, name string) (int, error) {
+	now := time.Now().UTC()
+	return s.reapBarrierVersions(ctx, name, func(meta *credentialMeta) ([]credentialMetaEntry, bool) {
+		expired := make([]credentialMetaEntry, 0, len(meta.History))
+		for _, h := range meta.History {
+			if !h.GraceUntil.IsZero() && now.After(h.GraceUntil) {
+				expired = append(expired, h)
+			}
 		}
-		removed++
-	}
-	return removed, nil
+		return expired, true
+	})
 }
 
-func (s *CredentialService) gcBarrier(ctx context.Context, name string) (int, error) {
-	meta, err := s.loadBarrierMeta(ctx, name)
-	if err != nil {
-		return 0, err
-	}
-	now := time.Now().UTC()
-	expired := make([]credentialMetaEntry, 0, len(meta.History))
-	kept := make([]credentialMetaEntry, 0, len(meta.History))
-	for _, h := range meta.History {
-		if !h.GraceUntil.IsZero() && now.After(h.GraceUntil) {
-			expired = append(expired, h)
-			continue
+// reapBarrierVersions deletes the versions pick selects from the metadata
+// record and removes them from its history, in one batch guarded on the
+// record pick read: a rotation, policy change, or delete and recreate
+// between the read and the write refuses the batch, nothing is deleted, and
+// the record is read and picked from again. pick returning false writes
+// nothing. Otherwise the record is written even when nothing is reaped, so a
+// sealed barrier fails the call closed.
+func (s *CredentialService) reapBarrierVersions(ctx context.Context, name string, pick func(*credentialMeta) ([]credentialMetaEntry, bool)) (int, error) {
+	for range rotationMetaRetries {
+		meta, rawMeta, err := s.readBarrierMeta(ctx, name)
+		if err != nil {
+			return 0, err
 		}
-		kept = append(kept, h)
+		versions, ok := pick(meta)
+		if !ok {
+			return 0, nil
+		}
+		gone := make(map[uint64]struct{}, len(versions))
+		writes := make([]kvstore.KV, 0, len(versions)+1)
+		for _, h := range versions {
+			gone[h.Version] = struct{}{}
+			writes = append(writes, kvstore.KV{Key: versionKey(name, h.Version), Delete: true})
+		}
+		kept := make([]credentialMetaEntry, 0, len(meta.History))
+		for _, h := range meta.History {
+			if _, ok := gone[h.Version]; !ok {
+				kept = append(kept, h)
+			}
+		}
+		meta.History = kept
+		nextMeta, err := json.Marshal(meta)
+		if err != nil {
+			return 0, &OperationError{Op: "encode meta", Cause: err}
+		}
+		writes = append(writes, kvstore.KV{Key: metaKey(name), Value: nextMeta})
+		applied, err := s.store.PutAllIfAllUnchanged(ctx, []kvstore.Guard{{Key: metaKey(name), Value: rawMeta}}, writes)
+		if err != nil {
+			return 0, &OperationError{Op: "write meta", Cause: err}
+		}
+		if applied {
+			return len(versions), nil
+		}
 	}
-	reaped, err := s.deleteBarrierVersionKeys(ctx, name, expired)
-	if err != nil {
-		return reaped, err
-	}
-	meta.History = kept
-	if err := s.writeBarrierMeta(ctx, name, meta); err != nil {
-		return reaped, err
-	}
-	return reaped, nil
+	return 0, &OperationError{Op: "write meta", Cause: ErrRotationMetaContended}
 }
 
 // deleteBarrierAll removes a barrier-strategy credential's current value,
 // its metadata sidecar, and every historical version (grace-period or not)
 // so that a deleted credential's previous values are no longer retrievable
-// through RetrieveCredentialVersion. Versions are torn down before the
-// metadata that indexes them, and the current value last, so a failure
-// partway through never leaves a version reachable through the service
-// API: a dangling meta entry without its version key reads as expired, and
-// a dangling version key without a meta entry reads as not-found.
+// through RetrieveCredentialVersion. History, staged values, metadata (which
+// holds the rotation policy) and the current value go in one commit guarded
+// on the metadata and the value as read, so a failure deletes nothing and a
+// SetRotationPolicy or rotation landing between the read and the commit
+// fails the guard: the delete then selects again.
 func (s *CredentialService) deleteBarrierAll(ctx context.Context, name string) error {
-	meta, err := s.loadBarrierMeta(ctx, name)
-	if err != nil {
-		return err
+	metaK, valueK := metaKey(name), credentialPrefix+name
+	stagedPrefix := StagedKeyPrefix + encodedName(name) + "/"
+	for range rotationMetaRetries {
+		// The selection is read from the metadata and the batch is
+		// guarded on it: a rotation that retains a version, or stages
+		// one, rewrites the metadata in the same batch, so one landing
+		// between the selection and the delete fails the guard and the
+		// whole selection is taken again. Deleting history before the
+		// head in separate steps let such a rotation orphan its retained
+		// value with no metadata naming it.
+		meta, rawMeta, err := s.readBarrierMeta(ctx, name)
+		if err != nil {
+			return err
+		}
+		rawValue, err := s.getOptional(ctx, valueK)
+		if err != nil {
+			return &OperationError{Op: "read current", Cause: err}
+		}
+		staged, err := s.store.List(ctx, stagedPrefix)
+		if err != nil {
+			secure.Wipe(rawValue)
+			return &OperationError{Op: "list staged rotations", Cause: err}
+		}
+		writes := make([]kvstore.KV, 0, len(meta.History)+len(staged)+2)
+		for _, h := range meta.History {
+			writes = append(writes, kvstore.KV{Key: versionKey(name, h.Version), Delete: true})
+		}
+		// Every value a scheduled rotation staged under the name goes
+		// too, an unfinished rotation's and a spent one a failed cleanup
+		// left alike, so a credential later stored under the name never
+		// lands one.
+		for _, k := range staged {
+			version, err := strconv.ParseUint(strings.TrimPrefix(k, stagedPrefix), 10, 64)
+			if err != nil || k != stagedKey(name, version) {
+				continue
+			}
+			writes = append(writes, kvstore.KV{Key: k, Delete: true})
+		}
+		// A legacy migration interrupted before its install still holds a
+		// pending claim on the name; the delete settles it in the same
+		// batch, so the install, retried after the delete, restores none
+		// of the deleted value, history or policy.
+		rawClaim, fence, err := s.deletionFence(ctx, name)
+		if err != nil {
+			secure.Wipe(rawValue)
+			return err
+		}
+		// A name absent here still gets the deletion tombstone: another
+		// node may hold a pre-upgrade copy its later migration would
+		// install, undoing the delete. Only a name whose claim is
+		// already settled (no fence to write) with nothing else left is
+		// a no-op, so a repeated delete writes nothing.
+		if rawMeta == nil && rawValue == nil && len(writes) == 0 && fence == nil {
+			return nil
+		}
+		writes = append(writes, kvstore.KV{Key: metaK, Delete: true}, kvstore.KV{Key: valueK, Delete: true})
+		// The claim is guarded whether or not it is rewritten (a nil
+		// value holds only while it is absent): a claim written since the
+		// read fails the batch and the selection is taken again, so it is
+		// fenced too. A name with no claim gets a deletion tombstone,
+		// which settles a pre-upgrade copy another node migrates later.
+		guards := []kvstore.Guard{{Key: metaK, Value: rawMeta}, {Key: valueK, Value: rawValue},
+			{Key: MigrationClaimPrefix + name, Value: rawClaim}}
+		if fence != nil {
+			writes = append(writes, kvstore.KV{Key: MigrationClaimPrefix + name, Value: fence})
+		}
+		applied, err := s.store.PutAllIfAllUnchanged(ctx, guards, writes)
+		secure.Wipe(rawValue)
+		if err != nil {
+			return &OperationError{Op: "delete current", Cause: err}
+		}
+		if applied {
+			return nil
+		}
 	}
-	if _, err := s.deleteBarrierVersionKeys(ctx, name, meta.History); err != nil {
-		return err
+	return &OperationError{Op: "delete current", Cause: ErrRotationMetaContended}
+}
+
+// getOptional reads key, returning nil with a nil error when it is absent.
+// A present empty value is returned as a non-nil empty slice, so a guard
+// built from it still requires the key to be present.
+func (s *CredentialService) getOptional(ctx context.Context, key string) ([]byte, error) {
+	raw, err := s.store.Get(ctx, key)
+	switch {
+	case err == nil:
+		if raw == nil {
+			raw = []byte{}
+		}
+		return raw, nil
+	case errors.Is(err, seal.ErrSecretNotFound):
+		return nil, nil
+	default:
+		return nil, err
 	}
-	if err := s.barrier.Delete(ctx, metaKey(name)); err != nil {
-		return &OperationError{Op: "delete meta", Cause: err}
-	}
-	if err := s.barrier.Delete(ctx, credentialPrefix+name); err != nil {
-		return &OperationError{Op: "delete current", Cause: err}
-	}
-	return nil
 }
 
 // =============================================================================
 // Barrier metadata helpers
 // =============================================================================
 
+// encodedName is name as the version and staged keys carry it: unpadded
+// URL-safe base64, which holds no '/'.
+func encodedName(name string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(name))
+}
+
 func versionKey(name string, version uint64) string {
-	return credentialPrefix + name + versionPrefix + strconv.FormatUint(version, 10)
+	return VersionKeyPrefix + encodedName(name) + "/" + strconv.FormatUint(version, 10)
+}
+
+// stagedKey keys a scheduled rotation's staged value apart from the version
+// records, so removing a spent staged value can never remove a retained
+// version that a concurrent rotation wrote under the same number.
+func stagedKey(name string, version uint64) string {
+	return StagedKeyPrefix + encodedName(name) + "/" + strconv.FormatUint(version, 10)
 }
 
 func metaKey(name string) string {
-	return credentialPrefix + name + metaSuffix
+	return MetaKeyPrefix + name
 }
 
 func (s *CredentialService) loadBarrierMeta(ctx context.Context, name string) (*credentialMeta, error) {
-	raw, err := s.barrier.Get(ctx, metaKey(name))
-	if err != nil {
+	meta, _, err := s.readBarrierMeta(ctx, name)
+	return meta, err
+}
+
+// readBarrierMeta returns the metadata record with the bytes it was decoded
+// from, the guard of a batch that writes it. The bytes are nil when the
+// record is absent.
+func (s *CredentialService) readBarrierMeta(ctx context.Context, name string) (*credentialMeta, []byte, error) {
+	raw, err := s.store.Get(ctx, metaKey(name))
+	if errors.Is(err, seal.ErrSecretNotFound) {
 		// Missing metadata is normal for legacy (untracked) entries
 		// and for credentials that have never been rotated. Return
 		// a zero-valued meta the caller can populate.
-		return &credentialMeta{}, nil
+		return &credentialMeta{}, nil, nil
+	}
+	if err != nil {
+		// Any other failure is not absence: a caller deciding on an
+		// empty record would number a version, or invoke the rotation
+		// value source, over metadata it never read.
+		return nil, nil, &OperationError{Op: "read meta", Cause: err}
 	}
 	var meta credentialMeta
 	if err := json.Unmarshal(raw, &meta); err != nil {
-		return nil, &OperationError{Op: "decode meta", Cause: err}
+		return nil, nil, &OperationError{Op: "decode meta", Cause: err}
 	}
-	return &meta, nil
-}
-
-func (s *CredentialService) writeBarrierMeta(ctx context.Context, name string, meta *credentialMeta) error {
-	raw, err := json.Marshal(meta)
-	if err != nil {
-		return &OperationError{Op: "encode meta", Cause: err}
-	}
-	if err := s.barrier.Put(ctx, metaKey(name), raw); err != nil {
-		return &OperationError{Op: "write meta", Cause: err}
-	}
-	return nil
+	return &meta, raw, nil
 }
 
 func (s *CredentialService) loadBarrierCurrent(ctx context.Context, name string) ([]byte, bool, error) {
-	value, err := s.barrier.Get(ctx, credentialPrefix+name)
-	if err != nil {
-		// We can't distinguish "missing" from "I/O failure" at this
-		// layer because StorageBarrier collapses everything to a
-		// single error. Treat any error as "not found"; downstream
-		// puts will fail if the I/O is genuinely broken.
+	value, err := s.store.Get(ctx, credentialPrefix+name)
+	if errors.Is(err, seal.ErrSecretNotFound) {
 		return nil, false, nil
 	}
+	if err != nil {
+		// Any other failure is not absence: a caller deciding on absence
+		// would number a version, or invoke the rotation value source,
+		// over a value it never read.
+		return nil, false, &OperationError{Op: "read current", Cause: err}
+	}
 	return value, true, nil
+}
+
+// readFailure maps the error of a store read to what the caller is told:
+// absent when the store answered that the key does not exist, and an
+// OperationError for every other failure, which says nothing about the key.
+func readFailure(op string, err, absent error) error {
+	if errors.Is(err, seal.ErrSecretNotFound) {
+		return absent
+	}
+	return &OperationError{Op: op, Cause: err}
+}
+
+// barrierExists reports whether the credential has a current value. The
+// value is read to learn that and wiped before returning.
+func (s *CredentialService) barrierExists(ctx context.Context, name string) (bool, error) {
+	value, exists, err := s.loadBarrierCurrent(ctx, name)
+	secure.Wipe(value)
+	return exists, err
 }
 
 // =============================================================================
@@ -767,4 +1222,25 @@ func sortStrings(in []string) {
 			j--
 		}
 	}
+}
+
+// deleteBarrierStaged removes the staged rotation values of exactly the
+// named credential that were staged for a version up to upTo.
+func (s *CredentialService) deleteBarrierStaged(ctx context.Context, name string, upTo uint64) error {
+	prefix := StagedKeyPrefix + encodedName(name) + "/"
+	keys, err := s.store.List(ctx, prefix)
+	if err != nil {
+		return &OperationError{Op: "list staged rotations", Cause: err}
+	}
+	for _, k := range keys {
+		// A staged key ends in its version.
+		version, err := strconv.ParseUint(strings.TrimPrefix(k, prefix), 10, 64)
+		if err != nil || k != stagedKey(name, version) || version > upTo {
+			continue
+		}
+		if err := s.store.Delete(ctx, k); err != nil {
+			return &OperationError{Op: "delete staged rotation", Cause: err}
+		}
+	}
+	return nil
 }
