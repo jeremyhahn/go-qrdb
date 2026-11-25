@@ -2252,8 +2252,9 @@ docker-build-it:
 # docker-down-it removes a run's compose project but keeps its image.
 .PHONY: docker-down-it
 docker-down-it:
-	@QRDB_IT_IMAGE='$(IT_IMAGE)' docker compose -f $(DEVCONTAINER_COMPOSE) -p '$(IT_PROJECT)' \
-		down --volumes --remove-orphans >/dev/null 2>&1 || true
+	@out=$$(QRDB_IT_IMAGE='$(IT_IMAGE)' docker compose -f $(DEVCONTAINER_COMPOSE) -p '$(IT_PROJECT)' \
+		down --volumes --remove-orphans 2>&1) \
+		|| { echo "docker-down-it: compose down of $(IT_PROJECT) failed:"; echo "$$out"; } || true
 
 toolchain-image:
 	@echo $(TOOLCHAIN_IMAGE)
