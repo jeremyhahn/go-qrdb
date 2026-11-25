@@ -534,6 +534,66 @@ func TestVFS_FullIsSQLiteFull(t *testing.T) {
 	mustExec(t, db, "insert into t values(3)")
 }
 
+// busyOnceBackend refuses the next commit with ErrBusy once armed.
+type busyOnceBackend struct {
+	*sqlitevfs.MVCCBackend
+	busy atomic.Bool
+}
+
+func (b *busyOnceBackend) Commit(ctx context.Context, reads []sqlitevfs.ReadCheck, puts map[string][]byte, deletes [][]byte) (int64, error) {
+	if b.busy.CompareAndSwap(true, false) {
+		return 0, sqlitevfs.ErrBusy
+	}
+	return b.MVCCBackend.Commit(ctx, reads, puts, deletes)
+}
+
+func TestVFS_RetriedBusyCommitKeepsWrites(t *testing.T) {
+	b := &busyOnceBackend{MVCCBackend: newBackend(t)}
+	const name = "busyretry.db"
+	setup(t, name, plainOpener(b, name))
+	db := openDB(t, name, "")
+	mustExec(t, db, "create table t(a)")
+	mustExec(t, db, "insert into t values(1)")
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("conn: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.ExecContext(ctx, "begin"); err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx, "insert into t values(2)"); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	b.busy.Store(true)
+	_, err = conn.ExecContext(ctx, "commit")
+	if c := code(err); c != sqlite3.SQLITE_BUSY {
+		t.Fatalf("first commit err = %v (code %d), want SQLITE_BUSY", err, c)
+	}
+	_, err = conn.ExecContext(ctx, "commit")
+	rows := func() int {
+		var n int
+		if err := conn.QueryRowContext(ctx, "select count(*) from t").Scan(&n); err != nil {
+			t.Fatalf("count: %v", err)
+		}
+		return n
+	}
+	switch c := code(err); {
+	case err == nil:
+		if n := rows(); n != 2 {
+			t.Fatalf("retried commit succeeded with %d rows, want 2", n)
+		}
+	case c == sqlite3.SQLITE_BUSY:
+		_, _ = conn.ExecContext(ctx, "rollback")
+		if n := rows(); n != 1 {
+			t.Fatalf("rows after a busy retry and rollback = %d, want 1", n)
+		}
+	default:
+		t.Fatalf("retried commit err = %v (code %d), want nil or SQLITE_BUSY", err, c)
+	}
+}
+
 func TestVFS_VacuumAboveStageThreshold(t *testing.T) {
 	b := newBackend(t)
 	const name = "vacuum.db"

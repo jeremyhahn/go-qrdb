@@ -63,14 +63,16 @@ const headerEnd = 100
 // back. The file refuses PRAGMA synchronous=OFF, so every write
 // transaction reaches a sync before it reports success. After a
 // failed commit the file ignores writes until the unlock, so SQLite's
-// journal playback is a no-op.
+// journal playback is a no-op, and every later sync returns the failure
+// code, so a retried commit never reports writes it dropped.
 type dbFile struct {
 	store    *sqlitevfs.Store
 	level    int32
 	txn      *sqlitevfs.Txn
 	reserved bool
 	dirty    bool
-	failed   bool
+	// failed is the result code of the failed commit, or SQLITE_OK.
+	failed int32
 	// served is the change counter page 1 shows in this transaction in
 	// optimistic mode; 0 serves the snapshot's change counter.
 	served uint32
@@ -158,8 +160,8 @@ func (f *dbFile) commit(fallback int32) int32 {
 	rev, err := txn.Commit(context.Background())
 	if err != nil {
 		_ = txn.Rollback(context.Background())
-		f.failed = true
-		return resultCode(err, fallback)
+		f.failed = resultCode(err, fallback)
+		return f.failed
 	}
 	if pinned, err := f.store.BeginAt(context.Background(), rev); err == nil {
 		f.txn = pinned
@@ -187,7 +189,7 @@ func (f *dbFile) read(p []byte, off int64) int32 {
 }
 
 func (f *dbFile) write(p []byte, off int64) int32 {
-	if f.failed {
+	if f.failed != sqlite3.SQLITE_OK {
 		return sqlite3.SQLITE_OK
 	}
 	txn, err := f.writer()
@@ -209,7 +211,7 @@ func (f *dbFile) write(p []byte, off int64) int32 {
 }
 
 func (f *dbFile) truncate(size int64) int32 {
-	if f.failed {
+	if f.failed != sqlite3.SQLITE_OK {
 		return sqlite3.SQLITE_OK
 	}
 	txn, err := f.writer()
@@ -228,7 +230,10 @@ func (f *dbFile) truncate(size int64) int32 {
 
 // sync is the commit point.
 func (f *dbFile) sync() int32 {
-	if f.failed || !f.dirty || f.txn == nil {
+	if f.failed != sqlite3.SQLITE_OK {
+		return f.failed
+	}
+	if !f.dirty || f.txn == nil {
 		return sqlite3.SQLITE_OK
 	}
 	return f.commit(sqlite3.SQLITE_IOERR_FSYNC)
@@ -271,14 +276,14 @@ func (f *dbFile) unlock(level int32) int32 {
 	}
 	rc := int32(sqlite3.SQLITE_OK)
 	switch {
-	case level >= sqlite3.SQLITE_LOCK_SHARED && f.dirty && !f.failed && f.txn != nil:
+	case level >= sqlite3.SQLITE_LOCK_SHARED && f.dirty && f.failed == sqlite3.SQLITE_OK && f.txn != nil:
 		rc = f.commit(sqlite3.SQLITE_IOERR_UNLOCK)
 	case level >= sqlite3.SQLITE_LOCK_SHARED && !f.reserved:
 		// A reader keeps its snapshot.
 	default:
 		f.release()
 	}
-	f.failed = false
+	f.failed = sqlite3.SQLITE_OK
 	f.level = level
 	return rc
 }
