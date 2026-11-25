@@ -76,6 +76,34 @@ func (m *mockCredentialService) CredentialDelete(ctx context.Context, name strin
 	return nil
 }
 
+// The rotation-policy and migration-conflict methods answer like the store:
+// a credential named "missing" is not found, and the conflict list holds one
+// conflict for "db".
+func (*mockCredentialService) CredentialSetRotationPolicy(_ context.Context, name string, _ credentials.RotationPolicy) error {
+	if name == "missing" {
+		return credentials.ErrCredentialNotFound
+	}
+	return nil
+}
+
+func (*mockCredentialService) CredentialRotationPolicy(_ context.Context, name string) (*service.CredentialRotationPolicyStatus, error) {
+	if name == "missing" {
+		return nil, credentials.ErrCredentialNotFound
+	}
+	return &service.CredentialRotationPolicyStatus{Policy: credentials.RotationPolicy{Enabled: true, Interval: time.Hour, RetainVersions: 2}}, nil
+}
+
+func (*mockCredentialService) CredentialMigrationConflicts(context.Context) ([]credentials.CredentialMigrationConflictError, error) {
+	return []credentials.CredentialMigrationConflictError{{Name: "db", Value: true, Policy: true}}, nil
+}
+
+func (*mockCredentialService) CredentialResolveMigrationConflict(_ context.Context, name string, _ credentials.MigrationResolution) error {
+	if name == "missing" {
+		return credentials.ErrMigrationConflictNotFound
+	}
+	return nil
+}
+
 func (m *mockCredentialService) CredentialStrategy(context.Context) (string, error) {
 	return m.credentialStrategy(), nil
 }

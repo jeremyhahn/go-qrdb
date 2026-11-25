@@ -354,6 +354,7 @@ func TestAll_ContainsAllConstants(t *testing.T) {
 		AdminSnapshot, AdminDrain, AdminCapabilities,
 		UsersCreate, UsersRead, UsersUpdate, UsersDelete, UsersList, UsersEnable, UsersDisable,
 		RolesCreate, RolesRead, RolesUpdate, RolesDelete, RolesList, RolesAssign, RolesUnassign,
+		GroupsCreate, GroupsRead, GroupsUpdate, GroupsDelete, GroupsList, GroupsAddMember, GroupsRemoveMember,
 		CertsIssue, CertsRevoke, CertsList,
 		SealBootstrap, SealUnseal, SealSeal, SealStatus,
 		TenantsCreate, TenantsRead, TenantsUpdate, TenantsDelete, TenantsList,
@@ -565,7 +566,7 @@ func TestAll_TotalCount(t *testing.T) {
 	//   custody is initialized = 376.
 	// + 1 cluster join-token minting perm (cluster:join_token) = 377 total.
 	// + 1 seal:store_manage, the generic secret store a seal strategy keeps
-	//   for its own state (embedded-SDK-only; no network route) = 378 total.
+	//   for its own state (served on every transport) = 378 total.
 	// + certs:generate retired for certs:issue (no client key is generated
 	//   server-side any more; net 0), + certs:enroll + trust_anchors:add/
 	//   list/remove (net +4) = 382 total.
@@ -615,9 +616,14 @@ func TestAll_TotalCount(t *testing.T) {
 	//   total.
 	// + 1 roles:reconcile_all, the platform operator's all-tenant built-in
 	//   role convergence (ScopeCross) = 412 total.
+	// + 4 device pairing/sharing perms (device:pair, device:revoke,
+	//   device:share, device:sync; ScopeSelf) + 1 passwords:override_ownership
+	//   (ScopeSelf, Admin and Security Officer) + 7 IAM groups perms
+	//   (groups:create/read/update/delete/list/add_member/remove_member;
+	//   ScopeSelf, granted like their roles:* counterparts)
 	// + 1 volume_pools:move, starting and cancelling a tenant's move
-	//   between volume pools (ScopeCross) = 413 total.
-	const expectedTotal = 413
+	//   between volume pools (ScopeCross) = 425 total.
+	const expectedTotal = 425
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)

@@ -289,6 +289,9 @@ func bootAdminIdentityVia(t *testing.T, cli string, connArgs []string, soPin, us
 		// (and, for a foreign issuer, --admin-cert-pool) in extraArgs.
 		args = append(args, "--admin-generate")
 	}
+	if !slices.Contains(extraArgs, "--so-username") {
+		args = append(args, systemSOArgs(t)...)
+	}
 	args = append(args, extraArgs...)
 
 	// Retry transient failures in the narrow window around the barrier
@@ -331,6 +334,78 @@ func bootAdminIdentityVia(t *testing.T, cli string, connArgs []string, soPin, us
 		}
 	}
 	return out
+}
+
+// systemSOUsername is the system SO every bootAdminIdentity ceremony enrols.
+const systemSOUsername = "system-so"
+
+// systemSOArgs returns the `qrdb init` flags naming a system SO: a username
+// and a CSR over a fresh key. The SO is optional in both postures; the
+// fixture always sends one so a daemon under FIPS 140-3, which runs
+// separation of duties strict and keeps the SO-exclusive operations to an
+// SO, still has one, and a standard daemon accepts it alike.
+func systemSOArgs(t *testing.T) []string {
+	t.Helper()
+	csrPath := filepath.Join(t.TempDir(), "system-so-csr.pem")
+	if err := os.WriteFile(csrPath, []byte(systemSOCSRPEM(t)), 0o600); err != nil {
+		t.Fatalf("systemSOArgs: write CSR: %v", err)
+	}
+	return []string{"--so-username", systemSOUsername, "--so-csr", csrPath}
+}
+
+// systemSOCertArgs returns the `qrdb init` flags naming the system SO by the
+// certificate a founder's ceremony issued it (initOut is that founder's
+// `qrdb --output json init` reply, as bootAdminIdentityVia returns it). A
+// node that joined the founder's cluster holds no CeremonyCA key, so it
+// refuses an SO CSR; it binds the founder's SO certificate the way it binds
+// the founder's admin certificate (--admin-cert).
+func systemSOCertArgs(t *testing.T, initOut string) []string {
+	t.Helper()
+	var reply struct {
+		SOCertPEM string `json:"so_cert_pem"`
+	}
+	// The --admin-generate path prints its warning ahead of the JSON reply.
+	body := initOut
+	if i := strings.Index(body, "{"); i >= 0 {
+		body = body[i:]
+	}
+	if err := json.Unmarshal([]byte(body), &reply); err != nil {
+		t.Fatalf("systemSOCertArgs: decode init reply: %v\noutput: %s", err, initOut)
+	}
+	if reply.SOCertPEM == "" {
+		t.Fatalf("systemSOCertArgs: the founder's init reply carries no SO certificate\noutput: %s", initOut)
+	}
+	certPath := filepath.Join(t.TempDir(), "system-so-cert.pem")
+	if err := os.WriteFile(certPath, []byte(reply.SOCertPEM), 0o600); err != nil {
+		t.Fatalf("systemSOCertArgs: write certificate: %v", err)
+	}
+	return []string{"--so-username", systemSOUsername, "--so-cert", certPath}
+}
+
+// systemSOFields returns the POST /v1/ceremony/initialize fields naming a
+// system SO, for the fixtures that run the ceremony over REST: a certificate
+// issued under ca, the node's own CA. These fixtures bring their own TLS (and
+// their admin certificate), so the node has no CeremonyCA to sign a CSR; the
+// CSR path stays covered by systemSOArgs on the managed-CA nodes.
+func systemSOFields(t *testing.T, ca *testCA) map[string]any {
+	t.Helper()
+	so := ca.issue(t, t.TempDir(), qrdbdharness.WithSubject(systemSOUsername, "system"))
+	return map[string]any{"so_username": systemSOUsername, "so_cert_pem": mustReadFile(t, so.CertPath)}
+}
+
+// systemSOCSRPEM returns a PEM CSR for the system SO over a fresh P-256 key,
+// a key that is never the admin's.
+func systemSOCSRPEM(t *testing.T) string {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("systemSOCSRPEM: generate key: %v", err)
+	}
+	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: systemSOUsername}}, key)
+	if err != nil {
+		t.Fatalf("systemSOCSRPEM: create CSR: %v", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}))
 }
 
 // generateAdminCSR generates an ECDSA P-256 key pair and a self-signed CSR
@@ -2589,6 +2664,37 @@ const (
 // package asserts on it.
 func initAndUnsealBarrier(t *testing.T, ca *testCA, port int, passphrase string) (certPath, keyPath string) {
 	t.Helper()
+	return initAndUnsealBarrierWith(t, ca, port, passphrase, nil)
+}
+
+// initAndUnsealBarrierWith is initAndUnsealBarrier with extra
+// CeremonyInitializeRequest fields, such as the system SO a strict
+// separation node names (startMultiProtocolNodeWithConfig).
+func initAndUnsealBarrierWith(t *testing.T, ca *testCA, port int, passphrase string, extra map[string]any) (certPath, keyPath string) {
+	t.Helper()
+	return initAndUnsealBarrierCeremony(t, ca, port, passphrase, extra, true)
+}
+
+// initAndUnsealBarrierWithoutSO runs the first-boot ceremony with no
+// security officer at all: no so_username/so_cert_pem field reaches
+// /v1/ceremony/initialize, so the node boots with no SO holder (docs/SPEC.md:
+// the SO is optional in both postures). extra must not name an SO.
+func initAndUnsealBarrierWithoutSO(t *testing.T, ca *testCA, port int, passphrase string, extra map[string]any) (certPath, keyPath string) {
+	t.Helper()
+	for _, k := range []string{"so_username", "so_cert_pem"} {
+		if _, named := extra[k]; named {
+			t.Fatalf("initAndUnsealBarrierWithoutSO: extra names %q; the no-SO ceremony must carry no SO field", k)
+		}
+	}
+	return initAndUnsealBarrierCeremony(t, ca, port, passphrase, extra, false)
+}
+
+// initAndUnsealBarrierCeremony is the shared body of initAndUnsealBarrierWith
+// and initAndUnsealBarrierWithoutSO. enrollSO is the explicit choice: when it
+// is true and extra names no SO, the harness's default system SO
+// (systemSOFields) is enrolled; when it is false no SO field is sent.
+func initAndUnsealBarrierCeremony(t *testing.T, ca *testCA, port int, passphrase string, extra map[string]any, enrollSO bool) (certPath, keyPath string) {
+	t.Helper()
 
 	_, certPath, keyPath = ca.adminIdentity(t, t.TempDir())
 	adminCertPEM, err := os.ReadFile(certPath)
@@ -2596,7 +2702,7 @@ func initAndUnsealBarrier(t *testing.T, ca *testCA, port int, passphrase string)
 		t.Fatalf("initAndUnsealBarrier: read %s: %v", certPath, err)
 	}
 
-	body, err := json.Marshal(map[string]any{
+	fields := map[string]any{
 		"so_pin":         harnessSOPIN,
 		"user_pin":       harnessUserPIN,
 		"admin_cert_pem": string(adminCertPEM),
@@ -2608,7 +2714,16 @@ func initAndUnsealBarrier(t *testing.T, ca *testCA, port int, passphrase string)
 		// etc.). A bare string marshals as plain JSON text instead, which
 		// is not valid base64 and the decoder rejects.
 		"secret": []byte(passphrase),
-	})
+	}
+	if _, named := extra["so_username"]; enrollSO && !named {
+		for k, v := range systemSOFields(t, ca) {
+			fields[k] = v
+		}
+	}
+	for k, v := range extra {
+		fields[k] = v
+	}
+	body, err := json.Marshal(fields)
 	if err != nil {
 		t.Fatalf("initAndUnsealBarrier: marshal: %v", err)
 	}
@@ -3013,16 +3128,18 @@ func waitForNodeToTrustClient(t *testing.T, client *http.Client, adminPort int, 
 
 	url := fmt.Sprintf("https://127.0.0.1:%d/health", adminPort)
 	var lastErr error
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	ok := pollUntil(timeout, 250*time.Millisecond, func() bool {
 		resp, err := client.Get(url)
 		if err == nil {
 			_, _ = io.Copy(io.Discard, resp.Body)
 			_ = resp.Body.Close()
-			return
+			return true
 		}
 		lastErr = err
-		time.Sleep(250 * time.Millisecond)
+		return false
+	})
+	if ok {
+		return
 	}
 	t.Fatalf("node on port %d did not accept the client certificate within %v: %v", adminPort, timeout, lastErr)
 }

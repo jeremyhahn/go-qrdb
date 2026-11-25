@@ -847,6 +847,39 @@ type RoleClient interface {
 	ReconcileBuiltInRolesAllTenants(ctx context.Context) (*ReconcileAllTenantsRolesResponse, error)
 }
 
+// GroupClient provides IAM group management. A group is a named set of roles
+// of one tenant; its members hold those roles. Membership is recorded on the
+// user record, and a role reaching a user through a group passes the same
+// escalation guard as AssignRole.
+type GroupClient interface {
+	// CreateGroup creates a group; the name must be unique within the tenant.
+	CreateGroup(ctx context.Context, req *CreateGroupRequest) (*Group, error)
+
+	// GetGroup retrieves a group by its ID.
+	GetGroup(ctx context.Context, id string) (*Group, error)
+
+	// GetGroupByName retrieves a group by its tenant-scoped name.
+	GetGroupByName(ctx context.Context, req *GetGroupByNameRequest) (*Group, error)
+
+	// UpdateGroup changes a group's name, description or role set.
+	UpdateGroup(ctx context.Context, req *UpdateGroupRequest) (*Group, error)
+
+	// DeleteGroup removes the group from every member, then the group.
+	DeleteGroup(ctx context.Context, id string) error
+
+	// ListGroups returns a page of the tenant's groups.
+	ListGroups(ctx context.Context, req *ListGroupsRequest) (*ListGroupsResponse, error)
+
+	// AddGroupMember adds a user to a group of the user's own tenant.
+	AddGroupMember(ctx context.Context, userID uint64, groupID string) error
+
+	// RemoveGroupMember removes a user from a group.
+	RemoveGroupMember(ctx context.Context, userID uint64, groupID string) error
+
+	// ListGroupMembers returns the members of a group ordered by user ID.
+	ListGroupMembers(ctx context.Context, groupID string) (*ListGroupMembersResponse, error)
+}
+
 // ---------------------------------------------------------------------------
 // Certificate management operations
 // ---------------------------------------------------------------------------
@@ -1110,6 +1143,24 @@ type CredentialClient interface {
 	// for a grace period.
 	CredentialRotate(ctx context.Context, req *CredentialRotateRequest) (*CredentialRotateResponse, error)
 
+	// CredentialSetRotationPolicy sets a credential's scheduled rotation
+	// policy. The server refuses an invalid policy as an invalid argument.
+	CredentialSetRotationPolicy(ctx context.Context, req *CredentialSetRotationPolicyRequest) error
+
+	// CredentialRotationPolicy returns a credential's scheduled rotation
+	// policy and the time of its next scheduled rotation.
+	CredentialRotationPolicy(ctx context.Context, name string) (*CredentialRotationPolicyResponse, error)
+
+	// CredentialMigrationConflicts lists the credentials whose node-local
+	// copy in the old credentials/ layout differs from the replicated
+	// record, sorted by name. No value is returned.
+	CredentialMigrationConflicts(ctx context.Context) (*CredentialMigrationConflictsResponse, error)
+
+	// CredentialResolveMigrationConflict settles one migration conflict by
+	// import or discard. A name with no conflict is a not-found error; any
+	// other resolution is an invalid argument.
+	CredentialResolveMigrationConflict(ctx context.Context, req *CredentialResolveMigrationConflictRequest) error
+
 	// CredentialRetrieveVersionBuffer returns the stored credential value
 	// for a specific version in protected memory. Use version == 0 for the
 	// current version. The caller owns the returned buffer and MUST Destroy
@@ -1138,7 +1189,9 @@ type CredentialClient interface {
 // Seal store operations
 // ---------------------------------------------------------------------------
 
-// SealStoreClient manages the local machine sealed credential store.
+// SealStoreClient manages the node's sealed named-secret store. It is embedded only; every
+// remote transport refuses each verb with *EmbeddedOnlyError (ruling 1234, EmbeddedOnlyOperations).
+// On the embedded transport each call requires seal:store_manage.
 type SealStoreClient interface {
 	// SealStorePut stores a secret in the seal store.
 	SealStorePut(ctx context.Context, req *SealStorePutRequest) error
@@ -1171,8 +1224,12 @@ type TenantClient interface {
 	// GetTenant retrieves a tenant by ID.
 	GetTenant(ctx context.Context, tenantID string) (*GetTenantResponse, error)
 
-	// ListTenants lists all tenants.
-	ListTenants(ctx context.Context) (*ListTenantsResponse, error)
+	// ListTenants lists the tenants the caller may list, narrowed to
+	// req.Status when it is set. A nil req is no filter. Against a server
+	// older than the filter, which drops it, a filtered request is refused
+	// with *CapabilityUnsupportedError (EnforceStatusFilter); the network
+	// transports check it, embedded is the same build.
+	ListTenants(ctx context.Context, req *ListTenantsRequest) (*ListTenantsResponse, error)
 
 	// ListDeletedTenants returns one page of retired tenant ids with their
 	// deletion records, in ascending id order.
@@ -1290,6 +1347,7 @@ type Client interface {
 	VlogClient
 	UserClient
 	RoleClient
+	GroupClient
 	CertClient
 	DEKClient
 	BarrierClient

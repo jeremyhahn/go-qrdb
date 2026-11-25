@@ -102,6 +102,13 @@ type MigrationStores struct {
 	// File are file-backend stores, recoded record by record through the file
 	// engine.
 	File []string
+	// Records are keyspaces in the barrier's own backend (the seal store's
+	// secrets) re-encrypted with the stores; they are not directories, so
+	// Dirs leaves them out.
+	Records []seal.StagedRecords
+	// RetireRecords retires the plaintext history the committed Records
+	// leave behind; nil means nothing to retire.
+	RetireRecords func(context.Context) error
 }
 
 // Dirs returns every directory in s.
@@ -247,6 +254,8 @@ func (s *EncryptionMigrationService) run(ctx context.Context, scope BarrierScope
 		StoreDirs:     stores.Pebble,
 		FileStoreDirs: stores.File,
 		Logger:        s.logger,
+		Records:       stores.Records,
+		RetireRecords: stores.RetireRecords,
 	}
 	if merr := mig.Run(ctx, opts); merr != nil {
 		err = merr

@@ -7,6 +7,11 @@ Command group: `qrdb barrier`. **This is the canonical barrier surface shared by
 every CLI binary in the stack** (`qrdb`, `xkmsctl`, `quicbaasctl`,
 `platformctl`). The verbs are `status`, `init`, `init-shamir`, `unseal`,
 `seal`, `cluster-unseal`, `rekey`, `enable-encryption`, `recovery`, `officer` and `quorum`.
+The node seal store of named secrets has no CLI group: its data is
+embedded-only (ruling 1234) and the shipped `qrdb` binary links no in-process
+node, so it is reached through `sdk/go/node`'s client or the desktop/GUI
+build's embedded binding ([api.md](api.md#seal-store-named-secrets)).
+`qrdb barrier seal|unseal` work on every transport.
 
 A Shamir barrier is unsealed, sealed, rekeyed and recovered only by a quorum
 of authenticated share holders. `officer`, `quorum`, `rekey`, `init-shamir`
@@ -304,6 +309,23 @@ nothing; a standalone node never refuses it. See
 The verbs are exercised end to end by `test/integration/barrier_cli_test.go`
 and `test/integration/barrier_permutations_cli_test.go`. The cluster-scope
 encryption migration test (`test/integration/cluster_enable_encryption_test.go`)
-runs under `make integration-test-barrier-seal`. CI runs them in the
-`integration-features` shard whose feature list includes `barrier-seal`
+runs under `make integration-test-barrier-seal`, as does
+`test/integration/seal_store_sdk_test.go`, which proves that every network
+transport refuses the seal-store verbs as embedded-only through the SDK while
+barrier seal and unseal keep working.
+`TestSealStore_GRPCWeb_EmbeddedOnly` proves gRPC-Web (`/grpc-web/` on the REST
+listener) answers every removed seal-store method Unimplemented, refuses a
+`BarrierSeal` without the SO PIN, seals with it and unseals the barrier, the
+status read back over gRPC-Web. A raw gRPC-Web client carries the barrier SO
+PIN as the SDK does on native gRPC, in `BarrierSealRequest.so_pin`; `seal:seal`
+is not an SO-gate permission, so no `x-qrdb-so-pin` header is read for it. `TestSealStore_SDK_Embedded_Lifecycle` proves the embedded
+transport, the one surface that serves seal-store data, end to end on a real
+passphrase-sealed node: put, get, list, status, reseal and delete through
+`Client.SealStore()`, refusal while sealed, and the secret read back unchanged
+after unseal. `TestSealStore_DesktopBinding_Lifecycle`
+(`cmd/qrdb/bindings_seal_store_test.go`, `qrdb_embedded` build) runs the same
+six verbs through the desktop build's embedded binding. There is no
+`qrdb seal-store` group: the CLI build links no in-process node, so no CLI
+transport could serve the data, and `TestRootCmd_NoSealStoreCommand` guards
+its absence. CI runs the integration tests in the `integration-features` shard whose feature list includes `barrier-seal`
 (`.github/workflows/ci.yml`), required by `ci-gate`.

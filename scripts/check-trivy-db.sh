@@ -14,75 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# check-trivy-db.sh — a trivy scan does not say how old the database it ruled
-# with was, and will happily rule with an arbitrarily old one (go-qrdb#451).
-#
-# WHAT WAS MEASURED
-#
-# trivy decides whether to refresh by reading `NextUpdate` out of the database
-# artifact it already has. That field is DATA INSIDE THE ARTIFACT, not a
-# wall-clock test, so a database that declares a distant NextUpdate is used
-# unconditionally. Measured on trivy v0.74.0 against this tree, with the
-# network removed so no refresh was possible:
-#
-#   metadata.json UpdatedAt 2026-06-30, NextUpdate 2027-01-01
-#     -> scanned, exit 0, and the output was byte-for-byte the shape of a scan
-#        against a database from that morning. No warning, no age, nothing.
-#
-#   metadata.json UpdatedAt 2026-06-30, NextUpdate 2026-07-01
-#     -> "Need to update DB", download fails, FATAL, non-zero.
-#
-# So trivy already fails closed on an EXPIRED database, and has no opinion at
-# all about a database that merely claims not to be expired. The second case is
-# the one this script exists for: a scan that certifies a tree using data older
-# than the advisory it was meant to find, and reports success.
-#
-# That is the worst shape a gate can take. A false RED is noisy and
-# self-correcting, because someone investigates it. A false GREEN is silent:
-# the local run and the CI run disagree and only one of them is right, and
-# nothing in either output says which.
-#
-# WHAT IT ASSERTS
-#
-# The age of the vulnerability database trivy WILL USE, against the wall clock,
-# refusing to certify rather than certifying blindly. It is not a second
-# expiry policy layered over trivy's: the default limit is 24 hours, which is
-# exactly the horizon trivy's own NextUpdate uses (trivy-db is rebuilt upstream
-# every six hours and its metadata sets NextUpdate = UpdatedAt + 24h). The
-# check adds the comparison trivy omits; it does not invent a stricter rule.
-#
-# It reads `trivy version --format json` rather than $TRIVY_CACHE_DIR/db/
-# metadata.json, because that is trivy answering for its own cache — it honours
-# --cache-dir, TRIVY_CACHE_DIR and any config file, so the answer describes the
-# database the NEXT INVOCATION in the same environment will load. Reading the
-# path directly would be this script guessing at a location trivy is free to
-# change.
-#
-# trivy-certified-db.sh runs it after each download source (the configured cache,
-# then trivy's upstream repositories), so a stale cache falls back rather than
-# failing the scan. `make trivy` calls that BETWEEN a `--download-db-only` refresh and a
-# `--skip-db-update` scan, so the database this certifies and the database the
-# scan rules with are the same one, and neither leg can move under the other.
-#
-# DISCOVERY HAS A FLOOR, as in check-tool-versions.sh and check-bundled-gosec.sh:
-# an absent database, an absent timestamp, a timestamp that does not parse and
-# a timestamp in the future are all FAILURES. Every one of them means the age is
-# unknown, and an unknown age is not a young one. With no database at all trivy
-# prints `{"Version":"0.74.0"}` and nothing else — a shape a check looking for
-# "too old" would pass.
-#
-# The timestamp is converted with days-from-civil arithmetic in awk rather than
-# with `date -d`, which is a GNU extension. A security gate that silently means
-# something different on a BusyBox image is the class of defect this file is
-# about.
-#
-# Usage: check-trivy-db.sh [max-age-hours] [trivy-binary]
-#
-#   max-age-hours    defaults to 24, the horizon trivy's own NextUpdate uses
-#   trivy-binary     defaults to `trivy` on PATH
-#
-# Exit status: 0 when the database is present and younger than the limit,
-# 1 otherwise.
+# check-trivy-db.sh: fails when the trivy vulnerability database is older than the allowed age.
 
 set -eu
 

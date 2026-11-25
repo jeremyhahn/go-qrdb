@@ -17,12 +17,15 @@ package node
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
 
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealretire"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -313,10 +316,18 @@ func (p *nodeMigrationProvider) StoreDirs(_ context.Context, scope service.Barri
 	if externalPebbleWAL(n.retainedStandalone.cfg, dataDir) != "" && len(existingDirs(pebbleDir)) > 0 {
 		return service.MigrationStores{}, &MigrationNotSupportedError{Reason: "the pebble store keeps its write-ahead log outside its directory (storage.wal_dir); encryption migration moves the store directory alone"}
 	}
-	return service.MigrationStores{
+	stores := service.MigrationStores{
 		Pebble: existingDirs(pebbleDir, filepath.Join(dataDir, "vector")),
 		File:   existingDirs(filepath.Join(dataDir, "file")),
-	}, nil
+		// The seal store keeps its secrets as records in the system
+		// barrier's own backend, so they are re-encrypted with the stores
+		// and their plaintext history retired once they commit.
+		Records: []seal.StagedRecords{sealretire.StagedRecords()},
+	}
+	if n.sealRetirer != nil {
+		stores.RetireRecords = n.sealRetirer.Retire
+	}
+	return stores, nil
 }
 
 // existingDirs returns those of candidates that are existing directories.
@@ -430,6 +441,19 @@ func (p *nodeMigrationProvider) Reopen(ctx context.Context, scope service.Barrie
 		return &MigrationReopenError{Reason: "retained boot params lost during migration"}
 	}
 
+	// A committed journal whose root key was not adopted leaves staged records a restart rolls forward over any write served now.
+	if committedStrategy != seal.StrategyPassphrase && committedStrategy != seal.StrategyShamir {
+		j, jerr := n.barrier.Load().LoadMigrationJournal(ctx)
+		if jerr != nil {
+			p.creds = seal.Credentials{}
+			return &MigrationReopenError{Reason: "the migration journal cannot be read; the node stays down until a restart recovers it", Err: jerr}
+		}
+		if j != nil && j.Committed() {
+			p.creds = seal.Credentials{}
+			return &MigrationReopenError{Reason: "the migration committed but its root key was not adopted; the node stays down until a restart rolls it forward"}
+		}
+	}
+
 	switch committedStrategy {
 	case seal.StrategyPassphrase, seal.StrategyShamir:
 		// Committed: replace the live none barrier with the keyed one.
@@ -440,6 +464,30 @@ func (p *nodeMigrationProvider) Reopen(ctx context.Context, scope service.Barrie
 		reopenStrat, serr := p.reopenStrategy(committedStrategy)
 		if serr != nil {
 			return serr
+		}
+		// A migration whose staged-record commit failed past the commit
+		// point leaves the seal store's secrets half-moved: a live record
+		// not yet replaced is unreadable under the adopted key, and a staged
+		// copy not yet deleted would overwrite a newer write at the next
+		// roll-forward. Finish that commit first. Any failure that does not
+		// prove the records committed (a failed commit, an unreadable
+		// journal, anything not ErrMigrationRetirePending) leaves the data
+		// plane down (the journal stays) so nothing is served until the
+		// boot's recovery completes it.
+		var retire func(context.Context) error
+		if n.sealRetirer != nil {
+			retire = n.sealRetirer.Retire
+		}
+		if ferr := database.FinishCommittedMigration(ctx, n.barrier.Load(), retire); ferr != nil {
+			if !errors.Is(ferr, database.ErrMigrationRetirePending) {
+				p.creds = seal.Credentials{}
+				return &MigrationReopenError{Reason: "the migration's re-encrypted seal-store records are not proven committed; the node stays down until a restart recovers them", Err: ferr}
+			}
+			// The records are committed; only the plaintext retirement
+			// failed, and its marker makes the next boot retry it.
+			if n.logger != nil {
+				n.logger.Warn("encryption migration: finish the committed migration", slog.Any("error", ferr))
+			}
 		}
 		keyed, rerr := n.barrier.Load().ReopenKeyed(ctx, reopenStrat, p.creds)
 		// The caller of EnableEncryption owns the credential and destroys it
@@ -474,7 +522,7 @@ func (p *nodeMigrationProvider) Reopen(ctx context.Context, scope service.Barrie
 			return nil
 		}
 	default:
-		// Not committed: the original barrier is still valid and unsealed.
+		// An uncommitted or absent journal keeps the original barrier valid and unsealed.
 	}
 
 	// Rebuild the data plane (storage, engine, services, server) under the

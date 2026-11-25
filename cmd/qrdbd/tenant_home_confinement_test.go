@@ -149,7 +149,7 @@ func newHomeFixture(t *testing.T, tc homedTenant) *homeFixture {
 	system := make(map[string][]byte)
 	mock := newMockKVStore(system)
 	mgmt, err := bootstrapUserRoleStores(ctx, mock, mock, newMockTransactionServicer(system), &mockRaftNode{}, testLeaderWait, 1, 1,
-		svc, false, reg, seal.StrategyPassphrase, nil, auth.MTLSBindingEnrolled, nil, nil, nil)
+		svc, false, reg, seal.StrategyPassphrase, nil, auth.MTLSBindingEnrolled, nil, nil, nil, soTrustSeams{})
 	if err != nil {
 		t.Fatalf("bootstrapUserRoleStores: %v", err)
 	}

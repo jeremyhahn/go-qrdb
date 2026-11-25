@@ -278,6 +278,16 @@ neither owns a verb neither registered. See
 | SDK Tier 2 aliases | `sdk/go/server/server.go` | go-qrdb |
 | Capability modules | — | **go-xkms, go-quicbaas, go-trusted-platform** |
 
+**WebTransport sessions** are a REST route, not a seventh transport.
+`pkg/server.WithWebTransportHandler` forwards to
+`rest.WithWebTransportHandler`, so the REST server registers the extended
+`CONNECT` on its configured HTTP/3 listener; `pkg/api/rest` owns the route, the
+upgrade and the draft -16 client checks (through `internal/webtransport`, a
+patched webtransport-go), and the embedder's handler owns each session once it
+is upgraded. `sdk/go/server` re-exports the option and the session types. See
+[api.md](api.md#webtransport-sessions) and, for the draft deviations,
+[../reference/README.md](../reference/README.md#the-draft-ietf-webtrans-http3-pin-and-its-deviations).
+
 ### Capability rows and the SDK edge
 
 The feature is the three rows of the constitution's capability registry under
@@ -547,6 +557,12 @@ for example [../key-value/architecture.md](../key-value/architecture.md#data-flo
 
 ## Trust boundaries
 
+- **A WebTransport session is authenticated before it exists.** Its extended
+  `CONNECT` passes the REST authentication and tenant-binding chain before the
+  upgrade; a refused `CONNECT` is answered as REST answers it and never reaches
+  the handler, which receives the authenticated caller and the bound tenant and
+  owns the session from then on. A path the middleware exempts as public is
+  refused at `Start`, and `Stop` ends every open session.
 - **A bind address holds on every transport or on none.** REST and HTTP/3 serve
   the same handler on the same port; binding is enforced to agree at start
   rather than reported in a log line an operator would have to notice.
@@ -586,7 +602,7 @@ for example [../key-value/architecture.md](../key-value/architecture.md#data-flo
 - **The SDK connects without a credential.** `Connect` on every Go SDK
   network transport probes Health, which is public, so a client with no
   credential connects and is refused with the typed `Unauthenticated` error
-  at its first authenticated call (ruling 264(b)); over MCP one refusal
+  at its first authenticated call; over MCP one refusal
   capture types the refusal of `initialize` and of every `tools/call` alike.
 - **A public MCP tool cannot reach data.** A declared tool that carries any
   permission but `identity:public` — a KV, SQL, document, vector, admin, IAM or

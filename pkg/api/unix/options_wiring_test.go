@@ -200,29 +200,77 @@ func (m *stubModule) Name() string {
 func TestStartRegistersEveryWiredService(t *testing.T) {
 	socketPath := tempSocketPath(t)
 
+	tenantSvc := &stubTenantBarrierSvc{}
+	barrierSvc := &stubBarrierSvc{}
+	ceremonySvc := &stubCeremonySvc{}
+	credentialSvc := &stubCredentialSvc{}
+	collectionSvc := &stubCollectionSvc{}
+	txSvc := &stubTransactionSvc{}
+	batchSvc := &stubBatchSvc{}
+	watchSvc := &stubWatchSvc{}
+	leaseSvc := &stubLeaseSvc{}
+	indexSvc := &stubIndexSvc{}
+	tsSvc := &stubTimeSeriesSvc{}
+	vectorSvc := &stubVectorSvc{}
+	mvccSvc := &stubMVCCSvc{}
+	databaseSvc := &stubDatabaseSvc{}
+	userSvc := &stubUserSvc{}
+	roleSvc := &stubRoleSvc{}
+	certProv := &stubCertProv{}
+
 	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath,
 		WithPINBackend(&stubPINBackend{}),
-		WithCeremonyService(&stubCeremonySvc{}),
-		WithTenantService(&stubTenantBarrierSvc{}),
+		WithCeremonyService(ceremonySvc),
+		WithTenantService(tenantSvc),
 		WithTenantBarrierService(&stubTenantBarrierSvc{}),
-		WithBarrierService(&stubBarrierSvc{}),
-		WithCredentialService(&stubCredentialSvc{}),
-		WithCollectionService(&stubCollectionSvc{}),
-		WithTransaction(&stubTransactionSvc{}),
-		WithBatch(&stubBatchSvc{}),
-		WithWatch(&stubWatchSvc{}),
-		WithLease(&stubLeaseSvc{}),
-		WithIndex(&stubIndexSvc{}),
-		WithTimeSeries(&stubTimeSeriesSvc{}),
-		WithVector(&stubVectorSvc{}),
-		WithMVCC(&stubMVCCSvc{}),
-		WithDatabaseService(&stubDatabaseSvc{}),
-		WithUserService(&stubUserSvc{}),
-		WithRoleService(&stubRoleSvc{}),
-		WithCertProvider(&stubCertProv{}),
+		WithBarrierService(barrierSvc),
+		WithCredentialService(credentialSvc),
+		WithCollectionService(collectionSvc),
+		WithTransaction(txSvc),
+		WithBatch(batchSvc),
+		WithWatch(watchSvc),
+		WithLease(leaseSvc),
+		WithIndex(indexSvc),
+		WithTimeSeries(tsSvc),
+		WithVector(vectorSvc),
+		WithMVCC(mvccSvc),
+		WithDatabaseService(databaseSvc),
+		WithUserService(userSvc),
+		WithRoleService(roleSvc),
+		WithCertProvider(certProv),
 		WithServiceModules([]apimodule.ServiceModule{&stubModule{}}),
 		WithTLS(selfSignedTLSConfig(t)),
 	)
+
+	// Each option stores the instance it was given (the removed
+	// TestWithXxx_Applied tests checked only a nil option on a nil default).
+	wired := []struct {
+		name      string
+		got, want any
+	}{
+		{"tenantSvc", srv.tenantSvc, tenantSvc},
+		{"barrierSvc", srv.barrierSvc, barrierSvc},
+		{"ceremonySvc", srv.ceremonySvc, ceremonySvc},
+		{"credentialSvc", srv.credentialSvc, credentialSvc},
+		{"collectionSvc", srv.collectionSvc, collectionSvc},
+		{"txSvc", srv.txSvc, txSvc},
+		{"batchSvc", srv.batchSvc, batchSvc},
+		{"watchSvc", srv.watchSvc, watchSvc},
+		{"leaseSvc", srv.leaseSvc, leaseSvc},
+		{"indexSvc", srv.indexSvc, indexSvc},
+		{"tsSvc", srv.tsSvc, tsSvc},
+		{"vectorSvc", srv.vectorSvc, vectorSvc},
+		{"mvccSvc", srv.mvccSvc, mvccSvc},
+		{"databaseSvc", srv.databaseSvc, databaseSvc},
+		{"userSvc", srv.userSvc, userSvc},
+		{"roleSvc", srv.roleSvc, roleSvc},
+		{"certProv", srv.certProv, certProv},
+	}
+	for _, w := range wired {
+		if w.got != w.want {
+			t.Errorf("%s = %v, want the injected instance %v", w.name, w.got, w.want)
+		}
+	}
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start: %v", err)

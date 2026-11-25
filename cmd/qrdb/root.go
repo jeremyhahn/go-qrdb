@@ -242,6 +242,7 @@ Supported transports:
 	rootCmd.AddCommand(newAuditCmd())
 	rootCmd.AddCommand(newUsersCmd())
 	rootCmd.AddCommand(newRolesCmd())
+	rootCmd.AddCommand(newGroupsCmd())
 
 	// The tenant command tree is assembled here (rather than inside
 	// newTenantCmd itself) so the tenant-scoped share-holder surface

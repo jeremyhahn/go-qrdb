@@ -21,6 +21,7 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
@@ -110,6 +111,11 @@ func WithRegisterUserAuthFactorService(svc service.UserAuthFactorServicer) Regis
 // WithRegisterRoleService attaches a role management service for the registered gRPC service.
 func WithRegisterRoleService(svc role.RoleServicer) RegisterOption {
 	return func(s *qrdbServiceServer) { s.roleSvc = svc }
+}
+
+// WithRegisterGroupService attaches the IAM group store for the registered gRPC service.
+func WithRegisterGroupService(svc group.GroupServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.groupSvc = svc }
 }
 
 // WithRegisterEmbedding attaches an embedding service for the registered gRPC service.

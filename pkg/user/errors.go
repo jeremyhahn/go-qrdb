@@ -420,6 +420,16 @@ func (e *RoleRevokerUnsupportedError) Error() string {
 	return "user: this user service cannot revoke roles; build it with NewStore or NewRoutingService"
 }
 
+// GroupMembershipUnsupportedError is returned by NewGroupMembership for a
+// UserServicer that is not a store built by this package. A membership change
+// must commit against the bytes it read, which only the store can do.
+type GroupMembershipUnsupportedError struct{}
+
+// Error returns a human-readable description of the refusal.
+func (e *GroupMembershipUnsupportedError) Error() string {
+	return "user: this user service cannot change group membership; build it with NewStore or NewRoutingService"
+}
+
 // RoleRevocationIncompleteError reports that RevokeRole swept a tenant Passes
 // times and every pass still found holders, because assignments of the role
 // kept committing while it ran. Every account it reached was stripped; a

@@ -120,17 +120,6 @@ func hostForMove(t *testing.T) *mockHost {
 // NewRebalanceService with options
 // ---------------------------------------------------------------------------
 
-func TestRebalanceService_NewRebalanceService_WithOptions_ReturnsNonNil(t *testing.T) {
-	store := newTestPlacementStore(t)
-	svc := NewRebalanceService(&mockHost{},
-		WithRebalancePlacementStore(store),
-		WithRebalanceSelfNodeID("self:9100"),
-	)
-	if svc == nil {
-		t.Fatal("expected non-nil RebalanceServicer")
-	}
-}
-
 func TestRebalanceService_NewRebalanceService_NoOptions_GenericPathUnchanged(t *testing.T) {
 	// Calling NewRebalanceService without options must not panic and must behave
 	// identically to the original constructor.

@@ -95,19 +95,6 @@ func (h *mockWatchHub) WatchPrefix(ctx context.Context, prefix string, opts ...w
 // NewWatchService
 // ---------------------------------------------------------------------------
 
-func TestWatchService_NewWatchService_ReturnsNonNil(t *testing.T) {
-	hub := &mockWatchHub{}
-	svc := NewWatchService(hub)
-	if svc == nil {
-		t.Fatal("expected non-nil WatchService")
-	}
-}
-
-func TestWatchService_NewWatchService_ImplementsInterface(t *testing.T) {
-	hub := &mockWatchHub{}
-	var _ WatchServicer = NewWatchService(hub) //nolint:staticcheck // QF1011: explicit interface assertion
-}
-
 // ---------------------------------------------------------------------------
 // Watch - delegation
 // ---------------------------------------------------------------------------

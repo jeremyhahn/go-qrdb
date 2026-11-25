@@ -55,6 +55,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
+	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/invite"
 	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -603,6 +604,10 @@ type Node struct {
 	User user.UserServicer
 	Role role.RoleServicer
 
+	// Group is the IAM group store (go-qrdb#1651): a group carries roles of
+	// its tenant, and its members (recorded on the user record) hold them.
+	Group group.GroupServicer
+
 	// Security services. All are nil when no SealBarrier was provided.
 	Barrier    service.BarrierServicer
 	Ceremony   service.CeremonyServicer
@@ -770,6 +775,10 @@ type Node struct {
 	// writer.
 	homeLeader atomic.Pointer[databaseLeadership]
 
+	// logGroups is the verifiable-log service's barrier group source; its
+	// groups are attached by AttachTenantHomes.
+	logGroups *logGroups
+
 	// work is what the node runs on its own behalf; Stop cancels it and
 	// waits for it before any closer runs.
 	work nodeWork
@@ -831,6 +840,15 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// BuildServices has returned, by which point n.Tenant -- if this
 	// composition has one at all -- is already set, so the lookups pick it
 	// up automatically with no restart.
+	//
+	// The replicated audit logger and the verifiable-log service share one
+	// resolver, so a barrier tenant's audit instance (system/audit) is
+	// written and read in its home group, under its barrier (n.logGroups,
+	// attached with the home groups): a sealed tenant barrier refuses its
+	// audit appends and reads as it refuses its other writes. Prefix,
+	// system and unregistered tenants keep the system shard.
+	n.logGroups = &logGroups{host: infra.Host}
+	logResolver := service.NewSystemShardLogResolver(infra.Host, shard.ShardKV, &nodeAuditIsolationLookup{node: n}, n.logGroups)
 	auditResolver := service.NewSystemShardAuditResolver(infra.Host, shard.ShardKV, &nodeAuditIsolationLookup{node: n})
 	n.ReplicatedAudit = service.NewOptInAuditLogger(
 		service.NewReplicatedLogger(auditResolver),
@@ -979,7 +997,11 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	if err != nil {
 		return nil, &RoleServiceError{Err: err}
 	}
-	roleSvc, err := role.NewStore(authStore, role.WithHolderRevoker(holders))
+	groupHolders, err := group.NewRoleRevoker(authStore)
+	if err != nil {
+		return nil, &RoleServiceError{Err: err}
+	}
+	roleSvc, err := role.NewStore(authStore, role.WithHolderRevoker(role.HolderRevokers(holders, groupHolders)))
 	if err != nil {
 		return nil, &RoleServiceError{Err: err}
 	}
@@ -1027,13 +1049,13 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		bm.SetUnsealGate(databaseUnsealGate(infra.ClusterSealer))
 	}
 
-	// The verifiable-log service routes as the audit chain does, but also
-	// refuses a barrier tenant and a barrier database: its log registry and
-	// sealed signing keys sit under the system barrier, not the tenant's or
-	// the database's. A build without the qrdb_vlog tag has no log service,
-	// which is not a boot failure.
-	logResolver := service.NewSystemShardLogResolver(infra.Host, shard.ShardKV, &nodeAuditIsolationLookup{node: n})
-	logSvc, err := buildLogService(logResolver, dbManager, infra.HeadSignerProvider)
+	// The verifiable-log service routes over the audit logger's resolver
+	// (logResolver above): a barrier tenant's logs, entries and sealed
+	// signing keys are applied in its home group, under its barrier, and a
+	// barrier-enabled database's in that database's own barrier-protected
+	// store. A build without the qrdb_vlog tag has no log service, which is
+	// not a boot failure.
+	logSvc, err := buildLogService(logResolver, auditResolver, dbManager, infra.HeadSignerProvider)
 	if err != nil {
 		return nil, err
 	}
@@ -1133,6 +1155,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	}
 
 	n.Database = service.NewDatabaseService(dbManager, placementOpts...)
+	wireLogReclaimer(n)
 
 	// Vector storage uses the directory when one is available, exactly as
 	// before go-qrdb#578; what #578 adds is infra.Backend deciding what
@@ -1229,6 +1252,13 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		Compaction: systemCompaction,
 	})
 	dbManager.SetKeyspaceReclaimer(n.KeyspaceReclaim)
+	// A barrier tenant's database created before its logs had a marker of
+	// their own in the home group gets one at its first log write.
+	if fenced, ok := n.Log.(interface {
+		SetLogFenceInitializer(service.LogFenceInitializer)
+	}); ok {
+		fenced.SetLogFenceInitializer(n.KeyspaceReclaim)
+	}
 
 	// go-qrdb#547's reclaim-job sweeper, over the un-namespaced system store
 	// where every pending job's index entry lives. Each job's own store is
@@ -1252,6 +1282,10 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	}
 	n.Embedding = embSvc
 	n.RAG = ragSvc
+
+	// iamResolver is the tenant store resolver user and role routing use;
+	// the group store routes through the same one (nil: no routing).
+	var iamResolver tenant.StoreResolver
 
 	// Seal-gated services: only constructed when a barrier is provided.
 	if infra.SealBarrier != nil {
@@ -1293,11 +1327,16 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 			if err != nil {
 				return nil, &RoleServiceError{Err: err}
 			}
-			routedRoles, err := role.NewRoutingService(resolver, role.WithHolderRevoker(routedHolders))
+			routedGroupHolders, err := group.NewRoutingRoleRevoker(resolver)
+			if err != nil {
+				return nil, &RoleServiceError{Err: err}
+			}
+			routedRoles, err := role.NewRoutingService(resolver, role.WithHolderRevoker(role.HolderRevokers(routedHolders, routedGroupHolders)))
 			if err != nil {
 				return nil, &RoleServiceError{Err: err}
 			}
 			n.Role = routedRoles
+			iamResolver = resolver
 
 			if err := n.buildUserAuthFactorService(ctx, resolver, authStore, infra.AuditLogger, log); err != nil {
 				return nil, err
@@ -1366,11 +1405,16 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		if rherr != nil {
 			return nil, &RoleServiceError{Err: rherr}
 		}
-		routedRoles, roerr := role.NewRoutingService(resolver, role.WithHolderRevoker(routedHolders))
+		routedGroupHolders, rgerr := group.NewRoutingRoleRevoker(resolver)
+		if rgerr != nil {
+			return nil, &RoleServiceError{Err: rgerr}
+		}
+		routedRoles, roerr := role.NewRoutingService(resolver, role.WithHolderRevoker(role.HolderRevokers(routedHolders, routedGroupHolders)))
 		if roerr != nil {
 			return nil, &RoleServiceError{Err: roerr}
 		}
 		n.Role = routedRoles
+		iamResolver = resolver
 
 		if uafErr := n.buildUserAuthFactorService(ctx, resolver, authStore, infra.AuditLogger, log); uafErr != nil {
 			return nil, uafErr
@@ -1452,6 +1496,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 			// options so neither set is dropped when the tenant service exists.
 			dbOpts = append(dbOpts, placementOpts...)
 			n.Database = service.NewDatabaseService(dbManager, dbOpts...)
+			wireLogReclaimer(n)
 		}
 		// dbManager.Open warned for the barrier records it can classify
 		// alone; a volume- or raft-isolated tenant's needs the tenant
@@ -1467,6 +1512,10 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 			w.SetHomeRetirer(r)
 		}
 	}
+
+	// DELETE TENANT releases the log service's standalone barrier store for
+	// the tenant, so tenant churn does not grow it until shutdown.
+	wireTenantLogsCloser(n.Tenant, n.Log)
 
 	// The vector namespace create guard (validateTenantCreate) reads the
 	// cluster-wide isolation floor; n.Tenant is the reader, and it exists
@@ -1520,6 +1569,28 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// provisioned with seal.enabled: true, with data moved into it through
 	// backup/restore or an application-level re-seed (see
 	// docs/barrier-seal/user.md).
+	// IAM groups (go-qrdb#1651): routed per tenant through the resolver
+	// user and role routing use, so a dedicated-isolation tenant's groups
+	// live inside its barrier and a sealed tenant's fail closed; without
+	// routing, one store over the auth store, its records keyed by tenant.
+	// Membership lives on the (final, possibly routed) user record and the
+	// group's roles are checked against the role service.
+	groupMembers, err := user.NewGroupMembership(n.User)
+	if err != nil {
+		return nil, &GroupServiceError{Err: err}
+	}
+	groupOpts := []group.Option{group.WithRoleLookup(n.Role), group.WithMemberRevoker(groupMembers)}
+	var groupSvc group.GroupServicer
+	if iamResolver != nil {
+		groupSvc, err = group.NewRoutingService(iamResolver, groupOpts...)
+	} else {
+		groupSvc, err = group.NewStore(authStore, groupOpts...)
+	}
+	if err != nil {
+		return nil, &GroupServiceError{Err: err}
+	}
+	n.Group = groupSvc
+
 	if !infra.SealEnabled && infra.SealBarrier == nil {
 		log.Warn("qrdb/seal: seal disabled; at-rest data is stored in plaintext",
 			"hint", "encryption cannot be added in place; provision a new node/tenant with seal.enabled: true and migrate data via backup/restore")
@@ -1554,13 +1625,77 @@ func infraClock(infra Infra) clock.Clock {
 // and the node's databases with the composer's head-signer provider; a nil
 // provider is the software default. It returns a nil service and no error when
 // the build does not carry the qrdb_vlog tag.
-func buildLogService(resolver service.AuditShardResolver, databases service.LogDatabaseLookup, signers vlog.HeadSignerProvider) (service.LogService, error) {
-	svc, err := service.NewLogService(service.LogServiceConfig{Resolver: resolver, Databases: databases, Signers: signers})
+func buildLogService(resolver, audit service.AuditShardResolver, databases service.LogDatabaseLookup, signers vlog.HeadSignerProvider) (service.LogService, error) {
+	svc, err := service.NewLogService(service.LogServiceConfig{Resolver: resolver, AuditResolver: audit, Databases: databases, Signers: signers})
 	var notCompiled *vlog.NotCompiledError
 	if errors.As(err, &notCompiled) {
 		return nil, nil
 	}
 	return svc, err
+}
+
+// wireLogReclaimer hands n.Database the verifiable-log service, so a dropped
+// database's logs are deleted and a database later created under the same
+// name starts with none. A build without the verifiable log has nothing to
+// reclaim.
+func wireLogReclaimer(n *Node) {
+	db, ok := n.Database.(interface{ SetLogReclaimer(service.LogReclaimer) })
+	if !ok {
+		return
+	}
+	if r, ok := n.Log.(service.LogReclaimer); ok {
+		db.SetLogReclaimer(r)
+	}
+}
+
+// tenantLogsForgetter is the log service's tenant eviction
+// (service.logService.ForgetTenantLogs).
+type tenantLogsForgetter interface {
+	ForgetTenantLogs(tenantID string)
+}
+
+// tenantLogsCloser is the tenant runtime closer that runs the closer wired
+// before it (nil runs none) and then evicts the tenant's log state. The
+// eviction cannot fail.
+type tenantLogsCloser struct {
+	prior tenant.TenantRuntimeCloser
+	logs  tenantLogsForgetter
+}
+
+var _ tenant.TenantRuntimeCloser = (*tenantLogsCloser)(nil)
+
+// CloseTenantRuntime implements tenant.TenantRuntimeCloser.
+func (c *tenantLogsCloser) CloseTenantRuntime(ctx context.Context, tenantID string) error {
+	if c.prior != nil {
+		if err := c.prior.CloseTenantRuntime(ctx, tenantID); err != nil {
+			return err
+		}
+	}
+	c.logs.ForgetTenantLogs(tenantID)
+	return nil
+}
+
+// wireTenantLogsCloser chains the log service's tenant eviction onto the
+// tenant service's runtime closer, keeping any closer already wired. A
+// tenant service without the wiring surface, or a log service without the
+// eviction, is left alone. server.WireTenantRuntimeCloser, run later, keeps
+// this closer as its next.
+func wireTenantLogsCloser(svc tenant.TenantServicer, logs service.LogService) {
+	forgetter, ok := logs.(tenantLogsForgetter)
+	if !ok {
+		return
+	}
+	w, ok := svc.(tenant.ResidueWiring)
+	if !ok {
+		return
+	}
+	g, ok := svc.(interface {
+		TenantRuntimeCloser() tenant.TenantRuntimeCloser
+	})
+	if !ok {
+		return
+	}
+	w.SetTenantRuntimeCloser(&tenantLogsCloser{prior: g.TenantRuntimeCloser(), logs: forgetter})
 }
 
 func buildDEKService(provider dek.Provider, resolver tenant.StoreResolver, keyWrapRegistry keywrap.Registry, keyWrapProvider keywrap.Provider, keyDir string) (service.DEKServicer, error) {
@@ -1660,11 +1795,160 @@ func credentialServiceOptions(infra Infra) []service.CredentialServiceOption {
 	return []service.CredentialServiceOption{service.WithCredentialTenantBarriers(infra.BarrierRegistry)}
 }
 
+// credentialStoreOnDataPlane reports whether the data plane infra describes
+// can hold the credential records: it must keep them encrypted at rest and
+// across a restart. Only a caller that names a persistent engine (pebble,
+// file or raft) and passes an enabled at-rest Encryptor (one bound to a
+// barrier) for those engines to write through proves both. An objstore backend writes the bytes it is given to its bucket
+// unencrypted, a memory backend keeps nothing across a restart, and a caller
+// that names no backend or passes no Encryptor (the desktop embedded binding
+// opens plaintext Pebble or file storage and an unencrypted Raft node) proves
+// neither, so binding any of them would lose a credential's confidentiality
+// or the credential itself (legacy migration deletes the barrier originals
+// once copied).
+func credentialStoreOnDataPlane(infra Infra) bool {
+	if !infra.Encryptor.Enabled() {
+		return false
+	}
+	switch infra.Backend {
+	case database.BackendPebble, database.BackendFile, database.BackendRaft:
+		return true
+	default:
+		return false
+	}
+}
+
+// sealGatedStore is the credential store bound on a data plane that
+// encrypts at rest: its records live on the node's KV, but every access
+// keeps the system seal barrier's own sealed-state check, exactly as
+// StorageBarrier's Get, Put and List refuse a sealed barrier with
+// seal.ErrSealed. Sealing neither closes the data plane nor makes an
+// ordinary KV read fail (a Pebble read ignores its SealWatch), so without
+// this gate a sealed node would still return a credential's current and
+// retained values through the credential verbs.
+type sealGatedStore struct {
+	credentials.Store
+	barrier *seal.StorageBarrier
+}
+
+// open reports seal.ErrSealed while the system barrier is sealed.
+func (s sealGatedStore) open() error {
+	if s.barrier.IsSealed() {
+		return seal.ErrSealed
+	}
+	return nil
+}
+
+func (s sealGatedStore) Get(ctx context.Context, key string) ([]byte, error) {
+	if err := s.open(); err != nil {
+		return nil, err
+	}
+	b, err := s.Store.Get(ctx, key)
+	// A seal that lands while the read is in flight withholds the bytes:
+	// the gate holds through the read, not only at its admission.
+	if sealErr := s.open(); sealErr != nil {
+		clear(b)
+		return nil, sealErr
+	}
+	return b, err
+}
+
+func (s sealGatedStore) Put(ctx context.Context, key string, value []byte) error {
+	if err := s.open(); err != nil {
+		return err
+	}
+	return s.Store.Put(ctx, key, value)
+}
+
+func (s sealGatedStore) Delete(ctx context.Context, key string) error {
+	if err := s.open(); err != nil {
+		return err
+	}
+	return s.Store.Delete(ctx, key)
+}
+
+func (s sealGatedStore) List(ctx context.Context, prefix string) ([]string, error) {
+	if err := s.open(); err != nil {
+		return nil, err
+	}
+	keys, err := s.Store.List(ctx, prefix)
+	if sealErr := s.open(); sealErr != nil {
+		return nil, sealErr
+	}
+	return keys, err
+}
+
+func (s sealGatedStore) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	if err := s.open(); err != nil {
+		return false, err
+	}
+	return s.Store.PutIfAbsent(ctx, key, value)
+}
+
+func (s sealGatedStore) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	if err := s.open(); err != nil {
+		return false, err
+	}
+	return s.Store.CompareAndSwap(ctx, key, expected, next)
+}
+
+func (s sealGatedStore) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	if err := s.open(); err != nil {
+		return false, err
+	}
+	return s.Store.PutAllIfAllUnchanged(ctx, guards, writes)
+}
+
 // buildSealServices constructs the security services that depend on the
 // seal barrier: BarrierService, CredentialService, CeremonyService,
 // TenantService, and CertProvider.
 func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Logger, authStore kvstore.KVStore) error {
 	if infra.CredentialCoreSvc != nil {
+		// One credential store per cluster (docs/credentials/architecture.md,
+		// "Storage"): the barrier strategy's records live on the system
+		// shard's replicated KV, and its conditional writes are Raft
+		// transactions, so a policy, claim or version written on one node is
+		// the same record on every node.
+		//
+		// The records are written to the data plane as they are, so the
+		// data plane must encrypt at rest and survive a restart. A
+		// standalone objstore backend does not encrypt, a memory backend
+		// does not persist, and a caller that names no backend or passes no
+		// Encryptor proves neither (credentialStoreOnDataPlane), so on any
+		// of them the system seal barrier, which
+		// encrypts every record it stores on its own durable store, is
+		// bound as the credential store instead. On a data plane that does
+		// encrypt at rest, the KV store is gated on the system barrier
+		// (sealGatedStore), so a sealed node refuses every credential read.
+		//
+		// The manual strategy keeps its credentials in protected memory
+		// and writes nothing to the data plane, so it binds no store and
+		// starts on any backend.
+		if infra.CredentialCoreSvc.Strategy() == credentials.StrategyBarrier {
+			var credStore credentials.Store = kvSealBackend{KVStore: newKVStoreAdapter(n.KV, n.Index), tx: n.Transaction}
+			switch {
+			case !credentialStoreOnDataPlane(infra):
+				if infra.SealBarrier == nil {
+					return &NilSealBarrierError{}
+				}
+				if err := infra.CredentialCoreSvc.BindStore(ctx, infra.SealBarrier); err != nil {
+					return err
+				}
+			case infra.SealBarrier != nil:
+				// An earlier build of this node may have fallen back to the
+				// seal barrier: its credentials, rotation policies and
+				// history move onto the data plane before the switch, even
+				// when the core's node-local migration already ran.
+				credStore = sealGatedStore{Store: credStore, barrier: infra.SealBarrier}
+				if err := infra.CredentialCoreSvc.BindStoreFrom(ctx, credStore, infra.SealBarrier); err != nil {
+					return err
+				}
+			default:
+				if err := infra.CredentialCoreSvc.BindStore(ctx, credStore); err != nil {
+					return err
+				}
+			}
+		}
 		n.Credential = service.NewCredentialService(infra.CredentialCoreSvc, credentialServiceOptions(infra)...)
 
 		ceremonyCoreSvc, err := ceremonyService(infra, log)
@@ -1913,6 +2197,7 @@ func ceremonyService(infra Infra, log *slog.Logger) (*ceremony.CeremonyService, 
 	svc.SetClock(infra.Clock)
 	svc.SetAuditLogger(infra.AuditLogger)
 	svc.SetAuditFailurePolicy(infra.AuditFailurePolicy)
+	svc.SetSeparationOfDuties(infra.SeparationOfDuties)
 	return svc, nil
 }
 
@@ -1971,7 +2256,7 @@ func (n *Node) buildEnrollmentServices(infra Infra, log *slog.Logger) {
 		Logger:      log,
 		Audit:       infra.AuditLogger,
 		AuditPolicy: infra.AuditFailurePolicy,
-		ClientTrust: service.ClientTrustRefresherFunc(n.refreshClientTrust),
+		ClientTrust: service.ClientTrustRefresherFunc(n.RefreshClientTrust),
 
 		SeparationOfDuties: infra.SeparationOfDuties,
 	}

@@ -26,6 +26,11 @@ type PermissionDeniedError struct {
 	// Reason provides additional context for the denial (e.g., SO deny-list).
 	// Empty when the denial is a plain permission miss.
 	Reason string
+	// Cause is a typed refusal behind the denial (for example
+	// *auth.SORoleConflictError under strict separation of duties), kept in
+	// the chain so errors.As and the transports' refusal classification see
+	// it. Nil for a plain permission miss.
+	Cause error
 }
 
 // Error returns a human-readable description of the denied permission.
@@ -39,8 +44,14 @@ func (e *PermissionDeniedError) Error() string {
 	return msg
 }
 
-// Unwrap returns auth.ErrUnauthorized so errors.Is works with the sentinel.
-func (e *PermissionDeniedError) Unwrap() error { return auth.ErrUnauthorized }
+// Unwrap returns auth.ErrUnauthorized, so errors.Is works with the sentinel,
+// and Cause when set, so errors.As reaches the typed refusal.
+func (e *PermissionDeniedError) Unwrap() []error {
+	if e.Cause == nil {
+		return []error{auth.ErrUnauthorized}
+	}
+	return []error{auth.ErrUnauthorized, e.Cause}
+}
 
 // ResolveError is returned when the role service fails to resolve
 // permissions for the given roles.

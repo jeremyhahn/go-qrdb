@@ -68,7 +68,7 @@ func (e rbacEndpoints) ListOwnPermissions(ctx context.Context) ([]transport.Perm
 	}
 	data, err := e.t.call(ctx, "role.ListOwnPermissions", nil)
 	if err != nil {
-		return nil, &transport.RequestError{Method: "ListOwnPermissions", Err: err}
+		return nil, err
 	}
 	var wire ownPermissionsWireResponse
 	if err := json.Unmarshal(data, &wire); err != nil {
@@ -84,7 +84,7 @@ func (e rbacEndpoints) ListPermissionCatalog(ctx context.Context) ([]transport.P
 	}
 	data, err := e.t.call(ctx, "role.ListPermissionCatalog", nil)
 	if err != nil {
-		return nil, &transport.RequestError{Method: "ListPermissionCatalog", Err: err}
+		return nil, err
 	}
 	var wire struct {
 		Permissions []transport.PermissionInfo `json:"permissions"`
@@ -118,7 +118,7 @@ func (e rbacEndpoints) EvaluateAuthorization(ctx context.Context, req *transport
 	}
 	data, err := e.t.call(ctx, "role.Authorize", payload)
 	if err != nil {
-		return nil, &transport.RequestError{Method: "Authorize", Err: err}
+		return nil, err
 	}
 	var decision transport.AuthorizeDecision
 	if err := json.Unmarshal(data, &decision); err != nil {

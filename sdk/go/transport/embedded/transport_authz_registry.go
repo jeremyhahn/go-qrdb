@@ -216,16 +216,20 @@ var operationPermissions = map[string]permission.Permission{
 	"LoginAuthFactor":   permission.UserAuthFactorsLogin,
 
 	// Credentials
-	"CredentialSubmit":                permission.CredentialsSubmit,
-	"CredentialStrategy":              permission.CredentialsStrategy,
-	"CredentialDelete":                permission.CredentialsDelete,
-	"CredentialList":                  permission.CredentialsList,
-	"CredentialRotate":                permission.CredentialsRotate,
-	"CredentialRetrieveVersionBuffer": permission.CredentialsRetrieveVersion,
-	"CredentialListVersions":          permission.CredentialsListVersions,
-	"CredentialGCExpired":             permission.CredentialsGCExpired,
-	"CredentialStore":                 permission.CredentialsStore,
-	"CredentialRetrieveBuffer":        permission.CredentialsRetrieve,
+	"CredentialSubmit":                   permission.CredentialsSubmit,
+	"CredentialStrategy":                 permission.CredentialsStrategy,
+	"CredentialDelete":                   permission.CredentialsDelete,
+	"CredentialList":                     permission.CredentialsList,
+	"CredentialRotate":                   permission.CredentialsRotate,
+	"CredentialSetRotationPolicy":        permission.CredentialsRotate,
+	"CredentialRotationPolicy":           permission.CredentialsRotate,
+	"CredentialMigrationConflicts":       permission.CredentialsList,
+	"CredentialResolveMigrationConflict": permission.CredentialsRotate,
+	"CredentialRetrieveVersionBuffer":    permission.CredentialsRetrieveVersion,
+	"CredentialListVersions":             permission.CredentialsListVersions,
+	"CredentialGCExpired":                permission.CredentialsGCExpired,
+	"CredentialStore":                    permission.CredentialsStore,
+	"CredentialRetrieveBuffer":           permission.CredentialsRetrieve,
 
 	// Tenant DEK keyring. Every method acts on the caller's own tenant only
 	// (ScopeSelf; the keyring service itself refuses a system-tenant
@@ -395,8 +399,8 @@ var operationPermissions = map[string]permission.Permission{
 	"PermissionClient.LookupScope": permission.PermissionsList,
 
 	// SealStore* (a generic secret-store abstraction over a seal strategy's
-	// own state, reached only through the embedded SDK -- no network route
-	// exists). seal:store_manage is ScopeCross like every other node-barrier
+	// own state, embedded-only: every remote transport refuses the verbs,
+	// ruling 1234, transport.EmbeddedOnlyOperations). seal:store_manage is ScopeCross like every other node-barrier
 	// permission, so SelfTarget here resolves to the caller's own tenant and
 	// the RBAC authorizer's ScopeCross rule admits only a system-tenant
 	// identity regardless, exactly like the "Node barrier" block above.

@@ -1341,9 +1341,7 @@ func TestCollectionService_CreateCollection_NoIndexes(t *testing.T) {
 // Interface compliance
 // ---------------------------------------------------------------------------
 
-func TestCollectionService_ImplementsCollectionServicer(t *testing.T) {
-	var _ CollectionServicer = (*CollectionService)(nil)
-}
+var _ CollectionServicer = (*CollectionService)(nil)
 
 // ---------------------------------------------------------------------------
 // Quota enforcement tests

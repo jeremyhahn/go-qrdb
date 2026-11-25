@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // Non-nil dependencies whose identity the option tests compare; none of
@@ -146,5 +147,21 @@ func TestRegisterService_RegistersQRDBService(t *testing.T) {
 	)
 	if _, ok := grpcSrv.GetServiceInfo()[pb.QRDBService_ServiceDesc.ServiceName]; !ok {
 		t.Fatalf("QRDBService not registered: %v", grpcSrv.GetServiceInfo())
+	}
+}
+
+// TestRegisterService_NoEmbeddedOnlyRPCs: the seal-store verbs are
+// embedded-only (ruling 1234), so no method or stream of the QRDB service is
+// named in transport.EmbeddedOnlyOperations.
+func TestRegisterService_NoEmbeddedOnlyRPCs(t *testing.T) {
+	for _, m := range pb.QRDBService_ServiceDesc.Methods {
+		if transport.IsEmbeddedOnly(m.MethodName) {
+			t.Errorf("gRPC method %s serves embedded-only operation %s", m.MethodName, m.MethodName)
+		}
+	}
+	for _, s := range pb.QRDBService_ServiceDesc.Streams {
+		if transport.IsEmbeddedOnly(s.StreamName) {
+			t.Errorf("gRPC stream %s serves embedded-only operation %s", s.StreamName, s.StreamName)
+		}
 	}
 }

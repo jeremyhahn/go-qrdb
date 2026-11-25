@@ -65,6 +65,7 @@ const (
 	// kdfTags:
 	//   'A' = Argon2id
 	//   'P' = PBKDF2-SHA256
+	pinHashRecordLen = 1 + 1 + 64 + 1 + 64
 )
 
 var (
@@ -83,6 +84,11 @@ var (
 	// ErrSOPINAlreadySet is returned when SetSOPIN is called for a tenant
 	// that already has a PIN committed.
 	ErrSOPINAlreadySet = errors.New("auth: SO PIN already set for tenant; use RotateSOPIN to change it")
+
+	// ErrSOPINChanged is returned by RotateSOPIN when the stored PIN record
+	// changed between the old PIN's verification and the write of the new
+	// one: a concurrent rotation won, and this one wrote nothing.
+	ErrSOPINChanged = errors.New("auth: SO PIN changed concurrently; rotation not applied")
 
 	// ErrNilStore is returned when a nil KVStore is provided.
 	ErrNilStore = errors.New("auth: nil kv store provided")
@@ -229,7 +235,9 @@ func (a *SOAuthenticator) SetSOPIN(ctx context.Context, tenantID string, newPIN 
 	}
 	defer pinBuf.Destroy()
 
-	// Reject if already committed.
+	// Refuse an already-committed PIN before paying for the KDF. This read is
+	// only the fast refusal: the conditional create in putPINRecord is what
+	// decides a race between two enrolments.
 	key := soPINCommitPrefix + tenantID
 	existing, err := a.store.Get(ctx, key)
 	if err != nil {
@@ -259,8 +267,91 @@ func (a *SOAuthenticator) SetSOPIN(ctx context.Context, tenantID string, newPIN 
 		})
 		return err
 	}
+	return a.putPINRecord(ctx, tenantID, key, record)
+}
 
-	if err := a.store.Put(ctx, key, []byte(record)); err != nil {
+// HashSOPIN hashes pin into the record SetSOPIN stores, for a caller that
+// must carry an SO's PIN to the node that commits it without carrying the
+// PIN itself: the first-boot hand-off of the system SO, which replicates
+// this record and commits it with CommitSOPINRecord. pin is not modified.
+func HashSOPIN(pin []byte) (string, error) {
+	if len(pin) == 0 {
+		return "", ErrSOPINEmptyPIN
+	}
+	return hashPIN(pin)
+}
+
+// CommitSOPINRecord commits record, made by HashSOPIN, as tenantID's SO PIN.
+// It is SetSOPIN for a PIN hashed elsewhere: the same once-only commit
+// (ErrSOPINAlreadySet when a PIN is set), the same audit. A record that is
+// not a HashSOPIN record is ErrSOPINInvalid.
+func (a *SOAuthenticator) CommitSOPINRecord(ctx context.Context, tenantID, record string) error {
+	if tenantID == "" {
+		return ErrSOPINEmptyTenant
+	}
+	if !validPINRecord(record) {
+		return ErrSOPINInvalid
+	}
+	return a.putPINRecord(ctx, tenantID, soPINCommitPrefix+tenantID, record)
+}
+
+// SOPINCommitted reports whether tenantID's SO PIN is committed. It reads
+// the record and changes nothing: first boot uses it to consume the pending
+// system SO record only once the SO it names is enrolled.
+func (a *SOAuthenticator) SOPINCommitted(ctx context.Context, tenantID string) (bool, error) {
+	if tenantID == "" {
+		return false, ErrSOPINEmptyTenant
+	}
+	existing, err := a.store.Get(ctx, soPINCommitPrefix+tenantID)
+	if err != nil {
+		return false, &OperationError{Op: "store get", Cause: err}
+	}
+	return existing != nil, nil
+}
+
+// SOPINRecordMatches reports whether tenantID's committed SO PIN record is
+// record, comparing them in constant time. It changes nothing: first boot
+// uses it to prove a PIN an earlier enrolment committed is this one's.
+func (a *SOAuthenticator) SOPINRecordMatches(ctx context.Context, tenantID, record string) (bool, error) {
+	if tenantID == "" {
+		return false, ErrSOPINEmptyTenant
+	}
+	existing, err := a.store.Get(ctx, soPINCommitPrefix+tenantID)
+	if err != nil {
+		return false, &OperationError{Op: "store get", Cause: err}
+	}
+	if existing == nil {
+		return false, nil
+	}
+	return subtle.ConstantTimeCompare(existing, []byte(record)) == 1, nil
+}
+
+// validPINRecord reports whether record has the shape hashPINImpl writes:
+// a known KDF tag, then a hex salt and a hex hash of 32 bytes each.
+func validPINRecord(record string) bool {
+	if len(record) != pinHashRecordLen || (record[0] != 'A' && record[0] != 'P') ||
+		record[1] != ':' || record[66] != ':' {
+		return false
+	}
+	_, saltErr := hex.DecodeString(record[2:66])
+	_, hashErr := hex.DecodeString(record[67:])
+	return saltErr == nil && hashErr == nil
+}
+
+// putPINRecord stores tenantID's SO PIN record under key and audits it.
+func (a *SOAuthenticator) putPINRecord(ctx context.Context, tenantID, key, record string) error {
+	// The first set is a conditional create, not an absence check followed by
+	// a Put: two enrolments racing past a Get would both write, and the later
+	// one would silently replace the PIN the earlier caller was told it set.
+	// PutIfAbsent admits exactly one; a store that cannot promise that is
+	// refused rather than degraded to the racy read-then-write.
+	store, ok := a.store.(kvstore.AtomicKVStore)
+	var stored bool
+	err := kvstore.ErrAtomicWriteUnsupported
+	if ok {
+		stored, err = store.PutIfAbsent(ctx, key, []byte(record))
+	}
+	if err != nil {
 		audit.EmitBestEffort(ctx, a.audit, "so-auth", audit.AuditEvent{
 			TenantID: tenantID,
 			Resource: "so-pin",
@@ -268,6 +359,15 @@ func (a *SOAuthenticator) SetSOPIN(ctx context.Context, tenantID string, newPIN 
 			Outcome:  audit.OutcomeFailure + ":store",
 		})
 		return &OperationError{Op: "store put", Cause: err}
+	}
+	if !stored {
+		audit.EmitBestEffort(ctx, a.audit, "so-auth", audit.AuditEvent{
+			TenantID: tenantID,
+			Resource: "so-pin",
+			Action:   "set",
+			Outcome:  audit.OutcomeFailure + ":already-set",
+		})
+		return ErrSOPINAlreadySet
 	}
 
 	a.logger.Info("SO PIN committed", slog.String("tenantID", tenantID))
@@ -409,6 +509,14 @@ func (a *SOAuthenticator) RotateSOPIN(ctx context.Context, tenantID string, oldP
 		return ErrSOPINEmptyPIN
 	}
 
+	// Read the record the old PIN is verified against, so the write below
+	// replaces exactly that record and nothing a concurrent rotation wrote.
+	key := soPINCommitPrefix + tenantID
+	prev, err := a.store.Get(ctx, key)
+	if err != nil {
+		return &OperationError{Op: "store get", Cause: err}
+	}
+
 	// Verify the old PIN first. VerifySOPIN emits its own failure audit events.
 	if err := a.VerifySOPIN(ctx, tenantID, oldPIN); err != nil {
 		return err
@@ -441,8 +549,15 @@ func (a *SOAuthenticator) RotateSOPIN(ctx context.Context, tenantID string, oldP
 		return err
 	}
 
-	key := soPINCommitPrefix + tenantID
-	if err := a.store.Put(ctx, key, []byte(record)); err != nil {
+	// A compare-and-swap against the verified record: a rotation that lost a
+	// race (or a delayed write) cannot overwrite a later PIN.
+	store, ok := a.store.(kvstore.AtomicKVStore)
+	var swapped bool
+	err = kvstore.ErrAtomicWriteUnsupported
+	if ok {
+		swapped, err = store.CompareAndSwap(ctx, key, prev, []byte(record))
+	}
+	if err != nil {
 		audit.EmitBestEffort(ctx, a.audit, "so-auth", audit.AuditEvent{
 			TenantID: tenantID,
 			Resource: "so-pin",
@@ -450,6 +565,15 @@ func (a *SOAuthenticator) RotateSOPIN(ctx context.Context, tenantID string, oldP
 			Outcome:  audit.OutcomeFailure + ":store",
 		})
 		return &OperationError{Op: "store put", Cause: err}
+	}
+	if !swapped {
+		audit.EmitBestEffort(ctx, a.audit, "so-auth", audit.AuditEvent{
+			TenantID: tenantID,
+			Resource: "so-pin",
+			Action:   "rotate",
+			Outcome:  audit.OutcomeFailure + ":changed",
+		})
+		return ErrSOPINChanged
 	}
 
 	a.logger.Info("SO PIN rotated", slog.String("tenantID", tenantID))

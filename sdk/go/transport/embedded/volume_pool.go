@@ -42,9 +42,6 @@ func (t *Transport) ListPools(ctx context.Context) ([]transport.VolumePool, erro
 	if err := t.authorize(ctx, "ListPools"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.volumeSvc == nil {
 		return nil, &NilServiceError{Service: "volume.Service"}
 	}
@@ -68,9 +65,6 @@ func (t *Transport) GetPool(ctx context.Context, name string) (*transport.Volume
 	if err := t.authorize(ctx, "GetPool"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.volumeSvc == nil {
 		return nil, &NilServiceError{Service: "volume.Service"}
 	}
@@ -89,9 +83,6 @@ func (t *Transport) CreatePool(ctx context.Context, req *transport.CreateVolumeP
 	}
 	if err := t.authorize(ctx, "CreatePool"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.volumeSvc == nil {
 		return nil, &NilServiceError{Service: "volume.Service"}
@@ -119,9 +110,6 @@ func (t *Transport) UpdatePool(ctx context.Context, req *transport.UpdateVolumeP
 	}
 	if err := t.authorize(ctx, "UpdatePool"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if req == nil {
 		return nil, &transport.RequestError{Method: "UpdatePool", Err: &transport.NilRequestError{}}
@@ -151,9 +139,6 @@ func (t *Transport) DeletePool(ctx context.Context, name string) error {
 	if err := t.authorize(ctx, "DeletePool"); err != nil {
 		return err
 	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	if t.volumeSvc == nil {
 		return &NilServiceError{Service: "volume.Service"}
 	}
@@ -169,9 +154,6 @@ func (t *Transport) ListPoolTenants(ctx context.Context, req *transport.ListVolu
 	}
 	if err := t.authorize(ctx, "ListPoolTenants"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.volumeSvc == nil {
 		return nil, &NilServiceError{Service: "volume.Service"}

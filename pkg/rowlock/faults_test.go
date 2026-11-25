@@ -265,11 +265,7 @@ func TestKeepalive_RevokedLease_MarksTheOwnerLost(t *testing.T) {
 	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeShared, 0))
 	require.NoError(t, s.deps.Lease.Revoke(context.Background(), a.lease.id))
 
-	deadline := time.Now().Add(3 * time.Second)
-	for !a.lease.lost.Load() && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
-	require.True(t, a.lease.lost.Load(), "a lease that can no longer be renewed must be noticed")
+	require.Eventually(t, a.lease.lost.Load, 3*time.Second, time.Millisecond, "a lease that can no longer be renewed must be noticed")
 	var lost *LockLostError
 	require.ErrorAs(t, a.Acquire(context.Background(), tbl, []string{keyB}, ModeShared, 0), &lost)
 }

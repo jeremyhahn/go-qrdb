@@ -15,6 +15,8 @@
 package sdk
 
 import (
+	"context"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -233,3 +235,18 @@ func SystemRoleIDs(tenantID string) map[string]string {
 // needs: "which role is named N in tenant T". qrdb's own role service
 // satisfies it, as does any consumer adapter over its own role store.
 type RoleNameResolver = role.NameResolver
+
+// RoleResolverRequiredError is returned by HoldsSystemRole when it is given
+// no RoleNameResolver. It is the role package's type, so errors.As works on
+// either side of the SDK boundary.
+type RoleResolverRequiredError = role.ResolverRequiredError
+
+// HoldsSystemRole reports whether roleIDs holds the built-in role named
+// roleName in tenantID. It resolves the role's persisted ID through svc and
+// matches IDs, never names, so a role ID that merely spells the role's name
+// does not pass. An empty tenantID is the system tenant; empty roleIDs and an
+// unknown role are false with no error; a nil svc is a
+// *RoleResolverRequiredError. It wraps role.HoldsSystemRole.
+func HoldsSystemRole(ctx context.Context, svc RoleNameResolver, tenantID string, roleIDs []string, roleName string) (bool, error) {
+	return role.HoldsSystemRole(ctx, svc, tenantID, roleIDs, roleName)
+}

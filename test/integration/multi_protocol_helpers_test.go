@@ -107,6 +107,10 @@ type multiProtoNode struct {
 	// strictSeparation marks a node under strict separation of duties, whose
 	// system admin holds no data permission (startStrictSeparationNode).
 	strictSeparation bool
+
+	// systemSOCert and systemSOKey are the system Security Officer's login
+	// the ceremony enrolled on a strict separation node (systemSOUser).
+	systemSOCert, systemSOKey string
 }
 
 // restart stops the node and relaunches it with the same start arguments,
@@ -276,9 +280,22 @@ func startStrictSeparationNode(t *testing.T) *multiProtoNode {
 	return startMultiProtocolNodeWithConfig(t, "mvcc", strictSeparationYAML)
 }
 
+// startStrictSeparationNodeWithoutSO starts a strict separation node whose
+// ceremony names no system SO: the SO is optional in both postures, and
+// such a node boots and serves but refuses its system Admin the
+// SO-exclusive operations (#1129).
+func startStrictSeparationNodeWithoutSO(t *testing.T) *multiProtoNode {
+	t.Helper()
+	return startMultiProtocolNodeWithSO(t, "mvcc", strictSeparationYAML, false)
+}
+
 // strictSeparationYAML is the daemon config fragment for strict separation of
 // duties; startMultiProtocolNodeWithConfig marks a node booted with it.
 const strictSeparationYAML = "auth:\n  separation_of_duties: true\n"
+
+// systemSOUser is the system Security Officer a strict separation node's
+// ceremony enrols, by a presented certificate under the system tenant.
+const systemSOUser = "secofficer"
 
 // startMultiProtocolNodeWithSM is startMultiProtocolNode parameterized on the
 // daemon's state machine type. smType is passed as the "--sm" flag value; an
@@ -315,6 +332,17 @@ func startMultiProtocolNodeWithArgs(t *testing.T, smType string, extraArgs ...st
 // extraYAML appended to the daemon's config file, for a setting that has no
 // daemon flag (see writeMultiProtocolSealConfig).
 func startMultiProtocolNodeWithConfig(t *testing.T, smType, extraYAML string, extraArgs ...string) *multiProtoNode {
+	t.Helper()
+	return startMultiProtocolNodeWithSO(t, smType, extraYAML, strings.Contains(extraYAML, strictSeparationYAML), extraArgs...)
+}
+
+// startMultiProtocolNodeWithSO is startMultiProtocolNodeWithConfig with the
+// system SO's enrolment chosen by the caller: a strict separation node's
+// ceremony names one only when enrollSO is set, since the SO is optional in
+// both postures (startStrictSeparationNodeWithoutSO, whose ceremony carries
+// no SO field at all). A node outside strict separation keeps the harness's
+// default system SO, whatever enrollSO says.
+func startMultiProtocolNodeWithSO(t *testing.T, smType, extraYAML string, enrollSO bool, extraArgs ...string) *multiProtoNode {
 	t.Helper()
 
 	bin := buildBinary(t)
@@ -399,7 +427,27 @@ func startMultiProtocolNodeWithConfig(t *testing.T, smType, extraYAML string, ex
 	grpcPort := mustFlagPort(t, args, "--grpc-port")
 	quicPort := mustFlagPort(t, args, "--quic-port")
 	mcpPort := mustFlagPort(t, args, "--mcp-port")
-	clientCert, clientKey := initAndUnsealBarrier(t, ca, restPort, passphrase)
+	// Strict separation keeps the SO-exclusive operations to a system SO
+	// (#1128), which is optional. A strict node with enrollSO set names one
+	// in its ceremony by a presented certificate, which the harness keeps
+	// whether or not the ceremony's reply arrives. A strict node without
+	// enrollSO runs the no-SO ceremony (initAndUnsealBarrierWithoutSO): no
+	// so_username/so_cert_pem field reaches /v1/ceremony/initialize, so the
+	// daemon boots with no SO holder at all. A node outside strict separation
+	// keeps the harness's default system SO (initAndUnsealBarrierWith).
+	strict := strings.Contains(extraYAML, strictSeparationYAML)
+	var systemSO *qrdbdharness.KeyPair
+	var clientCert, clientKey string
+	switch {
+	case strict && enrollSO:
+		systemSO = ca.issue(t, t.TempDir(), qrdbdharness.WithSubject(systemSOUser, "system"))
+		soCeremony := map[string]any{"so_username": systemSOUser, "so_cert_pem": mustReadFile(t, systemSO.CertPath)}
+		clientCert, clientKey = initAndUnsealBarrierWith(t, ca, restPort, passphrase, soCeremony)
+	case strict:
+		clientCert, clientKey = initAndUnsealBarrierWithoutSO(t, ca, restPort, passphrase, nil)
+	default:
+		clientCert, clientKey = initAndUnsealBarrierWith(t, ca, restPort, passphrase, nil)
+	}
 
 	waitForHealthy(t, dataDir, 60*time.Second)
 	waitForAdmin(t, ca.Pool, restPort, 90*time.Second)
@@ -423,7 +471,10 @@ func startMultiProtocolNodeWithConfig(t *testing.T, smType, extraYAML string, ex
 		proc:         proc,
 		configPath:   cfgPath,
 
-		strictSeparation: strings.Contains(extraYAML, strictSeparationYAML),
+		strictSeparation: strict,
+	}
+	if systemSO != nil {
+		n.systemSOCert, n.systemSOKey = systemSO.CertPath, systemSO.KeyPath
 	}
 
 	// Confirm every transport is actually serving (not just that its
@@ -763,7 +814,7 @@ func startSelfIssuedCAMultiProtocolCluster(t *testing.T) [3]*multiProtoNode {
 	credDir := t.TempDir()
 	adminCertPath := filepath.Join(credDir, "admin-cert.pem")
 	adminKeyPath := filepath.Join(credDir, "admin-key.pem")
-	var caPath string
+	var caPath, founderInit string
 	// bringUp runs node i's `qrdb init` in its sealed window, which is
 	// REST-only and unauthenticated (see startSelfIssuedCAMultiProtocolNode).
 	// The founder generates the bootstrap admin credential; every other node
@@ -772,12 +823,12 @@ func startSelfIssuedCAMultiProtocolCluster(t *testing.T) [3]*multiProtoNode {
 		connArgs := []string{"--server", listeners[i].adminURL(), "--transport", "rest", "--ca-file", caPath, "--timeout", "20s"}
 		pollUntilSealedListenerUp(t, cli, connArgs, 30*time.Second)
 		if i == 0 {
-			bootAdminIdentityVia(t, cli, connArgs, soPin, userPin, adminCertPath, adminKeyPath, "",
+			founderInit = bootAdminIdentityVia(t, cli, connArgs, soPin, userPin, adminCertPath, adminKeyPath, "",
 				"--barrier-strategy", "none")
 			return
 		}
 		bootAdminIdentityVia(t, cli, connArgs, soPin, userPin, filepath.Join(t.TempDir(), "admin-cert.pem"), "", "",
-			"--admin-cert", adminCertPath, "--barrier-strategy", "none")
+			append([]string{"--admin-cert", adminCertPath, "--barrier-strategy", "none"}, systemSOCertArgs(t, founderInit)...)...)
 	}
 
 	// A one-peer static founder runs without a Raft transport and grows only

@@ -157,6 +157,15 @@ const (
 	QRDBService_UpdateRole_FullMethodName                         = "/qrdb.v1.QRDBService/UpdateRole"
 	QRDBService_DeleteRole_FullMethodName                         = "/qrdb.v1.QRDBService/DeleteRole"
 	QRDBService_ListRoles_FullMethodName                          = "/qrdb.v1.QRDBService/ListRoles"
+	QRDBService_CreateGroup_FullMethodName                        = "/qrdb.v1.QRDBService/CreateGroup"
+	QRDBService_GetGroup_FullMethodName                           = "/qrdb.v1.QRDBService/GetGroup"
+	QRDBService_GetGroupByName_FullMethodName                     = "/qrdb.v1.QRDBService/GetGroupByName"
+	QRDBService_UpdateGroup_FullMethodName                        = "/qrdb.v1.QRDBService/UpdateGroup"
+	QRDBService_DeleteGroup_FullMethodName                        = "/qrdb.v1.QRDBService/DeleteGroup"
+	QRDBService_ListGroups_FullMethodName                         = "/qrdb.v1.QRDBService/ListGroups"
+	QRDBService_AddGroupMember_FullMethodName                     = "/qrdb.v1.QRDBService/AddGroupMember"
+	QRDBService_RemoveGroupMember_FullMethodName                  = "/qrdb.v1.QRDBService/RemoveGroupMember"
+	QRDBService_ListGroupMembers_FullMethodName                   = "/qrdb.v1.QRDBService/ListGroupMembers"
 	QRDBService_AssignRole_FullMethodName                         = "/qrdb.v1.QRDBService/AssignRole"
 	QRDBService_UnassignRole_FullMethodName                       = "/qrdb.v1.QRDBService/UnassignRole"
 	QRDBService_ListPermissions_FullMethodName                    = "/qrdb.v1.QRDBService/ListPermissions"
@@ -615,6 +624,24 @@ type QRDBServiceClient interface {
 	DeleteRole(ctx context.Context, in *DeleteRoleRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// ListRoles returns a paginated list of roles.
 	ListRoles(ctx context.Context, in *ListRolesRequest, opts ...grpc.CallOption) (*ListRolesResponse, error)
+	// CreateGroup creates a new IAM group.
+	CreateGroup(ctx context.Context, in *CreateGroupRequest, opts ...grpc.CallOption) (*GroupResponse, error)
+	// GetGroup retrieves a group by ID.
+	GetGroup(ctx context.Context, in *GetGroupRequest, opts ...grpc.CallOption) (*GroupResponse, error)
+	// GetGroupByName retrieves a group by tenant-scoped name.
+	GetGroupByName(ctx context.Context, in *GetGroupByNameRequest, opts ...grpc.CallOption) (*GroupResponse, error)
+	// UpdateGroup changes a group's name, description or role set.
+	UpdateGroup(ctx context.Context, in *UpdateGroupRequest, opts ...grpc.CallOption) (*GroupResponse, error)
+	// DeleteGroup removes a group from every member, then the group.
+	DeleteGroup(ctx context.Context, in *DeleteGroupRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// ListGroups returns a paginated list of a tenant's groups.
+	ListGroups(ctx context.Context, in *ListGroupsRequest, opts ...grpc.CallOption) (*ListGroupsResponse, error)
+	// AddGroupMember adds a user to a group.
+	AddGroupMember(ctx context.Context, in *GroupMemberRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// RemoveGroupMember removes a user from a group.
+	RemoveGroupMember(ctx context.Context, in *GroupMemberRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// ListGroupMembers returns the users that are members of a group.
+	ListGroupMembers(ctx context.Context, in *ListGroupMembersRequest, opts ...grpc.CallOption) (*ListGroupMembersResponse, error)
 	// AssignRole assigns a role to a user.
 	AssignRole(ctx context.Context, in *AssignRoleRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// UnassignRole removes a role assignment.
@@ -824,8 +851,9 @@ type QRDBServiceClient interface {
 	TenantCreate(ctx context.Context, in *TenantCreateRequest, opts ...grpc.CallOption) (*TenantCreateResponse, error)
 	// TenantGet retrieves a tenant by ID.
 	TenantGet(ctx context.Context, in *TenantGetRequest, opts ...grpc.CallOption) (*TenantResponse, error)
-	// TenantList returns metadata for all registered tenants.
-	TenantList(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*TenantListResponse, error)
+	// TenantList returns metadata for the tenants the caller may list,
+	// optionally narrowed to one status.
+	TenantList(ctx context.Context, in *TenantListRequest, opts ...grpc.CallOption) (*TenantListResponse, error)
 	// TenantUpdate applies a partial update to an existing tenant.
 	TenantUpdate(ctx context.Context, in *TenantUpdateRequest, opts ...grpc.CallOption) (*TenantResponse, error)
 	// TenantDelete removes a tenant and its metadata.
@@ -2271,6 +2299,96 @@ func (c *qRDBServiceClient) ListRoles(ctx context.Context, in *ListRolesRequest,
 	return out, nil
 }
 
+func (c *qRDBServiceClient) CreateGroup(ctx context.Context, in *CreateGroupRequest, opts ...grpc.CallOption) (*GroupResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GroupResponse)
+	err := c.cc.Invoke(ctx, QRDBService_CreateGroup_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) GetGroup(ctx context.Context, in *GetGroupRequest, opts ...grpc.CallOption) (*GroupResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GroupResponse)
+	err := c.cc.Invoke(ctx, QRDBService_GetGroup_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) GetGroupByName(ctx context.Context, in *GetGroupByNameRequest, opts ...grpc.CallOption) (*GroupResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GroupResponse)
+	err := c.cc.Invoke(ctx, QRDBService_GetGroupByName_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) UpdateGroup(ctx context.Context, in *UpdateGroupRequest, opts ...grpc.CallOption) (*GroupResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GroupResponse)
+	err := c.cc.Invoke(ctx, QRDBService_UpdateGroup_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) DeleteGroup(ctx context.Context, in *DeleteGroupRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_DeleteGroup_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) ListGroups(ctx context.Context, in *ListGroupsRequest, opts ...grpc.CallOption) (*ListGroupsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListGroupsResponse)
+	err := c.cc.Invoke(ctx, QRDBService_ListGroups_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) AddGroupMember(ctx context.Context, in *GroupMemberRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_AddGroupMember_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) RemoveGroupMember(ctx context.Context, in *GroupMemberRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_RemoveGroupMember_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) ListGroupMembers(ctx context.Context, in *ListGroupMembersRequest, opts ...grpc.CallOption) (*ListGroupMembersResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListGroupMembersResponse)
+	err := c.cc.Invoke(ctx, QRDBService_ListGroupMembers_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *qRDBServiceClient) AssignRole(ctx context.Context, in *AssignRoleRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(emptypb.Empty)
@@ -2971,7 +3089,7 @@ func (c *qRDBServiceClient) TenantGet(ctx context.Context, in *TenantGetRequest,
 	return out, nil
 }
 
-func (c *qRDBServiceClient) TenantList(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*TenantListResponse, error) {
+func (c *qRDBServiceClient) TenantList(ctx context.Context, in *TenantListRequest, opts ...grpc.CallOption) (*TenantListResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(TenantListResponse)
 	err := c.cc.Invoke(ctx, QRDBService_TenantList_FullMethodName, in, out, cOpts...)
@@ -4005,6 +4123,24 @@ type QRDBServiceServer interface {
 	DeleteRole(context.Context, *DeleteRoleRequest) (*emptypb.Empty, error)
 	// ListRoles returns a paginated list of roles.
 	ListRoles(context.Context, *ListRolesRequest) (*ListRolesResponse, error)
+	// CreateGroup creates a new IAM group.
+	CreateGroup(context.Context, *CreateGroupRequest) (*GroupResponse, error)
+	// GetGroup retrieves a group by ID.
+	GetGroup(context.Context, *GetGroupRequest) (*GroupResponse, error)
+	// GetGroupByName retrieves a group by tenant-scoped name.
+	GetGroupByName(context.Context, *GetGroupByNameRequest) (*GroupResponse, error)
+	// UpdateGroup changes a group's name, description or role set.
+	UpdateGroup(context.Context, *UpdateGroupRequest) (*GroupResponse, error)
+	// DeleteGroup removes a group from every member, then the group.
+	DeleteGroup(context.Context, *DeleteGroupRequest) (*emptypb.Empty, error)
+	// ListGroups returns a paginated list of a tenant's groups.
+	ListGroups(context.Context, *ListGroupsRequest) (*ListGroupsResponse, error)
+	// AddGroupMember adds a user to a group.
+	AddGroupMember(context.Context, *GroupMemberRequest) (*emptypb.Empty, error)
+	// RemoveGroupMember removes a user from a group.
+	RemoveGroupMember(context.Context, *GroupMemberRequest) (*emptypb.Empty, error)
+	// ListGroupMembers returns the users that are members of a group.
+	ListGroupMembers(context.Context, *ListGroupMembersRequest) (*ListGroupMembersResponse, error)
 	// AssignRole assigns a role to a user.
 	AssignRole(context.Context, *AssignRoleRequest) (*emptypb.Empty, error)
 	// UnassignRole removes a role assignment.
@@ -4214,8 +4350,9 @@ type QRDBServiceServer interface {
 	TenantCreate(context.Context, *TenantCreateRequest) (*TenantCreateResponse, error)
 	// TenantGet retrieves a tenant by ID.
 	TenantGet(context.Context, *TenantGetRequest) (*TenantResponse, error)
-	// TenantList returns metadata for all registered tenants.
-	TenantList(context.Context, *emptypb.Empty) (*TenantListResponse, error)
+	// TenantList returns metadata for the tenants the caller may list,
+	// optionally narrowed to one status.
+	TenantList(context.Context, *TenantListRequest) (*TenantListResponse, error)
 	// TenantUpdate applies a partial update to an existing tenant.
 	TenantUpdate(context.Context, *TenantUpdateRequest) (*TenantResponse, error)
 	// TenantDelete removes a tenant and its metadata.
@@ -4791,6 +4928,33 @@ func (UnimplementedQRDBServiceServer) DeleteRole(context.Context, *DeleteRoleReq
 func (UnimplementedQRDBServiceServer) ListRoles(context.Context, *ListRolesRequest) (*ListRolesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListRoles not implemented")
 }
+func (UnimplementedQRDBServiceServer) CreateGroup(context.Context, *CreateGroupRequest) (*GroupResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateGroup not implemented")
+}
+func (UnimplementedQRDBServiceServer) GetGroup(context.Context, *GetGroupRequest) (*GroupResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetGroup not implemented")
+}
+func (UnimplementedQRDBServiceServer) GetGroupByName(context.Context, *GetGroupByNameRequest) (*GroupResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetGroupByName not implemented")
+}
+func (UnimplementedQRDBServiceServer) UpdateGroup(context.Context, *UpdateGroupRequest) (*GroupResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UpdateGroup not implemented")
+}
+func (UnimplementedQRDBServiceServer) DeleteGroup(context.Context, *DeleteGroupRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteGroup not implemented")
+}
+func (UnimplementedQRDBServiceServer) ListGroups(context.Context, *ListGroupsRequest) (*ListGroupsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListGroups not implemented")
+}
+func (UnimplementedQRDBServiceServer) AddGroupMember(context.Context, *GroupMemberRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method AddGroupMember not implemented")
+}
+func (UnimplementedQRDBServiceServer) RemoveGroupMember(context.Context, *GroupMemberRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveGroupMember not implemented")
+}
+func (UnimplementedQRDBServiceServer) ListGroupMembers(context.Context, *ListGroupMembersRequest) (*ListGroupMembersResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListGroupMembers not implemented")
+}
 func (UnimplementedQRDBServiceServer) AssignRole(context.Context, *AssignRoleRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method AssignRole not implemented")
 }
@@ -5001,7 +5165,7 @@ func (UnimplementedQRDBServiceServer) TenantCreate(context.Context, *TenantCreat
 func (UnimplementedQRDBServiceServer) TenantGet(context.Context, *TenantGetRequest) (*TenantResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method TenantGet not implemented")
 }
-func (UnimplementedQRDBServiceServer) TenantList(context.Context, *emptypb.Empty) (*TenantListResponse, error) {
+func (UnimplementedQRDBServiceServer) TenantList(context.Context, *TenantListRequest) (*TenantListResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method TenantList not implemented")
 }
 func (UnimplementedQRDBServiceServer) TenantUpdate(context.Context, *TenantUpdateRequest) (*TenantResponse, error) {
@@ -7445,6 +7609,168 @@ func _QRDBService_ListRoles_Handler(srv interface{}, ctx context.Context, dec fu
 	return interceptor(ctx, in, info, handler)
 }
 
+func _QRDBService_CreateGroup_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateGroupRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).CreateGroup(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_CreateGroup_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).CreateGroup(ctx, req.(*CreateGroupRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_GetGroup_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetGroupRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).GetGroup(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_GetGroup_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).GetGroup(ctx, req.(*GetGroupRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_GetGroupByName_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetGroupByNameRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).GetGroupByName(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_GetGroupByName_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).GetGroupByName(ctx, req.(*GetGroupByNameRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_UpdateGroup_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateGroupRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).UpdateGroup(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_UpdateGroup_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).UpdateGroup(ctx, req.(*UpdateGroupRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_DeleteGroup_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteGroupRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).DeleteGroup(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_DeleteGroup_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).DeleteGroup(ctx, req.(*DeleteGroupRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_ListGroups_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListGroupsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).ListGroups(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_ListGroups_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).ListGroups(ctx, req.(*ListGroupsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_AddGroupMember_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GroupMemberRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).AddGroupMember(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_AddGroupMember_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).AddGroupMember(ctx, req.(*GroupMemberRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_RemoveGroupMember_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GroupMemberRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).RemoveGroupMember(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_RemoveGroupMember_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).RemoveGroupMember(ctx, req.(*GroupMemberRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_ListGroupMembers_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListGroupMembersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).ListGroupMembers(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_ListGroupMembers_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).ListGroupMembers(ctx, req.(*ListGroupMembersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _QRDBService_AssignRole_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(AssignRoleRequest)
 	if err := dec(in); err != nil {
@@ -8706,7 +9032,7 @@ func _QRDBService_TenantGet_Handler(srv interface{}, ctx context.Context, dec fu
 }
 
 func _QRDBService_TenantList_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(emptypb.Empty)
+	in := new(TenantListRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
@@ -8718,7 +9044,7 @@ func _QRDBService_TenantList_Handler(srv interface{}, ctx context.Context, dec f
 		FullMethod: QRDBService_TenantList_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).TenantList(ctx, req.(*emptypb.Empty))
+		return srv.(QRDBServiceServer).TenantList(ctx, req.(*TenantListRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -10495,6 +10821,42 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListRoles",
 			Handler:    _QRDBService_ListRoles_Handler,
+		},
+		{
+			MethodName: "CreateGroup",
+			Handler:    _QRDBService_CreateGroup_Handler,
+		},
+		{
+			MethodName: "GetGroup",
+			Handler:    _QRDBService_GetGroup_Handler,
+		},
+		{
+			MethodName: "GetGroupByName",
+			Handler:    _QRDBService_GetGroupByName_Handler,
+		},
+		{
+			MethodName: "UpdateGroup",
+			Handler:    _QRDBService_UpdateGroup_Handler,
+		},
+		{
+			MethodName: "DeleteGroup",
+			Handler:    _QRDBService_DeleteGroup_Handler,
+		},
+		{
+			MethodName: "ListGroups",
+			Handler:    _QRDBService_ListGroups_Handler,
+		},
+		{
+			MethodName: "AddGroupMember",
+			Handler:    _QRDBService_AddGroupMember_Handler,
+		},
+		{
+			MethodName: "RemoveGroupMember",
+			Handler:    _QRDBService_RemoveGroupMember_Handler,
+		},
+		{
+			MethodName: "ListGroupMembers",
+			Handler:    _QRDBService_ListGroupMembers_Handler,
 		},
 		{
 			MethodName: "AssignRole",

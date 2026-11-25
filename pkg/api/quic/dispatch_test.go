@@ -153,6 +153,17 @@ var expectedMethods = []string{
 	"user.Suspend",
 	"user.Unsuspend",
 
+	// IAM group management (9)
+	"group.Create",
+	"group.Get",
+	"group.GetByName",
+	"group.Update",
+	"group.Delete",
+	"group.List",
+	"group.AddMember",
+	"group.RemoveMember",
+	"group.ListMembers",
+
 	// Role management (10)
 	"role.Create",
 	"role.Get",
@@ -289,6 +300,7 @@ func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
 func TestBuildHandlers_MethodCount(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 
+	// 216 = 207 + the nine group.* IAM group methods (go-qrdb#1651).
 	// 207 = 206 + role.ListPermissionCatalog (docs/18 V12).
 	// 206 = 203 + cert.DelegationPolicyPut, cert.DelegationPolicyList and
 	// cert.DelegationPolicyDelete, the tenant's standing delegation policy
@@ -334,7 +346,7 @@ func TestBuildHandlers_MethodCount(t *testing.T) {
 	// part 2)
 	// + the 9 volumepool.* verbs (docs/volume-pools/api.md): List, Get,
 	// Create, Update, Delete, ListTenants, and the tenant-move verbs
-	// MoveTenant, GetMove, CancelMove (210 = 207 + those 3).
+	// MoveTenant, GetMove, CancelMove (219 = 207 + the nine group.* methods + those 3).
 	// cert.Export is retired entirely: encoding a PKCS#12 archive needs
 	// the private key, and no private key may reach a node (go-qrdb
 	// security review). The archive is now built LOCALLY, in the CLI and the
@@ -373,7 +385,7 @@ func TestBuildHandlers_MethodCount(t *testing.T) {
 	// kv.CompareAndDelete, kv.CompareAndSwap — go-qrdb#124), and the 161 was
 	// 160 plus user.GetByEmail, the canonical login-key lookup (go-qrdb#190).
 	// The 2 watch methods remain on the streaming path, not the unary table.
-	const wantCount = 210
+	const wantCount = 219
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}

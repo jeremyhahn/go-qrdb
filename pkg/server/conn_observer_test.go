@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go/http3"
+	"github.com/stretchr/testify/assert"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -84,25 +85,21 @@ var allConnTransports = []apimodule.Transport{
 	apimodule.TransportMCP,
 }
 
-// waitForCounts polls until cond holds for every transport or the deadline
-// passes, reporting the counts it last saw.
+// waitForCounts waits, with assert.Eventually, until cond holds for every
+// transport or the deadline passes, reporting the counts it last saw.
 func waitForCounts(t *testing.T, m *connCountingModule, what string, cond func(opened, closed int) bool) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	unsatisfied := func() map[apimodule.Transport][2]int {
 		pending := map[apimodule.Transport][2]int{}
 		for _, tr := range allConnTransports {
 			if o, c := m.counts(tr); !cond(o, c) {
 				pending[tr] = [2]int{o, c}
 			}
 		}
-		if len(pending) == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: transports not satisfied (opened, closed): %v", what, pending)
-		}
-		time.Sleep(20 * time.Millisecond)
+		return pending
+	}
+	if !assert.Eventually(t, func() bool { return len(unsatisfied()) == 0 }, 10*time.Second, 20*time.Millisecond) {
+		t.Fatalf("%s: transports not satisfied (opened, closed): %v", what, unsatisfied())
 	}
 }
 
@@ -153,16 +150,9 @@ func TestModuleConnObserver_SeesEveryListener(t *testing.T) {
 			t.Fatalf("%s: TLS dial: %v", tr, err)
 		}
 		_ = conn.Close()
-		deadline := time.Now().Add(10 * time.Second)
-		for {
+		if !assert.Eventually(t, func() bool { o, c := mod.counts(tr); return o == 1 && c == 1 }, 10*time.Second, 20*time.Millisecond) {
 			o, c := mod.counts(tr)
-			if o == 1 && c == 1 {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("%s: client closed but server reports opened=%d closed=%d, want 1/1", tr, o, c)
-			}
-			time.Sleep(20 * time.Millisecond)
+			t.Fatalf("%s: client closed but server reports opened=%d closed=%d, want 1/1", tr, o, c)
 		}
 	}
 
@@ -231,16 +221,9 @@ func TestModuleConnObserver_SeesEveryListener(t *testing.T) {
 	// client's close only when that client closes its pooled socket; those
 	// balance at Stop below.
 	for _, tr := range []apimodule.Transport{apimodule.TransportQUIC, apimodule.TransportHTTP3} {
-		deadline := time.Now().Add(10 * time.Second)
-		for {
+		if !assert.Eventually(t, func() bool { o, c := mod.counts(tr); return o == c }, 10*time.Second, 20*time.Millisecond) {
 			o, c := mod.counts(tr)
-			if o == c {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("%s: client closed but server still reports opened=%d closed=%d", tr, o, c)
-			}
-			time.Sleep(20 * time.Millisecond)
+			t.Fatalf("%s: client closed but server still reports opened=%d closed=%d", tr, o, c)
 		}
 	}
 

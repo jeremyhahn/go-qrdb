@@ -20,7 +20,7 @@ limitations under the License.
 -->
 
 This document goes with the SPEC row `rolling-upgrades` ([SPEC.md](../SPEC.md),
-issue #1628, owner decision 224). It records the current state, reviews the row
+issue #1628). It records the current state, reviews the row
 against the standards it cites, lists the questions the review must answer, and
 states the test plan. It designs nothing beyond the SPEC row. Wire formats,
 message layouts and package changes come with the implementation lanes, after
@@ -41,6 +41,7 @@ review.
 | Node release version | `VERSION` passed as `-X main.version` (default `dev`), shown only by `qrdbd version`; peers do not exchange it | `cmd/qrdbd` |
 | Capabilities RPC | 19 booleans, no server version | `CapabilitiesResponse` |
 | SDK user create | sends `pending_ttl_seconds` (#1587, on main after v0.58.5-alpha, in no release yet). An older server drops it; the SDK then sees an account with no expiry and deletes it (`transport.EnforcePendingTTL`). This is an undo after the fact, not a refusal (#1601) | `sdk/go/transport` |
+| SDK tenant list | sends the `status` filter (#1651, on the row branch, in no release yet). An older server drops it and answers every tenant; the SDK's network transports and the CLI refuse the answer with `*transport.CapabilityUnsupportedError` and no tenants (`transport.EnforceStatusFilter`). A typed refusal after the fact: the server did the unfiltered read | `sdk/go/transport` |
 | Test infrastructure | the clusterproof inventory has one image for the whole cluster; nothing builds an older release | `test/clusterproof` |
 
 Documents that say version equality is required today and change with this row:
@@ -72,10 +73,10 @@ skew", and [multi-tenancy/architecture.md](../multi-tenancy/architecture.md)
 ## Questions for review
 
 Each question has a recommendation. The owner ruled on Q4 (decision 231 (a))
-and approved the SPEC row text as written (ruling 913). The others are settled
-by convention (ruling 109) unless the review objects; Q5 stays open. The SPEC row
+and approved the SPEC row text as written. The others are settled
+by convention unless the review objects; Q5 stays open. The SPEC row
 merges on that recorded approval of its text, as the rules of
-[SPEC.md](../SPEC.md) require. Owner decision 224 ordered the row.
+[SPEC.md](../SPEC.md) require.
 
 1. **What "adjacent" means before 1.0.** Recommendation: consecutive minor
    releases, 0.y.z and 0.(y+1).z, with any patch levels. From 1.0 on: consecutive
@@ -91,13 +92,16 @@ merges on that recorded approval of its text, as the rules of
 4. **SPEC Boundaries ban on compatibility shims** ([SPEC.md](../SPEC.md)
    Boundaries; [multi-tenancy/architecture.md](../multi-tenancy/architecture.md)
    "No backward-compatibility code"). Speaking release N's wire from N+1 is
-   compatibility code. Ruled (owner decision 231 (a), ruling 913): the ban is scoped. Code that
+   compatibility code. Ruled: the ban is scoped. Code that
    speaks exactly one previous release's wire, behind the version negotiation and
    deleted in the release after, is allowed. Any other shim stays banned.
 5. **How a client learns what a server supports** (the #1601 TTL case). Left
    open for review. The options are a server release version in the capabilities
    response, a per-feature capability bit, or a typed refusal from the server.
    The SPEC row requires only that the field is never silently dropped.
+   The tenant list `status` filter (#1651) is answered by a client-side check
+   of the returned statuses (`transport.EnforceStatusFilter`), so it needs no
+   capability bit; that settles this field only, and the question stays open.
 
 ## Test plan
 
