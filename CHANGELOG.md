@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 Pre-1.0, MINOR is where breaking changes live; PATCH is reserved for changes
 that do not move the API. What holds from the first release candidate on is
-proposed in [docs/release/compatibility.md](docs/release/compatibility.md).
+set out in [docs/release/compatibility.md](docs/release/compatibility.md).
 Releases before `0.2.0-alpha` predate this file and
 are not reconstructed here — their history is in the git log.
 
@@ -15,9 +15,49 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
-- `Client.Permissions()` is a required capability and never returns nil on an open client: gRPC, REST, QUIC, Unix and MCP now implement `transport.PermissionProvider` over the new `ListPermissionCatalog` RPC (`GET /permissions/catalog`, QUIC `role.ListPermissionCatalog`, MCP `qrdb_permissions_catalog`, gated on `permissions:list`), which answers every registered permission with its scope, sorted by name. `Lookup`/`LookupScope` return `PermissionNotFoundError` for an unknown name and an error for an empty scope. `qrdb roles permissions --detail` lists the catalog with resource, action and scope; the default output is unchanged (docs/18 V12, #1647).
+- **Roles come only from the bound user record (#1651).** An authenticator's or token's role list is discarded on every path; a subject with no go-qrdb record, a sealed tenant and a node with no user store carry no roles. `authtest.FixedAuthenticator` gains `Users()`, the read-only user store a test pairs with it so its fixed identity's roles resolve through a record (SPEC `authz-claim-roles`).
 
+- Verifiable log review fixes (#1655): the kv surface refuses a barrier database's reserved verifiable-log keyspace with `ReservedKeyError` (`InvalidArgument`); dropping a database reclaims its logs, so a re-created name starts empty; a barrier tenant's audit trail stays on the system shard, as before, and the log service reads it there; only that audit log goes there, and the tenant's other logs stay under its own barrier; a tenant's encryption migration carries its verifiable logs; a drop reclaims logs before the name is released, behind the new `verifiable-log-drop` feature gate.
+- A verifiable log records its database's incarnation only once the `verifiable-log-drop` feature is active on its group, and a key rotation of a log that records one is refused with `LogFeatureNotActiveError` until then; a log that records none (created before incarnations were recorded, or during a rolling upgrade) is read, listed, appended to and rotated in the database that holds its name (#1655).
+- Verifiable log review fixes (#1655): the kv surface refuses a barrier database's reserved verifiable-log keyspace with `ReservedKeyError` (`InvalidArgument`); dropping a database reclaims its logs, so a re-created name starts empty; a barrier tenant's audit trail stays on the system shard, as before, and the log service reads it there; only that audit log goes there, and the tenant's other logs stay under its own barrier; a tenant's encryption migration carries its verifiable logs; a drop reclaims logs before the name is released, behind the new `verifiable-log-drop` feature gate; a barrier tenant's named databases keep their drop fence in the tenant's home group, where their logs are proposed, so a live one creates logs instead of being refused as being dropped.
+- The verifiable log serves barrier-isolated tenants (#1613). A barrier tenant's logs, entries and sealed head-signing keys are applied into and read from its own barrier-sealed home group, so snapshot and restore carry them with that group. A sealed barrier refuses every log call with the error it returns for other reads, a standalone node serves them from the tenant's own standalone barrier store (`AttachLocalTenantHomes`), and a node with neither a home group nor an attached standalone store refuses with `BarrierStoreUnavailableError` (`Unavailable`). `BarrierTenantLogNotSupportedError` is removed.
+- A barrier-enabled database's verifiable logs live in its tenant's Raft group, sealed under the database's key (#1613, owner ruling 1234): each entry's leaf hash is computed over the plaintext and its body sealed before the propose (sub-type 8), and a software signing key's PKCS#8 is sealed (new sub-types 9 and 10); the sealed writes need the `verifiable-log-sealed` feature. The database's own log store is removed.
+- The verifiable log is served in a barrier-enabled database (#1613): its logs are encrypted under the database's key, refused as sealed (`BarrierSealedError`, `Unavailable`) while the database is sealed, served unchanged after the unseal, and gone with the database on drop. The error that refused every log call in a barrier-enabled database is removed. A legacy raft barrier record is refused with `BarrierOffDataPathError` (`Unprocessable`).
+- A standalone node's audit trail is the tenant's audit log instance `<tenant>/system/audit` (#1613): its single-binary host writes every event with the `AuditAppend` sub-type, as a Raft group does once `verifiable-log-audit` is on, so `qrdb vlog head`, `get` and `prove-inclusion` serve it; the trail stays continuous with the events written before, and a build without `qrdb_vlog` keeps `OpAuditAppend`.
+- The REST transport sends the `X-QRDB-Database` scope header on `/vlog` requests, so `--database` reaches the server over REST as it does over every other transport (#1613).
+- **Tests/Docs.** The `pkg/server` `WithWebTransportHandler` wiring is proven by a started server serving an authenticated WebTransport session (`TestWithWebTransportHandler_ServedSessionReachesTheHandler`); `docs/api-server/api.md` and `architecture.md` describe the route (#1244).
+
+- **Tests/Docs.** The WebTransport `CONNECT` is proven to pass the REST sealed-window (`503`), awaiting-admin-credential (`503`) and client-limit (`429`) layers before the handler runs, and to be refused on the HTTP/1.1 and HTTP/2 listeners (`TestWebTransport_RESTLayersRefuseBeforeTheHandler`, `TestWebTransport_TCPListenersDoNotSpeakWebTransport`); `docs/api-server/api.md` lists the refusals (#1244).
+
+- **Tests/Docs.** A WebTransport session opened with a client certificate (mTLS) is proven to reach the handler with the certificate's subject and tenant; a refused certificate gets the status REST gives and a client tenant header is ignored (`TestWebTransport_MTLSSessionReachesTheHandler`, `TestWebTransport_RefusedCertificateStatusMatchesREST`, `TestWebTransport_TenantIsTheIdentitysNotAHeader`); `docs/api-server/user.md` describes it (#1244).
+
+- The clusterproof final read is bounded by the post-run deadline, not only by each operation's `OpTimeout`, and a workload operation that times out unanswered, a read included, fails its client over to the next node, so a read-only client no longer stays on a half-open session (#1637).
+- CBOR document writes are decoded back once and refused with `dao.CBORDecodeShapeError` when unreadable (for example a nested map with non-string keys); `make test-tags` runs `pkg/dao` and `pkg/service` under `codec_cbor`.
+- `pkg/codec`, a second wrapper over msgpack, yaml.v3, bson and protobuf, is removed with its Manager, Transcode, OptimizedCodec and Config API: collections, the database `storage_codec` check, the SDK's `AvailableCodecs` and batch import now take their storage codecs from go-codec through `pkg/dao` (`dao.NewCodec`, `dao.DocumentCodecs`), and import format detection lives in the batch import. The `codec_msgpack`, `codec_yaml`, `codec_bson` and `codec_protobuf` build tags and the Makefile's `WITH_CODEC_*` switches are removed; those formats are always built. Protobuf is no longer accepted as a collection or database storage codec. Documents already stored as msgpack, bson or yaml decode unchanged.
+- The vector state machine's commands, results and snapshots, the stored vector and namespace records, batch import's YAML parser and the CLI's `--output yaml` printer go through go-codec's msgpack and yaml codecs instead of calling vmihailenco/msgpack and yaml.v3 directly. The encoded bytes and the printed YAML are unchanged, so existing vector data, Raft logs and snapshots decode as before; byte-fixture tests pin them (#1646).
+- Config defaults and provider key case read YAML through go-codec's yaml codec, and a build gate (`test/buildgates/direct_format_imports_test.go`) holds direct yaml.v3, msgpack, cbor and bson imports, in test files as well as in code, to the named go-codec gap sites listed in the gate's goCodecGapSites and goCodecTestGapSites maps; tests that only decode plain structs (the CI-workflow build gates and the engine's CBOR fixture) now go through go-codec too (#1646).
+- Secondary indexes require the json storage codec: `CreateCollection` refuses index definitions when the collection's codec (or the database default) is not json, and insert, update and upsert into such an indexed collection are refused before anything is proposed, with `service.CollectionInvalidIndexError` (400 / `INVALID_ARGUMENT`). Replay of committed writes is unchanged.
+- The developer, test-stack and CUDA images are stages `dev`, `dev-deps`, `dev-integration` and `gpu` of `build/docker/devcontainer/Dockerfile`; their compose services live in `build/docker/devcontainer/compose.yaml`, VS Code opens `.devcontainer.json`, the machine-local env file is `build/docker/devcontainer/.env`, and the `.devcontainer/` directory is removed. A bare `docker compose build` needs `GO_IMAGE` and `TRIVY_IMAGE` in the environment (make exports both) (#1654).
+- Tests: cmd/qrdbd waits on the observed condition with bounded testify polls instead of fixed sleeps (#566)
+- Tests: pkg/service, pkg/volume and pkg/credentials wait on the observed condition with bounded testify polls instead of sleep loops (#566)
+- Tests: pkg/clienttrust, pkg/cert, pkg/cluster, pkg/clusterenroll, pkg/replicaforward, pkg/database, pkg/engine, pkg/store, pkg/sql/internal/sessionguard and pkg/bootstrap wait on the observed condition with bounded testify polls instead of sleep loops (#566)
+- Tests: pkg/api/connlimit, pkg/api/grpc, pkg/api/quic, pkg/sql/pgsql, pkg/statemachine, pkg/firstboot and pkg/rowlock wait on the observed condition with bounded testify polls instead of sleep loops (#566)
+- Tests: the sdk/go module (conformance, driver, node, testutil harnesses, transport/embedded) and test/clusterproof wait on the observed condition with ticker waits or a bounded `require.Never` instead of sleep loops (sleep sweep 8, #566)
+- Tests: test/integration polls through its `pollUntil` helper and the test/performance harnesses wait on tickers instead of sleep loops (sleep sweep 9, #566)
+- Tests: pkg/discovery drops its bare `<-time.After` sleeps for waits on owned state, `synctest.Test` bubbles or ticker waits (sleep sweep 10, #566)
+- Tests: the in-process windows of pkg/sql/internal/sessionguard and pkg/service run in `synctest.Test` bubbles on a fake clock (sleep sweep 11, #566)
+- Tests: the sdk/go lease tests run in `synctest.Test` bubbles and assert exact deadlines (sleep sweep 12, #566)
+- Tests: the injected store latency in pkg/backend and pkg/trustanchor tests is fake time inside `synctest.Test` bubbles (sleep sweep 13, #566)
+- Tests: the cluster-proof soak fake store and the etcd serial-stream detector run their latency on the `synctest.Test` fake clock (sleep sweep 14, #566)
+- Tests: pkg/service drops constructor non-nil and implements-interface tautologies; each path stays checked by a named test or a compile-time guard (#566)
+- Tests: cmd/qrdb and cmd/qrdbd drop non-nil and implements-interface tautologies; each path stays checked by a named test or a compile-time guard (#566)
+- Tests: pkg/server, pkg/database, pkg/seal and pkg/sql/provider drop non-nil and implements-interface tautologies; each path stays checked by a named test or a compile-time guard (#566)
+- Tests: pkg/api/rest, pkg/dao, pkg/statemachine and sdk/go (driver, MCP, QUIC and Unix transports) drop non-nil and implements-interface tautologies; each path stays checked by a named test or a compile-time guard (#566)
+- Tests: the HTTP/3 survival check, the default-snapshot log-range read and the startup-read and cluster CA backoff cancels assert what they claim again after the sleep sweeps (#566)
+- `Client.Permissions()` is a required capability and never returns nil on an open client: gRPC, REST, QUIC, Unix and MCP now implement `transport.PermissionProvider` over the new `ListPermissionCatalog` RPC (`GET /permissions/catalog`, QUIC `role.ListPermissionCatalog`, MCP `qrdb_permissions_catalog`, gated on `permissions:list`), which answers every registered permission with its scope, sorted by name. `Lookup`/`LookupScope` return `PermissionNotFoundError` for an unknown name and an error for an empty scope. `qrdb roles permissions --detail` lists the catalog with resource, action and scope; the default output is unchanged (docs/18 V12, #1647).
 - CI runs every job on the standard GitHub-hosted `ubuntu-latest` runner for every event, a push to `main` and a same-repository pull request included (owner ruling 999). The pool split (ruling 841) and the pool image producer that published the pool legs' images to the LAN CI registry (ruling 879) are removed; a job may run self-hosted only with a `# self-hosted: <reason>` comment naming the hardware it needs or the measured hosted limit it exceeds, and none does. Code review's review jobs keep their self-hosted review hosts.
+- Binding a node to the replicated credential store moves the earlier store's records one credential at a time (#1201): the current value, metadata, version history, staged rotations and migration claim of a name are written in one guarded batch that requires every destination key absent, and the source records go only once that batch applied. A name the new store already holds any record of is not moved: both copies stay as they are and the move reports the names (never values) in a `credentials.LayoutConflictError`, logged as a warning at bind. Every plaintext value the move read is wiped after its write attempt. A move cut after a batch applied deletes the source on the next operation without writing it again, and a sealed source store moves nothing and refuses every credential verb with `seal.ErrSealed`. A conflicting name's migration import records are still copied into the new store, so a retried legacy import there imports nothing.
+- A credential whose migration claim record does not decode is refused with `credentials.ErrCorruptMigrationClaim` (classified DataLoss, not retryable) on every verb and on `MigrateLegacy`, instead of the retryable `ErrStoreUnavailable` it was reported as (#1201). The error names the credential, never the record's bytes; the claim is never overwritten, so an operator must remove it. A delete still proceeds and leaves the claim as it is.
 - CI hands the toolchain and integration-test images between jobs through the LAN CI registry (the repository secret secrets.CI_IMAGE_REGISTRY, so every log line masks its address) on self-hosted runners; GitHub artifacts remain the path on GitHub-hosted runners and whenever a pull fails.
 - `make docker-build-toolchain`, `make docker-build-it` and `scripts/in-toolchain-image.sh` pull the content-hash-tagged image from the CI image registry the runner's environment names in `CI_IMAGE_REGISTRY` before they build, and push what they built to it (`scripts/image-registry.sh`, #1609), so a runner host no longer builds every image on its own disk. A failed or hung pull or push falls back to the build and never fails the job; each image logs one line (`pulled`, `miss, built and pushed` or `miss, built, push failed`); unset, nothing changes.
 
@@ -26,18 +66,74 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **A status-filtered tenant list is never answered unfiltered (#1651).** A server older than the tenant list status filter drops `?status=` (REST), `TenantListRequest.status` (gRPC, Unix), the `tenant.List` payload (QUIC) or the `qrdb_tenant_list` `status` argument (MCP) and answers every tenant. The Go SDK's `ListTenants` on those five transports now ends in `transport.EnforceStatusFilter`, which refuses such an answer with `*transport.CapabilityUnsupportedError` and no tenants when any returned tenant's status differs from the filter, so `qrdb tenant list --status` exits non-zero naming the refusal instead of printing every tenant (SPEC rolling upgrades item 5).
+- `qrdb credential rotation-policy` and `migration-conflicts` print the same snake_case keys with `--output yaml` as with `--output json` (#1201).
+- A credential read or listing that a system seal overtakes while it is in flight returns `seal.ErrSealed` and no value; the bytes read are zeroed (#1201).
+- The scheduled credential rotation sweep bounds its barrier listing and each tenant's store lookup at 30 s: a store that never answers no longer holds the sweep, and a tenant whose lookup times out is reported while the sweep goes on to the next tenant (#1201).
+- The Go SDK's rotation-policy, migration-conflict, delete, rotate, list-versions, retrieve and retrieve-version credential verbs return `*transport.KeyNotFoundError` for a missing credential, version or conflict on every transport: REST no longer returns a 404 `*transport.RequestError` and embedded no longer returns the raw `credentials.ErrCredentialNotFound` / `ErrMigrationConflictNotFound` / `ErrVersionNotFound` / `ErrVersionExpired` (#1201).
+- **Seal-store errors are embedded-only (#1647).** On a node's embedded client a seal-store call made while the barrier is sealed is refused by the node's seal gate first, so the caller sees `seal.ErrSealed` (`errors.Is`); `sdk.ErrSealStoreBarrierSealed` is the store's own guard behind it. A missing secret and an invalid name surface as `sdk.ErrSealStoreSecretNotFound` and `seal.ErrInvalidSecretName`, matched with `errors.Is`. No remote RPC returns them and the embedded transport returns them unclassified, so they carry no structured refusal reason and the `errclass` table no longer has rows for them.
+- **The embedded node serves the seal store (#1647).** `node.Client().SealStore()` is wired over the node barrier. Before this, every verb answered "SealStore must not be nil".
+- **The desktop build's embedded binding serves the seal store (#1647).** The desktop/GUI build's embedded client now answers put, get, list, delete, reseal and status over its embedded barrier; before, every verb answered "SealStore must not be nil".
+- **A barrier tenant's database data keeps its drop fence (#1613).** A barrier tenant's data fence stays on the system store, where its database data is served; only its logs' fence is kept in its home group (`StoreResolver.LogFenceTarget`), so a drop fences both and kv writes in a re-created database succeed.
+- **A signed head belongs to the incarnation it was admitted under (#1613).** `SignHead` admits first and reads the descriptor and head through the admitted group, so a signer paused across a database drop and re-create is refused with `DroppingError` instead of signing the old incarnation's head; `RotateKey` re-reads the descriptor under the admitted incarnation.
+- **Dropping an untenanted database reclaims its verifiable logs (#1613).** The drop skipped a database with no tenant, whose logs the log service keeps under the `system` tenant, so a re-created database of the same name could not create a log of an old name ("already exists"). The drop now checks and reclaims them under the `system` tenant; a tenant's drop is unchanged.
+- **A database drop deletes log descriptors and heads in bounded steps (#1613).** A completed log's descriptor and head count against `MaxPrunePerCommand`, so a database of many empty logs no longer deletes them all in one command.
+- **encfs: every synced record survives a power cut (go-xkms #2290).** The encrypting file system rewrote a WAL's trailing partial block in place on every Sync, so an unclean power loss or ENOSPC during the rewrite tore a block that already held synced records, and the next boot failed WAL replay with `encfs: block authentication failed`. Pebble WALs and MANIFESTs are now written in a framed, seal-on-sync layout: a frame is never rewritten once a Sync made it durable, each frame carries its plaintext length authenticated with its index, and two sealed commit slots after the header record the durable boundary (the count and physical end of the synced frames). On open, bytes past the durable boundary (a torn or unsealed tail written after the last Sync) are the end of the log; a synced frame, including the final one, that is corrupted, truncated or fails authentication refuses the open with `ErrAuthFailed` and leaves the file unchanged. The layout flag in the file header is sealed with the file's DEK, so a header whose flag was altered is refused (`HeaderLayoutMismatchError`) rather than read in the wrong layout. Other files keep the fixed-size block layout. A WAL or MANIFEST written in the old layout records no durable boundary, so one whose final block is shorter than the block overhead (`TrailingBlockTooShortError`) or fails authentication (`ErrAuthFailed`) is refused explicitly rather than opened short; an undamaged one opens unchanged.
 - **A stalled QUIC health probe no longer spends a client's whole timeout.** The SDK's QUIC Connect bounded its admin.Health probe only by the caller's timeout, so one stream the server never answered held the only attempt until `--timeout` ran out ("no healthy connection after 1 attempt(s)"). Each attempt's probe is now bounded by 5 s or a third of the time left, and a stalled probe is retried on a fresh connection within the caller's bound.
+- **Encryption-migration recovery keeps the seal store readable (#1647).** A boot that rolls an interrupted encryption migration forward now refuses a staging root key it cannot read (or finds empty) before it touches any store, record, staging key or the journal, so the seal-store secrets are never overwritten with ciphertext no key reads; and for a Shamir target it adopts the staged wrapped root key before the root-key envelope, as a completed migration does, so the node can still be unsealed. A Shamir roll-forward (the staging envelope's strategy or the journal's `TargetStrategy` names Shamir) refuses a missing, nil or empty staged wrapped key with `ErrMigrationStagingRootUnreadable` before any mutation. A refused recovery stops an embedded node's startup (`buildNodeSealSubsystem` closes the seal store and returns the error) as it stops the daemon's boot, and the kept journal makes the next start retry.
+- **QUIC permission refusals keep their status (#1647).** The QUIC permissions client (`ListOwnPermissions`, `ListPermissionCatalog`, `Authorize`) wrapped a refused call's typed `*transport.RequestError` in a second one with status 0; it now returns the call error as-is, so `errors.As` reads the wire status (permission denied is 4), as `kv.Get` already did.
 - **Key delivery works with `auth.enabled=false` (#1174).** An auto-provisioned key-delivery listener asks for node client certificates and trusts only the ceremony CA for them, so the cluster key route refuses a caller without a verified node certificate.
 - **Raft-mode disk state machines are durable (#1618).** `DiskAdapter.Sync` was a no-op, so go-quicraft could compact the Raft log past applied state the Pebble store (opened without synced writes) had never made durable, and a crash lost acknowledged writes. `PebbleStorage` now implements `storage.Syncer` (a synced WAL record, or a memtable flush when the WAL is disabled) and `DiskAdapter.Sync` calls it and returns its error. `QRDB_NOSYNC_WRITES=1` skips the Raft WAL fdatasync only in a `qrdb_testonly` build; a production build ignores it and logs one warning.
 
 ### Added
 
+- **IAM groups (#1651).** A group is a named set of one tenant's roles; every member holds the group's roles in addition to its own, unioned at identity binding from `User.GroupIDs`. Groups are managed on REST (`/groups`), gRPC and Unix (`GroupService`), QUIC (`group.*`), MCP (`qrdb_group_*`), the Go SDK (`Client.Groups()`, every transport including embedded) and the CLI (`qrdb groups`), under seven `groups:*` permissions granted like their `roles:*` counterparts; adding a member requires the right to assign every role of the group. Groups are stored per tenant like roles (`group.NewRoutingService`): a dedicated-isolation tenant's groups live inside its own barrier and a sealed tenant's groups fail closed. Under strict separation, dropping `so` from a group's roles or deleting a group that carries `so` is refused (`SORoleRequiredError`) unless the caller is the tenant's Security Officer. The TypeScript SDK adds `groups` to the shared `Client` interface, on `RestClient` (REST) and `WailsClient` (the desktop `GroupBinding`, Go wire keys), and the desktop app adds an Admin > Groups view (list, create, edit roles, members, delete).
+
+- **Unix peer-credential identity (#1651).** On Linux, `unix.peer_credentials` maps the `SO_PEERCRED` uid or gid of a process on the Unix socket to a go-qrdb account (never a role); the account's roles decide through RBAC. The `peercred` authenticator runs last in the chain, so a client certificate still wins; an unmapped peer is refused with `peer_credential_unmapped` (`UNAUTHENTICATED`), and a mapping whose account does not exist or was deleted with `peer_credential_account_missing` (`UNAUTHENTICATED`), and a mapping whose tenant IAM is sealed with the retryable sealed answer (503 / `UNAVAILABLE`), never the sealed-window barrier fallback. The peer-credential authenticator's decline on a request with no peer credential never masks an earlier method's error: an mTLS revocation-lookup failure stays 503 / `UNAVAILABLE` instead of becoming 401. See [docs/12-configuration.md](docs/12-configuration.md#unix).
+- **Tenant list status filter (#1651).** The tenant list takes an optional status: REST `GET /v1/tenants/list?status=`, gRPC and Unix `TenantList(TenantListRequest{status})`, QUIC `tenant.List`, MCP `qrdb_tenant_list` `status`, sdk/go `ListTenantsRequest.Status`, and `qrdb tenant list --status`. `active`, `suspended` or `disabled` keeps only tenants with exactly that status; empty lists all; any other value, `deleted` included, is refused with `*tenant.InvalidStatusError` (400 / `INVALID_ARGUMENT`). The filter runs after the `tenants:list:cross` narrowing. **Breaking (sdk/go):** `TenantClient.ListTenants(ctx)` is now `ListTenants(ctx, req *transport.ListTenantsRequest)`; pass nil for the unfiltered list. gRPC `TenantList` takes `TenantListRequest` instead of `google.protobuf.Empty`.
+- **Object-owner authorization (#1651).** The ABAC condition `subject.owns_resource` is true only when the owner an embedder's store put on the context with `auth.WithResourceOwner` (`sdk.WithResourceOwner`) is non-empty and equals the caller's bound account (`auth.UserSubject(UserID)`, `UserID != 0`), and fails closed otherwise; the decorator also exposes that owner as `resource.owner`. The Go rule `auth.OwnObject` (`sdk.OwnObject`), the object twin of `OwnTenant`, refuses anyone else with `*ObjectOwnerDeniedError` (PermissionDenied). Ownership needs a bound account: a holder-certificate or service identity whose subject string equals an account id does not own that account's objects.
+- **Device pairing and sharing, the shared-password override, and the IAM SDK names (#1651).** `device:pair`, `device:revoke`, `device:share` and `device:sync` are registered (ScopeSelf, Admin and Owner); `passwords:override_ownership` lets the Security Officer and the Admin act on a shared password whatever its owner (ScopeSelf, enforced by the consumer's password store). `sdk/go` adds `sdk.HoldsSystemRole`, `sdk.RoleResolverRequiredError` and `sdk.Permission*` names for the keys, certs, passwords, ssh, pin, piv, `devices:onboard` and `device:*` permissions.
+- **Named credentials rotate on a policy, once per interval across the cluster.**
+  A `barrier` credential can carry a rotation policy (enabled, interval,
+  versions retained) in its metadata record; `RotateDue` rotates each due
+  credential once under a guarded claim, with the next value from the
+  embedder's `WithRotationValueSource` (`node.WithCredentialRotationValueSource`).
+  With no source a due credential reports `ErrNoRotationValueSource`, and a
+  policy on a `manual` service is refused with `InvalidRotationPolicyError`.
+  A tenant's credential store of record is now its replicated home store; the
+  tenant barrier is read once, as the migration source of the old layout
+  (part 1 of #1201). A Buffer a failing rotation value source or
+  `credential://` retrieve still returns is now destroyed, not leaked.
+- **`sdk.TenantFromCert` and `sdk.SystemRoleIDs` (ruling 557).** `sdk.TenantFromCert(cert, trustDomain)` is the composer-side form of `MTLSAuthenticator.TenantFromCert`, with the rule, refusals and errors of `sdk.TenantFromClientCert`. `sdk.SystemRoleIDs(tenantID)` (over the new `role.SystemRoleIDs`) maps every system role name to its one canonical `SystemRoleID`, in a fresh map per call; it is not the removed UUIDv5/v8 dual-read set.
+- **Every node rotates due credentials on a ticker, and the rotation policy is
+  set and read on every server transport.** `pkg/server` checks every
+  `seal.credential_rotation_check_period` (default `1m`), skipping the pass
+  while the node is sealed. Rotation-policy set and get, and migration-conflict
+  list and resolve, are served on REST (`PUT`/`GET
+  /v1/credentials/{name}/rotation-policy`, `GET
+  /v1/credentials/migration-conflicts`, `POST
+  /v1/credentials/{name}/migration-resolve`), gRPC and Unix, QUIC and MCP under
+  `credentials:rotate`. A REST name holding `/` or `%` travels as one escaped
+  segment, produced by the Go SDK's REST transport; a segment that does not
+  unescape is a 400 (part 2 of #1201).
+- **Rotation policies and migration conflicts from every SDK transport and the
+  `qrdb` CLI.** `transport.Client`'s credentials surface gains
+  `CredentialSetRotationPolicy`, `CredentialRotationPolicy`,
+  `CredentialMigrationConflicts` and `CredentialResolveMigrationConflict`,
+  implemented by the embedded, gRPC, MCP, QUIC, REST and Unix transports (the
+  embedded one under `credentials:rotate`, `credentials:list` for the
+  conflict list). The CLI adds `qrdb credential rotation-policy set|get` and
+  `qrdb credential migration-conflicts list|resolve`, driven end to end over
+  every transport (part 3 of #1201). Each transport refuses an unknown
+  resolution, a name with no conflict and a missing permission with the typed
+  error, and a tenant's rotation policy governs only that tenant's credential
+  (#1548).
+- **Seal-store data is embedded-only (#1647, ruling 1234).** `Client.SealStore()` (put, get, list, delete, reseal, status) is served only by the embedded transport. Every remote transport (gRPC incl. gRPC-Web, Unix, REST, QUIC and MCP) refuses each verb before any I/O with `*transport.EmbeddedOnlyError` (`errors.Is(err, transport.ErrEmbeddedOnly)`, the operation and transport named, wire reason `EMBEDDED_ONLY`); `transport.EmbeddedOnlyOperations` lists the verbs. The node serves no seal-store route: no REST `/v1/seal-store` route, no gRPC/Unix `SealStore*` RPC, no QUIC `sealstore.*` method and no MCP `qrdb_seal_store_*` tool. Seal and unseal stay on every transport, gRPC-Web included (BarrierSeal carries the barrier SO PIN in `BarrierSealRequest.so_pin`, as on native gRPC). The seal store's consumers are `sdk/go/node`'s client and the desktop/GUI build's embedded binding; there is no `qrdb seal-store` CLI group, because the shipped `qrdb` binary links no in-process node and so no CLI build could serve the data. A secret name may not be empty, `.` or `..`, or contain `/`, `\` or a control character (`seal.ErrInvalidSecretName`); reseal is one serialized write that leaves the old record on failure; and `enable-encryption` re-encrypts the seal store under the new root key, rolls it forward at boot after a crash past the commit point and compacts its plaintext history out of the seal store's files. A record stored before the name rule (for example `tls/key`) stays listed, readable, deletable and resealable through the embedded `seal.SealStore`, while Put refuses such a name.
 - **`sdk/go` re-exports the policy mint (#1187).** `sdk.MintDelegationRequest`, `sdk.IssuedDelegation` and `sdk.DelegationPolicyNotFoundError` name `Node.MintDelegation`'s request, result and refusal, so an embedder never imports `pkg/*`; an operation the minted scope does not hold is refused with `sdk.PermissionDeniedError` in the delegating tenant itself, pinned on the SDK and over every CLI transport.
 - **Embedder operations under a policy-minted delegation (#1187).** Role and effective-permission reads for one account (`roles:read`, `users:read`, `permissions:resolve`), role assign/unassign, and `tenant_barrier:officer_list` and `tenant_barrier:seal` run in the delegating tenant under a delegation minted on its standing policy, through the node's authorization middleware: allowed and audited in that tenant, refused in every other tenant and the system tenant, and refused once the policy is deleted and the serial revoked, on the SDK and over every CLI transport (REST, gRPC, QUIC, MCP, Unix). Delegation admission needs a revocation checker that answers uncached (`auth.UncachedRevocationChecker`, as `cert.RevocationCache` does), so a revoke refuses the next call whatever the cache TTL; a checker without it, including a wrapper that embeds `auth.RevocationChecker`, has every delegation refused. See [docs/identity-rbac/user.md](docs/identity-rbac/user.md#letting-it-renew-on-its-own-a-standing-policy).
 - **Pending users with a TTL (#1583).** A pending create may carry a time-to-live: REST `pending_ttl`, gRPC and Unix `CreateUserRequest.pending_ttl_seconds`, QUIC `pendingTTL`, MCP `qrdb_user_create` `pending_ttl`, sdk/go `CreateUserRequest.PendingTTL`, and `qrdb users create --pending --pending-ttl`. User reads carry the expiry (`pending_expires_at`, `pending_expires_at_unix`, `pendingExpiresAt`, `User.PendingExpiresAt`). Activation (`EnableUser`) clears it. A leader-only reaper deletes pending users past their TTL, with their role assignments and factors, and audits `pending_reaped`; it never touches an active user. `auth.pending_user_sweep_interval` sets the sweep period (default `1m`; `off` disables). On a cluster, TTLs need the `pending-user-ttl` cluster feature: until every member advertises it a TTL-bearing create is refused as not active and the reaper does not sweep.
 - **`qrdb ca delegate policy put|list|delete` (#1187).** The CLI writes, lists and deletes the tenant's standing delegation policies over every transport (REST, gRPC, QUIC, MCP, Unix); deleting a policy refuses the next mint for its principal. See [docs/certificate-authority/cli.md](docs/certificate-authority/cli.md#qrdb-ca-delegate-policy).
-- **`sdk.TenantFromCert` and `sdk.SystemRoleIDs` (ruling 557).** `sdk.TenantFromCert(cert, trustDomain)` is the composer-side form of `MTLSAuthenticator.TenantFromCert`, with the rule, refusals and errors of `sdk.TenantFromClientCert`. `sdk.SystemRoleIDs(tenantID)` (over the new `role.SystemRoleIDs`) maps every system role name to its one canonical `SystemRoleID`, in a fresh map per call; it is not the removed UUIDv5/v8 dual-read set.
-- **qrdb.proto declares the credential rotation policy and tenant delegation policy RPCs (#1201, #1187).** `CredentialSetRotationPolicy`, `CredentialRotationPolicy`, `CredentialMigrationConflicts`, `CredentialResolveMigrationConflict`, `PutDelegationPolicy`, `ListDelegationPolicies` and `DeleteDelegationPolicy` carry their permissions. The server answers the three delegation policy RPCs; it answers the four credential rotation RPCs `UNIMPLEMENTED` until their handlers land.
+- **qrdb.proto declares the credential rotation policy and tenant delegation policy RPCs (#1201, #1187).** `CredentialSetRotationPolicy`, `CredentialRotationPolicy`, `CredentialMigrationConflicts`, `CredentialResolveMigrationConflict`, `PutDelegationPolicy`, `ListDelegationPolicies` and `DeleteDelegationPolicy` carry their permissions, and the server answers all seven.
 - **The Signatures job has behaviour tests.** `TestCISignatures` runs the job's real script on signed and unsigned fixture repositories with throwaway keys and a fake GitHub API, and proves every reject path fails closed.
 - **CI verifies commit signatures.** A Signatures job from ci-template
   v1.35.1 checks each pull-request commit against `.github/allowed_signers`,
@@ -115,6 +211,8 @@ are not reconstructed here — their history is in the git log.
   whole (`feature.NotActiveError`, `UNAVAILABLE` / 503) until the cluster
   feature `transaction-reads` is active on every member. A branch that only
   reads does not advance the revision.
+- **WebTransport sessions on the HTTP/3 listener** (#1243): `WithWebTransportHandler(path, handler)` (`pkg/api/rest`, `pkg/server`, `sdk/go/server`) serves draft-ietf-webtrans-http3-16 sessions through webtransport-go v0.13.0. Each session's CONNECT passes the REST authentication and tenant-binding chain before it is upgraded, and the handler receives the caller and tenant. Without the option, the listener sends no WebTransport SETTINGS and the path is an unknown route. A CONNECT whose client sends no HTTP/3 SETTINGS within the 5 s handshake timeout is reset with H3_REQUEST_REJECTED and never reaches the handler. A CONNECT whose client omits SETTINGS_WT_ENABLED, SETTINGS_H3_DATAGRAM or the reset_stream_at transport parameter is reset with H3_MESSAGE_ERROR (draft-16 section 3.1).
+- **Bounded WebTransport stream buffering before CONNECT** (#1244): webtransport-go is now `internal/webtransport`, a patched copy of upstream v0.13.0 inside the go-qrdb module (so SDK embedders build it too) that builds against quic-go v0.65.0. A connection buffers at most 16 streams per not-yet-established session and 64 in total. Streams past the cap are reset with WT_BUFFERED_STREAM_REJECTED, and later streams no longer extend the 5 s buffering deadline. An established session queues at most 100 streams of each direction for its handler to accept; the server advertises those limits and a 16 MiB session data window, and resets further streams with WT_BUFFERED_STREAM_REJECTED. A local `CloseWithError` racing the peer's FIN still finishes the CONNECT stream (WT_CLOSE_SESSION and a FIN, or a reset).
   The encrypted file backend holds the same lease across its open-time
   journal recovery and every write and journaled batch commit, and refuses
   both on a closed gate with `*file.SealedError` (`quiesce.ErrSealing`).
@@ -135,6 +233,43 @@ are not reconstructed here — their history is in the git log.
   a change, the record is written first; the node whose conditional write
   wins then emits one `posture-change` audit event (`previous`, `posture`,
   `fips_forced`). A record that cannot be read or written refuses the start.
+- **First boot enrols a system Security Officer** (#1128). `qrdb init
+  --so-username` with exactly one of `--so-csr` / `--so-cert` (with
+  `--so-chain`), and `CeremonyInitializeRequest`'s `so_username`,
+  `so_csr_pem`, `so_cert_pem` and `so_chain_pem` on REST, gRPC, QUIC, MCP, Unix
+  and embedded, name the system tenant's SO. Its PIN is `so_pin`. The ceremony
+  signs or adopts its certificate, returns it as `so_cert_pem`, and keeps the
+  PIN only as its `auth.HashSOPIN` hash. `qrdbd` and `sdk/go/node` record the
+  SO in the replicated store (`firstboot.PendingSystemSOKey`), and first boot
+  enrols it with the system `so` role alone, idempotently, through
+  `firstboot.Dependencies.SO` / `SOPINs`. The SO is optional in both
+  postures; under strict separation of duties the system SO alone runs role
+  create and the built-in role reconciles.
+  A malformed SO, a presented certificate whose subject CN is not the SO
+  username, or, under strict separation, an SO that is the admin by username or
+  key (compared from the supplied CSRs or certificates before anything is
+  provisioned), is
+  `*ceremony.SystemSORejectedError`, classified `INVALID_ARGUMENT` / 400 on
+  every transport. Initialize records the issued SO in the system barrier
+  before it reports success, so a node that crashes before the replicated
+  record is written recovers it on restart (`*ceremony.SystemSOPersistError`
+  on failure). A store fault reading the pending record fails the boot and
+  refuses consumption; only not-found means no SO. An adopted SO certificate
+  keeps the trust pool that validated it through the handoff, a restart of
+  a bound admin with a pending SO still to enrol takes the full first boot, and an enrolment retry
+  that finds a different committed SO PIN still fails. The SO is signed or
+  adopted before the PIN is provisioned or the barrier initialised, so a
+  signing fault leaves the node awaiting init and a retry completes. A
+  presented SO certificate carrying a holder profile OU (`security-officer`
+  or `custodian`) is a custody identity, not a login certificate, and is
+  refused with `*ceremony.SystemSOHolderCertError`. `--admin-cert-pool` is
+  accepted with `--so-cert` alone, so a CSR or generated admin can present
+  an SO certificate chained to it. An adopted SO certificate without the
+  client-auth profile (digital signature key usage, client authentication
+  EKU) is refused with `*ceremony.ClientAuthProfileError` before anything is
+  bound. First boot stores the adopted SO's pool as system tenant trust
+  anchors and refreshes runtime client trust before it binds the SO, so the
+  SO can authenticate over mTLS.
 - **Tenant create takes an optional Security Officer** (#1042): `so_username`,
   `so_pin` and exactly one of `so_csr_pem` / `so_cert_pem` (with
   `so_chain_pem`), on REST, gRPC, QUIC, MCP, Unix and embedded, and as
@@ -181,7 +316,7 @@ are not reconstructed here — their history is in the git log.
   `database.UnmigratedDatabasesError`, naming every file, rather than starting
   with those databases unlisted. A create releases an entry this node holds
   for a database another node dropped before refusing the name as a duplicate.
-- **`qrdb roles reconcile --all-tenants`** converges the built-in roles of every live tenant in one pass, so a renamed permission no longer needs each tenant's own Admin to repair. `role.ReconcileAllTenants` backs it on gRPC (`ReconcileBuiltInRolesAllTenants`), REST, QUIC, MCP, Unix and the embedded transport, and each `sdk/go` client exposes `ReconcileBuiltInRolesAllTenants`. It needs the new cross-scope permission `roles:reconcile_all`, granted only to the system tenant's built-in Admin, and refuses a caller bound to any other tenant with `tenant.PlatformOperatorRequiredError` (403). The report carries one per-tenant reconcile report for each tenant reached (the system tenant first), the skipped tenants with their reason (`sealed`, `refused`) and the failed ones; the CLI exits non-zero on a failed tenant and rejects `--all-tenants` with `--tenant`. A system Admin stored before this release gains the permission by running the system tenant's own `qrdb roles reconcile` first (#1219).
+- **`qrdb roles reconcile --all-tenants`** converges the built-in roles of every live tenant in one pass, so a renamed permission no longer needs each tenant's own Admin to repair. `role.ReconcileAllTenants` backs it on gRPC (`ReconcileBuiltInRolesAllTenants`), REST, QUIC, MCP, Unix and the embedded transport, and each `sdk/go` client exposes `ReconcileBuiltInRolesAllTenants`. It needs the new cross-scope permission `roles:reconcile_all`, held by the system tenant's built-in Admin in the standard posture and by the system SO under strict separation of duties, and refuses a caller bound to any other tenant with `tenant.PlatformOperatorRequiredError` (403). The report carries one per-tenant reconcile report for each tenant reached (the system tenant first), the skipped tenants with their reason (`sealed`, `refused`) and the failed ones; the CLI exits non-zero on a failed tenant and rejects `--all-tenants` with `--tenant`. A system Admin stored before this release gains the permission by running the system tenant's own `qrdb roles reconcile` first (#1219).
 - **Signed tenant barrier init** (#1212): a two-phase init for a first admin whose key signs away from the node. `POST /v1/tenants/{id}/barrier/signed-init/begin` (gRPC `TenantBarrierService.SignedInitBegin`, QUIC `tenant.BarrierSignedInitBegin`, MCP `qrdb_tenant_barrier_signed_init_begin`) takes the signer's SubjectPublicKeyInfo and returns the epoch-1 init statement to sign and a single-use reference valid for five minutes (`tenant.signed_init_ttl` may shorten it, never lengthen it); `…/signed-init/complete` (`SignedInitComplete`, `tenant.BarrierSignedInitComplete`, `qrdb_tenant_barrier_signed_init_complete`) redeems it with the detached signature. Every complete attempt spends its reference. The Go SDK carries `Tenants().TenantBarrierSignedInitBegin` / `TenantBarrierSignedInitComplete` on every transport, and `sdk/go` re-exports the service types and refusals as `ServiceTenantBarrierInitBeginRequest`, `ServiceTenantSignedInitError` and the rest. The CLI adds `qrdb tenant barrier-init-begin` (`--public-key`, `--statement-out`) and `qrdb tenant barrier-init-complete` (`--reference-hex`, `--sig-file`).
 - `service.LeaseService.LogRenewals` counts the lease keep-alives sent
   through the raft log rather than answered by the lease primary from memory.
@@ -267,6 +402,28 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- **The SO is optional in both postures (SPEC row 124).** First boot, the `qrdb init` ceremony and tenant create no longer refuse a strict request that names no SO; a strict node or tenant without one refuses only the SO-exclusive operations, and every check on an SO that is given still applies. `firstboot.SystemSORequiredError`, `bootstrap.TenantSORequiredError`, `firstboot.Dependencies.SOEnrolled`, `bootstrap.SystemConfig.SOEnrolled` and `firstboot.RecognizeEnrolledSystemSO` are removed (go-qrdb#1129).
+- **The SO input errors moved from `pkg/bootstrap` to `pkg/firstboot`**
+  (#1128), shared by tenant create and the system SO:
+  `bootstrap.IncompleteTenantSOError` is now `firstboot.IncompleteSOError`,
+  and `bootstrap.ConflictingSOCredentialError` / `bootstrap.SOMatchesAdminError`
+  are now `firstboot.ConflictingSOCredentialError` /
+  `firstboot.SOMatchesAdminError`. Their errclass rows moved with them and
+  still classify `INVALID_ARGUMENT`.
+- **Compliance mode runs the SO-exclusive role operations only as a separate
+  Security Officer** (#1128). Under strict separation of duties
+  (`auth.separation_of_duties`, forced on by FIPS 140-3 mode) no account holds
+  the `so` role together with its tenant's `admin` role: a role write leaving
+  an account holding both is refused with `SORoleConflictError` (403 /
+  `PermissionDenied`). `roles create` and `roles reconcile` run only as the
+  target tenant's own SO that does not hold `admin`, on REST, gRPC, QUIC, MCP
+  and the embedded transport; the tenant Admin is refused with
+  `SORoleRequiredError`, and an account left holding both from the standard
+  posture with `SORoleConflictError`. In the standard posture an Admin may
+  hold `so` and runs both operations as before. The SO is optional in both
+  postures: a strict node or tenant without one refuses only the SO-exclusive
+  operations. When an SO is named, the pending system SO record is kept until
+  its account and PIN are committed.
 - **The devcontainer build proxy has no `direct` entry** (ci-template
   v1.34.1). `GO_BUILD_PROXY` in `build/docker/devcontainer/Dockerfile`
   defaults to `https://proxy.golang.org` alone, so a module the proxy cannot
@@ -377,6 +534,13 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- `qrdb roles reconcile --all-tenants` follows the SPEC again: it needs `roles:reconcile_all`, and the two postures grant it differently. In the standard posture the system tenant's built-in Admin holds it and runs the pass. Under strict separation of duties the authorizer grants it to the system SO instead (`permission.StrictSOGrants`) and every transport also calls `AuthorizeSOExclusive`, which admits only a separate system SO, so the system Admin is refused (go-qrdb#1129).
+- Under strict separation of duties a principal holding the built-in SO and Admin roles together is refused on every request, whatever tenant it targets: the check now counts the identity's own home-tenant role bindings, so a system Admin bound to the system SO is no longer admitted on a request against another tenant (go-qrdb#1129).
+- An M-of-N `qrdb init` whose system SO record write failed after the Shamir barrier was initialized is left enrolling, and a retried init (after an unseal, with the provisioned SO PIN) persists only the SO, so strict first boot is never stranded without it (go-qrdb#1129). The retry now reaches the ceremony core through the admin-rebind service wrapper that `qrdbd` and clustered SDK nodes serve, instead of being answered as an admin reissue. Until the SO record is durable the sealed-window listener stays up and admits that retry, first boot publishes no admin credential, and a same-process retry naming another officer roster or threshold is refused before it records anything.
+- The system SO and the bootstrap admin must be distinct accounts and keys only under strict separation of duties; in standard posture first boot and the `qrdb init` ceremony accept the admin as the SO, and first boot grants that account the SO role. One key still binds to one account (go-qrdb#1129).
+- Direct first boot refuses a holder-profile (custody) certificate as the system SO certificate before writing anything, as the ceremony already did (go-qrdb#1129).
+- System SO enrolment fails closed: first boot proves the SO PIN before binding a key or installing trust anchors, the ceremony matches the bootstrap admin's username exactly before letting the SO share its key, and an SO-persist retry on the same running node writes the SO record instead of being taken for an admin reissue (go-qrdb#1368).
+- Granting a permission to a role now checks the grantor's effective permissions, so an SO that also holds User can no longer grant `keys:sign` or another cryptographic permission it is denied (SPEC row 132). `auth.GrantAuthorizer` and its `AuthorizeGrant` methods are removed (go-qrdb#1129).
 - A standalone node no longer acknowledges writes that a crash can lose
   (#1617). `pkg/storage/pebble.DefaultConfig` set `SyncWrites: false` on the
   premise that the Raft WAL provides durability, so every write went through
@@ -803,6 +967,7 @@ are not reconstructed here — their history is in the git log.
 
 ### Security
 
+- **Named credentials are never stored in an unencrypted data plane** (#1201): with seal enabled, a standalone node whose backend is `objstore` (which does not encrypt at rest) and whose credential strategy is `barrier` now binds the system seal barrier, which encrypts every record, as the credential store instead of the data plane (the `manual` strategy writes nothing to the data plane and starts on any backend). A legacy `<name>#meta` value with data after its JSON document now migrates as a credential under its full name, not as `<name>`'s metadata.
 - Barrier secrets and the SO PIN are never resent on any redirect, the same
   host included (REST, MCP), and an explicit `http://` address makes every
   secret-carrying gRPC and QUIC call refuse before any request is sent (#1639).
@@ -886,12 +1051,13 @@ are not reconstructed here — their history is in the git log.
   (a C2SP signed-note checkpoint), rotate the head-signing key and expire
   entry bodies, under the `vlog:*`
   permissions, in the caller's tenant and the request's database; no
-  request names a tenant, on any transport. Every call naming a barrier-isolated
-  tenant or a barrier-enabled database, sealed or not, is refused as
-  `Unimplemented` (`BarrierTenantLogNotSupportedError`,
-  `BarrierDatabaseLogNotSupportedError`): the log registry sits under the
-  system barrier, not theirs, so `service.LogServiceConfig` requires the
-  node's database registry as `Databases`. They are
+  request names a tenant, on any transport. A barrier-isolated
+  tenant's logs live in its own barrier-sealed home group and a
+  barrier-enabled database's in the database's own group, so
+  `service.LogServiceConfig` requires the node's database registry as
+  `Databases`; a sealed barrier refuses every call with its own sealed error,
+  and a node without the group with `BarrierStoreUnavailableError`
+  (`Unavailable`). They are
   served while the node has a log service (`server.WithLogService`, wired by
   `qrdbd` and `sdk/go/node`). REST, QUIC and MCP answer in one JSON shape,
   `sdk/go/transport/vlogwire`'s, with byte fields in standard base64. Every `pkg/vlog` refusal

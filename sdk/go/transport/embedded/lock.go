@@ -44,9 +44,6 @@ func (t *Transport) LockAcquire(ctx context.Context, req *transport.LockAcquireR
 	if err := t.authorize(ctx, "LockAcquire"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.lockSvc == nil {
 		return nil, &NilServiceError{Service: "LockServicer"}
 	}
@@ -69,9 +66,6 @@ func (t *Transport) LockTryLock(ctx context.Context, req *transport.LockAcquireR
 	if err := t.authorize(ctx, "LockTryLock"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if t.lockSvc == nil {
 		return nil, &NilServiceError{Service: "LockServicer"}
 	}
@@ -93,9 +87,6 @@ func (t *Transport) LockRelease(ctx context.Context, req *transport.LockReleaseR
 	if err := t.authorize(ctx, "LockRelease"); err != nil {
 		return err
 	}
-	if t.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	if t.lockSvc == nil {
 		return &NilServiceError{Service: "LockServicer"}
 	}
@@ -111,9 +102,6 @@ func (t *Transport) LockExtend(ctx context.Context, req *transport.LockExtendReq
 	}
 	if err := t.authorize(ctx, "LockExtend"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.lockSvc == nil {
 		return nil, &NilServiceError{Service: "LockServicer"}
@@ -136,9 +124,6 @@ func (t *Transport) LockStatus(ctx context.Context, key string) (*transport.Lock
 	}
 	if err := t.authorize(ctx, "LockStatus"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.lockSvc == nil {
 		return nil, &NilServiceError{Service: "LockServicer"}
@@ -164,9 +149,6 @@ func (t *Transport) LockList(ctx context.Context, prefix string) (*transport.Loc
 	}
 	if err := t.authorize(ctx, "LockList"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if t.lockSvc == nil {
 		return nil, &NilServiceError{Service: "LockServicer"}

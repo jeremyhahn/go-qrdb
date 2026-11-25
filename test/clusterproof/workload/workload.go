@@ -26,8 +26,9 @@
 // The workload survives node loss. An operation that times out or loses its
 // connection is recorded and the client carries on: a write whose answer
 // never came is indeterminate, never ok and never fail (see Classifier). A
-// client whose connection drops dials again, moving to the next endpoint when
-// its own will not answer, so a dead node slows the run without stopping it.
+// client whose connection drops, or whose operation goes unanswered, dials
+// the next endpoint afresh, so a dead node or a half-open session slows the
+// run without stopping it.
 //
 // After the load phase, FinalRead reads every key once more, so the ledger can
 // check each key's acknowledged writes against what the cluster now holds.
@@ -51,7 +52,7 @@ type Workload struct {
 	dial     Dialer
 	rec      *history.Recorder
 	classify Classifier
-	keys     []string
+	keys     *keyspace
 	kinds    []weightedKind
 	// sleep takes a client's backoff pause; tests replace sleepContext with
 	// a recording fake so no test waits on a real timer.
@@ -103,7 +104,7 @@ func New(cfg Config, dial Dialer, rec *history.Recorder, opts ...Option) (*Workl
 		rec:      rec,
 		classify: DefaultClassifier,
 		sleep:    sleepContext,
-		keys:     make([]string, cfg.Keys),
+		keys:     newKeyspace(cfg.KeyPrefix, cfg.Keys, cfg.KeyMaxOps, cfg.KeyMaxIndeterminate),
 		outcomes: map[history.Outcome]*atomic.Uint64{
 			history.OutcomeOK:            new(atomic.Uint64),
 			history.OutcomeFail:          new(atomic.Uint64),
@@ -115,9 +116,6 @@ func New(cfg Config, dial Dialer, rec *history.Recorder, opts ...Option) (*Workl
 	}
 	if w.classify == nil {
 		return nil, &ConfigError{Field: "classifier", Reason: "must not be nil"}
-	}
-	for i := range w.keys {
-		w.keys[i] = cfg.KeyPrefix + "/k" + strconv.Itoa(i)
 	}
 	cum := 0
 	for _, kw := range []struct {
@@ -137,8 +135,9 @@ func New(cfg Config, dial Dialer, rec *history.Recorder, opts ...Option) (*Workl
 	return w, nil
 }
 
-// Keys returns the keys the run contends on.
-func (w *Workload) Keys() []string { return append([]string(nil), w.keys...) }
+// Keys returns every key the run has used so far: each slot's first key, and
+// every key that replaced a retired one.
+func (w *Workload) Keys() []string { return w.keys.all() }
 
 // Stats returns the counts recorded so far.
 func (w *Workload) Stats() Stats {
@@ -178,7 +177,7 @@ func (w *Workload) FinalRead(ctx context.Context) error {
 	c := w.newClient(w.cfg.Clients)
 	defer c.drop()
 	var unread []string
-	for _, key := range w.keys {
+	for _, key := range w.keys.all() {
 		if !c.readUntilAnswered(ctx, key) {
 			unread = append(unread, key)
 		}
@@ -241,11 +240,15 @@ func (c *client) run(ctx context.Context) {
 		if !c.connect(ctx) {
 			continue
 		}
-		key := c.w.keys[c.rng.IntN(len(c.w.keys))]
+		slot := c.rng.IntN(c.w.cfg.Keys)
+		kind := c.pick()
+		key, lease := c.w.keys.acquire(slot, kind != history.KindGet)
+		outcome := ops[kind](c, ctx, key)
+		c.w.keys.release(lease, outcome)
 		// Every failed operation is followed by a pause, so a node that
 		// refuses or times out is retried at a bounded rate, not in a loop
 		// that floods the history.
-		if ops[c.pick()](c, ctx, key) != history.OutcomeOK {
+		if outcome != history.OutcomeOK {
 			c.backoff(ctx)
 		}
 		n++
@@ -291,10 +294,16 @@ func (c *client) drop() {
 	}
 }
 
-// opContext bounds one operation by OpTimeout but not by ctx's cancellation:
-// stopping the run must not turn an operation in flight into a timeout.
+// opContext bounds one operation by OpTimeout and by ctx's deadline, whichever
+// comes first, but not by ctx's cancellation: stopping the run must not turn an
+// operation in flight into a timeout, while a deadline -- the post-run phase's
+// -- still bounds the final verification reads.
 func (c *client) opContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(ctx), time.Duration(c.w.cfg.OpTimeout))
+	deadline := time.Now().Add(time.Duration(c.w.cfg.OpTimeout))
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	return context.WithDeadline(context.WithoutCancel(ctx), deadline)
 }
 
 // nextValue returns a value no other operation in the run writes.
@@ -317,10 +326,26 @@ func (c *client) finish(p history.Pending, kind history.Kind, out *history.Outpu
 	if outcome == history.OutcomeOK {
 		c.pause.reset()
 	}
-	if connectionLost(err) {
-		c.drop()
+	if outcome == history.OutcomeIndeterminate || connectionLost(err) || unanswered(err) {
+		c.failover()
 	}
 	return outcome
+}
+
+// failover drops the client's connection and moves it to the next endpoint.
+// A definite rejection is an answer and keeps the connection; a connection
+// whose operation was not answered -- timed out or lost -- is never trusted
+// again, even a read the classifier calls failed (a read has no effect, so
+// the history stays correct, but a timed-out read is no answer): a session
+// left half-open by a kill, a pause
+// or a partition can time out every later operation without ever reporting
+// the connection lost, which pinned a client to it for the rest of a soak.
+// The next operation dials afresh on the next endpoint, so a client keeps
+// completing operations on the nodes that answer, and returns to a healed
+// node when its rotation comes back round.
+func (c *client) failover() {
+	c.drop()
+	c.endpoint = (c.endpoint + 1) % len(c.w.cfg.Endpoints)
 }
 
 func (c *client) put(ctx context.Context, key string) history.Outcome {
@@ -407,8 +432,11 @@ func (c *client) readUntilAnswered(ctx context.Context, key string) bool {
 		if answered {
 			return true
 		}
-		c.drop()
-		c.endpoint = (c.endpoint + 1) % len(c.w.cfg.Endpoints)
+		// An unanswered read has already failed the client over; a refused
+		// one moves on too, since the final read wants any node's answer.
+		if c.conn != nil {
+			c.failover()
+		}
 		c.backoff(ctx)
 	}
 	return false

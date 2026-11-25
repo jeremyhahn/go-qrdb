@@ -315,6 +315,78 @@ func TestAuthorize_OwnerRoleVoidedUnderStrictSeparation(t *testing.T) {
 	}
 }
 
+// TestAuthorize_SOWithAdminRefusedUnderStrictSeparation covers the SPEC's
+// prohibition of a combined SO/Admin principal for tenant-local accounts: an
+// account a standard posture enrolled as both SO and Admin in its own tenant
+// keeps working there under the standard posture, and is refused every
+// permission once the node runs strict, whether it holds the two roles as
+// home-tenant Roles or one of them through a tenant-scoped RoleBinding. A
+// strict principal holding only one of the two is unaffected.
+func TestAuthorize_SOWithAdminRefusedUnderStrictSeparation(t *testing.T) {
+	soID := role.SystemRoleID("tenant-1", role.RoleNameSO)
+	adminID := role.SystemRoleID("tenant-1", role.RoleNameAdmin)
+	svc := newMockRoleService(map[string][]permission.Permission{
+		soID:    {"roles:read"},
+		adminID: {"kv:put"},
+	})
+	for _, tc := range []struct {
+		name     string
+		identity *auth.Identity
+		strict   bool
+		denied   bool
+	}{
+		{
+			name:     "home SO and Admin, standard",
+			identity: &auth.Identity{Subject: "both", TenantID: "tenant-1", Roles: []string{soID, adminID}},
+		},
+		{
+			name:     "home SO and Admin, strict",
+			identity: &auth.Identity{Subject: "both", TenantID: "tenant-1", Roles: []string{soID, adminID}},
+			strict:   true,
+			denied:   true,
+		},
+		{
+			name: "home SO with bound Admin, strict",
+			identity: &auth.Identity{Subject: "bound", TenantID: "tenant-1", Roles: []string{soID},
+				RoleBindings: []auth.RoleBinding{{RoleID: adminID, TenantID: "tenant-1"}}},
+			strict: true,
+			denied: true,
+		},
+		{
+			name:     "Admin only, strict",
+			identity: &auth.Identity{Subject: "admin", TenantID: "tenant-1", Roles: []string{adminID}},
+			strict:   true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := New(svc, WithStrictSeparation(tc.strict)).Authorize(ctxFor("tenant-1"), tc.identity, "kv", "put")
+			if !tc.denied {
+				if err != nil {
+					t.Fatalf("expected kv:put allowed, got %v", err)
+				}
+				return
+			}
+			var denied *PermissionDeniedError
+			if !errors.As(err, &denied) {
+				t.Fatalf("expected *PermissionDeniedError, got %v", err)
+			}
+			// The SDK's documented errors.As check for the typed
+			// refusal (docs/identity-rbac/api.md) must hold for a
+			// combined caller refused here, not only at the SO gate.
+			var conflict *auth.SORoleConflictError
+			if !errors.As(err, &conflict) || conflict.TenantID != "tenant-1" {
+				t.Fatalf("expected *auth.SORoleConflictError{tenant-1} in the chain, got %v", err)
+			}
+			if !errors.Is(err, auth.ErrUnauthorized) {
+				t.Fatalf("expected the ErrUnauthorized sentinel in the chain, got %v", err)
+			}
+			if !strings.Contains(denied.Reason, "SO role together with Admin") {
+				t.Fatalf("reason = %q, want the strict SO/Admin refusal", denied.Reason)
+			}
+		})
+	}
+}
+
 func TestAuthorize_Denied(t *testing.T) {
 	svc := newMockRoleService(map[string][]permission.Permission{
 		"reader": {"kv:get"},

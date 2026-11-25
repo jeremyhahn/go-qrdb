@@ -21,6 +21,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 )
@@ -46,13 +48,7 @@ func (f *feeds) WatchMembers(context.Context) (<-chan cluster.MemberEvent, error
 
 func eventually(t *testing.T, cond func() bool, msg string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatal(msg)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	require.Eventually(t, cond, 5*time.Second, 5*time.Millisecond, msg)
 }
 
 func TestRunInvalidation_PlacementAndMemberChangesEvict(t *testing.T) {

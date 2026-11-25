@@ -276,7 +276,7 @@ func TestBundleRefusesToOverwrite(t *testing.T) {
 	if err := os.MkdirAll(o.Bundle, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Run(context.Background(), o); err == nil {
+	if _, _, err := bubbleRun(t, context.Background, o); err == nil {
 		t.Fatal("Run wrote into an existing bundle directory")
 	}
 }

@@ -196,14 +196,17 @@ func TestAuthenticator_Authenticate_SuccessfulAuth(t *testing.T) {
 	// bypassing the need for real mTLS certificate chains.
 	expected := &auth.Identity{
 		Subject:  "pgsql-user",
+		UserID:   42,
 		TenantID: "tenant-42",
 		Roles:    []string{"reader", "writer"},
 	}
 
+	fa := authtest.NewFixedAuthenticator(expected)
 	mw := authmw.New(
 		&auth.NoopAuthorizer{},
 		authmw.WithRoleResolver(authtest.BuiltInRoles(t)),
-		authmw.WithAuthenticator(&testAuthenticator{identity: expected}),
+		authmw.WithAuthenticator(fa),
+		authmw.WithUserService(fa.Users()),
 	)
 	a := NewAuthenticator(mw)
 	addr := &net.TCPAddr{IP: net.ParseIP("192.168.1.100"), Port: 5432}
@@ -219,28 +222,18 @@ func TestAuthenticator_Authenticate_SuccessfulAuth(t *testing.T) {
 	// Verify the identity was stored in the package-specific context key.
 	identity := IdentityFromContext(resultCtx)
 	require.NotNil(t, identity)
-	assert.Equal(t, "pgsql-user", identity.Subject)
+	// The identity is bound to the account record: its Subject is the
+	// account's immutable id and its Username the presented name.
+	assert.Equal(t, auth.UserSubject(42), identity.Subject)
+	assert.Equal(t, uint64(42), identity.UserID)
+	assert.Equal(t, "pgsql-user", identity.Username)
 	assert.Equal(t, "tenant-42", identity.TenantID)
 	assert.Equal(t, []string{"reader", "writer"}, identity.Roles)
 
 	// Verify the identity was also stored via auth.WithIdentity.
 	authIdentity := auth.IdentityFromContext(resultCtx)
 	require.NotNil(t, authIdentity)
-	assert.Equal(t, "pgsql-user", authIdentity.Subject)
-}
-
-// testAuthenticator is a mock auth.Authenticator for testing. It always
-// returns the configured identity without inspecting TLS state.
-type testAuthenticator struct {
-	identity *auth.Identity
-}
-
-func (a *testAuthenticator) Authenticate(_ context.Context) (*auth.Identity, error) {
-	return a.identity, nil
-}
-
-func (a *testAuthenticator) Name() string {
-	return "test"
+	assert.Equal(t, auth.UserSubject(42), authIdentity.Subject)
 }
 
 // stubAuthMiddleware creates a minimal AuthMiddleware for testing. It uses

@@ -24,6 +24,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
@@ -92,14 +94,10 @@ func TestPostgresWire_SealClosesAnOpenSession(t *testing.T) {
 				t.Fatalf("another tenant's seal reached the session: %v", err)
 			}
 			seal(probe, streams)
-			deadline := time.Now().Add(5 * time.Second)
-			for !conn.PgConn().IsClosed() {
-				if time.Now().After(deadline) {
-					t.Fatal("the session's connection stayed open after the seal")
-				}
+			require.EventuallyWithT(t, func(c *assert.CollectT) {
 				_, _ = conn.Exec(ctx, "SELECT 1") // reads the close, or the refusal
-				time.Sleep(20 * time.Millisecond)
-			}
+				assert.True(c, conn.PgConn().IsClosed(), "the session's connection stayed open after the seal")
+			}, 5*time.Second, 20*time.Millisecond, "the session's connection stayed open after the seal")
 		})
 	}
 }

@@ -29,6 +29,7 @@ import (
 
 	vtmysql "github.com/dolthub/vitess/go/mysql"
 	gomysql "github.com/go-sql-driver/mysql"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/rowlock"
@@ -130,17 +131,10 @@ func TestWaitTimeout_ClosesIdleCursorAndReleasesItsLock(t *testing.T) {
 	// Never fetch. Once the connection has been idle past wait_timeout, the
 	// lock its open cursor held is released, exactly as it is for an
 	// abruptly dropped connection (TestMySQLWire_ClosedConnection_ReleasesItsLocks).
-	deadline := time.Now().Add(wait + 10*time.Second)
-	for {
+	require.EventuallyWithT(t, func(ct *assert.CollectT) {
 		err := drain(other, "SELECT * FROM accounts WHERE id = 1 FOR UPDATE NOWAIT")
-		if err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the idle cursor's lock was never released: %v", err)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		assert.NoError(ct, err, "the idle cursor's lock was never released")
+	}, wait+10*time.Second, 20*time.Millisecond)
 
 	// The connection itself is gone, not just the lock it held.
 	_, fetchErr := c.fetch(stmt)

@@ -448,6 +448,19 @@ func kvHandlePut(e *KVEngine, cmd kv.Command) (sm.Result, error) {
 		}
 	}
 
+	// Read-only pre-check before anything is queued: a unique conflict is a
+	// non-fatal declined write. A value that is not a JSON object is nothing
+	// to index and is written as on main.
+	if len(e.indexes) > 0 {
+		if verr := CheckUniqueViolation(batch, e.indexes, e.indexFields, e.indexScopes, cmd.Key, cmd.Value); verr != nil {
+			res, handled, herr := asAppErrResult(verr)
+			if handled {
+				return res, nil
+			}
+			return sm.Result{Value: 1}, herr
+		}
+	}
+
 	// Queue data write.
 	if err := batch.Set(cmd.Key, cmd.Value); err != nil {
 		return sm.Result{Value: 1}, err
@@ -1598,7 +1611,11 @@ func (e *KVEngine) lookupIndexQuery(q index.IndexQueryRequest) (interface{}, err
 	if !exists {
 		return nil, &index.NotFoundError{Name: q.IndexName}
 	}
-	return idx.Get(q.Value)
+	keys, err := idx.Get(q.Value)
+	if err != nil {
+		return nil, err
+	}
+	return dropSystemKeys(keys), nil
 }
 
 // lookupIndexScan performs a range index scan.
@@ -1607,7 +1624,11 @@ func (e *KVEngine) lookupIndexScan(q index.IndexScanRequest) (interface{}, error
 	if !exists {
 		return nil, &index.NotFoundError{Name: q.IndexName}
 	}
-	return idx.Scan(q.Start, q.End)
+	entries, err := idx.Scan(q.Start, q.End)
+	if err != nil {
+		return nil, err
+	}
+	return dropSystemEntries(entries), nil
 }
 
 // lookupIndexList returns the names of all registered indexes.

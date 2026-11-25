@@ -110,3 +110,67 @@ func TestPermissionCatalog_CLI_PerProtocol(t *testing.T) {
 		})
 	}
 }
+
+// iamExposurePermissionNames are the device and shared-password permissions
+// row iam-exposure (#1651) exposes: every one is self-scope and held by the
+// node administrator.
+var iamExposurePermissionNames = []string{
+	"device:pair", "device:revoke", "device:share", "device:sync",
+	"devices:onboard", "passwords:override_ownership",
+}
+
+// TestPermissionCatalog_CLI_IAMExposure_PerProtocol drives the qrdb CLI on
+// every transport and pins that the device pairing/sharing permissions,
+// devices:onboard and passwords:override_ownership are in the permission
+// catalog with scope "self", and that the node administrator holds them all.
+func TestPermissionCatalog_CLI_IAMExposure_PerProtocol(t *testing.T) {
+	t.Parallel()
+	node := startMultiProtocolNode(t)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			out, err := runCLIProto(t, node, proto, "--output", "json", "roles", "permissions", "--detail")
+			if err != nil {
+				t.Fatalf("[%s] roles permissions --detail: %v\noutput: %s", proto.name, err, out)
+			}
+			var doc struct {
+				Permissions []transport.PermissionInfo `json:"permissions"`
+			}
+			if jerr := json.Unmarshal([]byte(out), &doc); jerr != nil {
+				t.Fatalf("[%s] decode JSON: %v\noutput: %s", proto.name, jerr, out)
+			}
+			scopes := make(map[string]string, len(doc.Permissions))
+			for _, p := range doc.Permissions {
+				scopes[string(p.Name)] = string(p.Scope)
+			}
+			for _, name := range iamExposurePermissionNames {
+				scope, ok := scopes[name]
+				if !ok {
+					t.Fatalf("[%s] catalog lacks %q", proto.name, name)
+				}
+				if scope != "self" {
+					t.Errorf("[%s] %q scope = %q, want %q", proto.name, name, scope, "self")
+				}
+			}
+
+			own, err := runCLIProto(t, node, proto, "--output", "json", "roles", "own-permissions")
+			if err != nil {
+				t.Fatalf("[%s] roles own-permissions: %v\noutput: %s", proto.name, err, own)
+			}
+			var held ownPermissionsCLIJSON
+			if jerr := json.Unmarshal([]byte(own), &held); jerr != nil {
+				t.Fatalf("[%s] decode roles own-permissions JSON: %v\noutput: %s", proto.name, jerr, own)
+			}
+			holds := make(map[string]struct{}, len(held.Permissions))
+			for _, p := range held.Permissions {
+				holds[p.Name] = struct{}{}
+			}
+			for _, name := range iamExposurePermissionNames {
+				if _, ok := holds[name]; !ok {
+					t.Errorf("[%s] administrator does not hold %q", proto.name, name)
+				}
+			}
+		})
+	}
+}

@@ -56,6 +56,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
+	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/joinadvertise"
 	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -205,6 +206,9 @@ type Server struct {
 	// retention_scheduler.go); nil when none is running.
 	retentionCancel context.CancelFunc
 
+	// credentialRotationCancel stops the credential rotation scheduler
+	// (see credential_rotation_scheduler.go); nil when none is running.
+	credentialRotationCancel context.CancelFunc
 	// pendingReaperCancel stops the pending-user reaper (see
 	// pending_user_reaper.go); nil when none is running.
 	pendingReaperCancel context.CancelFunc
@@ -255,6 +259,7 @@ type serverOptions struct {
 	mcpServerOpts      []mcpapi.ServerOption
 	userSvc            user.UserServicer
 	roleSvc            role.RoleServicer
+	groupSvc           group.GroupServicer
 	certProv           cert.CertProvider
 	certEnroll         service.CertEnrollmentServicer
 	invitations        service.InvitationServicer
@@ -308,6 +313,10 @@ type serverOptions struct {
 	// time-series metrics for expired points; zero keeps
 	// DefaultRetentionInterval. See WithRetentionInterval.
 	retentionInterval time.Duration
+	// credentialRotationPeriod is how often the credential rotation
+	// scheduler runs the due rotation policies; zero keeps
+	// credentials.DefaultRotationCheckPeriod.
+	credentialRotationPeriod time.Duration
 
 	// Pending-user reaper (WithPendingUserReaper). A negative interval
 	// disables it; ticks/now are test hooks.
@@ -408,6 +417,9 @@ type serverOptions struct {
 	// by ServeSealedWindow. Its gates refuse every request once the barrier
 	// is unsealed, and it serves no SQL wire protocol.
 	sealedWindowListener bool
+	// sealedWindowCeremony, when set (withSealedWindowCeremony), is the
+	// ceremony core the sealed-window listener probe reads.
+	sealedWindowCeremony sealedWindowCeremony
 
 	// clusterSeal enforces cluster seals on this node; see WithClusterSeal.
 	clusterSeal ClusterSeal
@@ -682,6 +694,11 @@ func WithRoleService(svc role.RoleServicer) ServerOption {
 	return func(o *serverOptions) { o.roleSvc = svc }
 }
 
+// WithGroupService configures the IAM group store for every protocol server.
+func WithGroupService(svc group.GroupServicer) ServerOption {
+	return func(o *serverOptions) { o.groupSvc = svc }
+}
+
 // WithCertProvider configures the certificate provider for all protocol
 // servers that support it. The SDK node builders, which build their services
 // through lifecycle.BuildServices, also read it back
@@ -769,7 +786,24 @@ func withSealedWindowListener(probe SealedWindowProbe) ServerOption {
 type sealedWindowListenerProbe struct {
 	SealedWindowProbe
 	*sealedwindow.Admission
-	ceremony *ceremony.CeremonyService
+	ceremony sealedWindowCeremony
+}
+
+// sealedWindowCeremony is what the sealed-window listener probe reads from
+// the ceremony core (*ceremony.CeremonyService).
+type sealedWindowCeremony interface {
+	EnrollmentOpen(ctx context.Context) bool
+	HoldsSealedWindow(ctx context.Context) bool
+}
+
+var _ sealedWindowCeremony = (*ceremony.CeremonyService)(nil)
+
+// withSealedWindowCeremony replaces the ceremony core the sealed-window
+// listener probe reads, which otherwise comes from WithCeremonyService.
+func withSealedWindowCeremony(c sealedWindowCeremony) ServerOption {
+	return func(o *serverOptions) {
+		o.sealedWindowCeremony = c
+	}
 }
 
 // barrierInitializedProbe is the part of *seal.StorageBarrier the
@@ -799,6 +833,23 @@ func (p sealedWindowListenerProbe) EnrollmentOpen(ctx context.Context) bool {
 }
 
 var _ sealedwindow.ListenerProbe = sealedWindowListenerProbe{}
+
+// IsSealed implements sealedwindow.ListenerProbe: the window stays sealed --
+// the gate serves its allowlist, not the full API -- while the barrier is
+// sealed or, with a ceremony core, while the core holds the window
+// (ceremony.CeremonyService.HoldsSealedWindow): an initial ceremony whose
+// system SO record is not yet durable keeps its retry on this listener.
+func (p sealedWindowListenerProbe) IsSealed() bool {
+	if p.SealedWindowProbe.IsSealed() {
+		return true
+	}
+	if p.ceremony == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), enrollmentProbeTimeout)
+	defer cancel()
+	return p.ceremony.HoldsSealedWindow(ctx)
+}
 
 // NewSealedWindowListenerProbe returns the probe that gates a sealed-window
 // surface: sealed reports the barrier's state, and ceremonySvc (which may be
@@ -830,7 +881,7 @@ func NewSealedWindowListenerProbe(sealed SealedWindowProbe, ceremonySvc service.
 	}
 	p := sealedWindowListenerProbe{SealedWindowProbe: sealed, Admission: &sealedwindow.Admission{}}
 	if ceremonySvc != nil {
-		if core, ok := service.CeremonyServiceCore(ceremonySvc); ok {
+		if core, ok := service.CeremonyServiceCore(ceremonySvc); ok && core != nil {
 			p.ceremony = core
 		}
 	}
@@ -1521,6 +1572,10 @@ func New(cfg *config.Config, kvSvc service.KVServicer, adminSvc service.AdminSer
 	// authenticated path, where barrier-cluster-unseal is served.
 	if s.opts.sealedWindowProbe != nil || s.opts.sealedWindowListener {
 		s.sealedListener = NewSealedWindowListenerProbe(s.opts.sealedWindowProbe, s.opts.ceremonySvc)
+		if p, ok := s.sealedListener.(sealedWindowListenerProbe); ok && s.opts.sealedWindowCeremony != nil {
+			p.ceremony = s.opts.sealedWindowCeremony
+			s.sealedListener = p
+		}
 	}
 	s.opts.applyClusterSeal()
 
@@ -1688,7 +1743,9 @@ func (s *Server) wireTenantHostShards() {
 //     so both the reclamation (go-qrdb#412) and the drop fence go there;
 //   - a raft-isolated tenant's database has a shard of its own, so its drop
 //     fence goes into that shard -- the Raft group its writes are guarded
-//     in.
+//     in;
+//   - a barrier-isolated tenant's logs are proposed to its home group, so
+//     the drop fence of each of its databases goes there.
 //
 // It is a no-op without the reclaim service, because then there is nothing to
 // attach it to, and without either registry, because then every database's
@@ -1706,6 +1763,7 @@ func (s *Server) wireStoreResolver() {
 	}
 	if s.opts.raftBackend != nil {
 		resolver.raft = s.opts.raftBackend
+		resolver.barrier = s.opts.raftBackend
 	}
 	s.opts.keyspaceReclaim.SetStoreResolver(resolver)
 }
@@ -1990,6 +2048,8 @@ func (s *Server) start() error {
 	// implicitly.
 	s.startRetentionScheduler()
 
+	// Named credentials whose rotation policy is due are rotated on it.
+	s.startCredentialRotationScheduler()
 	// Pending users past their TTL are deleted by the leader.
 	s.startPendingUserReaper()
 
@@ -2067,6 +2127,7 @@ func (s *Server) stopModules() {
 func (s *Server) Stop() {
 	s.stopCompactionScheduler()
 	s.stopRetentionScheduler()
+	s.stopCredentialRotationScheduler()
 	s.stopPendingUserReaper()
 	s.stopCollectionSweeper()
 	s.stopAllEtcd()
@@ -2205,6 +2266,9 @@ func (s *Server) startREST() error {
 	}
 	if s.opts.roleSvc != nil {
 		restOpts = append(restOpts, rest.WithRoleService(s.opts.roleSvc))
+	}
+	if s.opts.groupSvc != nil {
+		restOpts = append(restOpts, rest.WithGroupService(s.opts.groupSvc))
 	}
 	if s.opts.certProv != nil {
 		restOpts = append(restOpts, rest.WithCertProvider(s.opts.certProv))
@@ -2373,6 +2437,9 @@ func (s *Server) startREST() error {
 	if len(s.opts.modules) > 0 {
 		restOpts = append(restOpts, rest.WithServiceModules(s.opts.modules))
 	}
+	if s.opts.webTransportSet {
+		restOpts = append(restOpts, rest.WithWebTransportHandler(s.opts.webTransportPath, s.opts.webTransportHandler))
+	}
 	if gw := s.grpcWebConfig(); gw.Enabled {
 		restOpts = append(restOpts, rest.WithGRPCWeb(gw, http.HandlerFunc(s.serveGRPCWeb)))
 	}
@@ -2523,6 +2590,9 @@ func (s *Server) startGRPC() error {
 	}
 	if s.opts.roleSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithRoleService(s.opts.roleSvc))
+	}
+	if s.opts.groupSvc != nil {
+		grpcOpts = append(grpcOpts, grpcapi.WithGroupService(s.opts.groupSvc))
 	}
 	if gate, err := s.soGate(); err != nil {
 		return err
@@ -2699,6 +2769,9 @@ func (s *Server) startQUIC() error {
 	if s.opts.roleSvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithRoleService(s.opts.roleSvc))
 	}
+	if s.opts.groupSvc != nil {
+		quicOpts = append(quicOpts, quicapi.WithGroupService(s.opts.groupSvc))
+	}
 	if gate, err := s.soGate(); err != nil {
 		return err
 	} else if gate != nil {
@@ -2865,6 +2938,9 @@ func (s *Server) startUnix() error {
 	}
 	if s.opts.roleSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithRoleService(s.opts.roleSvc))
+	}
+	if s.opts.groupSvc != nil {
+		unixOpts = append(unixOpts, unixapi.WithGroupService(s.opts.groupSvc))
 	}
 	if gate, err := s.soGate(); err != nil {
 		return err
@@ -3059,6 +3135,9 @@ func (s *Server) startMCP() error {
 	}
 	if s.opts.roleSvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithRoleService(s.opts.roleSvc))
+	}
+	if s.opts.groupSvc != nil {
+		mcpOpts = append(mcpOpts, mcpapi.WithGroupService(s.opts.groupSvc))
 	}
 	if gate, err := s.soGate(); err != nil {
 		return err

@@ -241,8 +241,8 @@ path.
   `test/integration/backup_cli_test.go` and `backup_restore_test.go`. CI runs
   them in the `integration-features` shard whose feature list includes
   `backup-restore` (`.github/workflows/ci.yml`), required by `ci-gate` in CI's full tier: on
-  every push to `main`, every dispatch, and every pull request labelled
-  `ci:full`.
+  every push to `main`, every dispatch on `main`, and every non-draft pull
+  request that is not docs-only.
 
 ## Observability
 

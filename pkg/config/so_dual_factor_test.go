@@ -17,7 +17,7 @@ package config
 import (
 	"testing"
 
-	"gopkg.in/yaml.v3"
+	gocodecyaml "github.com/jeremyhahn/go-codec/pkg/yaml"
 )
 
 // TestAuthConfig_SODualFactor_DefaultOff verifies the SO dual-factor
@@ -35,7 +35,7 @@ func TestAuthConfig_SODualFactor_DefaultOff(t *testing.T) {
 func TestAuthConfig_SODualFactor_YAMLRoundTrip(t *testing.T) {
 	var cfg Config
 	src := "auth:\n  so_dual_factor: true\n"
-	if err := yaml.Unmarshal([]byte(src), &cfg); err != nil {
+	if err := gocodecyaml.New[Config]().Unmarshal([]byte(src), &cfg); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if !cfg.Auth.SODualFactor {
@@ -43,7 +43,7 @@ func TestAuthConfig_SODualFactor_YAMLRoundTrip(t *testing.T) {
 	}
 
 	var off Config
-	if err := yaml.Unmarshal([]byte("auth:\n  so_dual_factor: false\n"), &off); err != nil {
+	if err := gocodecyaml.New[Config]().Unmarshal([]byte("auth:\n  so_dual_factor: false\n"), &off); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if off.Auth.SODualFactor {

@@ -230,7 +230,8 @@ func runJoinSuiteRow(t *testing.T, fips bool, flags func(noiseAddr, joinAddr str
 	bootAdminIdentity(t, cli, node1.caPath, node1.adminPort, "SOPIN-node1-suite", "USERPIN-node1-suite",
 		filepath.Join(credDir, "admin-cert.pem"), filepath.Join(credDir, "admin-key.pem"), "",
 		"--barrier-strategy", "none")
-	ceremonyBringUpBarrierWithCertHTTP(t, node2.client, node2.adminPort, node2AdminCertPEM)
+	ceremonyBringUpBarrierWithCertHTTP(t, node2.client, node2.adminPort, node2AdminCertPEM,
+		systemSOCertPEM(t, node1.caPath, node1CAKeyPath))
 	waitForHealthy(t, node1.dataDir, 90*time.Second)
 	waitForHealthy(t, node2.dataDir, 90*time.Second)
 	waitForReachable(t, node1.client, node1.adminPort, 30*time.Second)

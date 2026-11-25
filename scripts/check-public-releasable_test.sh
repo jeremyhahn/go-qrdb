@@ -154,7 +154,7 @@ plant "$d" pkg/near.go '// neighbours of the fixture network: 110.123.45.7, 10.1
 plant "$d" pkg/near.go '// placeholders: /home/user/.config, /home/alice/x, /Users/dev/x, /home/fixtureownerx/y'
 plant "$d" pkg/near.go '// longer names: labhost-004, mylabhost-04, zeta-nodes, ZETA-NODE (that rule is case-sensitive)'
 plant "$d" pkg/near.go '// tracker references are allowed in code: go-qrdb#123, #45'
-plant "$d" .devcontainer/.env.example 'DEVCACHE_GOPROXY=http://cache.example.com:3000'
+plant "$d" build/docker/devcontainer/.env.example 'DEVCACHE_GOPROXY=http://cache.example.com:3000'
 expect_pass "near-misses pass" "$d"
 
 d=$(fixture untracked)

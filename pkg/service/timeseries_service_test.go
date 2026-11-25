@@ -32,13 +32,6 @@ import (
 // NewTimeSeriesService
 // ---------------------------------------------------------------------------
 
-func TestTimeSeriesService_NewTimeSeriesService_ReturnsNonNil(t *testing.T) {
-	svc := NewTimeSeriesService(&mockHost{}, 1)
-	if svc == nil {
-		t.Fatal("expected non-nil TimeSeriesService")
-	}
-}
-
 func TestTimeSeriesService_NewTimeSeriesService_PreservesShardID(t *testing.T) {
 	var capturedShardID uint64
 	host := &mockHost{

@@ -25,6 +25,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // mockHTTPClient implements HTTPClient for testing.
@@ -239,11 +241,14 @@ func TestTokenDiscovery_Stop(t *testing.T) {
 	}
 	nodesJSON, _ := json.Marshal(nodesResp)
 
+	// polls counts node-list requests, so the test can wait for polling.
+	var polls atomic.Int64
 	client := &mockHTTPClient{
 		doFunc: func(req *http.Request) (*http.Response, error) {
 			if req.Method == http.MethodPut {
 				return newMockResponse(http.StatusOK, ""), nil
 			}
+			polls.Add(1)
 			return newMockResponse(http.StatusOK, string(nodesJSON)), nil
 		},
 	}
@@ -267,8 +272,9 @@ func TestTokenDiscovery_Stop(t *testing.T) {
 		done <- err
 	}()
 
-	// Give the goroutine time to start polling.
-	<-time.After(50 * time.Millisecond)
+	// Wait until the goroutine is polling.
+	require.Eventually(t, func() bool { return polls.Load() >= 1 },
+		2*time.Second, time.Millisecond, "Discover never polled the node list")
 
 	if err := td.Stop(); err != nil {
 		t.Fatalf("Stop() error: %v", err)

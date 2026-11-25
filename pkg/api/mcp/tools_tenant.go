@@ -138,7 +138,7 @@ func toolTenantCreate() mcp.Tool {
 			mcp.Description("A PEM bundle of CA certificates to register as the tenant's trust anchors."),
 		),
 		mcp.WithString("so_username",
-			mcp.Description("The tenant's optional security officer, enrolled with the so role alone. Given with so_pin and exactly one of so_csr_pem and so_cert_pem, or not at all; it must differ from the admin by name and by key."),
+			mcp.Description("The tenant's optional security officer, enrolled with the so role alone. Given with so_pin and exactly one of so_csr_pem and so_cert_pem, or not at all; under strict separation of duties it must differ from the admin by name and by key; otherwise the admin may be named the SO, by name and key together."),
 		),
 		mcp.WithString("so_csr_pem",
 			mcp.Description("The SO's PEM certificate signing request, signed like the admin's. Exactly one of this and so_cert_pem."),
@@ -322,14 +322,17 @@ func handleTenantGet(svc tenant.TenantServicer, mw *authmw.AuthMiddleware) mcpse
 // toolTenantList defines the qrdb_tenant_list tool schema.
 func toolTenantList() mcp.Tool {
 	return mcp.NewTool("qrdb_tenant_list",
-		mcp.WithDescription("Return metadata for all registered tenants."),
+		mcp.WithDescription("Return metadata for the tenants the caller may list, optionally narrowed to one status."),
+		mcp.WithString("status",
+			mcp.Description("Only tenants in this status: active, suspended or disabled. Absent lists every status. Deleted tenants are not a status: list them with qrdb_tenant_list_deleted."),
+		),
 	)
 }
 
 // handleTenantList returns a tool handler that lists every tenant to a caller
 // holding tenants:list:cross, and the caller's own tenant only to anyone else.
 func handleTenantList(svc tenant.TenantServicer, mw *authmw.AuthMiddleware) mcpserver.ToolHandlerFunc {
-	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		tenants, err := svc.ListTenants(ctx)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_tenant_list", Err: err}
@@ -338,6 +341,9 @@ func handleTenantList(svc tenant.TenantServicer, mw *authmw.AuthMiddleware) mcps
 			if tenants, err = mw.FilterTenantList(ctx, tenants); err != nil {
 				return authzToolError(err), nil
 			}
+		}
+		if tenants, err = tenant.FilterByStatus(tenants, tenant.Status(mcp.ParseString(req, "status", ""))); err != nil {
+			return nil, &ToolError{Tool: "qrdb_tenant_list", Err: err}
 		}
 
 		data, jsonErr := json.Marshal(tenantInfosToJSON(tenants))

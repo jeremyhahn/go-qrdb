@@ -185,6 +185,11 @@ type AuthMiddlewareConfig struct {
 	RoleServiceFallback role.RoleServicer
 	UserServiceFallback user.UserServicer
 
+	// GroupResolver is the IAM group store identity binding reads the
+	// roles of a user's groups from (middleware.WithGroupResolver). Nil
+	// leaves identities with their direct roles only.
+	GroupResolver middleware.GroupResolver
+
 	// StrictSeparation enables strict separation-of-duties posture: the
 	// authorizer's (AuthorizerConfig.StrictSeparation) and the middleware's
 	// SO-exclusive so-role gate (middleware.WithStrictSeparation).
@@ -365,6 +370,14 @@ type AuthMiddlewareConfig struct {
 	// login method implements auth.UnobservableMethodAuthenticator.
 	ExtraAuthenticators []auth.AuthenticatorPlacement
 
+	// PeerCredentials maps local Unix accounts (the connecting process's
+	// uid or gid, read from the Unix socket with SO_PEERCRED) to go-qrdb
+	// accounts. It is reachable on the Unix transport only, and names an
+	// account, never a role: the bound account's roles decide. When
+	// non-empty, a peer-credential authenticator is installed LAST in the
+	// chain; empty installs nothing.
+	PeerCredentials []auth.PeerCredentialMapping
+
 	// WrapAuthorizer, when non-nil, decorates the fully built
 	// RBAC[+ABAC] authorizer with embedder-supplied authorization logic.
 	// The wrapper receives the inner authorizer and returns the one the
@@ -498,6 +511,16 @@ func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, 
 	if err != nil {
 		return nil, err
 	}
+	// The Unix socket's peer-credential identity goes LAST, after mTLS and
+	// every embedder placement: an explicit credential (a certificate or a
+	// bearer token) wins over the ambient identity of the connecting
+	// process. Only the Unix transport binds a peer credential, so on every
+	// other transport it declines (auth.ErrUnauthenticated), and the chain
+	// never lets that decline mask an earlier method's error: an mTLS
+	// revocation-lookup failure stays the retryable unavailable answer.
+	if len(cfg.PeerCredentials) > 0 {
+		chain = append(chain, auth.NewPeerCredentialAuthenticator(cfg.PeerCredentials))
+	}
 
 	if cfg.WrapAuthorizer != nil {
 		authorizer = cfg.WrapAuthorizer(authorizer)
@@ -551,6 +574,9 @@ func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, 
 	}
 	if cfg.RoleServiceFallback != nil {
 		opts = append(opts, middleware.WithRoleResolverFallback(cfg.RoleServiceFallback))
+	}
+	if cfg.GroupResolver != nil {
+		opts = append(opts, middleware.WithGroupResolver(cfg.GroupResolver))
 	}
 	if cfg.AuditLogger != nil {
 		opts = append(opts,

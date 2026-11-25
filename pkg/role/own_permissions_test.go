@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // tenantRoutedResolver is a RoleServicer double that resolves a role ID in
@@ -54,6 +55,39 @@ func ownCtx(tenantID string, roles ...string) context.Context {
 	return auth.WithIdentity(context.Background(), &auth.Identity{Subject: "alice", TenantID: tenantID, Roles: roles})
 }
 
+// TestListOwnPermissions_StrictSystemSOListsReconcileAll: the strict system
+// SO lists the strict-only SO grants Authorize extends to it; the standard
+// posture and a tenant SO do not (Codex P1 on #1579).
+func TestListOwnPermissions_StrictSystemSOListsReconcileAll(t *testing.T) {
+	sysSO := SystemRoleID(tenantid.System, RoleNameSO)
+	acmeSO := SystemRoleID("acme", RoleNameSO)
+	svc := &tenantRoutedResolver{grants: map[string]map[string][]permission.Permission{
+		tenantid.System: {sysSO: {permission.RolesRead}},
+		"acme":          {acmeSO: {permission.RolesRead}},
+	}}
+	names := func(ctx context.Context, strict bool) []string {
+		t.Helper()
+		got, err := ListOwnPermissions(ctx, svc, strict)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := make([]string, len(got))
+		for i, p := range got {
+			out[i] = p.Name
+		}
+		return out
+	}
+	if got, want := names(ownCtx(tenantid.System, sysSO), true), []string{"roles:read", "roles:reconcile_all"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("strict system SO lists %v, want %v", got, want)
+	}
+	if got, want := names(ownCtx(tenantid.System, sysSO), false), []string{"roles:read"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("standard system SO lists %v, want %v", got, want)
+	}
+	if got, want := names(ownCtx("acme", acmeSO), true), []string{"roles:read"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("strict acme SO lists %v, want %v", got, want)
+	}
+}
+
 func names(infos []PermissionInfo) []string {
 	out := make([]string, len(infos))
 	for i, info := range infos {
@@ -66,7 +100,7 @@ func TestListOwnPermissions_ReturnsTheCallersOwnGrantsWithScope(t *testing.T) {
 	svc := &tenantRoutedResolver{grants: map[string]map[string][]permission.Permission{
 		"acme": {"reader": {permission.KVGet, permission.RolesRead}, "other": {permission.KVPut}},
 	}}
-	got, err := ListOwnPermissions(ownCtx("acme", "reader"), svc)
+	got, err := ListOwnPermissions(ownCtx("acme", "reader"), svc, false)
 	if err != nil {
 		t.Fatalf("ListOwnPermissions: %v", err)
 	}
@@ -92,7 +126,7 @@ func TestListOwnPermissions_NeverResolvesInAnotherTenant(t *testing.T) {
 	// The request targets globex; the caller is acme's. The resolve must
 	// run in acme, so globex's same-id role contributes nothing.
 	ctx := tenant.WithTenantID(ownCtx("acme", "r1"), "globex")
-	got, err := ListOwnPermissions(ctx, svc)
+	got, err := ListOwnPermissions(ctx, svc, false)
 	if err != nil {
 		t.Fatalf("ListOwnPermissions: %v", err)
 	}
@@ -113,7 +147,7 @@ func TestListOwnPermissions_RefusesAnUnauthenticatedCaller(t *testing.T) {
 	}
 	for name, ctx := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := ListOwnPermissions(ctx, svc)
+			_, err := ListOwnPermissions(ctx, svc, false)
 			if !errors.Is(err, auth.ErrUnauthenticated) {
 				t.Fatalf("err = %v, want auth.ErrUnauthenticated", err)
 			}
@@ -128,7 +162,7 @@ func TestListOwnPermissions_ExpandsWildcardGrants(t *testing.T) {
 	svc := &tenantRoutedResolver{grants: map[string]map[string][]permission.Permission{
 		"acme": {"kvadmin": {"kv:*", permission.KVGet}},
 	}}
-	got, err := ListOwnPermissions(ownCtx("acme", "kvadmin"), svc)
+	got, err := ListOwnPermissions(ownCtx("acme", "kvadmin"), svc, false)
 	if err != nil {
 		t.Fatalf("ListOwnPermissions: %v", err)
 	}
@@ -145,11 +179,11 @@ func TestListOwnPermissions_ExpandsWildcardGrants(t *testing.T) {
 
 func TestListOwnPermissions_PropagatesErrors(t *testing.T) {
 	boom := errors.New("store down")
-	if _, err := ListOwnPermissions(ownCtx("acme", "r"), &tenantRoutedResolver{err: boom}); !errors.Is(err, boom) {
+	if _, err := ListOwnPermissions(ownCtx("acme", "r"), &tenantRoutedResolver{err: boom}, false); !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want the resolve error", err)
 	}
 	var sr *ServiceRequiredError
-	if _, err := ListOwnPermissions(ownCtx("acme", "r"), nil); !errors.As(err, &sr) {
+	if _, err := ListOwnPermissions(ownCtx("acme", "r"), nil, false); !errors.As(err, &sr) {
 		t.Fatalf("err = %v, want *ServiceRequiredError", err)
 	}
 }

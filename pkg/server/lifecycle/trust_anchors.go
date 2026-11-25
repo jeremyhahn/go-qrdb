@@ -37,10 +37,11 @@ func (n *Node) WireTrustAnchors(pool *clienttrust.Pool) {
 	n.clientTrust.Store(pool)
 }
 
-// refreshClientTrust rebuilds the trust pool WireTrustAnchors wired, returning
+// RefreshClientTrust rebuilds the trust pool WireTrustAnchors wired, returning
 // once its next handshake reads the rebuilt trust. Before a pool is wired it
-// has nothing to rebuild and returns nil.
-func (n *Node) refreshClientTrust(ctx context.Context) error {
+// has nothing to rebuild and returns nil. First boot calls it once it has
+// installed an adopted SO's trust anchors (firstboot.ClientTrustRefresher).
+func (n *Node) RefreshClientTrust(ctx context.Context) error {
 	pool := n.clientTrust.Load()
 	if pool == nil {
 		return nil
@@ -48,7 +49,7 @@ func (n *Node) refreshClientTrust(ctx context.Context) error {
 	return pool.Refresh(ctx)
 }
 
-// settleClientTrust is refreshClientTrust when a change to the trusted CAs
+// settleClientTrust is RefreshClientTrust when a change to the trusted CAs
 // is still waiting on the pool's rebuild, and nothing otherwise
 // (clienttrust.Pool.Settle). Certificate issuance and enrollment call it
 // before answering.

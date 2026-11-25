@@ -253,6 +253,21 @@ type RoleServiceError struct {
 	Err error
 }
 
+// GroupServiceError is returned when the IAM group store cannot be built.
+type GroupServiceError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *GroupServiceError) Error() string {
+	return "lifecycle: group service initialization failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *GroupServiceError) Unwrap() error {
+	return e.Err
+}
+
 // Error returns a human-readable description.
 func (e *RoleServiceError) Error() string {
 	return "lifecycle: role service initialization failed: " + e.Err.Error()
@@ -453,4 +468,15 @@ type CertProviderConflictError struct{}
 
 func (e *CertProviderConflictError) Error() string {
 	return "lifecycle: CertProvider and CertKeyProviderFactory are mutually exclusive: the key factory configures only the built-in certificate provider"
+}
+
+// ObjstoreBarrierSealedError reports an objstore LSM store (object-storage-lsm)
+// opened while the at-rest barrier is sealed. Its SSTables are sealed by the
+// barrier, so the open fails closed before any store is opened or file
+// created, rather than reading ciphertext it cannot decrypt.
+type ObjstoreBarrierSealedError struct{}
+
+// Error returns a human-readable description of the refusal.
+func (e *ObjstoreBarrierSealedError) Error() string {
+	return "lifecycle: the storage barrier is sealed; an objstore LSM store cannot open until it is unsealed (object-storage-lsm, fails closed)"
 }

@@ -1304,6 +1304,12 @@ func (s *kvUserStore) updateUserAt(ctx context.Context, req *UpdateUserRequest, 
 		if req.RoleIDs != nil {
 			next.RoleIDs = req.RoleIDs
 		}
+		if req.GroupIDs != nil {
+			next.GroupIDs = req.GroupIDs
+		}
+		if req.pendingGroupIDs != nil {
+			next.PendingGroupIDs = req.pendingGroupIDs
+		}
 		if req.RoleBindings != nil {
 			next.RoleBindings = roleBindings
 		}
@@ -1544,6 +1550,12 @@ func (s *kvUserStore) updateUserAt(ctx context.Context, req *UpdateUserRequest, 
 
 	if req.RoleIDs != nil {
 		existing.RoleIDs = req.RoleIDs
+	}
+	if req.GroupIDs != nil {
+		existing.GroupIDs = req.GroupIDs
+	}
+	if req.pendingGroupIDs != nil {
+		existing.PendingGroupIDs = req.pendingGroupIDs
 	}
 	if req.RoleBindings != nil {
 		existing.RoleBindings = roleBindings
@@ -2681,6 +2693,8 @@ func onlyReassertsLifecycle(req *UpdateUserRequest) bool {
 		req.Name == "" &&
 		req.LastAuth == nil &&
 		req.RoleIDs == nil &&
+		req.GroupIDs == nil &&
+		req.pendingGroupIDs == nil &&
 		req.RoleBindings == nil &&
 		req.Attributes == nil &&
 		req.CertBindings == nil &&
@@ -2758,6 +2772,8 @@ func lastAuthOnly(req *UpdateUserRequest) bool {
 		req.Name == "" &&
 		req.Lifecycle == "" &&
 		req.RoleIDs == nil &&
+		req.GroupIDs == nil &&
+		req.pendingGroupIDs == nil &&
 		req.RoleBindings == nil &&
 		req.Attributes == nil &&
 		req.CertBindings == nil &&

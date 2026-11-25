@@ -379,11 +379,18 @@ func TestHostShardSnapshotProvider_SnapshotShard_ExportTimesOut(t *testing.T) {
 }
 
 func TestHostShardSnapshotProvider_SnapshotShard_ContextCanceledDuringPoll(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// The first poll callback the provider makes cancels ctx and answers as
+	// before, so the cancel lands while the provider is polling.
 	host := newMockSnapshotHost()
 	host.requestFn = func(_ context.Context, _ uint64, _ quicraft.SnapshotOption) (uint64, error) {
+		cancel()
 		return 0, quicraft.ErrSnapshotInProgress
 	}
 	host.exportFn = func(_ context.Context, _ uint64, _ io.Writer) error {
+		cancel()
 		return quicraft.ErrSnapshotNotFound
 	}
 
@@ -391,12 +398,6 @@ func TestHostShardSnapshotProvider_SnapshotShard_ContextCanceledDuringPoll(t *te
 		WithSnapshotPollInterval(50*time.Millisecond),
 		WithSnapshotPollTimeout(time.Minute),
 	)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		time.Sleep(5 * time.Millisecond)
-		cancel()
-	}()
 
 	_, err := provider.SnapshotShard(ctx, 8)
 	if err == nil {

@@ -27,6 +27,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
 )
 
@@ -98,16 +101,10 @@ func TestMultiProcessHelper(t *testing.T) {
 
 	// Hold at the line until the parent has started every child, so the
 	// children contend for the whole run instead of running one after another.
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		if _, err := os.Stat(startFile); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("start signal never arrived")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		_, err := os.Stat(startFile)
+		assert.NoError(c, err)
+	}, 30*time.Second, time.Millisecond, "start signal never arrived")
 
 	ctx := context.Background()
 	var won []string

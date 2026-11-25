@@ -43,6 +43,8 @@ import (
 	"testing"
 	"time"
 
+	gocodecyaml "github.com/jeremyhahn/go-codec/pkg/yaml"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
@@ -199,8 +201,10 @@ func testCredentialTenantStoresOverProtocol(t *testing.T, node *multiProtoNode, 
 	if names := list(globex); stringSliceContains(names, acmeOnly) || !stringSliceContains(names, shared) {
 		t.Fatalf("[%s] globex's list = %v, want %q and not %q", proto.name, names, shared, acmeOnly)
 	}
-	if out, err := runQRDB(t, node.cli, globex, "credential", "retrieve", acmeOnly); err == nil || strings.Contains(out, "acme-private") {
-		t.Fatalf("[%s] globex must not read acme's %s: err=%v output: %s", proto.name, acmeOnly, err, out)
+	if out, err := runQRDB(t, node.cli, globex, "credential", "retrieve", acmeOnly); strings.Contains(out, "acme-private") {
+		t.Fatalf("[%s] globex read acme's %s: %s", proto.name, acmeOnly, out)
+	} else {
+		requireCredentialNotFoundCLI(t, proto, "globex retrieve of acme's "+acmeOnly, out, err)
 	}
 	if !stringSliceContains(list(acme), acmeOnly) {
 		t.Fatalf("[%s] acme's list must name its own %s", proto.name, acmeOnly)
@@ -222,6 +226,35 @@ func testCredentialTenantStoresOverProtocol(t *testing.T, node *multiProtoNode, 
 		t.Fatalf("[%s] globex's %s changed with acme's rotation: %q", proto.name, shared, got)
 	}
 
+	// A rotation policy set in acme governs acme's credential only: globex's
+	// credential of the same name keeps no policy, and globex can set no
+	// policy on a name only acme holds.
+	run(acme, "credential", "rotation-policy", "set", shared, "--enabled", "--interval", "24h", "--retain-versions", "2")
+	policyOf := func(conn []string) credentialRotationPolicyStatusCLIJSON {
+		t.Helper()
+		out := run(conn, "--output", "json", "credential", "rotation-policy", "get", shared)
+		var policy credentialRotationPolicyStatusCLIJSON
+		if err := json.Unmarshal([]byte(out), &policy); err != nil {
+			t.Fatalf("[%s] decode rotation-policy JSON: %v\noutput: %s", proto.name, err, out)
+		}
+		return policy
+	}
+	if got := policyOf(acme); !got.Enabled || got.RetainVersions != 2 || got.NextRotation == "" {
+		t.Fatalf("[%s] acme's policy on %s = %+v, want enabled retain_versions=2 with a next rotation", proto.name, shared, got)
+	}
+	if got := policyOf(globex); got.Enabled || got.NextRotation != "" {
+		t.Fatalf("[%s] acme's policy reached globex's %s: %+v", proto.name, shared, got)
+	}
+	out, err := runQRDB(t, node.cli, globex, "credential", "rotation-policy", "set", acmeOnly,
+		"--enabled", "--interval", "1h", "--retain-versions", "1")
+	requireCredentialNotFoundCLI(t, proto, "globex rotation-policy set on acme's "+acmeOnly, out, err)
+	out, err = runQRDB(t, node.cli, globex, "credential", "rotation-policy", "get", acmeOnly)
+	requireCredentialNotFoundCLI(t, proto, "globex rotation-policy get on acme's "+acmeOnly, out, err)
+	if got := run(acme, "credential", "rotation-policy", "get", acmeOnly); !strings.Contains(got, "enabled=false") {
+		t.Fatalf("[%s] globex's refused set reached acme's %s: %s", proto.name, acmeOnly, got)
+	}
+	run(acme, "credential", "rotation-policy", "set", shared, "--interval", "24h", "--retain-versions", "2")
+
 	// globex deleting the shared name leaves acme's in place.
 	run(globex, "credential", "delete", shared)
 	if got := run(acme, "credential", "retrieve", shared); got != "acme-value-2" {
@@ -234,7 +267,7 @@ func testCredentialTenantStoresOverProtocol(t *testing.T, node *multiProtoNode, 
 
 	// A tenant on the shared system barrier is refused, not served the
 	// node-wide store.
-	out, err := runQRDB(t, node.cli, ct.conn(node, proto, ct.shared), "credential", "store", shared, "--value", "leak")
+	out, err = runQRDB(t, node.cli, ct.conn(node, proto, ct.shared), "credential", "store", shared, "--value", "leak")
 	if err == nil {
 		t.Fatalf("[%s] a shared-barrier tenant must be refused a credential store, got success: %s", proto.name, out)
 	}
@@ -341,6 +374,29 @@ func TestCredential_Embedded_TenantStores(t *testing.T) {
 		t.Fatalf("CredentialDelete: %v", err)
 	}
 	mustRetrieve(acmeCtx, sharedName, "acme-value-2")
+
+	// A rotation policy set in process is the policy read back; an invalid
+	// one is refused with the typed error; a disabled one schedules nothing.
+	setPolicy := func(enabled bool, interval string) error {
+		return creds.CredentialSetRotationPolicy(acmeCtx, &transport.CredentialSetRotationPolicyRequest{
+			Name: acmeOnly, Enabled: enabled, Interval: interval, RetainVersions: 2,
+		})
+	}
+	if err := setPolicy(true, "24h"); err != nil {
+		t.Fatalf("CredentialSetRotationPolicy: %v", err)
+	}
+	if p, err := creds.CredentialRotationPolicy(acmeCtx, acmeOnly); err != nil || !p.Enabled || p.RetainVersions != 2 || p.NextRotation == "" {
+		t.Fatalf("CredentialRotationPolicy = %+v, %v; want enabled, retain 2, scheduled", p, err)
+	}
+	if err := setPolicy(true, "0s"); err == nil || !strings.Contains(err.Error(), "invalid rotation policy: interval must be positive") {
+		t.Fatalf("a zero interval must be refused with the typed error, got %v", err)
+	}
+	if err := setPolicy(false, "24h"); err != nil {
+		t.Fatalf("disable CredentialSetRotationPolicy: %v", err)
+	}
+	if p, err := creds.CredentialRotationPolicy(acmeCtx, acmeOnly); err != nil || p.Enabled || p.NextRotation != "" {
+		t.Fatalf("a disabled policy = %+v, %v; want disabled, nothing scheduled", p, err)
+	}
 
 	// A principal without the grants is refused by authorization.
 	if _, err := creds.CredentialList(initechCtx, &transport.CredentialListRequest{}); err == nil ||
@@ -695,4 +751,314 @@ func parseReapedCount(t *testing.T, proto multiProtocol, out string) int {
 	}
 	t.Fatalf("[%s] credential gc: output did not contain a 'reaped N' count: %s", proto.name, out)
 	return 0
+}
+
+// credentialRotationPolicyCLIJSON is `qrdb credential rotation-policy get
+// --output json`.
+type credentialRotationPolicyCLIJSON struct {
+	Enabled        bool   `json:"enabled"`
+	Interval       string `json:"interval"`
+	RetainVersions int    `json:"retain_versions"`
+}
+
+// TestCredential_CLI_Cluster_OneStore_PerProtocol is the property of
+// docs/credentials/architecture.md, "Storage": a cluster keeps one credential
+// store, on the system shard, so a credential, its rotation policy and its
+// version history written through one node are the same records read
+// through every other node.
+func TestCredential_CLI_Cluster_OneStore_PerProtocol(t *testing.T) {
+	t.Parallel()
+	nodes, _ := startMultiProtocolCluster(t, 0)
+
+	for _, proto := range multiProtocols {
+		t.Run(proto.name, func(t *testing.T) {
+			testCredentialOneStoreOverProtocol(t, nodes, proto)
+		})
+	}
+}
+
+func testCredentialOneStoreOverProtocol(t *testing.T, nodes [3]*multiProtoNode, proto multiProtocol) {
+	t.Helper()
+	a, b, c := nodes[0], nodes[1], nodes[2]
+	name := fmt.Sprintf("ccl-%s-%d", proto.name, time.Now().UnixNano())
+
+	// --- a credential stored through A is read through B and C ------------
+	if out, err := runCLIProto(t, a, proto, "credential", "store", name, "--value", "cluster-value-1"); err != nil {
+		t.Fatalf("[%s] credential store on A: %v\noutput: %s", proto.name, err, out)
+	}
+	for label, node := range map[string]*multiProtoNode{"B": b, "C": c} {
+		out, err := runCLIProto(t, node, proto, "credential", "retrieve", name)
+		if err != nil {
+			t.Fatalf("[%s] credential retrieve on %s: %v\noutput: %s", proto.name, label, err, out)
+		}
+		if got := strings.TrimSpace(out); got != "cluster-value-1" {
+			t.Fatalf("[%s] credential retrieve on %s = %q, want %q", proto.name, label, got, "cluster-value-1")
+		}
+		out, err = runCLIProto(t, node, proto, "--output", "json", "credential", "list")
+		if err != nil {
+			t.Fatalf("[%s] credential list on %s: %v\noutput: %s", proto.name, label, err, out)
+		}
+		var names []string
+		if jerr := json.Unmarshal([]byte(out), &names); jerr != nil {
+			t.Fatalf("[%s] decode credential list JSON on %s: %v\noutput: %s", proto.name, label, jerr, out)
+		}
+		if !stringSliceContains(names, name) {
+			t.Fatalf("[%s] credential list on %s = %v, want to contain %q", proto.name, label, names, name)
+		}
+	}
+
+	// --- a rotation policy set through A is the policy B reads -------------
+	if out, err := runCLIProto(t, a, proto, "credential", "rotation-policy", "set", name,
+		"--enabled", "--interval", "720h", "--retain-versions", "3"); err != nil {
+		t.Fatalf("[%s] rotation-policy set on A: %v\noutput: %s", proto.name, err, out)
+	}
+	out, err := runCLIProto(t, b, proto, "--output", "json", "credential", "rotation-policy", "get", name)
+	if err != nil {
+		t.Fatalf("[%s] rotation-policy get on B: %v\noutput: %s", proto.name, err, out)
+	}
+	var policy credentialRotationPolicyCLIJSON
+	if jerr := json.Unmarshal([]byte(out), &policy); jerr != nil {
+		t.Fatalf("[%s] decode rotation-policy JSON on B: %v\noutput: %s", proto.name, jerr, out)
+	}
+	interval, perr := time.ParseDuration(policy.Interval)
+	if !policy.Enabled || perr != nil || interval != 720*time.Hour || policy.RetainVersions != 3 {
+		t.Fatalf("[%s] rotation-policy on B = %+v, want enabled interval=720h retain_versions=3", proto.name, policy)
+	}
+
+	// --- a rotation through B is the version history A and C read ----------
+	if out, err := runCLIProto(t, b, proto, "credential", "rotate", name,
+		"--value", "cluster-value-2", "--grace-period", "120"); err != nil {
+		t.Fatalf("[%s] credential rotate on B: %v\noutput: %s", proto.name, err, out)
+	}
+	out, err = runCLIProto(t, a, proto, "--output", "json", "credential", "versions", name)
+	if err != nil {
+		t.Fatalf("[%s] credential versions on A: %v\noutput: %s", proto.name, err, out)
+	}
+	var versions credentialVersionsCLIJSON
+	if jerr := json.Unmarshal([]byte(out), &versions); jerr != nil {
+		t.Fatalf("[%s] decode credential versions JSON on A: %v\noutput: %s", proto.name, jerr, out)
+	}
+	v2, ok := findCredentialVersion(versions.Versions, 2)
+	if len(versions.Versions) != 2 || !ok || !v2.IsCurrent {
+		t.Fatalf("[%s] credential versions on A = %+v, want v1 in grace and v2 current", proto.name, versions)
+	}
+	out, err = runCLIProto(t, c, proto, "credential", "retrieve", name)
+	if err != nil {
+		t.Fatalf("[%s] credential retrieve on C after rotate: %v\noutput: %s", proto.name, err, out)
+	}
+	if got := strings.TrimSpace(out); got != "cluster-value-2" {
+		t.Fatalf("[%s] credential retrieve on C after rotate = %q, want %q", proto.name, got, "cluster-value-2")
+	}
+
+	// --- a delete through C is gone on A -----------------------------------
+	if out, err := runCLIProto(t, c, proto, "credential", "delete", name); err != nil {
+		t.Fatalf("[%s] credential delete on C: %v\noutput: %s", proto.name, err, out)
+	}
+	out, err = runCLIProto(t, a, proto, "credential", "retrieve", name)
+	requireCredentialNotFoundCLI(t, proto, "credential retrieve on A after delete on C", out, err)
+}
+
+// requireCredentialNotFoundCLI fails the test unless a CLI call failed with
+// a not-found refusal. Every transport names it "not found" (their error
+// types differ), so the refusal reads the
+// same as for a name no tenant holds and leaks no other failure.
+func requireCredentialNotFoundCLI(t *testing.T, proto multiProtocol, what, out string, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("[%s] %s must be refused, got: %s", proto.name, what, out)
+	}
+	if !strings.Contains(strings.ToLower(out+err.Error()), "not found") {
+		t.Fatalf("[%s] %s refusal = %v\noutput: %s\nwant a not-found refusal", proto.name, what, err, out)
+	}
+}
+
+// credentialRotationPolicyStatusCLIJSON is `qrdb credential rotation-policy
+// get --output json` with the schedule.
+type credentialRotationPolicyStatusCLIJSON struct {
+	credentialRotationPolicyCLIJSON
+	NextRotation string `json:"next_rotation"`
+}
+
+// TestCredential_CLI_RotationPolicy_PerProtocol drives `qrdb credential
+// rotation-policy` over every transport (docs/credentials/cli.md): a policy
+// set is the policy read back with its next rotation scheduled, an invalid
+// policy is refused with the typed InvalidRotationPolicyError text, a
+// disabled policy reads back disabled with nothing scheduled, and a
+// manual-strategy store refuses any policy. The scheduled rotation itself is
+// proven by pkg/credentials' RotateDue unit tests on an injected clock.
+func TestCredential_CLI_RotationPolicy_PerProtocol(t *testing.T) {
+	t.Parallel()
+	barrier := startMultiProtocolNode(t)
+	manual := startMultiProtocolNodeWithConfig(t, "", "  credential_strategy: manual\n")
+
+	for _, proto := range multiProtocols {
+		t.Run(proto.name, func(t *testing.T) {
+			testCredentialRotationPolicyOverProtocol(t, barrier, manual, proto)
+		})
+	}
+}
+
+func testCredentialRotationPolicyOverProtocol(t *testing.T, barrier, manual *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+	name := fmt.Sprintf("crp-%s-%d", proto.name, time.Now().UnixNano())
+	get := func() credentialRotationPolicyStatusCLIJSON {
+		t.Helper()
+		out, err := runCLIProto(t, barrier, proto, "--output", "json", "credential", "rotation-policy", "get", name)
+		if err != nil {
+			t.Fatalf("[%s] rotation-policy get: %v\noutput: %s", proto.name, err, out)
+		}
+		var policy credentialRotationPolicyStatusCLIJSON
+		if jerr := json.Unmarshal([]byte(out), &policy); jerr != nil {
+			t.Fatalf("[%s] decode rotation-policy JSON: %v\noutput: %s", proto.name, jerr, out)
+		}
+		return policy
+	}
+	refused := func(node *multiProtoNode, want string, args ...string) {
+		t.Helper()
+		out, err := runCLIProto(t, node, proto, append([]string{"credential", "rotation-policy", "set", name}, args...)...)
+		if err == nil {
+			t.Fatalf("[%s] rotation-policy set %v must be refused, got: %s", proto.name, args, out)
+		}
+		if !strings.Contains(out+err.Error(), "invalid rotation policy: "+want) {
+			t.Fatalf("[%s] rotation-policy set %v refusal = %v\noutput: %s\nwant %q", proto.name, args, err, out, want)
+		}
+	}
+
+	if out, err := runCLIProto(t, barrier, proto, "credential", "store", name, "--value", "policy-value-1"); err != nil {
+		t.Fatalf("[%s] credential store: %v\noutput: %s", proto.name, err, out)
+	}
+
+	// (a) a policy set is the policy read back, with a rotation scheduled.
+	if out, err := runCLIProto(t, barrier, proto, "credential", "rotation-policy", "set", name,
+		"--enabled", "--interval", "24h", "--retain-versions", "2"); err != nil {
+		t.Fatalf("[%s] rotation-policy set: %v\noutput: %s", proto.name, err, out)
+	}
+	policy := get()
+	interval, perr := time.ParseDuration(policy.Interval)
+	if !policy.Enabled || perr != nil || interval != 24*time.Hour || policy.RetainVersions != 2 {
+		t.Fatalf("[%s] rotation-policy = %+v, want enabled interval=24h retain_versions=2", proto.name, policy)
+	}
+	if _, terr := time.Parse(time.RFC3339, policy.NextRotation); terr != nil {
+		t.Fatalf("[%s] an enabled policy must schedule its next rotation, got %q: %v", proto.name, policy.NextRotation, terr)
+	}
+	// The YAML rendering carries the JSON key names and the same values.
+	yamlOut, err := runCLIProto(t, barrier, proto, "--output", "yaml", "credential", "rotation-policy", "get", name)
+	if err != nil {
+		t.Fatalf("[%s] rotation-policy get yaml: %v\noutput: %s", proto.name, err, yamlOut)
+	}
+	var yamlPolicy map[string]any
+	if yerr := gocodecyaml.New[map[string]any]().Unmarshal([]byte(yamlOut), &yamlPolicy); yerr != nil {
+		t.Fatalf("[%s] decode rotation-policy YAML: %v\noutput: %s", proto.name, yerr, yamlOut)
+	}
+	wantYAML := map[string]any{
+		"name": name, "enabled": true, "interval": "24h0m0s", "retain_versions": 2,
+		"next_rotation": policy.NextRotation,
+	}
+	if len(yamlPolicy) != len(wantYAML) {
+		t.Fatalf("[%s] rotation-policy YAML keys = %v, want exactly %v", proto.name, yamlPolicy, wantYAML)
+	}
+	for key, want := range wantYAML {
+		if got, ok := yamlPolicy[key]; !ok || got != want {
+			t.Fatalf("[%s] rotation-policy YAML %s = %#v, want %#v\noutput: %s", proto.name, key, got, want, yamlOut)
+		}
+	}
+
+	// (b) an invalid policy is refused with the typed error and changes
+	// nothing; a manual-strategy store refuses any policy.
+	refused(barrier, "interval must be positive", "--enabled", "--interval", "0s", "--retain-versions", "2")
+	refused(barrier, `interval "soon" is not a duration`, "--enabled", "--interval", "soon", "--retain-versions", "2")
+	refused(barrier, "retain versions must be at least 1", "--enabled", "--interval", "24h", "--retain-versions", "0")
+	if after := get(); after != policy {
+		t.Fatalf("[%s] a refused policy changed the stored one: %+v, want %+v", proto.name, after, policy)
+	}
+	refused(manual, "the manual strategy holds non-resident values and cannot rotate on a schedule",
+		"--enabled", "--interval", "24h", "--retain-versions", "2")
+
+	// (c) a disabled policy reads back disabled, nothing scheduled.
+	if out, err := runCLIProto(t, barrier, proto, "credential", "rotation-policy", "set", name,
+		"--interval", "24h", "--retain-versions", "2"); err != nil {
+		t.Fatalf("[%s] rotation-policy disable: %v\noutput: %s", proto.name, err, out)
+	}
+	if disabled := get(); disabled.Enabled || disabled.NextRotation != "" {
+		t.Fatalf("[%s] a disabled policy = %+v, want disabled with no next rotation", proto.name, disabled)
+	}
+	out, err := runCLIProto(t, barrier, proto, "credential", "retrieve", name)
+	if err != nil || strings.TrimSpace(out) != "policy-value-1" {
+		t.Fatalf("[%s] a policy change must not rotate the value: %q, %v", proto.name, out, err)
+	}
+}
+
+// TestCredential_CLI_MigrationConflicts_PerProtocol drives `credential
+// migration-conflicts list|resolve` over every protocol against a node that
+// adopted no node-local credential copies: the list is empty in every
+// output form, and a resolve is refused with the typed error and a non-zero
+// exit, whether the name has no conflict or the resolution is unknown.
+func TestCredential_CLI_MigrationConflicts_PerProtocol(t *testing.T) {
+	t.Parallel()
+	node := startMultiProtocolNode(t)
+
+	for _, proto := range multiProtocols {
+		t.Run(proto.name, func(t *testing.T) {
+			testCredentialMigrationConflictsOverProtocol(t, node, proto)
+		})
+	}
+}
+
+func testCredentialMigrationConflictsOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+	name := fmt.Sprintf("cmc-%s-%d", proto.name, time.Now().UnixNano())
+	if out, err := runCLIProto(t, node, proto, "credential", "store", name, "--value", "conflict-free"); err != nil {
+		t.Fatalf("[%s] credential store: %v\noutput: %s", proto.name, err, out)
+	}
+
+	// (a) no conflicts: an empty JSON array, and no table rows.
+	out, err := runCLIProto(t, node, proto, "--output", "json", "credential", "migration-conflicts", "list")
+	if err != nil {
+		t.Fatalf("[%s] migration-conflicts list: %v\noutput: %s", proto.name, err, out)
+	}
+	var listed map[string]json.RawMessage
+	if jerr := json.Unmarshal([]byte(out), &listed); jerr != nil {
+		t.Fatalf("[%s] decode migration-conflicts JSON: %v\noutput: %s", proto.name, jerr, out)
+	}
+	var conflicts []map[string]any
+	if raw, ok := listed["conflicts"]; !ok || json.Unmarshal(raw, &conflicts) != nil || conflicts == nil || len(conflicts) != 0 {
+		t.Fatalf("[%s] migration-conflicts list = %s, want an empty conflicts array", proto.name, out)
+	}
+	yamlOut, err := runCLIProto(t, node, proto, "--output", "yaml", "credential", "migration-conflicts", "list")
+	if err != nil {
+		t.Fatalf("[%s] migration-conflicts list yaml: %v\noutput: %s", proto.name, err, yamlOut)
+	}
+	var yamlListed map[string]any
+	if yerr := gocodecyaml.New[map[string]any]().Unmarshal([]byte(yamlOut), &yamlListed); yerr != nil {
+		t.Fatalf("[%s] decode migration-conflicts YAML: %v\noutput: %s", proto.name, yerr, yamlOut)
+	}
+	if yamlConflicts, ok := yamlListed["conflicts"].([]any); len(yamlListed) != 1 || !ok || len(yamlConflicts) != 0 {
+		t.Fatalf("[%s] migration-conflicts list YAML = %q, want only a conflicts key holding an empty list", proto.name, yamlOut)
+	}
+	table, err := runCLIProto(t, node, proto, "credential", "migration-conflicts", "list")
+	if err != nil || strings.TrimSpace(table) != "" {
+		t.Fatalf("[%s] migration-conflicts list (table) = %q, %v; want no rows", proto.name, table, err)
+	}
+
+	// (b) resolving a name with no conflict, or with an unknown
+	// resolution, is refused with the typed error.
+	refused := func(want string, args ...string) {
+		t.Helper()
+		out, err := runCLIProto(t, node, proto, append([]string{"credential", "migration-conflicts", "resolve"}, args...)...)
+		if err == nil {
+			t.Fatalf("[%s] migration-conflicts resolve %v must be refused, got: %s", proto.name, args, out)
+		}
+		if !strings.Contains(out+err.Error(), want) {
+			t.Fatalf("[%s] migration-conflicts resolve %v refusal = %v\noutput: %s\nwant %q", proto.name, args, err, out, want)
+		}
+	}
+	refused("migration conflict not found", name, "--resolution", "import")
+	refused("migration conflict not found", "cmc-absent-"+proto.name, "--resolution", "discard")
+	refused("migration resolution must be import or discard", name, "--resolution", "merge")
+	refused(`required flag(s) "resolution" not set`, name)
+
+	// The refusals changed nothing.
+	if got, err := runCLIProto(t, node, proto, "credential", "retrieve", name); err != nil || strings.TrimSpace(got) != "conflict-free" {
+		t.Fatalf("[%s] a refused resolve changed %s: %q, %v", proto.name, name, got, err)
+	}
 }

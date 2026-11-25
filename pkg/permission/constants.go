@@ -331,6 +331,20 @@ const (
 	RolesAssign Permission = "roles:assign"
 	// RolesUnassign grants access to unassign roles from users.
 	RolesUnassign Permission = "roles:unassign"
+	// GroupsCreate grants access to create IAM groups.
+	GroupsCreate Permission = "groups:create"
+	// GroupsRead grants access to read IAM group details.
+	GroupsRead Permission = "groups:read"
+	// GroupsUpdate grants access to update IAM groups.
+	GroupsUpdate Permission = "groups:update"
+	// GroupsDelete grants access to delete IAM groups.
+	GroupsDelete Permission = "groups:delete"
+	// GroupsList grants access to list IAM groups and their members.
+	GroupsList Permission = "groups:list"
+	// GroupsAddMember grants access to add a user to an IAM group.
+	GroupsAddMember Permission = "groups:add_member"
+	// GroupsRemoveMember grants access to remove a user from an IAM group.
+	GroupsRemoveMember Permission = "groups:remove_member"
 	// PermissionsList grants access to list available permission categories.
 	PermissionsList Permission = "permissions:list"
 	// PermissionsResolve grants access to resolve the effective (unioned)
@@ -495,6 +509,11 @@ const (
 	PasswordsLock Permission = "passwords:lock"
 	// PasswordsUnlock grants access to unlock the password vault.
 	PasswordsUnlock Permission = "passwords:unlock"
+	// PasswordsOverrideOwnership lets the holder act on a shared password it
+	// does not own: read, update, delete or re-share it whatever its owner.
+	// go-qrdb stores no passwords; the store that owns the shared passwords
+	// (go-xkms) enforces it by asking the PDP for this permission.
+	PasswordsOverrideOwnership Permission = "passwords:override_ownership"
 )
 
 // ---------------------------------------------------------------------------
@@ -539,6 +558,28 @@ const (
 	// for the caller's own tenant's devices: committing the image so the
 	// device no longer rolls back to the previous one.
 	OTAConfirm Permission = "ota:confirm"
+)
+
+// ---------------------------------------------------------------------------
+// Device pairing and sharing permissions
+// ---------------------------------------------------------------------------
+
+// The singular "device" resource is the SPEC's name for the pairing and
+// sharing family; it stands beside devices:onboard. Every one acts in the
+// caller's own tenant only (ScopeSelf).
+const (
+	// DevicePair grants access to pair a device to a user or account in the
+	// caller's own tenant.
+	DevicePair Permission = "device:pair"
+	// DeviceRevoke grants access to revoke a paired device in the caller's
+	// own tenant.
+	DeviceRevoke Permission = "device:revoke"
+	// DeviceShare grants access to share a device's access with another
+	// identity in the caller's own tenant.
+	DeviceShare Permission = "device:share"
+	// DeviceSync grants access to sync state across a user's paired devices
+	// in the caller's own tenant.
+	DeviceSync Permission = "device:sync"
 )
 
 // ---------------------------------------------------------------------------
@@ -597,8 +638,9 @@ const (
 
 	// SealStoreManage grants access to the generic secret store a seal
 	// strategy keeps for its own state (SealStore{Put,Get,Delete,List,
-	// Reseal,Status} on the embedded SDK transport -- there is no network
-	// route for this surface, it exists only for an in-process embedder).
+	// Reseal,Status}). It gates the embedded surface only: the verbs are
+	// embedded-only (ruling 1234, transport.EmbeddedOnlyOperations) and every
+	// remote transport refuses them before authorization.
 	// It is platform state, like every other node-barrier permission:
 	// ScopeCross (node_barrier_scope.go), so only a system-tenant identity
 	// exercises it, and a tenant-scoped identity is refused regardless of
@@ -1155,6 +1197,14 @@ var categories = []Category{
 		},
 	},
 	{
+		Name:  "Group Management",
+		Group: "Management Services",
+		Permissions: []Permission{
+			GroupsCreate, GroupsRead, GroupsUpdate, GroupsDelete,
+			GroupsList, GroupsAddMember, GroupsRemoveMember,
+		},
+	},
+	{
 		Name:  "ABAC Policy Management",
 		Group: "Management Services",
 		Permissions: []Permission{
@@ -1206,6 +1256,7 @@ var categories = []Category{
 		Permissions: []Permission{
 			PasswordsRead, PasswordsWrite, PasswordsDelete,
 			PasswordsGenerate, PasswordsLock, PasswordsUnlock,
+			PasswordsOverrideOwnership,
 		},
 	},
 	{
@@ -1220,6 +1271,13 @@ var categories = []Category{
 		Group: "Device Services",
 		Permissions: []Permission{
 			DevicesOnboard,
+		},
+	},
+	{
+		Name:  "Device Sharing",
+		Group: "Device Services",
+		Permissions: []Permission{
+			DevicePair, DeviceRevoke, DeviceShare, DeviceSync,
 		},
 	},
 	{

@@ -284,6 +284,10 @@ func CeremonyInitFromPB(req *pb.CeremonyInitializeRequest) (*service.CeremonyIni
 		AdminCertPEM:           req.GetAdminCertPem(),
 		AdminCertPoolPEM:       req.GetAdminCertPoolPem(),
 		AdminGenerate:          req.GetAdminGenerate(),
+		SOUsername:             req.GetSoUsername(),
+		SOCSRPEM:               req.GetSoCsrPem(),
+		SOCertPEM:              req.GetSoCertPem(),
+		SOChainPEM:             req.GetSoChainPem(),
 		Secret:                 secretBuf,
 	}, nil
 }
@@ -358,5 +362,6 @@ func CeremonyInitToPB(r *service.CeremonyInitResult) *pb.CeremonyInitializeRespo
 		AdminCertPem:          string(r.AdminCertPEM),
 		AdminKeyPem:           bytes.Clone(r.AdminKeyPEM),
 		AdminCredentialSource: r.AdminCredentialSource,
+		SoCertPem:             string(r.SOCertPEM),
 	}
 }

@@ -1321,29 +1321,6 @@ func adminPermSet(t *testing.T) map[permission.Permission]struct{} {
 	return set
 }
 
-// wildcardSatisfies mirrors the RBAC authorizer's whole-segment wildcard match
-// (pkg/auth/rbac.permissionGranted): a granted resource:* covers any concrete
-// resource:action in that family. It is duplicated here only to assert the
-// grant's effect without importing the rbac package (which would create an
-// import cycle through role).
-func wildcardSatisfies(grants map[permission.Permission]struct{}, required permission.Permission) bool {
-	if _, ok := grants[required]; ok {
-		return true
-	}
-	res := permission.Resource(required)
-	act := permission.Action(required)
-	for _, cand := range []permission.Permission{
-		permission.Permission(res + ":*"),
-		permission.Permission("*:" + act),
-		permission.Permission("*:*"),
-	} {
-		if _, ok := grants[cand]; ok {
-			return true
-		}
-	}
-	return false
-}
-
 // TestBuiltInRoles_AdminWildcardsResolveConcreteDataPlane verifies the
 // tenant-admin wildcard grants actually satisfy concrete data-plane
 // resource:action checks (the operation the broker PEP enforces). Without the
@@ -1361,7 +1338,7 @@ func TestBuiltInRoles_AdminWildcardsResolveConcreteDataPlane(t *testing.T) {
 		permission.OllamaEmbed, permission.OllamaModelList,
 	}
 	for _, p := range concrete {
-		if !wildcardSatisfies(set, p) {
+		if !permission.Granted(set, p) {
 			t.Errorf("admin wildcard grants do not satisfy concrete %q", p)
 		}
 	}

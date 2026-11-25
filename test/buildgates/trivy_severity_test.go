@@ -22,7 +22,7 @@ import (
 	"strings"
 	"testing"
 
-	"gopkg.in/yaml.v3"
+	gocodecyaml "github.com/jeremyhahn/go-codec/pkg/yaml"
 )
 
 // The trivy severity bands, as trivy spells them.
@@ -497,12 +497,13 @@ func jobSteps(t *testing.T, path, job string) []workflowStep {
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
-	var doc struct {
+	type workflowDoc struct {
 		Jobs map[string]struct {
 			Steps []workflowStep `yaml:"steps"`
 		} `yaml:"jobs"`
 	}
-	if err := yaml.Unmarshal(raw, &doc); err != nil {
+	var doc workflowDoc
+	if err := gocodecyaml.New[workflowDoc]().Unmarshal(raw, &doc); err != nil {
 		t.Fatalf("%s is not parseable YAML: %v", path, err)
 	}
 	j, ok := doc.Jobs[job]

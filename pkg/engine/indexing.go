@@ -409,6 +409,47 @@ func RemoveIndexesBatch(batch storage.Batch, indexes map[string]index.Index, ind
 // new index with every matching key in the state machine, including keys
 // belonging to other databases and other tenants (go-qrdb#410). A nil scope
 // backfills everything, which is the unscoped index.
+// systemKeyPrefix is kvstore.ReservedPrefixSystem, the namespace the
+// credential store (__sys:credentials/, __sys:credential-meta/,
+// __sys:credential-versions/, __sys:credential-staged/) and every other
+// system record live under. No secondary index holds or returns a key under
+// it: a bare index is unscoped, so without this exclusion an index:create +
+// index:scan caller could index a credential record's fields and read its
+// secret without credentials:retrieve. The engine package cannot import
+// kvstore, so the literal is repeated; TestSystemKeyPrefixIsTheReservedPrefix
+// pins the two together.
+const systemKeyPrefix = "__sys:"
+
+// IsSystemKey reports whether key lies in the reserved system namespace,
+// which no secondary index build, backfill, maintenance or scan touches.
+func IsSystemKey(key []byte) bool {
+	return bytes.HasPrefix(key, []byte(systemKeyPrefix))
+}
+
+// dropSystemKeys removes every system key from keys, in place.
+func dropSystemKeys(keys [][]byte) [][]byte {
+	out := keys[:0]
+	for _, k := range keys {
+		if !IsSystemKey(k) {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// dropSystemEntries removes every system key from a scan result, and any
+// value left with no key.
+func dropSystemEntries(entries map[string][][]byte) map[string][][]byte {
+	for v, keys := range entries {
+		if kept := dropSystemKeys(keys); len(kept) == 0 {
+			delete(entries, v)
+		} else {
+			entries[v] = kept
+		}
+	}
+	return entries
+}
+
 func BackfillIndex(scanner func() ([]*service.KeyValue, error), idx index.Index, fieldName string, scope []byte) {
 	kvs, err := scanner()
 	if err != nil {
@@ -463,7 +504,7 @@ func BackfillIndexWithPrefix(stg storage.Storage, idx index.Index, fieldName str
 			break
 		}
 
-		if len(iter.Value()) == 0 {
+		if len(iter.Value()) == 0 || IsSystemKey(iter.Key()) {
 			continue
 		}
 
@@ -595,7 +636,7 @@ func BackfillCompoundIndexWithPrefix(stg storage.Storage, idx *index.CompoundInd
 			break
 		}
 
-		if len(iter.Value()) == 0 {
+		if len(iter.Value()) == 0 || IsSystemKey(iter.Key()) {
 			continue
 		}
 

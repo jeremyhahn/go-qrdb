@@ -25,6 +25,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -768,26 +769,32 @@ func TestReclaimSweeper_RunSweepsOnEveryTick(t *testing.T) {
 // a composer that starts Run before the server installs the resolver (the
 // SDK's own order) must not race.
 func TestReclaimSweeper_SetStoreResolverIsRaceFreeWithRun(t *testing.T) {
-	store := newFakeCatalogStore()
-	rs := NewReclaimSweeper(store)
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	done := make(chan struct{})
-	go func() {
-		rs.Run(ctx, time.Millisecond, nil, discardLogger())
-		close(done)
-	}()
-	for i := 0; ctx.Err() == nil; i++ {
-		if i%2 == 0 {
-			rs.SetStoreResolver(newFakeReclaimResolver())
-		} else {
-			rs.SetStoreResolver(nil)
+	// In a synctest bubble the 100ms context and the 1ms pacing are fake
+	// time: Run ticks every fake millisecond while the loop swaps the
+	// resolver once per fake millisecond, so -race sees the same
+	// interleaving without the run taking wall time.
+	synctest.Test(t, func(t *testing.T) {
+		store := newFakeCatalogStore()
+		rs := NewReclaimSweeper(store)
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		done := make(chan struct{})
+		go func() {
+			rs.Run(ctx, time.Millisecond, nil, discardLogger())
+			close(done)
+		}()
+		for i := 0; ctx.Err() == nil; i++ {
+			if i%2 == 0 {
+				rs.SetStoreResolver(newFakeReclaimResolver())
+			} else {
+				rs.SetStoreResolver(nil)
+			}
+			time.Sleep(time.Millisecond) // fake clock: one Run tick
 		}
-		time.Sleep(time.Millisecond)
-	}
-	<-done
-	rs.SetStoreResolver(nil)
-	assert.Nil(t, rs.storeResolver())
+		<-done
+		rs.SetStoreResolver(nil)
+		assert.Nil(t, rs.storeResolver())
+	})
 }
 
 // ---------------------------------------------------------------------------

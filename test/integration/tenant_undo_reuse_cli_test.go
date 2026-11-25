@@ -145,19 +145,20 @@ func TestTenantUndo_IDReuseAwaitsEveryNode_PerProtocol(t *testing.T) {
 	}
 	awaitReleased := func(t *testing.T, u undoneTenant, why string) {
 		t.Helper()
-		deadline := time.Now().Add(90 * time.Second)
-		for {
-			out, err := runCLIProto(t, node, u.proto, u.createArgs()...)
+		var out string
+		ok := pollUntil(90*time.Second, time.Second, func() bool {
+			var err error
+			out, err = runCLIProto(t, node, u.proto, u.createArgs()...)
 			if err == nil {
-				return
+				return true
 			}
 			if !strings.Contains(out, "was undone and") {
 				t.Fatalf("re-create after every node acknowledged: %v\noutput: %s", err, out)
 			}
-			if time.Now().After(deadline) {
-				t.Fatalf("id still pending %s\noutput: %s", why, out)
-			}
-			time.Sleep(time.Second)
+			return false
+		})
+		if !ok {
+			t.Fatalf("id still pending %s\noutput: %s", why, out)
 		}
 	}
 

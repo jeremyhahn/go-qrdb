@@ -15,6 +15,7 @@
 package protocol
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
 	"strconv"
@@ -81,6 +82,37 @@ const (
 	// audit instance, the log system/audit. Only the replicated audit
 	// logger proposes it, once featuregate.VerifiableLogAudit is enabled.
 	VerifiableLogSubtypeAuditAppend byte = 6
+
+	// VerifiableLogSubtypeDropDatabase reclaims the logs of a dropped
+	// database, a bounded number of records per command (vlog.Chain
+	// DropDatabase); the database service repeats it until it deletes 0.
+	// It requires featuregate.VerifiableLogDrop: a replica that implements
+	// only VerifiableLog has no handler for it, so it is never proposed
+	// until every replica of the group advertises the drop feature.
+	VerifiableLogSubtypeDropDatabase byte = 7
+
+	// VerifiableLogSubtypeAppendSealed is a barrier database's append: each
+	// entry carries its RFC 6962 leaf hash, computed over the plaintext
+	// before propose, and its body sealed under the database's barrier key
+	// (vlog.Chain AppendSealed). Apply folds the given hash and stores the
+	// sealed body; it never sees the plaintext. It requires
+	// featuregate.VerifiableLogSealed: a replica that implements only
+	// VerifiableLog has no handler for it.
+	VerifiableLogSubtypeAppendSealed byte = 8
+
+	// VerifiableLogSubtypeCreateSealedKey is a barrier database's create
+	// with its software key record: the body is a Create body whose key
+	// record's PKCS8 the proposer sealed under the database's barrier
+	// after matching it against the descriptor (vlog.Chain
+	// CreateWithSealedKey). It requires featuregate.VerifiableLogSealed.
+	VerifiableLogSubtypeCreateSealedKey byte = 9
+
+	// VerifiableLogSubtypeRotateSealedKey is a barrier database's key
+	// rotation with its software key record, sealed as for
+	// CreateSealedKey (vlog.Chain RotateSealedKey). The body is a
+	// RotateKey body that carries the record. It requires
+	// featuregate.VerifiableLogSealed.
+	VerifiableLogSubtypeRotateSealedKey byte = 10
 )
 
 // The presence byte of a Create or RotateKey body's key record.
@@ -119,6 +151,26 @@ func EncodeVerifiableLogRotateKey(id vlog.LogID, next vlog.HeadKey, record *vlog
 		return nil, &InvalidCommandError{Reason: "verifiable log rotate key: empty signing key"}
 	}
 	return encodeVerifiableLogKeyed(VerifiableLogSubtypeRotateKey, "verifiable log rotate key: key", id, next, record)
+}
+
+// EncodeVerifiableLogCreateSealedKey encodes a CreateSealedKey command: a
+// create of id with the key record whose PKCS8 is sealed. Decode its body
+// with DecodeVerifiableLogCreate.
+func EncodeVerifiableLogCreateSealedKey(id vlog.LogID, desc vlog.Descriptor, key vlog.SigningKey) ([]byte, error) {
+	if key.Version == 0 || len(key.PKCS8) == 0 {
+		return nil, &InvalidCommandError{Reason: "verifiable log create sealed key: empty signing key"}
+	}
+	return encodeVerifiableLogKeyed(VerifiableLogSubtypeCreateSealedKey, "verifiable log create: descriptor", id, desc, &key)
+}
+
+// EncodeVerifiableLogRotateSealedKey encodes a RotateSealedKey command: a
+// rotation of id to next with the key record whose PKCS8 is sealed. Decode
+// its body with DecodeVerifiableLogRotateKey.
+func EncodeVerifiableLogRotateSealedKey(id vlog.LogID, next vlog.HeadKey, record vlog.SigningKey) ([]byte, error) {
+	if record.Version == 0 || len(record.PKCS8) == 0 {
+		return nil, &InvalidCommandError{Reason: "verifiable log rotate sealed key: empty signing key"}
+	}
+	return encodeVerifiableLogKeyed(VerifiableLogSubtypeRotateSealedKey, "verifiable log rotate key: key", id, next, &record)
 }
 
 // encodeVerifiableLogKeyed frames a sub-type whose fields are a
@@ -183,6 +235,36 @@ func encodeVerifiableLogEntries(subtype byte, id vlog.LogID, entries [][]byte) (
 	})
 }
 
+// EncodeVerifiableLogAppendSealed builds a VerifiableLogSubtypeAppendSealed
+// command body: the count, then per leaf its 32-byte leaf hash and its
+// length-prefixed sealed body.
+func EncodeVerifiableLogAppendSealed(id vlog.LogID, leaves []vlog.SealedLeaf) ([]byte, error) {
+	if len(leaves) == 0 || len(leaves) > vlog.MaxAppendPerCommand {
+		return nil, &vlog.AppendBatchError{Count: len(leaves)}
+	}
+	bodies := make([][]byte, len(leaves))
+	for i, l := range leaves {
+		if len(l.Hash) != sha256.Size {
+			return nil, &vlog.LeafHashError{Index: i, Len: len(l.Hash)}
+		}
+		bodies[i] = l.Body
+	}
+	fieldsSize, err := framedSlicesSize(bodies)
+	if err != nil {
+		return nil, err
+	}
+	fieldsSize += len(leaves) * sha256.Size
+	return encodeVerifiableLog(VerifiableLogSubtypeAppendSealed, id, fieldsSize, func(buf []byte) []byte {
+		buf = binary.BigEndian.AppendUint32(buf, uint32(len(leaves)))
+		for _, l := range leaves {
+			buf = append(buf, l.Hash...)
+			buf = binary.BigEndian.AppendUint32(buf, uint32(len(l.Body)))
+			buf = append(buf, l.Body...)
+		}
+		return buf
+	})
+}
+
 // EncodeVerifiableLogCheckpoint creates an OpVerifiableLog/Checkpoint
 // command recording signed as the checkpoint of the log id at size, whose
 // tree root is root.
@@ -208,6 +290,40 @@ func EncodeVerifiableLogExpireBodies(id vlog.LogID, cutoff uint64) ([]byte, erro
 	return encodeVerifiableLog(VerifiableLogSubtypeExpireBodies, id, 8, func(buf []byte) []byte {
 		return binary.BigEndian.AppendUint64(buf, cutoff)
 	})
+}
+
+// EncodeVerifiableLogDropDatabase encodes one bounded step of reclaiming the
+// logs of tenantID's dropped database. The log name field is empty: the
+// command names a database, not one log. incarnation is the dropped
+// database's (database.Database.Incarnation): apply deletes only logs created
+// under it, or under no recorded incarnation, so a stale drop leaves the logs
+// of a database created again under the name alone.
+func EncodeVerifiableLogDropDatabase(tenantID, database, incarnation string) ([]byte, error) {
+	if tenantID == "" || database == "" {
+		return nil, &InvalidCommandError{Reason: "verifiable log drop database: tenant id and database required"}
+	}
+	for _, f := range []struct{ name, value string }{
+		{"verifiable log tenant id", tenantID},
+		{"verifiable log database", database},
+		{"verifiable log database incarnation", incarnation},
+	} {
+		if err := checkUint16Len(len(f.value), f.name); err != nil {
+			return nil, err
+		}
+	}
+	size, err := addSizes(headerSize, 1, 2, len(tenantID), 2, len(database), 2, 2, len(incarnation))
+	if err != nil {
+		return nil, err
+	}
+	buf := make([]byte, 0, size)
+	buf = append(buf, OpVerifiableLog, VerifiableLogSubtypeDropDatabase)
+	buf = binary.BigEndian.AppendUint16(buf, uint16(len(tenantID)))
+	buf = append(buf, tenantID...)
+	buf = binary.BigEndian.AppendUint16(buf, uint16(len(database)))
+	buf = append(buf, database...)
+	buf = binary.BigEndian.AppendUint16(buf, 0)
+	buf = binary.BigEndian.AppendUint16(buf, uint16(len(incarnation)))
+	return append(buf, incarnation...), nil
 }
 
 // encodeVerifiableLog frames one OpVerifiableLog command: the op byte, the
@@ -346,6 +462,44 @@ func DecodeVerifiableLogAppend(tenantID string, body []byte) (vlog.LogID, [][]by
 	return id, entries, nil
 }
 
+// DecodeVerifiableLogAppendSealed parses an
+// EncodeVerifiableLogAppendSealed body. A leaf hash that is not exactly 32
+// bytes cannot be framed, so a short body is refused as truncated.
+func DecodeVerifiableLogAppendSealed(tenantID string, body []byte) (vlog.LogID, []vlog.SealedLeaf, error) {
+	id, rest, err := decodeLogName(tenantID, body)
+	if err != nil {
+		return vlog.LogID{}, nil, err
+	}
+	if len(rest) < 4 {
+		return vlog.LogID{}, nil, &InvalidCommandError{Reason: "verifiable log sealed append: count truncated"}
+	}
+	count := binary.BigEndian.Uint32(rest)
+	rest = rest[4:]
+	// Every leaf costs at least its hash and its 4-byte length, so a count
+	// the body cannot hold is refused before it sizes an allocation.
+	if uint64(count) > uint64(len(rest))/(sha256.Size+4) {
+		return vlog.LogID{}, nil, &InvalidCommandError{Reason: "verifiable log sealed append: entries truncated"}
+	}
+	leaves := make([]vlog.SealedLeaf, 0, count)
+	for range count {
+		if len(rest) < sha256.Size+4 {
+			return vlog.LogID{}, nil, &InvalidCommandError{Reason: "verifiable log sealed append: entries truncated"}
+		}
+		hash := rest[:sha256.Size:sha256.Size]
+		blen := binary.BigEndian.Uint32(rest[sha256.Size:])
+		rest = rest[sha256.Size+4:]
+		if uint64(blen) > uint64(len(rest)) {
+			return vlog.LogID{}, nil, &InvalidCommandError{Reason: "verifiable log sealed append: entries truncated"}
+		}
+		leaves = append(leaves, vlog.SealedLeaf{Hash: hash, Body: rest[:blen:blen]})
+		rest = rest[blen:]
+	}
+	if len(rest) != 0 {
+		return vlog.LogID{}, nil, &InvalidCommandError{Reason: "verifiable log sealed append: trailing bytes"}
+	}
+	return id, leaves, nil
+}
+
 // DecodeVerifiableLogAuditAppend decodes an AuditAppend body, which is
 // framed as an Append body.
 func DecodeVerifiableLogAuditAppend(tenantID string, body []byte) (vlog.LogID, [][]byte, error) {
@@ -382,6 +536,24 @@ func DecodeVerifiableLogExpireBodies(tenantID string, body []byte) (vlog.LogID, 
 		return vlog.LogID{}, 0, &InvalidCommandError{Reason: "verifiable log expire bodies: cutoff malformed"}
 	}
 	return id, binary.BigEndian.Uint64(rest), nil
+}
+
+// DecodeVerifiableLogDropDatabase decodes the body
+// EncodeVerifiableLogDropDatabase wrote, returning the database it names and
+// that database's incarnation.
+func DecodeVerifiableLogDropDatabase(tenantID string, body []byte) (database, incarnation string, err error) {
+	id, rest, err := decodeLogName(tenantID, body)
+	if err != nil {
+		return "", "", err
+	}
+	if id.Database == "" || id.Log != "" || len(rest) < 2 {
+		return "", "", &InvalidCommandError{Reason: "verifiable log drop database: malformed"}
+	}
+	n := int(binary.BigEndian.Uint16(rest))
+	if len(rest) != 2+n {
+		return "", "", &InvalidCommandError{Reason: "verifiable log drop database: malformed"}
+	}
+	return id.Database, string(rest[2:]), nil
 }
 
 // decodeLogName reads the database and log names every body opens with and

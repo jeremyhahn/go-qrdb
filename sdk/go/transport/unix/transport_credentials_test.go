@@ -17,12 +17,16 @@ package unix
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
+
+	"google.golang.org/grpc/codes"
 
 	unixserver "github.com/jeremyhahn/go-qrdb/pkg/api/unix"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -44,6 +48,8 @@ type mockCredentialSvc struct {
 	retrieveVersionFn func(ctx context.Context, name string, version uint64) ([]byte, error)
 	listVersionsFn    func(ctx context.Context, name string) ([]credentials.CredentialVersion, error)
 	gcExpiredFn       func(ctx context.Context, name string) (int, error)
+	setPolicyFn       func(ctx context.Context, name string, policy credentials.RotationPolicy) error
+	conflictsFn       func(ctx context.Context) ([]credentials.CredentialMigrationConflictError, error)
 }
 
 func (m *mockCredentialSvc) CredentialStore(ctx context.Context, name string, value []byte) error {
@@ -134,6 +140,40 @@ func (m *mockCredentialSvc) CredentialGCExpired(ctx context.Context, name string
 		return m.gcExpiredFn(ctx, name)
 	}
 	return 0, nil
+}
+
+func (m *mockCredentialSvc) CredentialSetRotationPolicy(ctx context.Context, name string, policy credentials.RotationPolicy) error {
+	if m.setPolicyFn != nil {
+		return m.setPolicyFn(ctx, name, policy)
+	}
+	if name == "missing" {
+		return credentials.ErrCredentialNotFound
+	}
+	return nil
+}
+
+func (m *mockCredentialSvc) CredentialRotationPolicy(_ context.Context, name string) (*service.CredentialRotationPolicyStatus, error) {
+	if name == "missing" {
+		return nil, credentials.ErrCredentialNotFound
+	}
+	return &service.CredentialRotationPolicyStatus{Policy: credentials.RotationPolicy{Enabled: true, Interval: time.Hour, RetainVersions: 2}}, nil
+}
+
+func (m *mockCredentialSvc) CredentialMigrationConflicts(ctx context.Context) ([]credentials.CredentialMigrationConflictError, error) {
+	if m.conflictsFn != nil {
+		return m.conflictsFn(ctx)
+	}
+	return []credentials.CredentialMigrationConflictError{{Name: "db", Value: true, Policy: true}}, nil
+}
+
+func (m *mockCredentialSvc) CredentialResolveMigrationConflict(_ context.Context, name string, how credentials.MigrationResolution) error {
+	if how != credentials.MigrationImport && how != credentials.MigrationDiscard {
+		return credentials.ErrInvalidMigrationResolution
+	}
+	if name == "missing" {
+		return credentials.ErrMigrationConflictNotFound
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -452,6 +492,175 @@ func TestTransport_CredentialRotate_ServerError(t *testing.T) {
 		Name: "x", NewValue: []byte("v"),
 	}); err == nil {
 		t.Fatal("expected error from server")
+	}
+}
+
+func TestTransport_CredentialSetRotationPolicy_RoundTrip(t *testing.T) {
+	var gotName string
+	var gotPolicy credentials.RotationPolicy
+	svc := &mockCredentialSvc{
+		setPolicyFn: func(_ context.Context, name string, policy credentials.RotationPolicy) error {
+			gotName, gotPolicy = name, policy
+			return nil
+		},
+	}
+	tr, cleanup := connectTransportWithCredentials(t, svc)
+	defer cleanup()
+
+	if err := tr.CredentialSetRotationPolicy(context.Background(), &transport.CredentialSetRotationPolicyRequest{
+		Name: "db-password", Enabled: true, Interval: "720h", RetainVersions: 4,
+	}); err != nil {
+		t.Fatalf("CredentialSetRotationPolicy: %v", err)
+	}
+	want := credentials.RotationPolicy{Enabled: true, Interval: 720 * time.Hour, RetainVersions: 4}
+	if gotName != "db-password" || gotPolicy != want {
+		t.Errorf("server saw %q %+v, want db-password %+v", gotName, gotPolicy, want)
+	}
+}
+
+func TestTransport_CredentialSetRotationPolicy_InvalidPolicy(t *testing.T) {
+	svc := &mockCredentialSvc{
+		setPolicyFn: func(context.Context, string, credentials.RotationPolicy) error {
+			return &credentials.InvalidRotationPolicyError{Reason: "retain versions must be at least 1"}
+		},
+	}
+	tr, cleanup := connectTransportWithCredentials(t, svc)
+	defer cleanup()
+
+	err := tr.CredentialSetRotationPolicy(context.Background(), &transport.CredentialSetRotationPolicyRequest{
+		Name: "x", Enabled: true, Interval: "1h",
+	})
+	var re *transport.RequestError
+	if !errors.As(err, &re) {
+		t.Fatalf("expected RequestError, got %T: %v", err, err)
+	}
+	if re.StatusCode != int(codes.InvalidArgument) {
+		t.Errorf("status = %d, want InvalidArgument (%d)", re.StatusCode, codes.InvalidArgument)
+	}
+}
+
+func TestTransport_CredentialSetRotationPolicy_NilRequest(t *testing.T) {
+	tr, cleanup := connectTransportWithCredentials(t, &mockCredentialSvc{})
+	defer cleanup()
+	var re *transport.RequestError
+	if err := tr.CredentialSetRotationPolicy(context.Background(), nil); !errors.As(err, &re) {
+		t.Fatalf("expected RequestError, got %T: %v", err, err)
+	}
+}
+
+func TestTransport_CredentialRotationPolicy_RoundTrip(t *testing.T) {
+	tr, cleanup := connectTransportWithCredentials(t, &mockCredentialSvc{})
+	defer cleanup()
+
+	resp, err := tr.CredentialRotationPolicy(context.Background(), "db-password")
+	if err != nil {
+		t.Fatalf("CredentialRotationPolicy: %v", err)
+	}
+	if resp.Name != "db-password" || !resp.Enabled || resp.Interval != time.Hour.String() || resp.RetainVersions != 2 {
+		t.Errorf("unexpected resp: %+v", resp)
+	}
+}
+
+func TestTransport_CredentialRotationPolicy_NotFound(t *testing.T) {
+	tr, cleanup := connectTransportWithCredentials(t, &mockCredentialSvc{})
+	defer cleanup()
+
+	var nf *transport.KeyNotFoundError
+	if _, err := tr.CredentialRotationPolicy(context.Background(), "missing"); !errors.As(err, &nf) {
+		t.Fatalf("expected KeyNotFoundError, got %T: %v", err, err)
+	}
+}
+
+func TestTransport_CredentialMigrationConflicts_RoundTrip(t *testing.T) {
+	tr, cleanup := connectTransportWithCredentials(t, &mockCredentialSvc{})
+	defer cleanup()
+
+	resp, err := tr.CredentialMigrationConflicts(context.Background())
+	if err != nil {
+		t.Fatalf("CredentialMigrationConflicts: %v", err)
+	}
+	want := transport.CredentialMigrationConflict{Name: "db", Value: true, Policy: true}
+	if len(resp.Conflicts) != 1 || resp.Conflicts[0] != want {
+		t.Errorf("unexpected resp: %+v", resp)
+	}
+}
+
+func TestTransport_CredentialMigrationConflicts_Closed(t *testing.T) {
+	tr := &Transport{}
+	tr.closed.Store(true)
+	var ce *transport.ClosedError
+	if _, err := tr.CredentialMigrationConflicts(context.Background()); !errors.As(err, &ce) {
+		t.Fatalf("expected ClosedError, got %T: %v", err, err)
+	}
+}
+
+// TestTransport_CredentialMigrationConflicts_StoreUnavailable pins the typed
+// refusal of a listing the service cannot serve: a store not yet bound comes
+// back over the socket as codes.Unavailable, not as an empty list.
+func TestTransport_CredentialMigrationConflicts_StoreUnavailable(t *testing.T) {
+	svc := &mockCredentialSvc{
+		conflictsFn: func(context.Context) ([]credentials.CredentialMigrationConflictError, error) {
+			return nil, credentials.ErrStoreUnavailable
+		},
+	}
+	tr, cleanup := connectTransportWithCredentials(t, svc)
+	defer cleanup()
+
+	resp, err := tr.CredentialMigrationConflicts(context.Background())
+	var re *transport.RequestError
+	if !errors.As(err, &re) || re.StatusCode != int(codes.Unavailable) {
+		t.Fatalf("expected an Unavailable RequestError, got %T: %v (resp %+v)", err, err, resp)
+	}
+}
+
+func TestTransport_CredentialResolveMigrationConflict_RoundTrip(t *testing.T) {
+	tr, cleanup := connectTransportWithCredentials(t, &mockCredentialSvc{})
+	defer cleanup()
+
+	if err := tr.CredentialResolveMigrationConflict(context.Background(),
+		&transport.CredentialResolveMigrationConflictRequest{Name: "db", Resolution: "import"}); err != nil {
+		t.Fatalf("CredentialResolveMigrationConflict: %v", err)
+	}
+}
+
+func TestTransport_CredentialResolveMigrationConflict_NotFound(t *testing.T) {
+	tr, cleanup := connectTransportWithCredentials(t, &mockCredentialSvc{})
+	defer cleanup()
+
+	var nf *transport.KeyNotFoundError
+	if err := tr.CredentialResolveMigrationConflict(context.Background(),
+		&transport.CredentialResolveMigrationConflictRequest{Name: "missing", Resolution: "discard"}); !errors.As(err, &nf) {
+		t.Fatalf("expected KeyNotFoundError, got %T: %v", err, err)
+	}
+}
+
+// TestTransport_CredentialResolveMigrationConflict_UnknownResolution pins
+// that an unknown resolution travels over the socket unchanged and comes back
+// refused with the ErrInvalidMigrationResolution text.
+func TestTransport_CredentialResolveMigrationConflict_UnknownResolution(t *testing.T) {
+	tr, cleanup := connectTransportWithCredentials(t, &mockCredentialSvc{})
+	defer cleanup()
+
+	err := tr.CredentialResolveMigrationConflict(context.Background(),
+		&transport.CredentialResolveMigrationConflictRequest{Name: "db", Resolution: "merge"})
+	if err == nil || !strings.Contains(err.Error(), credentials.ErrInvalidMigrationResolution.Error()) {
+		t.Fatalf("expected ErrInvalidMigrationResolution text, got %v", err)
+	}
+}
+
+func TestTransport_CredentialResolveMigrationConflict_NilRequestAndClosed(t *testing.T) {
+	tr, cleanup := connectTransportWithCredentials(t, &mockCredentialSvc{})
+	defer cleanup()
+	var re *transport.RequestError
+	if err := tr.CredentialResolveMigrationConflict(context.Background(), nil); !errors.As(err, &re) {
+		t.Fatalf("expected RequestError, got %T: %v", err, err)
+	}
+	closed := &Transport{}
+	closed.closed.Store(true)
+	var ce *transport.ClosedError
+	if err := closed.CredentialResolveMigrationConflict(context.Background(),
+		&transport.CredentialResolveMigrationConflictRequest{Name: "db", Resolution: "import"}); !errors.As(err, &ce) {
+		t.Fatalf("expected ClosedError, got %T: %v", err, err)
 	}
 }
 

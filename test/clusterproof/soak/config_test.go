@@ -28,6 +28,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/test/clusterproof/nemesis"
@@ -184,6 +185,27 @@ func TestLoadOptionsKillUnderNoneNeedsNoUnseal(t *testing.T) {
 		_, err := LoadOptions(env(seal), now)
 		if _, ok := errors.AsType[*ConfigError](err); !ok || !strings.Contains(err.Error(), EnvTargets+" unseal") {
 			t.Errorf("LoadOptions of kill under %s without an unseal command = %v, want a ConfigError naming %s unseal", seal, err, EnvTargets)
+		}
+	}
+}
+
+func TestLoadOptionsDiskFullUnderSealNeedsUnseal(t *testing.T) {
+	tf := writeFile(t, "t.json", strings.Replace(targetsJSON, `  "unseal": ["ssh", "{{.Vars.host}}", "--", "true"],
+`, "", 1))
+	env := func(seal string) func(string) string {
+		return envOf(map[string]string{EnvSeal: seal, EnvNodes: nodesEnv, EnvNemesis: "disk-full", EnvDuration: "1m", EnvTargets: tf})
+	}
+	o, err := LoadOptions(env("none"), now)
+	if err != nil {
+		t.Fatalf("LoadOptions: %v", err)
+	}
+	if _, ok := o.Nemeses["disk-full"]; !ok {
+		t.Fatalf("faults %v, want disk-full", slices.Sorted(maps.Keys(o.Nemeses)))
+	}
+	for _, seal := range []string{"passphrase", "shamir"} {
+		_, err := LoadOptions(env(seal), now)
+		if _, ok := errors.AsType[*ConfigError](err); !ok || !strings.Contains(err.Error(), EnvTargets+" unseal") {
+			t.Errorf("LoadOptions of disk-full under %s without an unseal command = %v, want a ConfigError naming %s unseal", seal, err, EnvTargets)
 		}
 	}
 }
@@ -380,7 +402,7 @@ func TestMainRunsAndReports(t *testing.T) {
 	kv := newFakeKV()
 	bundle := filepath.Join(t.TempDir(), "bundle")
 	var stdout, stderr bytes.Buffer
-	code := Main(context.Background(), Env{
+	env := Env{
 		Getenv: envOf(map[string]string{
 			EnvSeal: "shamir", EnvNodes: "n1=a1", EnvNemesis: "none", EnvDuration: "200ms", EnvBundle: bundle, EnvSeed: "5",
 		}),
@@ -392,6 +414,13 @@ func TestMainRunsAndReports(t *testing.T) {
 			o.Checkers = append(o.Checkers, passChecker{})
 			return nil
 		},
+	}
+	// Main runs inside a synctest bubble, so the fake store's opDelay and
+	// the 200ms run elapse on the fake clock; the bundle is under the
+	// outer t.TempDir and outlives the bubble.
+	var code int
+	synctest.Test(t, func(*testing.T) {
+		code = Main(context.Background(), env)
 	})
 	if code != ExitInvalid {
 		t.Fatalf("a none run = %d, want %d; stdout %q stderr %q", code, ExitInvalid, stdout.String(), stderr.String())
