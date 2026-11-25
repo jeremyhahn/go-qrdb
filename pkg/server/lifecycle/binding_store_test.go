@@ -342,9 +342,10 @@ func TestLocalBindingFactory_ErrorsTyped(t *testing.T) {
 		mgr := newBindingManager(t, dir, nil)
 		defer func() { _ = mgr.Close() }()
 		_, err := mgr.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "d", Backend: database.BackendPebble})
-		var want *lifecycle.BindingOpenError
+		// The root check resolves the binding root before anything opens.
+		var want *database.InvalidDataDirError
 		if !errors.As(err, &want) {
-			t.Fatalf("err = %v (%T), want *lifecycle.BindingOpenError", err, err)
+			t.Fatalf("err = %v (%T), want *database.InvalidDataDirError", err, err)
 		}
 		if _, ok := mgr.Local("d", bindingTenant); ok {
 			t.Fatal("the Manager recorded a database whose binding failed to open")
