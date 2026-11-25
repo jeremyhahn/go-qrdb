@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,6 +30,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 type recordingRevoker struct {
@@ -616,5 +618,458 @@ func TestGroupStore_WritesRefuseNonAtomicStore(t *testing.T) {
 		if len(f.revoker.calls) != 0 {
 			t.Fatalf("members revoked before the refusal: %v", f.revoker.calls)
 		}
+	})
+}
+
+var errFault = errors.New("injected store fault")
+
+// faultKV is a memory store whose operations fail with errFault when the
+// key starts with the prefix registered for the operation in fail; with
+// casFalse every CompareAndSwap reports a lost race.
+type faultKV struct {
+	*kvstore.MemoryKVStore
+	fail     map[string]string
+	casFalse bool
+}
+
+func newFaultKV() *faultKV {
+	return &faultKV{MemoryKVStore: kvstore.NewMemoryKVStore(), fail: map[string]string{}}
+}
+
+func (f *faultKV) faulted(op, key string) bool {
+	p, ok := f.fail[op]
+	return ok && strings.HasPrefix(key, p)
+}
+
+func (f *faultKV) Get(ctx context.Context, key string) ([]byte, error) {
+	if f.faulted("get", key) {
+		return nil, errFault
+	}
+	return f.MemoryKVStore.Get(ctx, key)
+}
+
+func (f *faultKV) Put(ctx context.Context, key string, value []byte) error {
+	if f.faulted("put", key) {
+		return errFault
+	}
+	return f.MemoryKVStore.Put(ctx, key, value)
+}
+
+func (f *faultKV) Delete(ctx context.Context, key string) error {
+	if f.faulted("delete", key) {
+		return errFault
+	}
+	return f.MemoryKVStore.Delete(ctx, key)
+}
+
+func (f *faultKV) Scan(ctx context.Context, prefix string, fn func(key string, value []byte) error) error {
+	if f.faulted("scan", prefix) {
+		return errFault
+	}
+	return f.MemoryKVStore.Scan(ctx, prefix, fn)
+}
+
+func (f *faultKV) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	if f.faulted("pia", key) {
+		return false, errFault
+	}
+	return f.MemoryKVStore.PutIfAbsent(ctx, key, value)
+}
+
+func (f *faultKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	if f.faulted("cas", key) {
+		return false, errFault
+	}
+	if f.casFalse {
+		return false, nil
+	}
+	return f.MemoryKVStore.CompareAndSwap(ctx, key, expected, next)
+}
+
+func (f *faultKV) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	if f.faulted("cad", key) {
+		return false, errFault
+	}
+	return f.MemoryKVStore.CompareAndDelete(ctx, key, expected)
+}
+
+// fakeIdentity is an identity index whose answers are set by its fields.
+type fakeIdentity struct {
+	tenant.IdentityIndex
+	token     string
+	recordErr error
+	lookupErr error
+	claim     tenant.Claim
+	held      bool
+	forgetErr error
+	forgot    []string
+}
+
+func (f *fakeIdentity) Record(context.Context, tenant.IdentityKind, string, string) (string, error) {
+	return f.token, f.recordErr
+}
+
+func (f *fakeIdentity) Forget(_ context.Context, _ tenant.IdentityKind, _, token string) error {
+	f.forgot = append(f.forgot, token)
+	return f.forgetErr
+}
+
+func (f *fakeIdentity) Lookup(context.Context, tenant.IdentityKind, string) (tenant.Claim, bool, error) {
+	return f.claim, f.held, f.lookupErr
+}
+
+// stubRoles answers every role lookup with r and err.
+type stubRoles struct {
+	r   *role.Role
+	err error
+}
+
+func (s stubRoles) GetRole(context.Context, string) (*role.Role, error) { return s.r, s.err }
+
+func wantErr[T error](t *testing.T, what string, err error) {
+	t.Helper()
+	var target T
+	if !errors.As(err, &target) {
+		t.Fatalf("%s = %v, want %T", what, err, target)
+	}
+}
+
+func TestGroupErrors_Messages(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{&GroupNotFoundError{ID: "g1"}, `group "g1" not found`},
+		{&GroupNotFoundError{Name: "eng", TenantID: "acme"}, `group "eng" not found in tenant "acme"`},
+		{&GroupConflictError{ID: "g1"}, "group: g1 changed concurrently; retry"},
+		{&ClaimLapsedError{ID: "g1"}, "group: g1: the member claim lapsed before the change it guarded committed; retry"},
+		{&GroupNameTakenError{Name: "eng", TenantID: "acme"}, `group name "eng" already exists in tenant "acme"`},
+		{&RoleNotInTenantError{RoleID: "r1", TenantID: "acme"}, `role "r1" is not a role of tenant "acme"`},
+		{&ValidationError{Field: "name", Reason: "bad"}, "group: invalid name: bad"},
+		{&StoreError{Op: "get", Detail: "lookup", Err: errFault}, "group store get: lookup: injected store fault"},
+		{&StoreError{Op: "new", Detail: "nil"}, "group store new: nil"},
+	} {
+		if got := tc.err.Error(); got != tc.want {
+			t.Errorf("%T.Error() = %q, want %q", tc.err, got, tc.want)
+		}
+	}
+	if !errors.Is(&StoreError{Op: "get", Err: errFault}, errFault) {
+		t.Error("StoreError does not unwrap to its cause")
+	}
+	if (&StoreError{}).Unwrap() != nil {
+		t.Error("StoreError without a cause unwraps to non-nil")
+	}
+}
+
+func TestNewStore_Refusals(t *testing.T) {
+	_, err := NewStore(nil)
+	wantErr[*StoreError](t, "NewStore(nil)", err)
+	if _, err := NewStore(nonAtomicKV{KVStore: kvstore.NewMemoryKVStore()}); !errors.Is(err, ErrStoreNotAtomic) {
+		t.Fatalf("NewStore(non-atomic) = %v, want ErrStoreNotAtomic", err)
+	}
+	svc, err := NewStore(kvstore.NewMemoryKVStore(), WithClock(nil))
+	if err != nil || svc.(*kvGroupStore).clock == nil {
+		t.Fatalf("NewStore(WithClock(nil)) = %v, %v; want a clock kept", svc, err)
+	}
+	_, err = NewRoleRevoker(nil)
+	wantErr[*StoreError](t, "NewRoleRevoker(nil)", err)
+	_, err = NewRoutingRoleRevoker(nil)
+	wantErr[*StoreError](t, "NewRoutingRoleRevoker(nil)", err)
+}
+
+func TestGroupStore_Validation(t *testing.T) {
+	ctx := context.Background()
+	kv := kvstore.NewMemoryKVStore()
+	acmeRole := stubRoles{r: &role.Role{ID: "r1", TenantID: "acme"}}
+	s := &kvGroupStore{store: kv, roles: acmeRole, revoker: &recordingRevoker{}, clock: clocktest.New()}
+	_, err := s.CreateGroup(ctx, nil)
+	wantErr[*ValidationError](t, "CreateGroup(nil)", err)
+	_, err = s.UpdateGroup(ctx, nil)
+	wantErr[*ValidationError](t, "UpdateGroup(nil)", err)
+	_, err = s.ListGroups(ctx, nil)
+	wantErr[*ValidationError](t, "ListGroups(nil)", err)
+	_, err = s.CreateGroup(ctx, &CreateGroupRequest{TenantID: "acme", Name: strings.Repeat("n", 257)})
+	wantErr[*ValidationError](t, "257-byte name", err)
+	_, err = s.CreateGroup(ctx, &CreateGroupRequest{TenantID: "acme", Name: "eng", RoleIDs: []string{""}})
+	wantErr[*ValidationError](t, "empty role id", err)
+	g, err := s.CreateGroup(ctx, &CreateGroupRequest{TenantID: "acme", Name: "eng", RoleIDs: []string{"r1", "r1"}})
+	if err != nil || !slices.Equal(g.RoleIDs, []string{"r1"}) {
+		t.Fatalf("duplicate role ids = %+v, %v; want one r1", g, err)
+	}
+	for name, roles := range map[string]RoleLookup{
+		"no role lookup": nil,
+		"deleting role":  stubRoles{r: &role.Role{ID: "r1", TenantID: "acme", Deleting: true}},
+	} {
+		bare := &kvGroupStore{store: kv, roles: roles, clock: clocktest.New()}
+		_, err := bare.CreateGroup(ctx, &CreateGroupRequest{TenantID: "acme", Name: "x", RoleIDs: []string{"r1"}})
+		wantErr[*RoleNotInTenantError](t, name, err)
+	}
+	failing := &kvGroupStore{store: kv, roles: stubRoles{err: errFault}, clock: clocktest.New()}
+	_, err = failing.CreateGroup(ctx, &CreateGroupRequest{TenantID: "acme", Name: "x", RoleIDs: []string{"r1"}})
+	wantErr[*StoreError](t, "role lookup error", err)
+	_, _, err = s.ClaimGroup(ctx, g.ID, "bogus", nil)
+	wantErr[*ValidationError](t, "ClaimGroup op bogus", err)
+	_, err = s.GetGroup(ctx, "")
+	wantErr[*ValidationError](t, "GetGroup empty id", err)
+	_, err = s.GetGroupByName(ctx, "acme", "")
+	wantErr[*ValidationError](t, "GetGroupByName empty name", err)
+	_, err = s.GetGroupByName(ctx, "acme", "nobody")
+	wantErr[*GroupNotFoundError](t, "GetGroupByName unknown", err)
+	if err := kv.Put(ctx, nameIndexKey("acme", "dangling"), []byte("missing-id")); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	_, err = s.GetGroupByName(ctx, "acme", "dangling")
+	var nf *GroupNotFoundError
+	if !errors.As(err, &nf) || nf.Name != "dangling" {
+		t.Fatalf("name index to a missing record = %v, want *GroupNotFoundError by name", err)
+	}
+	if err := s.ReleaseClaim(ctx, g.ID, ""); err != nil {
+		t.Fatalf("ReleaseClaim empty token = %v", err)
+	}
+	if err := s.ReleaseClaim(ctx, "missing-id", "tok"); err != nil {
+		t.Fatalf("ReleaseClaim of a missing group = %v", err)
+	}
+	resp, err := s.ListGroups(ctx, &ListGroupsRequest{TenantID: "acme"})
+	if err != nil || resp.Total != 1 || len(resp.Groups) != 1 {
+		t.Fatalf("ListGroups default page size = %+v, %v", resp, err)
+	}
+	na := &kvGroupStore{store: nonAtomicKV{KVStore: kv}, clock: clocktest.New()}
+	if _, _, err := na.ClaimGroup(ctx, g.ID, ClaimMember, nil); !errors.Is(err, ErrStoreNotAtomic) {
+		t.Fatalf("ClaimGroup non-atomic = %v", err)
+	}
+	if err := na.ReleaseClaim(ctx, g.ID, "tok"); !errors.Is(err, ErrStoreNotAtomic) {
+		t.Fatalf("ReleaseClaim non-atomic = %v", err)
+	}
+	if _, err := na.RevokeRole(ctx, "acme", "r1"); !errors.Is(err, ErrStoreNotAtomic) {
+		t.Fatalf("RevokeRole non-atomic = %v", err)
+	}
+}
+
+// newFaultStore returns a store over a fresh faultKV holding one acme group
+// "eng" carrying role r1.
+func newFaultStore(t *testing.T) (*kvGroupStore, *faultKV, *Group) {
+	t.Helper()
+	fk := newFaultKV()
+	s := &kvGroupStore{store: fk, roles: stubRoles{r: &role.Role{ID: "r1", TenantID: "acme"}}, revoker: &recordingRevoker{}, clock: clocktest.New()}
+	g, err := s.CreateGroup(context.Background(), &CreateGroupRequest{TenantID: "acme", Name: "eng", RoleIDs: []string{"r1"}})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	return s, fk, g
+}
+
+func TestGroupStore_StoreFaults(t *testing.T) {
+	ctx := context.Background()
+	create := func(s *kvGroupStore, name string) error {
+		_, err := s.CreateGroup(ctx, &CreateGroupRequest{TenantID: "acme", Name: name})
+		return err
+	}
+	for _, tc := range []struct{ op, prefix string }{
+		{"pia", keyPrefixName}, {"put", keyPrefixPrimary}, {"put", keyPrefixTenant},
+	} {
+		t.Run("CreateGroup "+tc.op+" "+tc.prefix, func(t *testing.T) {
+			s, fk, _ := newFaultStore(t)
+			fk.fail[tc.op] = tc.prefix
+			wantErr[*StoreError](t, "create", create(s, "ops"))
+			delete(fk.fail, tc.op)
+			if err := create(s, "ops"); err != nil {
+				t.Fatalf("create after the fault = %v; the name claim was not released", err)
+			}
+		})
+	}
+	t.Run("readGroup", func(t *testing.T) {
+		s, fk, g := newFaultStore(t)
+		fk.fail["get"] = keyPrefixPrimary
+		_, err := s.GetGroup(ctx, g.ID)
+		wantErr[*StoreError](t, "get fault", err)
+		delete(fk.fail, "get")
+		if err := fk.MemoryKVStore.Put(ctx, primaryKey("junk"), []byte("{")); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		_, err = s.GetGroup(ctx, "junk")
+		wantErr[*StoreError](t, "unmarshal", err)
+		fk.fail["get"] = keyPrefixName
+		_, err = s.GetGroupByName(ctx, "acme", "eng")
+		wantErr[*StoreError](t, "GetGroupByName get fault", err)
+	})
+	t.Run("ClaimGroup", func(t *testing.T) {
+		s, fk, g := newFaultStore(t)
+		fk.fail["cas"] = keyPrefixPrimary
+		_, _, err := s.ClaimGroup(ctx, g.ID, ClaimMember, nil)
+		wantErr[*StoreError](t, "cas fault", err)
+		delete(fk.fail, "cas")
+		fk.casFalse = true
+		_, _, err = s.ClaimGroup(ctx, g.ID, ClaimMember, nil)
+		wantErr[*GroupConflictError](t, "lost cas", err)
+	})
+	t.Run("ReleaseClaim", func(t *testing.T) {
+		s, fk, g := newFaultStore(t)
+		_, token, err := s.ClaimGroup(ctx, g.ID, ClaimMember, nil)
+		if err != nil {
+			t.Fatalf("claim: %v", err)
+		}
+		fk.fail["cas"] = keyPrefixPrimary
+		wantErr[*StoreError](t, "cas fault", s.ReleaseClaim(ctx, g.ID, token))
+		delete(fk.fail, "cas")
+		fk.casFalse = true
+		wantErr[*GroupConflictError](t, "lost cas", s.ReleaseClaim(ctx, g.ID, token))
+		fk.casFalse = false
+		fk.fail["get"] = keyPrefixPrimary
+		wantErr[*StoreError](t, "get fault", s.ReleaseClaim(ctx, g.ID, token))
+	})
+	t.Run("UpdateGroup", func(t *testing.T) {
+		s, fk, g := newFaultStore(t)
+		if err := create(s, "taken"); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		update := func(name string) error {
+			_, err := s.UpdateGroup(ctx, &UpdateGroupRequest{ID: g.ID, Name: name})
+			return err
+		}
+		fk.fail["pia"] = keyPrefixName
+		wantErr[*StoreError](t, "rename claim fault", update("ops"))
+		delete(fk.fail, "pia")
+		wantErr[*GroupNameTakenError](t, "rename to a taken name", update("taken"))
+		fk.fail["cas"] = keyPrefixPrimary
+		wantErr[*StoreError](t, "cas fault", update("ops"))
+		delete(fk.fail, "cas")
+		if id, _ := fk.MemoryKVStore.Get(ctx, nameIndexKey("acme", "ops")); id != nil {
+			t.Fatal("the new name stayed claimed after the failed update")
+		}
+		fk.fail["cad"] = nameIndexKey("acme", "eng")
+		wantErr[*StoreError](t, "old name release fault", update("ops"))
+		delete(fk.fail, "cad")
+		desc := "platform team"
+		got, err := s.UpdateGroup(ctx, &UpdateGroupRequest{ID: g.ID, Description: &desc})
+		if err != nil || got.Description != desc || got.Name != "ops" {
+			t.Fatalf("description update = %+v, %v", got, err)
+		}
+	})
+	t.Run("DeleteGroup", func(t *testing.T) {
+		s, fk, g := newFaultStore(t)
+		bare := &kvGroupStore{store: fk, clock: clocktest.New()}
+		wantErr[*StoreError](t, "no revoker", bare.DeleteGroup(ctx, g.ID))
+		for _, f := range []struct{ op, prefix string }{
+			{"cad", keyPrefixName}, {"delete", keyPrefixTenant}, {"delete", keyPrefixPrimary},
+		} {
+			fk.fail[f.op] = f.prefix
+			wantErr[*StoreError](t, "delete "+f.op+" "+f.prefix, s.DeleteGroup(ctx, g.ID))
+			delete(fk.fail, f.op)
+		}
+		if err := s.DeleteGroup(ctx, g.ID); err != nil {
+			t.Fatalf("delete after the faults = %v", err)
+		}
+	})
+	t.Run("ListGroups", func(t *testing.T) {
+		s, fk, _ := newFaultStore(t)
+		fk.fail["scan"] = keyPrefixTenant
+		_, err := s.ListGroups(ctx, &ListGroupsRequest{TenantID: "acme"})
+		wantErr[*StoreError](t, "scan fault", err)
+		delete(fk.fail, "scan")
+		if err := fk.MemoryKVStore.Put(ctx, tenantIndexKey("acme", "ghost"), []byte("ghost")); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		_, err = s.ListGroups(ctx, &ListGroupsRequest{TenantID: "acme"})
+		wantErr[*GroupNotFoundError](t, "index entry for a missing record", err)
+	})
+}
+
+func TestGroupStore_IdentityIndex(t *testing.T) {
+	ctx := context.Background()
+	t.Run("record error releases the name", func(t *testing.T) {
+		idx := &fakeIdentity{recordErr: errFault}
+		s := &kvGroupStore{store: kvstore.NewMemoryKVStore(), identity: idx, clock: clocktest.New()}
+		_, err := s.CreateGroup(ctx, &CreateGroupRequest{TenantID: "acme", Name: "eng"})
+		wantErr[*StoreError](t, "record error", err)
+		idx.recordErr = nil
+		if _, err := s.CreateGroup(ctx, &CreateGroupRequest{TenantID: "acme", Name: "eng"}); err != nil {
+			t.Fatalf("create after the record error = %v", err)
+		}
+	})
+	t.Run("failed create forgets its claim", func(t *testing.T) {
+		idx := &fakeIdentity{token: "tok"}
+		fk := newFaultKV()
+		fk.fail["put"] = keyPrefixPrimary
+		s := &kvGroupStore{store: fk, identity: idx, clock: clocktest.New()}
+		_, err := s.CreateGroup(ctx, &CreateGroupRequest{TenantID: "acme", Name: "eng"})
+		wantErr[*StoreError](t, "put fault", err)
+		if !slices.Equal(idx.forgot, []string{"tok"}) {
+			t.Fatalf("forgotten tokens = %v, want [tok]", idx.forgot)
+		}
+	})
+	t.Run("forgetIdentity", func(t *testing.T) {
+		stale := &tenant.IdentityClaimStaleError{Kind: tenant.IdentityGroup, ID: "g1"}
+		for _, tc := range []struct {
+			name     string
+			idx      *fakeIdentity
+			tenantID string
+			check    func(error) bool
+		}{
+			{"lookup error", &fakeIdentity{lookupErr: errFault}, "acme", func(err error) bool { return errors.Is(err, errFault) }},
+			{"not held", &fakeIdentity{}, "acme", func(err error) bool { return err == nil }},
+			{"system tenant", &fakeIdentity{held: true, claim: tenant.Claim{Tenant: tenantid.System, Token: "t"}}, "", func(err error) bool { return err == nil }},
+			{"other tenant", &fakeIdentity{held: true, claim: tenant.Claim{Tenant: "other", Token: "t"}}, "acme", func(err error) bool {
+				var c *tenant.IdentityClaimConflictError
+				return errors.As(err, &c)
+			}},
+			{"stale forget", &fakeIdentity{held: true, claim: tenant.Claim{Tenant: "acme", Token: "t"}, forgetErr: stale}, "acme", func(err error) bool { return err == nil }},
+			{"forget error", &fakeIdentity{held: true, claim: tenant.Claim{Tenant: "acme", Token: "t"}, forgetErr: errFault}, "acme", func(err error) bool { return errors.Is(err, errFault) }},
+		} {
+			s := &kvGroupStore{identity: tc.idx}
+			if err := s.forgetIdentity(ctx, "g1", tc.tenantID); !tc.check(err) {
+				t.Errorf("%s: forgetIdentity = %v", tc.name, err)
+			}
+		}
+	})
+	t.Run("delete reports an identity failure", func(t *testing.T) {
+		idx := &fakeIdentity{}
+		s := &kvGroupStore{store: kvstore.NewMemoryKVStore(), identity: idx, revoker: &recordingRevoker{}, clock: clocktest.New()}
+		g, err := s.CreateGroup(ctx, &CreateGroupRequest{TenantID: "acme", Name: "eng"})
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		idx.lookupErr = errFault
+		wantErr[*StoreError](t, "delete", s.DeleteGroup(ctx, g.ID))
+	})
+}
+
+func TestGroupStore_RevokeRoleFaults(t *testing.T) {
+	ctx := context.Background()
+	revoke := func(s *kvGroupStore) (int, error) { return s.RevokeRole(ctx, "acme", "r1") }
+	t.Run("scan", func(t *testing.T) {
+		s, fk, _ := newFaultStore(t)
+		fk.fail["scan"] = keyPrefixTenant
+		_, err := revoke(s)
+		wantErr[*StoreError](t, "scan fault", err)
+	})
+	t.Run("get", func(t *testing.T) {
+		s, fk, _ := newFaultStore(t)
+		fk.fail["get"] = keyPrefixPrimary
+		_, err := revoke(s)
+		wantErr[*StoreError](t, "get fault", err)
+	})
+	t.Run("missing and garbage records", func(t *testing.T) {
+		s, fk, _ := newFaultStore(t)
+		if err := fk.MemoryKVStore.Put(ctx, tenantIndexKey("acme", "0-ghost"), []byte("0-ghost")); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		if n, err := revoke(s); err != nil || n != 1 {
+			t.Fatalf("revoke past a missing record = %d, %v; want 1, nil", n, err)
+		}
+		if err := fk.MemoryKVStore.Put(ctx, primaryKey("0-ghost"), []byte("{")); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		_, err := revoke(s)
+		wantErr[*StoreError](t, "unmarshal", err)
+	})
+	t.Run("cas", func(t *testing.T) {
+		s, fk, _ := newFaultStore(t)
+		fk.fail["cas"] = keyPrefixPrimary
+		_, err := revoke(s)
+		wantErr[*StoreError](t, "cas fault", err)
+		delete(fk.fail, "cas")
+		fk.casFalse = true
+		_, err = revoke(s)
+		wantErr[*GroupConflictError](t, "lost cas", err)
 	})
 }

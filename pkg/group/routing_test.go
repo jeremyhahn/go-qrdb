@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -194,5 +195,121 @@ func TestRoutingGroupService_DeletedGroupClaimIsReconciled(t *testing.T) {
 	}
 	if _, held, err := index.Lookup(ctx, tenant.IdentityGroup, g2.ID); err != nil || held {
 		t.Fatalf("claim after delete held=%v err=%v, want released", held, err)
+	}
+}
+
+func TestRoutingGroupService_ClaimReleaseAndRevoke(t *testing.T) {
+	resolver := &routeResolver{
+		shared:  kvstore.NewMemoryKVStore(),
+		tenants: map[string]kvstore.KVStore{"vault": kvstore.NewMemoryKVStore()},
+		sealed:  map[string]bool{},
+	}
+	svc, err := NewRoutingService(resolver, WithMemberRevoker(&recordingRevoker{}),
+		WithRoleLookup(stubRoles{r: &role.Role{ID: "r1", TenantID: "vault"}}))
+	if err != nil {
+		t.Fatalf("NewRoutingService: %v", err)
+	}
+	ctx := tenant.WithTenantID(context.Background(), "vault")
+	g, err := svc.CreateGroup(ctx, &CreateGroupRequest{TenantID: "vault", Name: "keepers", RoleIDs: []string{"r1"}})
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	_, token, err := svc.ClaimGroup(ctx, g.ID, ClaimMember, nil)
+	if err != nil {
+		t.Fatalf("ClaimGroup: %v", err)
+	}
+	if err := svc.ReleaseClaim(ctx, g.ID, token); err != nil {
+		t.Fatalf("ReleaseClaim: %v", err)
+	}
+	if _, _, err := svc.ClaimGroup(ctx, "no-such-group", ClaimMember, nil); err == nil {
+		t.Fatal("ClaimGroup of an unknown id succeeded")
+	}
+	if err := svc.ReleaseClaim(ctx, "no-such-group", "tok"); err != nil {
+		t.Fatalf("ReleaseClaim of an unknown id = %v, want nil", err)
+	}
+
+	revoker, err := NewRoutingRoleRevoker(resolver)
+	if err != nil {
+		t.Fatalf("NewRoutingRoleRevoker: %v", err)
+	}
+	if n, err := revoker.RevokeRole(ctx, "vault", "r1"); err != nil || n != 1 {
+		t.Fatalf("RevokeRole = %d, %v; want 1, nil", n, err)
+	}
+	if got, err := svc.GetGroup(ctx, g.ID); err != nil || len(got.RoleIDs) != 0 {
+		t.Fatalf("group after RevokeRole = %+v, %v; want no roles", got, err)
+	}
+
+	routed := svc.(*routingGroupService)
+	inner, err := NewStore(resolver.shared)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	routed.stores.Store(resolver.shared, struct{ GroupServicer }{inner})
+	_, err = routed.RevokeRole(tenant.WithTenantID(context.Background(), "acme"), "acme", "r1")
+	wantErr[*StoreError](t, "RevokeRole through a non-revoker", err)
+
+	resolver.sealed["vault"] = true
+	if _, _, err := svc.ClaimGroup(ctx, g.ID, ClaimMember, nil); !errors.Is(err, tenant.ErrTenantSealed) {
+		t.Fatalf("sealed ClaimGroup = %v", err)
+	}
+	if err := svc.ReleaseClaim(ctx, g.ID, token); !errors.Is(err, tenant.ErrTenantSealed) {
+		t.Fatalf("sealed ReleaseClaim = %v", err)
+	}
+	_, err = revoker.RevokeRole(ctx, "vault", "r1")
+	wantErr[*StoreError](t, "sealed RevokeRole", err)
+}
+
+type resolverFunc func(ctx context.Context, tenantID string) (kvstore.KVStore, error)
+
+func (f resolverFunc) Resolve(ctx context.Context, tenantID string) (kvstore.KVStore, error) {
+	return f(ctx, tenantID)
+}
+
+// uncomparableKV is an atomic store whose value cannot key a map.
+type uncomparableKV struct {
+	*kvstore.MemoryKVStore
+	_ []int
+}
+
+func TestRoutingGroupService_StoreForAndNilRequests(t *testing.T) {
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	kv := uncomparableKV{MemoryKVStore: kvstore.NewMemoryKVStore()}
+	svc, err := NewRoutingService(resolverFunc(func(context.Context, string) (kvstore.KVStore, error) { return kv, nil }))
+	if err != nil {
+		t.Fatalf("NewRoutingService: %v", err)
+	}
+	g, err := svc.CreateGroup(ctx, &CreateGroupRequest{TenantID: "acme", Name: "eng"})
+	if err != nil {
+		t.Fatalf("CreateGroup over an uncomparable store: %v", err)
+	}
+	if got, err := svc.GetGroup(ctx, g.ID); err != nil || got.Name != "eng" {
+		t.Fatalf("GetGroup = %+v, %v", got, err)
+	}
+	_, err = svc.CreateGroup(ctx, nil)
+	wantErr[*ValidationError](t, "CreateGroup(nil)", err)
+	_, err = svc.ListGroups(ctx, nil)
+	wantErr[*ValidationError](t, "ListGroups(nil)", err)
+	_, err = svc.CreateGroup(ctx, &CreateGroupRequest{TenantID: "other", Name: "x"})
+	wantErr[*tenant.CrossTenantDeniedError](t, "cross-tenant CreateGroup", err)
+	if _, err := svc.GetGroup(ctx, "no-such-group"); err == nil {
+		t.Fatal("GetGroup unknown succeeded")
+	}
+	if _, err := svc.UpdateGroup(ctx, &UpdateGroupRequest{ID: "no-such-group"}); err == nil {
+		t.Fatal("UpdateGroup unknown succeeded")
+	}
+	if _, err := svc.UpdateGroup(ctx, nil); err == nil {
+		t.Fatal("UpdateGroup(nil) succeeded")
+	}
+	_, err = svc.GetGroupByName(ctx, "acme", "nobody")
+	wantErr[*GroupNotFoundError](t, "GetGroupByName unknown", err)
+
+	na, err := NewRoutingService(resolverFunc(func(context.Context, string) (kvstore.KVStore, error) {
+		return nonAtomicKV{KVStore: kvstore.NewMemoryKVStore()}, nil
+	}))
+	if err != nil {
+		t.Fatalf("NewRoutingService: %v", err)
+	}
+	if _, err := na.ListGroups(ctx, &ListGroupsRequest{TenantID: "acme"}); !errors.Is(err, ErrStoreNotAtomic) {
+		t.Fatalf("ListGroups over a non-atomic store = %v", err)
 	}
 }
