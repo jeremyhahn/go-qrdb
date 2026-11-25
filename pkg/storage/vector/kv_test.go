@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -267,6 +268,124 @@ func TestKVVectorStorage_GenerationAdvancesOnEveryWrite(t *testing.T) {
 		}
 		if gen != uint64(i+1) {
 			t.Fatalf("generation after write %d = %d, want %d", i, gen, i+1)
+		}
+	}
+}
+
+// interleavingKV runs during, once, after the first Exists call has read.
+type interleavingKV struct {
+	*kvstore.MemoryKVStore
+	during func()
+}
+
+func (k *interleavingKV) Exists(ctx context.Context, key string) (bool, error) {
+	exists, err := k.MemoryKVStore.Exists(ctx, key)
+	if hook := k.during; hook != nil {
+		k.during = nil
+		hook()
+	}
+	return exists, err
+}
+
+// TestKVVectorStorage_CreateNamespaceRacingReplicaKeepsTheFirst: a create on
+// one replica that interleaves with another replica's create and ID
+// allocation is refused and leaves the first creator's metadata and counter.
+func TestKVVectorStorage_CreateNamespaceRacingReplicaKeepsTheFirst(t *testing.T) {
+	ctx := context.Background()
+	mem := kvstore.NewMemoryKVStore()
+	first := newKVStorage(t, mem)
+	kv := &interleavingKV{MemoryKVStore: mem}
+	late := newKVStorage(t, kv)
+	kv.during = func() {
+		if err := first.CreateNamespace(ctx, &NamespaceInfo{Name: "ns", Dimension: 2}); err != nil {
+			t.Fatalf("first create: %v", err)
+		}
+		if _, err := first.BatchAllocateIDs("ns", 3); err != nil {
+			t.Fatalf("allocate: %v", err)
+		}
+	}
+	if err := late.CreateNamespace(ctx, &NamespaceInfo{Name: "ns", Dimension: 8}); !errors.Is(err, ErrNamespaceExists) {
+		t.Fatalf("racing create err = %v, want ErrNamespaceExists", err)
+	}
+	info, err := first.GetNamespaceInfo(ctx, "ns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Dimension != 2 {
+		t.Fatalf("dimension = %d, want the first creator's 2", info.Dimension)
+	}
+	id, err := first.NextID("ns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != 4 {
+		t.Fatalf("NextID after 3 allocations = %d, want 4", id)
+	}
+}
+
+// TestKVVectorStorage_ConcurrentCreateNamespaceOneWinner: replicas creating
+// one namespace at once yield one creator, whose metadata stands, and IDs
+// allocated afterwards on every replica never repeat.
+func TestKVVectorStorage_ConcurrentCreateNamespaceOneWinner(t *testing.T) {
+	ctx := context.Background()
+	mem := kvstore.NewMemoryKVStore()
+	const replicas = 16
+	stores := make([]*KVVectorStorage, replicas)
+	for i := range stores {
+		stores[i] = newKVStorage(t, mem)
+	}
+	created := make([]bool, replicas)
+	ids := make([][]uint64, replicas)
+	var wg sync.WaitGroup
+	for i := range stores {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			err := stores[i].CreateNamespace(ctx, &NamespaceInfo{Name: "ns", Dimension: uint32(i + 1)})
+			switch {
+			case err == nil:
+				created[i] = true
+			case !errors.Is(err, ErrNamespaceExists):
+				t.Errorf("create %d: %v", i, err)
+				return
+			}
+			for n := 0; n < 8; n++ {
+				id, err := stores[i].NextID("ns")
+				if err != nil {
+					t.Errorf("NextID %d: %v", i, err)
+					return
+				}
+				ids[i] = append(ids[i], id)
+			}
+		}(i)
+	}
+	wg.Wait()
+	winner := -1
+	for i, ok := range created {
+		if ok {
+			if winner >= 0 {
+				t.Fatalf("creates %d and %d both succeeded", winner, i)
+			}
+			winner = i
+		}
+	}
+	if winner < 0 {
+		t.Fatal("no create succeeded")
+	}
+	info, err := stores[0].GetNamespaceInfo(ctx, "ns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Dimension != uint32(winner+1) {
+		t.Fatalf("dimension = %d, want the creator's %d", info.Dimension, winner+1)
+	}
+	seen := map[uint64]bool{}
+	for _, list := range ids {
+		for _, id := range list {
+			if seen[id] {
+				t.Fatalf("id %d allocated twice", id)
+			}
+			seen[id] = true
 		}
 	}
 }

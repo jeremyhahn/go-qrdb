@@ -363,6 +363,9 @@ func (s *KVVectorStorage) CreateNamespace(ctx context.Context, info *NamespaceIn
 	if exists {
 		return ErrNamespaceExists
 	}
+	if atomicKV, ok := s.kv.(kvstore.AtomicKVStore); ok {
+		return s.createNamespaceIfAbsent(ctx, atomicKV, info)
+	}
 	if err := s.kv.Put(ctx, kvIDKey(info.Name), encodeID(0)); err != nil {
 		return err
 	}
@@ -371,6 +374,30 @@ func (s *KVVectorStorage) CreateNamespace(ctx context.Context, info *NamespaceIn
 	}
 	infoCopy := *info
 	return s.putNamespace(ctx, &infoCopy)
+}
+
+// createNamespaceIfAbsent creates info's counters and then its metadata, each
+// only where absent, so a concurrent create on another replica of the store
+// neither resets the ID counter nor replaces the metadata: the create whose
+// metadata lands first wins and every other one is ErrNamespaceExists.
+func (s *KVVectorStorage) createNamespaceIfAbsent(ctx context.Context, atomicKV kvstore.AtomicKVStore, info *NamespaceInfo) error {
+	value, err := schema.EncodeNamespaceInfo(toSchemaNamespaceInfo(info))
+	if err != nil {
+		return err
+	}
+	for _, key := range []string{kvIDKey(info.Name), kvGenKey(info.Name)} {
+		if _, err := atomicKV.PutIfAbsent(ctx, key, encodeID(0)); err != nil {
+			return err
+		}
+	}
+	stored, err := atomicKV.PutIfAbsent(ctx, kvNamespaceKey(info.Name), value)
+	if err != nil {
+		return err
+	}
+	if !stored {
+		return ErrNamespaceExists
+	}
+	return nil
 }
 
 // UpdateNamespace replaces the namespace's index parameters and metadata in
