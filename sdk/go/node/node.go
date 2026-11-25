@@ -249,8 +249,13 @@ func WithClock(c clock.Clock) NodeOption {
 // configuration route is backup.destination (any go-objstore provider,
 // opened by the node); setting both, or backup.destination beside a
 // server.WithBackupSink option, is BackupDestinationConflictError.
+//
+// A nil sink still counts as set: beside backup.destination it is a conflict.
 func WithBackupSink(sink service.BackupSink) NodeOption {
-	return func(o *nodeOptions) { o.backupSink = sink }
+	return func(o *nodeOptions) {
+		o.backupSink = sink
+		o.backupSinkSet = true
+	}
 }
 
 // WithStorageFactory opens a standalone node's data-plane storage through f in
@@ -374,7 +379,7 @@ func openNodeBackupDestination(cfg *qrdbconfig.Config, nOpts *nodeOptions, serve
 	if cfg.Backup.Destination == nil {
 		return nil, nil
 	}
-	if nOpts.backupSink != nil || server.ResolveCryptoOptions(serverOpts...).BackupSinkSet {
+	if nOpts.backupSinkSet || server.ResolveCryptoOptions(serverOpts...).BackupSinkSet {
 		return nil, &BackupDestinationConflictError{}
 	}
 	engine, err := lifecycle.OpenBackupDestination(*cfg.Backup.Destination)
@@ -480,6 +485,7 @@ type nodeOptions struct {
 	// it, and nil keeps the software default. mergeSeamOptions folds them
 	// into the server options.
 	backupSink              service.BackupSink
+	backupSinkSet           bool // WithBackupSink was applied, nil sink included
 	storageFactory          server.StorageFactory
 	replicaStorageFactory   ReplicaStorageFactory
 	dekProvider             dek.Provider

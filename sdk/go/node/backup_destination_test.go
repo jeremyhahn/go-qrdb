@@ -70,15 +70,37 @@ func TestBackupDestination_NodeWritesAndSecondNodeReads(t *testing.T) {
 // WithBackupSink and a configured backup.destination are exclusive: the
 // constructor refuses rather than silently picking one.
 func TestBackupDestination_ConflictWithWithBackupSink(t *testing.T) {
-	cfg := newTenantIsolationConfig(t)
-	cfg.Backup.Destination = localDestination(t.TempDir())
-	n, err := NewStandaloneNode(context.Background(), cfg, nil, WithBackupSink(listingSink{}))
-	if n != nil {
-		_ = n.Close()
+	sinks := []struct {
+		name string
+		opt  NodeOption
+	}{
+		{"sink", WithBackupSink(listingSink{})},
+		{"nil sink", WithBackupSink(nil)},
 	}
-	var conflict *BackupDestinationConflictError
-	require.True(t, errors.As(err, &conflict), "want *BackupDestinationConflictError, got %v", err)
-	require.Nil(t, n)
+	for _, s := range sinks {
+		t.Run("standalone "+s.name, func(t *testing.T) {
+			cfg := newTenantIsolationConfig(t)
+			cfg.Backup.Destination = localDestination(t.TempDir())
+			n, err := NewStandaloneNode(context.Background(), cfg, nil, s.opt)
+			if n != nil {
+				_ = n.Close()
+			}
+			var conflict *BackupDestinationConflictError
+			require.True(t, errors.As(err, &conflict), "want *BackupDestinationConflictError, got %v", err)
+			require.Nil(t, n)
+		})
+		t.Run("clustered "+s.name, func(t *testing.T) {
+			cfg := &qrdbconfig.Config{}
+			cfg.Backup.Destination = localDestination(t.TempDir())
+			n, err := NewClusteredNode(context.Background(), cfg, map[uint64]string{1: "127.0.0.1:1"}, nil, s.opt)
+			if n != nil {
+				_ = n.Close()
+			}
+			var conflict *BackupDestinationConflictError
+			require.True(t, errors.As(err, &conflict), "want *BackupDestinationConflictError, got %v", err)
+			require.Nil(t, n)
+		})
+	}
 }
 
 func TestBackupDestination_ConflictWithServerWithBackupSink(t *testing.T) {
