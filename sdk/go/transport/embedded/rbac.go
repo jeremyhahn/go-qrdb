@@ -187,7 +187,7 @@ func (c *rbacClient) ListOwnPermissions(ctx context.Context) ([]transport.Permis
 	if c.transport.roleSvc == nil {
 		return nil, &MissingRoleServiceForRBACError{}
 	}
-	perms, err := role.ListOwnPermissions(ctx, c.transport.roleSvc)
+	perms, err := role.ListOwnPermissions(ctx, c.transport.roleSvc, c.transport.authMW.StrictSeparation())
 	if err != nil {
 		return nil, err
 	}

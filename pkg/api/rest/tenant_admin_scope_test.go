@@ -16,6 +16,7 @@ package rest
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -336,7 +337,9 @@ func soRoleServer(t *testing.T, callerIsSO, aliceIsSO bool, opts ...authmw.Optio
 		}
 	}
 	if callerIsSO {
-		seed(authtest.BindingTenantAdminID, role.SystemRoleID(authtest.BindingTenant, role.RoleNameAdmin), so)
+		// Under strict separation the SO is a separate principal: it
+		// holds the so role and not the admin role.
+		seed(authtest.BindingTenantAdminID, so)
 	}
 	if aliceIsSO {
 		seed(authtest.UserInBindingTenant, so)
@@ -355,4 +358,157 @@ func holdsSO(u *user.User, so string) bool {
 		}
 	}
 	return false
+}
+
+// Under strict separation, role create and built-in reconcile are
+// SO-exclusive acts: the tenant admin is refused, and so is an SO that also
+// holds the admin role; only a separate SO passes (go-qrdb#1128).
+func TestSOExclusive_RoleCreateAndReconcile(t *testing.T) {
+	admin := role.SystemRoleID(authtest.BindingTenant, role.RoleNameAdmin)
+	so := role.SystemRoleID(authtest.BindingTenant, role.RoleNameSO)
+	ops := []struct {
+		name, path, body string
+		ok               int
+	}{
+		{name: "create role", path: "/roles", ok: http.StatusCreated,
+			body: `{"name":"reviewer","tenant_id":"` + authtest.BindingTenant + `","permissions":["kv:get"]}`},
+		{name: "reconcile built-in roles", path: "/roles/reconcile", ok: http.StatusOK,
+			body: `{"tenant_id":"` + authtest.BindingTenant + `"}`},
+	}
+	callers := []struct {
+		name    string
+		roleIDs []string
+		refused bool
+	}{
+		{name: "tenant admin", roleIDs: []string{admin}, refused: true},
+		{name: "SO holding admin", roleIDs: []string{admin, so}, refused: true},
+		{name: "separate SO", roleIDs: []string{so}},
+	}
+	for _, op := range ops {
+		for _, c := range callers {
+			t.Run(op.name+"/"+c.name, func(t *testing.T) {
+				srv, users := bindingServer(t, authtest.BindingTenantAdmin(), authmw.WithStrictSeparation(true))
+				ctx := tenant.WithTenantID(context.Background(), tenantid.System)
+				if _, err := users.UpdateUser(ctx, &user.UpdateUserRequest{ID: authtest.BindingTenantAdminID, RoleIDs: c.roleIDs}); err != nil {
+					t.Fatalf("seed caller: %v", err)
+				}
+				rec := serve(srv, http.MethodPost, op.path, op.body)
+				want := op.ok
+				if c.refused {
+					want = http.StatusForbidden
+				}
+				if rec.Code != want {
+					t.Fatalf("status = %d, want %d: %s", rec.Code, want, rec.Body.String())
+				}
+			})
+		}
+	}
+}
+
+// TestStrictTenantWithoutSO_RefusesSOExclusiveOps covers SPEC row 124: a
+// tenant may be created, or a node first booted, under strict separation
+// with no SO, and then only the operations that need an SO are refused.
+// The tenant's sole principal is its admin, no SO is enrolled, and the
+// SO-exclusive role create and built-in reconcile answer 403.
+func TestStrictTenantWithoutSO_RefusesSOExclusiveOps(t *testing.T) {
+	srv, _ := bindingServer(t, authtest.BindingTenantAdmin(), authmw.WithStrictSeparation(true))
+	for _, op := range []struct{ path, body string }{
+		{"/roles", `{"name":"reviewer","tenant_id":"` + authtest.BindingTenant + `","permissions":["kv:get"]}`},
+		{"/roles/reconcile", `{"tenant_id":"` + authtest.BindingTenant + `"}`},
+	} {
+		if rec := serve(srv, http.MethodPost, op.path, op.body); rec.Code != http.StatusForbidden {
+			t.Fatalf("POST %s with no SO enrolled = %d, want 403: %s", op.path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// TestSOExclusive_PostureGatesEveryRoleOp holds REST's three SO-exclusive
+// role operations (create role, per-tenant reconcile, all-tenants
+// reconcile) to the exact posture gate (go-qrdb#1129): under strict
+// separation an Admin without the SO role is refused with SO_ROLE_REQUIRED
+// and an SO holding Admin with SO_ROLE_CONFLICT naming its tenant, both 403;
+// a separate SO passes. Under the standard posture all three callers pass,
+// the Admin keeping its SO duties.
+func TestSOExclusive_PostureGatesEveryRoleOp(t *testing.T) {
+	sys := tenantid.System
+	ops := []struct {
+		name string
+		ok   int
+		call func(*Server, context.Context) *httptest.ResponseRecorder
+	}{
+		{name: "create role", ok: http.StatusCreated, call: func(s *Server, ctx context.Context) *httptest.ResponseRecorder {
+			req := httptest.NewRequest(http.MethodPost, "/roles",
+				strings.NewReader(`{"name":"reviewer","tenant_id":"`+sys+`","permissions":["kv:get"]}`)).WithContext(ctx)
+			rec := httptest.NewRecorder()
+			s.handleCreateRole(rec, req)
+			return rec
+		}},
+		{name: "reconcile built-in roles", ok: http.StatusOK, call: func(s *Server, ctx context.Context) *httptest.ResponseRecorder {
+			req := httptest.NewRequest(http.MethodPost, "/roles/reconcile",
+				strings.NewReader(`{"tenant_id":"`+sys+`"}`)).WithContext(ctx)
+			rec := httptest.NewRecorder()
+			s.handleReconcileRoles(rec, req)
+			return rec
+		}},
+		{name: "reconcile every tenant", ok: http.StatusOK, call: func(s *Server, ctx context.Context) *httptest.ResponseRecorder {
+			req := httptest.NewRequest(http.MethodPost, "/roles/reconcile/all-tenants", http.NoBody).WithContext(ctx)
+			rec := httptest.NewRecorder()
+			s.handleReconcileRolesAllTenants(rec, req)
+			return rec
+		}},
+	}
+	for _, strict := range []bool{true, false} {
+		for _, op := range ops {
+			callers := []struct {
+				name       string
+				roleNames  []string
+				wantReason string
+			}{
+				{name: "admin without SO", roleNames: []string{role.RoleNameAdmin}, wantReason: auth.ReasonSORoleRequired},
+				{name: "SO holding admin", roleNames: []string{role.RoleNameAdmin, role.RoleNameSO}, wantReason: auth.ReasonSORoleConflict},
+				{name: "separate SO", roleNames: []string{role.RoleNameSO}},
+			}
+			for _, c := range callers {
+				t.Run(op.name+"/"+c.name+"/strict="+strconv.FormatBool(strict), func(t *testing.T) {
+					roles := authtest.BindingRoles(t)
+					sysCtx := tenant.WithTenantID(context.Background(), sys)
+					roleIDs := make([]string, 0, len(c.roleNames))
+					for _, name := range c.roleNames {
+						r, err := roles.GetRoleByName(sysCtx, sys, name)
+						if err != nil {
+							t.Fatalf("system %s role: %v", name, err)
+						}
+						roleIDs = append(roleIDs, r.ID)
+					}
+					mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithStrictSeparation(strict))
+					srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
+						WithRoleService(roles), WithTenantService(liveRESTTenants(t, "acme")),
+						WithAuthMiddleware(mw))
+					ctx := auth.WithIdentity(sysCtx, &auth.Identity{Subject: "system-caller", TenantID: sys, Roles: roleIDs})
+					rec := op.call(srv, ctx)
+					if !strict || c.wantReason == "" {
+						if rec.Code != op.ok {
+							t.Fatalf("status = %d, want %d: %s", rec.Code, op.ok, rec.Body.String())
+						}
+						return
+					}
+					if rec.Code != http.StatusForbidden {
+						t.Fatalf("status = %d, want 403: %s", rec.Code, rec.Body.String())
+					}
+					var body errorResponse
+					if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+						t.Fatalf("decode: %v", err)
+					}
+					if body.Code != c.wantReason {
+						t.Fatalf("code = %q, want %q: %s", body.Code, c.wantReason, rec.Body.String())
+					}
+					if c.wantReason == auth.ReasonSORoleConflict {
+						if got := auth.SORoleConflictFromMetadata(body.Metadata); got.TenantID != sys {
+							t.Fatalf("conflict tenant = %q, want %q", got.TenantID, sys)
+						}
+					}
+				})
+			}
+		}
+	}
 }

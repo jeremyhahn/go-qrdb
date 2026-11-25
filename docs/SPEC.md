@@ -31,7 +31,7 @@ Only go-xkms and go-quicbaas use go-qrdb directly. go-quicbaas composes go-qrdb 
 
 go-qrdb never:
 
-- ships TPM 2.0, PKCS#11, FIDO2, PIV or cloud-KMS driver code: go-xkms implements those and passes them in as `Factor` or `SealStrategy` implementations through the `With*` options;
+- ships TPM 2.0, PKCS#11, FIDO2, PIV or cloud-KMS driver code: go-xkms implements those and passes them in as `Factor` or `SealingStrategy` implementations through the `With*` options;
 - holds WebAuthn relying-party ceremony state, an ACME server, a DANE publisher or trust-bootstrap dispatch: go-xkms;
 - implements the application layer and its composition (go-quicbaas) or Raft primitives (go-quicraft);
 - copies code from go-xkms or imports it (composition is one-way), or keeps a compatibility shim or transitional wrapper, except code that speaks exactly one previous release's wire, chosen by version negotiation and deleted in the release after (rolling-upgrades row, owner decision 231 (a)).
