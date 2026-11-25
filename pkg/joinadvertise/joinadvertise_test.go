@@ -194,6 +194,28 @@ func TestAdvertiseJoiner_WritesAnUnleasedRecordWithoutLease(t *testing.T) {
 	}
 }
 
+// failKV is a KVWriter whose every Put fails with err.
+type failKV struct{ err error }
+
+func (f failKV) Put(context.Context, string, []byte) error { return f.err }
+
+func TestAdvertiseJoiner_UnleasedWriteFailure(t *testing.T) {
+	sentinel := errors.New("store unavailable")
+	a := joinadvertise.New(nil, nil, failKV{err: sentinel})
+	if a == nil {
+		t.Fatal("New(nil, nil, kv) = nil, want an unleased Advertiser")
+	}
+
+	err := a.AdvertiseJoiner(context.Background(), 4, "10.0.0.4:63001", featuregate.SupportedNames(), "0.59.0-alpha")
+	var writeErr *joinadvertise.WriteError
+	if !errors.As(err, &writeErr) {
+		t.Fatalf("error = %T (%v), want *joinadvertise.WriteError", err, err)
+	}
+	if !errors.Is(err, sentinel) {
+		t.Errorf("error = %v, want it to wrap the store's error", err)
+	}
+}
+
 // fakeLeaseServicer wraps a real LeaseServicer but fails every Grant, to
 // exercise AdvertiseJoiner's lease-failure path without needing a second
 // kind of real backend fault.
