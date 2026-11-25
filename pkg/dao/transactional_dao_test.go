@@ -21,6 +21,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -28,7 +30,7 @@ import (
 // TestNewTransactional validates NewTransactional creation.
 func TestNewTransactional(t *testing.T) {
 	t.Run("ValidCreation", func(t *testing.T) {
-		store := newMemoryKVStore()
+		store := kvstoretest.NewGuardedMemoryStore()
 		dao, err := NewTransactional[*TestEntity](
 			store,
 			"users",
@@ -50,7 +52,7 @@ func TestNewTransactional(t *testing.T) {
 	})
 
 	t.Run("EmptyEntityType", func(t *testing.T) {
-		store := newMemoryKVStore()
+		store := kvstoretest.NewGuardedMemoryStore()
 		_, err := NewTransactional[*TestEntity](
 			store,
 			"",
@@ -62,7 +64,7 @@ func TestNewTransactional(t *testing.T) {
 	})
 
 	t.Run("NilNewEntity", func(t *testing.T) {
-		store := newMemoryKVStore()
+		store := kvstoretest.NewGuardedMemoryStore()
 		_, err := NewTransactional[*TestEntity](
 			store,
 			"users",
@@ -74,7 +76,7 @@ func TestNewTransactional(t *testing.T) {
 	})
 
 	t.Run("WithOptions", func(t *testing.T) {
-		store := newMemoryKVStore()
+		store := kvstoretest.NewGuardedMemoryStore()
 		dao, err := NewTransactional[*TestEntity](
 			store,
 			"users",
@@ -89,7 +91,7 @@ func TestNewTransactional(t *testing.T) {
 
 // TestTransactionalDAOBasicOperations validates basic CRUD operations.
 func TestTransactionalDAOBasicOperations(t *testing.T) {
-	store := newMemoryKVStore()
+	store := kvstoretest.NewGuardedMemoryStore()
 	dao, err := NewTransactional[*TestEntity](
 		store,
 		"users",
@@ -125,7 +127,7 @@ func TestTransactionalDAOBasicOperations(t *testing.T) {
 
 	t.Run("Count", func(t *testing.T) {
 		// Clear store by creating new DAO
-		store := newMemoryKVStore()
+		store := kvstoretest.NewGuardedMemoryStore()
 		dao, err := NewTransactional[*TestEntity](
 			store,
 			"users",
@@ -150,7 +152,7 @@ func TestTransactionalDAOBasicOperations(t *testing.T) {
 
 // TestWithTx validates the WithTx helper function.
 func TestWithTx(t *testing.T) {
-	store := newMemoryKVStore()
+	store := kvstoretest.NewGuardedMemoryStore()
 	dao, err := NewTransactional[*TestEntity](
 		store,
 		"users",
@@ -200,7 +202,7 @@ func TestWithTx(t *testing.T) {
 
 // TestBatchSave validates the BatchSave helper function.
 func TestBatchSave(t *testing.T) {
-	store := newMemoryKVStore()
+	store := kvstoretest.NewGuardedMemoryStore()
 	dao, err := NewTransactional[*TestEntity](
 		store,
 		"users",
@@ -241,7 +243,7 @@ func TestBatchSave(t *testing.T) {
 
 // TestBatchDelete validates the BatchDelete helper function.
 func TestBatchDelete(t *testing.T) {
-	store := newMemoryKVStore()
+	store := kvstoretest.NewGuardedMemoryStore()
 	dao, err := NewTransactional[*TestEntity](
 		store,
 		"users",
@@ -289,7 +291,7 @@ func TestBatchDelete(t *testing.T) {
 
 // TestSaveWithOptimisticLock validates the SaveWithOptimisticLock helper.
 func TestSaveWithOptimisticLock(t *testing.T) {
-	store := newMemoryKVStore()
+	store := kvstoretest.NewGuardedMemoryStore()
 	dao, err := NewTransactional[*VersionedTestEntity](
 		store,
 		"versioned",
@@ -360,7 +362,7 @@ func TestTimestampedEntity(t *testing.T) {
 
 // TestTransactionalDAOPagination validates pagination operations.
 func TestTransactionalDAOPagination(t *testing.T) {
-	store := newMemoryKVStore()
+	store := kvstoretest.NewGuardedMemoryStore()
 	dao, err := NewTransactional[*TestEntity](
 		store,
 		"users",
@@ -413,7 +415,7 @@ func TestTransactionalDAOPagination(t *testing.T) {
 
 // TestTransactionConditionOperators validates all condition operators.
 func TestTransactionConditionOperators(t *testing.T) {
-	store := newMemoryKVStore()
+	store := kvstoretest.NewGuardedMemoryStore()
 	dao, err := NewTransactional[*VersionedTestEntity](
 		store,
 		"versioned",
@@ -561,7 +563,7 @@ func TestErrorMessages(t *testing.T) {
 
 // TestTransactionWithTimestampedEntity validates condition evaluation with timestamps.
 func TestTransactionWithTimestampedEntity(t *testing.T) {
-	store := newMemoryKVStore()
+	store := kvstoretest.NewGuardedMemoryStore()
 	dao, err := NewTransactional[*TimestampedTestEntity](
 		store,
 		"timestamped",
@@ -644,7 +646,7 @@ func TestTransactionWithTimestampedEntity(t *testing.T) {
 
 // TestTransactionValueCondition validates value-based conditions.
 func TestTransactionValueCondition(t *testing.T) {
-	store := newMemoryKVStore()
+	store := kvstoretest.NewGuardedMemoryStore()
 	dao, err := NewTransactional[*TestEntity](
 		store,
 		"users",
@@ -686,7 +688,7 @@ func TestTransactionValueCondition(t *testing.T) {
 
 // TestConcurrentTransactions validates concurrent transaction behavior.
 func TestConcurrentTransactions(t *testing.T) {
-	store := newMemoryKVStore()
+	store := kvstoretest.NewGuardedMemoryStore()
 	dao, err := NewTransactional[*TestEntity](
 		store,
 		"users",
@@ -724,4 +726,137 @@ func TestConcurrentTransactions(t *testing.T) {
 		_, err = dao.Get(ctx, 801)
 		require.NoError(t, err)
 	})
+}
+
+// TestTransactionCommit_ThirdOpFailureAppliesNothing proves Commit is
+// all-or-nothing: when the third queued op is refused, the first two never
+// reach the store (go-qrdb#1737).
+func TestTransactionCommit_ThirdOpFailureAppliesNothing(t *testing.T) {
+	store := kvstoretest.NewGuardedMemoryStore()
+	dao, err := NewTransactional[*VersionedTestEntity](
+		store, "versioned", func() *VersionedTestEntity { return &VersionedTestEntity{} },
+	)
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	existing := &VersionedTestEntity{ID: 900, Name: "Original", Version: 5}
+	require.NoError(t, dao.Save(ctx, existing))
+	doomed := &VersionedTestEntity{ID: 903, Name: "Doomed", Version: 1}
+	require.NoError(t, dao.Save(ctx, doomed))
+
+	tx, err := dao.BeginTx(ctx)
+	require.NoError(t, err)
+	require.NoError(t, tx.Save(&VersionedTestEntity{ID: 901, Name: "First", Version: 1}))
+	require.NoError(t, tx.Delete(doomed))
+	require.NoError(t, tx.SaveWithCondition(
+		&VersionedTestEntity{ID: 900, Name: "Updated", Version: 6},
+		Condition{Target: ConditionVersion, Operator: OpEqual, Value: int64(1)},
+	))
+
+	err = tx.Commit(ctx)
+	require.Error(t, err)
+	assert.True(t, IsConditionFailed(err))
+
+	_, err = dao.Get(ctx, 901)
+	assert.True(t, IsNotFound(err), "the first op must not have been applied")
+	still, err := dao.Get(ctx, 903)
+	require.NoError(t, err, "the second op (a delete) must not have been applied")
+	assert.Equal(t, "Doomed", still.Name)
+	unchanged, err := dao.Get(ctx, 900)
+	require.NoError(t, err)
+	assert.Equal(t, "Original", unchanged.Name)
+}
+
+// changeAfterReadStore is a guarded memory store that, the first time
+// changeKey is read, hands back what it read and then writes changeTo in
+// its place: a concurrent writer landing between a SaveWithCondition's
+// evaluation and the batch.
+type changeAfterReadStore struct {
+	*kvstoretest.GuardedMemoryStore
+	changeKey string
+	changeTo  []byte
+	changed   bool
+}
+
+func (s *changeAfterReadStore) Get(ctx context.Context, key string) ([]byte, error) {
+	data, err := s.GuardedMemoryStore.Get(ctx, key)
+	if err == nil && key == s.changeKey && !s.changed {
+		s.changed = true
+		if putErr := s.GuardedMemoryStore.Put(ctx, key, s.changeTo); putErr != nil {
+			return nil, putErr
+		}
+	}
+	return data, err
+}
+
+// TestTransactionCommit_ConditionGuardRefusesConcurrentChange proves a
+// SaveWithCondition is guarded on the bytes its condition was evaluated
+// against: a record that changes after evaluation refuses the whole batch.
+func TestTransactionCommit_ConditionGuardRefusesConcurrentChange(t *testing.T) {
+	store := &changeAfterReadStore{GuardedMemoryStore: kvstoretest.NewGuardedMemoryStore()}
+	dao, err := NewTransactional[*VersionedTestEntity](
+		store, "versioned", func() *VersionedTestEntity { return &VersionedTestEntity{} },
+	)
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	require.NoError(t, dao.Save(ctx, &VersionedTestEntity{ID: 910, Name: "Original", Version: 5}))
+	gDAO := dao.(*transactionalDAO[*VersionedTestEntity])
+	concurrent, err := gDAO.codec.Marshal(&VersionedTestEntity{ID: 910, Name: "Concurrent", Version: 6})
+	require.NoError(t, err)
+	store.changeKey = gDAO.makeKey(910)
+	store.changeTo = concurrent
+
+	tx, err := dao.BeginTx(ctx)
+	require.NoError(t, err)
+	require.NoError(t, tx.Save(&VersionedTestEntity{ID: 911, Name: "Sibling", Version: 1}))
+	require.NoError(t, tx.SaveWithCondition(
+		&VersionedTestEntity{ID: 910, Name: "Mine", Version: 6},
+		Condition{Target: ConditionVersion, Operator: OpEqual, Value: int64(5)},
+	))
+
+	err = tx.Commit(ctx)
+	require.Error(t, err)
+	assert.True(t, IsTransactionCommitError(err))
+	assert.ErrorIs(t, err, kvstore.ErrNotApplied)
+	assert.True(t, store.changed, "the concurrent write must have happened after evaluation")
+
+	_, err = dao.Get(ctx, 911)
+	assert.True(t, IsNotFound(err), "the sibling save must not have been applied")
+	got, err := dao.Get(ctx, 910)
+	require.NoError(t, err)
+	assert.Equal(t, "Concurrent", got.Name, "the concurrent writer's record must survive")
+}
+
+// TestTransactionCommit_NonGuardedStoreRefused proves Commit, BatchSave and
+// WithTx refuse a store without kvstore.MultiGuardedBatchKVStore with
+// *AtomicBatchUnsupportedError and write nothing: there is no sequential
+// fallback.
+func TestTransactionCommit_NonGuardedStoreRefused(t *testing.T) {
+	store := newMemoryKVStore()
+	dao, err := NewTransactional[*TestEntity](
+		store, "users", func() *TestEntity { return &TestEntity{} },
+	)
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	tx, err := dao.BeginTx(ctx)
+	require.NoError(t, err)
+	require.NoError(t, tx.Save(&TestEntity{ID: 920, Name: "A"}))
+	require.NoError(t, tx.Save(&TestEntity{ID: 921, Name: "B"}))
+	var unsupported *AtomicBatchUnsupportedError
+	require.ErrorAs(t, tx.Commit(ctx), &unsupported)
+
+	err = BatchSave(ctx, dao, []*TestEntity{{ID: 922, Name: "C"}, {ID: 923, Name: "D"}})
+	require.ErrorAs(t, err, &unsupported)
+
+	err = WithTx(ctx, dao, func(tx DAOTransaction[*TestEntity]) error {
+		return tx.Save(&TestEntity{ID: 924, Name: "E"})
+	})
+	require.ErrorAs(t, err, &unsupported)
+
+	for _, id := range []uint64{920, 921, 922, 923, 924} {
+		_, getErr := dao.Get(ctx, id)
+		assert.True(t, IsNotFound(getErr), "id %d must not have been written", id)
+	}
 }
