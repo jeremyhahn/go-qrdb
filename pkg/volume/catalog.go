@@ -732,7 +732,10 @@ func (c *Catalog) moveDropsEncryption(ctx context.Context, tenantID, toPool stri
 // a Lockable-to-non-Lockable move with *MoveToUnencryptedPoolError unless
 // req.AllowEncryptionDrop (decision Q9, ruling 1234: MoveTenant sets it only
 // after auditing the drop), checked before Q3; an admitted drop is
-// journalled as Move.EncryptionDropped. The
+// journalled as Move.EncryptionDropped. req.AllowEncryptionDrop requires
+// req.AuditedFromPool (*InvalidMoveRequestError without it), and a tenant
+// whose pool is no longer req.AuditedFromPool is refused with
+// *MoveConflictError, so a drop is admitted only from the audited source. The
 // tenant-kind and AllowedVolumePools checks belong to the caller in the
 // tenant layer: MoveTenant calls AdmitMove once the wired MoveAdmission
 // admitted the move and supplied the replica nodes.
@@ -756,6 +759,9 @@ func (c *Catalog) AdmitMove(ctx context.Context, req MoveAdmitRequest) (*Move, e
 		}
 		seen[n] = struct{}{}
 	}
+	if req.AllowEncryptionDrop && req.AuditedFromPool == "" {
+		return nil, &InvalidMoveRequestError{Reason: "encryption drop without an audited source pool"}
+	}
 
 	for attempt := 0; attempt < maxCASRetries; attempt++ {
 		assignRaw, err := c.kv.Get(ctx, AssignmentKey(req.TenantID))
@@ -771,6 +777,9 @@ func (c *Catalog) AdmitMove(ctx context.Context, req MoveAdmitRequest) (*Move, e
 		}
 		if err := ValidateAssignmentPath(req.TenantID, assignment.Path); err != nil {
 			return nil, err
+		}
+		if req.AuditedFromPool != "" && assignment.Pool != req.AuditedFromPool {
+			return nil, &MoveConflictError{TenantID: req.TenantID, Reason: "source pool changed since the start was audited"}
 		}
 
 		existing, _, err := c.readMove(ctx, req.TenantID)

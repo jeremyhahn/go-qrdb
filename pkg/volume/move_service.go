@@ -133,6 +133,7 @@ func (c *Catalog) MoveTenant(ctx context.Context, req MoveTenantRequest) (*Move,
 		ToPool:              req.ToPool,
 		ReplicaNodes:        nodes,
 		AllowEncryptionDrop: facts.EncryptionDropped,
+		AuditedFromPool:     facts.FromPool,
 	})
 	settle(m, err)
 	if err != nil {

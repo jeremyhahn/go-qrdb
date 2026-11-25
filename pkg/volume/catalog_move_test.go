@@ -503,6 +503,7 @@ func TestCatalog_AdmitMove_Q9AllowedDropIsJournalled(t *testing.T) {
 	cat, kv := newQ9Catalog(t, "luks2", "dir")
 	req := admitAcme()
 	req.AllowEncryptionDrop = true
+	req.AuditedFromPool = "fast"
 	m, err := cat.AdmitMove(ctx, req)
 	if err != nil {
 		t.Fatalf("AdmitMove luks2 to dir with AllowEncryptionDrop: %v", err)
@@ -737,6 +738,7 @@ func (a *recordingAdmission) AdmitTenantMove(_ context.Context, req MoveTenantRe
 // settle, and fails begin with beginErr.
 type recordingAuditor struct {
 	beginErr    error
+	onBegin     func()
 	begins      []MoveTenantRequest
 	facts       []MoveStartFacts
 	settles     int
@@ -747,6 +749,9 @@ type recordingAuditor struct {
 func (a *recordingAuditor) BeginMoveStart(_ context.Context, req MoveTenantRequest, facts MoveStartFacts) (func(*Move, error), error) {
 	a.begins = append(a.begins, req)
 	a.facts = append(a.facts, facts)
+	if a.onBegin != nil {
+		a.onBegin()
+	}
 	if a.beginErr != nil {
 		return nil, a.beginErr
 	}
@@ -933,6 +938,68 @@ func TestCatalog_MoveTenant_Q9FlagAuditsTheDrop(t *testing.T) {
 	}
 	if stored := storedMove(t, kv, "acme"); stored == nil || !stored.EncryptionDropped {
 		t.Fatalf("journal = %+v, want EncryptionDropped", stored)
+	}
+}
+
+func TestCatalog_MoveTenant_Q9AuditedSourceChangedIsRefused(t *testing.T) {
+	ctx := context.Background()
+	cat, kv := newQ9Catalog(t, "luks2", "dir")
+	if _, err := cat.CreatePool(ctx, CreatePoolRequest{Name: "vault", Provider: "luks2", CapacityBytes: 1000}); err != nil {
+		t.Fatalf("CreatePool vault: %v", err)
+	}
+	cat.SetMoveAdmission(&recordingAdmission{nodes: []string{"n1", "n2"}})
+	aud := &recordingAuditor{onBegin: func() {
+		a := storedAssignment(t, kv, "acme")
+		a.Pool = "vault"
+		data, err := json.Marshal(a)
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		if err := kv.Put(ctx, AssignmentKey("acme"), data); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+	}}
+	cat.SetMoveStartAuditor(aud)
+	destBefore, _, err := cat.getPoolRaw(ctx, "bulk")
+	if err != nil {
+		t.Fatalf("getPoolRaw bulk: %v", err)
+	}
+	req := moveAcme()
+	req.AllowUnencryptedDestination = true
+	_, moveErr := cat.MoveTenant(ctx, req)
+	var conflict *MoveConflictError
+	if !errors.As(moveErr, &conflict) || !strings.Contains(conflict.Reason, "source pool changed") {
+		t.Fatalf("MoveTenant after the audited source changed: err = %v, want *MoveConflictError naming the changed source", moveErr)
+	}
+	if stored := storedMove(t, kv, "acme"); stored != nil {
+		t.Fatalf("journal = %+v, want none", stored)
+	}
+	destAfter, _, err := cat.getPoolRaw(ctx, "bulk")
+	if err != nil {
+		t.Fatalf("getPoolRaw bulk: %v", err)
+	}
+	if destAfter.ReservedBytes != destBefore.ReservedBytes {
+		t.Fatalf("destination reserved = %d, want %d", destAfter.ReservedBytes, destBefore.ReservedBytes)
+	}
+	if aud.settles != 1 || aud.settledErr != moveErr {
+		t.Fatalf("auditor settles=%d err=%v, want 1 with %v", aud.settles, aud.settledErr, moveErr)
+	}
+}
+
+func TestCatalog_AdmitMove_AllowDropWithoutAuditedSourceRefused(t *testing.T) {
+	cat, kv := newQ9Catalog(t, "luks2", "dir")
+	_, err := cat.AdmitMove(context.Background(), MoveAdmitRequest{
+		TenantID:            "acme",
+		ToPool:              "bulk",
+		ReplicaNodes:        []string{"n1", "n2"},
+		AllowEncryptionDrop: true,
+	})
+	var invalid *InvalidMoveRequestError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("AdmitMove drop without an audited source: err = %v, want *InvalidMoveRequestError", err)
+	}
+	if stored := storedMove(t, kv, "acme"); stored != nil {
+		t.Fatalf("journal = %+v, want none", stored)
 	}
 }
 

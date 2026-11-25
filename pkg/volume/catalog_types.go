@@ -278,8 +278,12 @@ type MoveAdmitRequest struct {
 	// AllowEncryptionDrop admits a Lockable-to-non-Lockable move (decision
 	// Q9, ruling 1234). Only Catalog.MoveTenant sets it, after the drop was
 	// audited; without it AdmitMove refuses the downgrade with
-	// *MoveToUnencryptedPoolError.
+	// *MoveToUnencryptedPoolError. It requires AuditedFromPool.
 	AllowEncryptionDrop bool
+	// AuditedFromPool is the source pool the start audit read; required
+	// with AllowEncryptionDrop. AdmitMove refuses with *MoveConflictError
+	// when the tenant's pool is no longer this one.
+	AuditedFromPool string
 }
 
 // MoveTenantRequest is the operator's request to move a tenant between
