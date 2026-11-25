@@ -466,7 +466,7 @@ func (t *Transport) admitWatch(svc service.WatchServicer) service.WatchServicer 
 // Connect is a no-op for embedded transports since the service layer
 // is already available in-process.
 func (t *Transport) Connect(_ context.Context) error {
-	if t.closed.Load() {
+	if t.isClosed() {
 		return &transport.ClosedError{}
 	}
 	return nil
@@ -486,10 +486,15 @@ func (t *Transport) Close() error {
 	return nil
 }
 
-// Healthy returns true when the transport is open. For embedded
-// transports, the service layer is always reachable if not closed.
+// Healthy returns true when the transport is open. It is false once this
+// transport or the root it was scoped from is closed.
 func (t *Transport) Healthy(_ context.Context) bool {
-	return !t.closed.Load()
+	return !t.isClosed()
+}
+
+// isClosed reports whether this transport or the root it was scoped from is closed.
+func (t *Transport) isClosed() bool {
+	return t.closed.Load() || (t.life != nil && t.life.closed.Load())
 }
 
 // Request dispatches a generic request to the appropriate service method

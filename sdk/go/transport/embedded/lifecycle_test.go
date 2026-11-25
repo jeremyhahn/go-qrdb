@@ -56,6 +56,12 @@ func TestTransport_RootCloseRefusesScopedClones(t *testing.T) {
 	if _, err := scoped.SealStoreGet(ctx, &transport.SealStoreGetRequest{Name: "n"}); !errors.As(err, &closed) {
 		t.Fatalf("scoped SealStoreGet after root Close: err = %v, want *transport.ClosedError", err)
 	}
+	if scoped.Healthy(ctx) {
+		t.Fatal("scoped Healthy after root Close = true, want false")
+	}
+	if err := scoped.Connect(ctx); !errors.As(err, &closed) {
+		t.Fatalf("scoped Connect after root Close: err = %v, want *transport.ClosedError", err)
+	}
 }
 
 // TestTransport_ScopedCloseLeavesRootOpen pins that a scoped clone's Close
@@ -79,6 +85,12 @@ func TestTransport_ScopedCloseLeavesRootOpen(t *testing.T) {
 	}
 	if string(got) != "v" {
 		t.Fatalf("root Get = %q, want %q", got, "v")
+	}
+	if !root.Healthy(ctx) {
+		t.Fatal("root Healthy after scoped Close = false, want true")
+	}
+	if err := root.Connect(ctx); err != nil {
+		t.Fatalf("root Connect after scoped Close: %v", err)
 	}
 }
 
