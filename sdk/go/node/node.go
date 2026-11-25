@@ -2838,7 +2838,7 @@ func (n *Node) startTenantMoves(svcNode *lifecycle.Node, ti *server.TenantInfra,
 	if host != nil {
 		membership = host
 	}
-	worker, err := server.WireTenantMoves(server.TenantMoveConfig{
+	moveCfg := server.TenantMoveConfig{
 		Catalog:     n.volumeCatalog,
 		BarrierReg:  barrierRegistry,
 		Tenants:     tenants,
@@ -2850,7 +2850,11 @@ func (n *Node) startTenantMoves(svcNode *lifecycle.Node, ti *server.TenantInfra,
 		StartAudit:  service.NewVolumeMoveAudit(n.auditLogger, policy),
 		Transitions: service.NewVolumeMoveTransitionAudit(n.auditLogger),
 		Logger:      n.logger,
-	})
+	}
+	if n.dbManager != nil {
+		moveCfg.DataDirs = n.dbManager
+	}
+	worker, err := server.WireTenantMoves(moveCfg)
 	if err != nil {
 		if n.logger != nil {
 			n.logger.Warn("volume pool: tenant moves are not wired on this node", slog.Any("error", err))

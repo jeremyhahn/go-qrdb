@@ -35,6 +35,14 @@ type TenantStoreCloser interface {
 	OpenTenantStores(ctx context.Context, tenantID string) error
 }
 
+// TenantDataDirRelocator is implemented by a TenantStoreCloser whose
+// tenant database records name absolute data directories: a settle rewrites
+// each one under fromRoot to the same path under toRoot before it reopens
+// the stores, so no later open recreates a directory under the retired root.
+type TenantDataDirRelocator interface {
+	RelocateTenantDataDirs(ctx context.Context, tenantID, fromRoot, toRoot string) error
+}
+
 // MoveStepNodeError is returned by MoveStepRunner.RunMoveStep for a step
 // granted to another node: a node runs only its own steps.
 type MoveStepNodeError struct {
@@ -127,9 +135,15 @@ func (m *MoveStepRunner) SettleMoveStep(ctx context.Context, step volume.MoveSte
 		// The journal now records this node copied, so the destination is
 		// authoritative here: open the stores from it.
 		m.reg.moveOpenPools.Store(step.TenantID, step.ToPool)
+		if err := m.relocateDataDirs(ctx, step, false); err != nil {
+			return err
+		}
 		return m.stores.OpenTenantStores(ctx, step.TenantID)
 	case step.Phase == volume.MoveStepPhaseAbort && step.Copied:
 		m.reg.moveOpenPools.Delete(step.TenantID)
+		if err := m.relocateDataDirs(ctx, step, true); err != nil {
+			return err
+		}
 		if err := m.stores.OpenTenantStores(ctx, step.TenantID); err != nil {
 			return err
 		}
@@ -137,6 +151,24 @@ func (m *MoveStepRunner) SettleMoveStep(ctx context.Context, step volume.MoveSte
 	default:
 		return nil
 	}
+}
+
+// relocateDataDirs rewrites the tenant's recorded database directories onto
+// the root its stores now open from: the destination, or the source when
+// back is true.
+func (m *MoveStepRunner) relocateDataDirs(ctx context.Context, step volume.MoveStep, back bool) error {
+	rel, ok := m.stores.(TenantDataDirRelocator)
+	if !ok {
+		return nil
+	}
+	src, dst, err := m.placements(ctx, step)
+	if err != nil {
+		return err
+	}
+	if back {
+		src, dst = dst, src
+	}
+	return rel.RelocateTenantDataDirs(ctx, step.TenantID, src, dst)
 }
 
 func (m *MoveStepRunner) copyStep(ctx context.Context, step volume.MoveStep) error {

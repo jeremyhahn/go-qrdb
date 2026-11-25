@@ -79,7 +79,10 @@ type TenantMoveConfig struct {
 	// CatchUpTimeout bounds how long a settle step waits for each reopened
 	// replica to catch up; a non-positive one is DefaultMoveCatchUpTimeout.
 	CatchUpTimeout time.Duration
-	Logger         *slog.Logger
+	// DataDirs rewrites a moved tenant's database records onto the root it
+	// settles on; nil rewrites none.
+	DataDirs MoveDataDirRelocator
+	Logger   *slog.Logger
 }
 
 // TenantMoveWorker runs a node's share of the tenant moves: every tick it
@@ -180,6 +183,9 @@ func newMoveStores(cfg TenantMoveConfig) (*MoveStoreCloser, error) {
 	}
 	if cfg.Infra != nil && cfg.Infra.Hosts != nil {
 		opts = append(opts, WithMoveTenantHosts(cfg.Infra.Hosts))
+	}
+	if cfg.DataDirs != nil {
+		opts = append(opts, WithMoveDataDirRelocator(cfg.DataDirs))
 	}
 	if local := localMoveReplicas(cfg.Membership, cfg.Placements, cfg.ReplicaID); local != nil {
 		opts = append(opts, WithMoveLocalReplicas(local))

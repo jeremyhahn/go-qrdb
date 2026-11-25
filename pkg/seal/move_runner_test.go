@@ -814,6 +814,55 @@ func TestMoveStepRunner_SealedReopenSettlesOnlyAfterUnseal(t *testing.T) {
 	assertGone(t, fx2.dst())
 }
 
+// relocatingStores records each data-directory relocation a settle asks for.
+type relocatingStores struct {
+	*fakeStores
+	moves [][2]string
+	err   error
+}
+
+func (s *relocatingStores) RelocateTenantDataDirs(_ context.Context, tenantID, fromRoot, toRoot string) error {
+	if tenantID != moveTestTenant {
+		return errors.New("relocate of another tenant")
+	}
+	s.moves = append(s.moves, [2]string{fromRoot, toRoot})
+	return s.err
+}
+
+func TestMoveStepRunner_SettleRelocatesDataDirs(t *testing.T) {
+	fx, stores, _ := newRunnerFixture(t)
+	ctx := context.Background()
+	rs := &relocatingStores{fakeStores: stores}
+	r, err := NewMoveStepRunner(fx.reg, moveTestNode, rs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RunMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+	rs.err = errors.New("relocate refused")
+	if err := r.SettleMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); !errors.Is(err, rs.err) {
+		t.Fatalf("settle with a refused relocation = %v, want it", err)
+	}
+	rs.err = nil
+	if err := r.SettleMoveStep(ctx, runnerStep(volume.MoveStepPhaseCopy, false)); err != nil {
+		t.Fatalf("settle copy: %v", err)
+	}
+	if got := rs.moves[len(rs.moves)-1]; got != [2]string{fx.src, fx.dst()} {
+		t.Fatalf("copy settle relocated %v, want %s -> %s", got, fx.src, fx.dst())
+	}
+	abort := runnerStep(volume.MoveStepPhaseAbort, true)
+	if err := r.RunMoveStep(ctx, abort); err != nil {
+		t.Fatalf("abort run: %v", err)
+	}
+	if err := r.SettleMoveStep(ctx, abort); err != nil {
+		t.Fatalf("abort settle: %v", err)
+	}
+	if got := rs.moves[len(rs.moves)-1]; got != [2]string{fx.dst(), fx.src} {
+		t.Fatalf("abort settle relocated %v, want %s -> %s", got, fx.dst(), fx.src)
+	}
+}
+
 func TestMoveStepRunner_RetireRemovesSource(t *testing.T) {
 	fx, _, r := newRunnerFixture(t)
 	ctx := context.Background()

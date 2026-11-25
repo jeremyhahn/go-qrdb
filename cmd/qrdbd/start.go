@@ -2645,6 +2645,7 @@ func runStart(f *startFlags) (err error) {
 					Placements:  svcNode.PlacementStore,
 					StartAudit:  service.NewVolumeMoveAudit(complianceAudit, auditPolicy),
 					Transitions: service.NewVolumeMoveTransitionAudit(complianceAudit),
+					DataDirs:    dbManager,
 					Logger:      slog.Default(),
 				})
 				if mwErr != nil {

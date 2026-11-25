@@ -86,6 +86,9 @@ type MoveStoreCloser struct {
 	localReplicas MoveLocalReplicas
 	// catchUpTimeout bounds each replica's catch-up wait.
 	catchUpTimeout time.Duration
+	// dataDirs rewrites the tenant's database records onto a settled root;
+	// nil when the node keeps no database records.
+	dataDirs MoveDataDirRelocator
 
 	mu         sync.Mutex
 	closed     map[string][]string
@@ -143,6 +146,30 @@ func WithMoveCatchUpTimeout(timeout time.Duration) MoveStoreCloserOption {
 			c.catchUpTimeout = timeout
 		}
 	}
+}
+
+// MoveDataDirRelocator rewrites a tenant's database records whose data
+// directory lies under fromRoot onto the same path under toRoot.
+type MoveDataDirRelocator interface {
+	RelocateTenantDataDirs(ctx context.Context, tenantID, fromRoot, toRoot string) error
+}
+
+// WithMoveDataDirRelocator sets the relocator a settle rewrites the tenant's
+// database records with; nil keeps none.
+func WithMoveDataDirRelocator(r MoveDataDirRelocator) MoveStoreCloserOption {
+	return func(c *MoveStoreCloser) { c.dataDirs = r }
+}
+
+// RelocateTenantDataDirs rewrites the tenant's database records from fromRoot
+// onto toRoot; with no relocator set it does nothing.
+func (c *MoveStoreCloser) RelocateTenantDataDirs(ctx context.Context, tenantID, fromRoot, toRoot string) error {
+	if c.dataDirs == nil {
+		return nil
+	}
+	if err := c.dataDirs.RelocateTenantDataDirs(ctx, tenantID, fromRoot, toRoot); err != nil {
+		return fmt.Errorf("move: relocate the database records of tenant %s: %w", tenantID, err)
+	}
+	return nil
 }
 
 // NewMoveStoreCloser returns the closer over shards and barriers. shards
