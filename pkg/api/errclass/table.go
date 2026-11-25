@@ -132,6 +132,8 @@ var dominantRules = []rule{
 	// A barrier-isolated tenant's IAM store resolved to a SEALED barrier; the
 	// resolver fails closed rather than falling back to the shared store.
 	is(tenant.ErrTenantSealed, Unavailable),
+	// A standalone barrier log store a migration replaced: the retry resolves the new barrier.
+	is(service.ErrLogStoreReplaced, Unavailable),
 	// The same seal met one step later: the barrier sealed AFTER Resolve
 	// returned a store and BEFORE that store's own Get/Put ran, which reports
 	// the barrier's sentinel unwrapped (go-qrdb#464 round 6).
@@ -422,6 +424,9 @@ var vlogRules = []rule{
 	as(&vlog.ExpireNotAllowedError{}, FailedPrecondition),
 	as(&vlog.ReservedLogError{}, PermissionDenied),
 	as(&vlog.NotAuditLogError{}, InvalidArgument),
+	// A kv key or delete range inside the verifiable log's reserved
+	// keyspace: only the log service reads or writes it.
+	as(&service.ReservedKeyError{}, InvalidArgument),
 	as(&vlog.CheckpointRootMismatchError{}, FailedPrecondition),
 	as(&vlog.InvalidSigningKeyError{}, FailedPrecondition),
 	// Another rotation applied first: the caller retries against the new key.
@@ -430,10 +435,11 @@ var vlogRules = []rule{
 	as(&vlog.CorruptTableError{}, DataLoss),
 	as(&vlog.NotCompiledError{}, Unimplemented),
 	as(&service.LogFeatureNotActiveError{}, Unavailable),
-	// A barrier tenant or database keeps its data under its own barrier; the
-	// log registry sits under the system barrier, so neither is served.
-	as(&service.BarrierTenantLogNotSupportedError{}, Unimplemented),
-	as(&service.BarrierDatabaseLogNotSupportedError{}, Unimplemented),
+	// A barrier-enabled database create over a name that already holds logs.
+	as(&service.DatabaseLogsExistError{}, FailedPrecondition),
+	// A barrier tenant's log lives in its home group, which this node cannot
+	// reach yet.
+	as(&service.BarrierStoreUnavailableError{}, Unavailable),
 }
 
 // collectionRules are the document-collection conditions.

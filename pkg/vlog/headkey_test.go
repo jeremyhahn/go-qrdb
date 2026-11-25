@@ -612,6 +612,132 @@ func TestChain_RotateKey_RefusesAnUnreadableDescriptor(t *testing.T) {
 	}
 }
 
+// TestChain_CreateWithSealedKey_RecordsTheSealedRecord pins that a barrier
+// database's log stores the sealed key record verbatim: vlog never opens it.
+func TestChain_CreateWithSealedKey_RecordsTheSealedRecord(t *testing.T) {
+	stg := memory.NewStorage()
+	c := NewChain()
+	k := mustKey(t, SignatureEd25519)
+	sealed := SigningKey{Version: k.Version, PKCS8: []byte("sealed-opaque")}
+	if err := c.CreateWithSealedKey(stg, testLog, keyedDescriptor(t, k), sealed); err != nil {
+		t.Fatalf("CreateWithSealedKey: %v", err)
+	}
+	desc, err := ReadDescriptor(stg, testLog)
+	if want := []HeadKey{headKeyOf(t, k)}; err != nil || !reflect.DeepEqual(desc.Keys, want) {
+		t.Fatalf("ReadDescriptor = %+v, %v; want Keys %+v", desc, err, want)
+	}
+	got, err := ReadSigningKey(stg, testLog, k.Version)
+	if err != nil || !reflect.DeepEqual(*got, sealed) {
+		t.Fatalf("ReadSigningKey = %+v, %v; want %+v", got, err, sealed)
+	}
+}
+
+func TestChain_CreateWithSealedKey_Refusals(t *testing.T) {
+	k := mustKey(t, SignatureEd25519)
+	two, err := GenerateSigningKey(SignatureEd25519, 2)
+	if err != nil {
+		t.Fatalf("GenerateSigningKey: %v", err)
+	}
+	sealed := SigningKey{Version: k.Version, PKCS8: []byte("sealed-opaque")}
+	noKeys := keyedDescriptor(t, k)
+	noKeys.Keys = nil
+	twoKeys := keyedDescriptor(t, k)
+	twoKeys.Keys = append(twoKeys.Keys, headKeyOf(t, two))
+	cases := map[string]struct {
+		id     LogID
+		desc   Descriptor
+		record SigningKey
+		want   any
+	}{
+		"no keys":          {testLog, noKeys, sealed, new(*InvalidDescriptorError)},
+		"two keys":         {testLog, twoKeys, sealed, new(*InvalidDescriptorError)},
+		"empty record":     {testLog, keyedDescriptor(t, k), SigningKey{Version: k.Version}, new(*InvalidSigningKeyError)},
+		"version mismatch": {testLog, keyedDescriptor(t, k), SigningKey{Version: 2, PKCS8: []byte("sealed")}, new(*InvalidSigningKeyError)},
+		"invalid id":       {LogID{TenantID: "t", Database: "d"}, keyedDescriptor(t, k), sealed, new(*InvalidLogNameError)},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			stg := memory.NewStorage()
+			before := dump(t, stg)
+			if err := NewChain().CreateWithSealedKey(stg, tc.id, tc.desc, tc.record); !errors.As(err, tc.want) {
+				t.Fatalf("CreateWithSealedKey = %v, want %T", err, tc.want)
+			}
+			if dump(t, stg) != before {
+				t.Fatal("a refused create wrote records")
+			}
+		})
+	}
+}
+
+// TestChain_RotateSealedKey_AppendsTheSealedRecord pins that a rotation on a
+// barrier database's log stores the next sealed record verbatim.
+func TestChain_RotateSealedKey_AppendsTheSealedRecord(t *testing.T) {
+	stg := memory.NewStorage()
+	c := NewChain()
+	first := mustKey(t, SignatureEd25519)
+	if err := c.CreateWithKey(stg, testLog, keyedDescriptor(t, first), first); err != nil {
+		t.Fatalf("CreateWithKey: %v", err)
+	}
+	next, err := GenerateSigningKey(SignatureEd25519, FirstKeyVersion+1)
+	if err != nil {
+		t.Fatalf("GenerateSigningKey: %v", err)
+	}
+	sealed := SigningKey{Version: next.Version, PKCS8: []byte("sealed-2")}
+	if err := c.RotateSealedKey(stg, stg, testLog, headKeyOf(t, next), sealed); err != nil {
+		t.Fatalf("RotateSealedKey: %v", err)
+	}
+	desc, err := ReadDescriptor(stg, testLog)
+	if want := []HeadKey{headKeyOf(t, first), headKeyOf(t, next)}; err != nil || !reflect.DeepEqual(desc.Keys, want) {
+		t.Fatalf("ReadDescriptor = %+v, %v; want Keys %+v", desc, err, want)
+	}
+	got, err := ReadSigningKey(stg, testLog, next.Version)
+	if err != nil || !reflect.DeepEqual(*got, sealed) {
+		t.Fatalf("ReadSigningKey = %+v, %v; want %+v", got, err, sealed)
+	}
+}
+
+func TestChain_RotateSealedKey_Refusals(t *testing.T) {
+	first := mustKey(t, SignatureEd25519)
+	next, err := GenerateSigningKey(SignatureEd25519, 2)
+	if err != nil {
+		t.Fatalf("GenerateSigningKey: %v", err)
+	}
+	third, err := GenerateSigningKey(SignatureEd25519, 3)
+	if err != nil {
+		t.Fatalf("GenerateSigningKey: %v", err)
+	}
+	sealed := SigningKey{Version: 2, PKCS8: []byte("sealed-2")}
+	cases := map[string]struct {
+		id     LogID
+		next   HeadKey
+		record SigningKey
+		want   any
+	}{
+		"invalid id":       {LogID{TenantID: "t", Database: "d"}, headKeyOf(t, next), sealed, new(*InvalidLogNameError)},
+		"invalid key":      {testLog, HeadKey{Version: 2}, sealed, new(*InvalidSigningKeyError)},
+		"empty record":     {testLog, headKeyOf(t, next), SigningKey{Version: 2}, new(*InvalidSigningKeyError)},
+		"version mismatch": {testLog, headKeyOf(t, next), SigningKey{Version: 3, PKCS8: []byte("sealed-3")}, new(*InvalidSigningKeyError)},
+		"no such log":      {LogID{TenantID: "acme", Database: "ledger", Log: "absent"}, headKeyOf(t, next), sealed, new(*LogNotFoundError)},
+		"skips a version":  {testLog, headKeyOf(t, third), SigningKey{Version: 3, PKCS8: []byte("sealed-3")}, new(*KeyVersionConflictError)},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			stg := memory.NewStorage()
+			c := NewChain()
+			if err := c.CreateWithKey(stg, testLog, keyedDescriptor(t, first), first); err != nil {
+				t.Fatalf("CreateWithKey: %v", err)
+			}
+			before := dump(t, stg)
+			if err := c.RotateSealedKey(stg, stg, tc.id, tc.next, tc.record); !errors.As(err, tc.want) {
+				t.Fatalf("RotateSealedKey = %v, want %T", err, tc.want)
+			}
+			if dump(t, stg) != before {
+				t.Fatal("a refused rotation wrote records")
+			}
+		})
+	}
+}
+
 // TestChain_CreateRefusesMoreThanTheFirstKey: a log is created with at most
 // its first key; later keys arrive through RotateKey.
 func TestChain_CreateRefusesMoreThanTheFirstKey(t *testing.T) {
