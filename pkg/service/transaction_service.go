@@ -167,7 +167,23 @@ func (s *TransactionService) encodeTransactionCommand(compares []Compare, succes
 		encodedFailure[i] = encoded
 	}
 
-	return protocol.EncodeTransaction(encodedCompares, encodedSuccess, encodedFailure)
+	return protocol.EncodeTransactionFlags(encodedCompares, encodedSuccess, encodedFailure, uniqueCheckFlags(s.host, s.shardID))
+}
+
+// uniqueCheckFlags returns the flag trailer an OpTransaction or OpBatch
+// proposed to shardID carries: protocol.CmdFlagOrderedUnique, so apply checks
+// unique indexes in op order, unless host gates features and
+// featuregate.OrderedUniqueCheck is not enabled for the group. Until it is,
+// the command is encoded without the trailer, exactly as an older binary
+// encodes it, and every replica applies the legacy check (an older binary
+// ignores the trailer, so a flagged command would diverge the group). A host
+// that gates nothing (standalone, embedded) has one binary and gets the flag
+// at once.
+func uniqueCheckFlags(host Host, shardID uint64) byte {
+	if gated, ok := host.(FeatureGatedHost); ok && !gated.FeatureEnabled(shardID, featuregate.OrderedUniqueCheck) {
+		return 0
+	}
+	return protocol.CmdFlagOrderedUnique
 }
 
 // buildTransactionResponse constructs a TransactionResponse from the Raft
@@ -266,14 +282,14 @@ func (s *TransactionService) ExecuteEntity(ctx context.Context, req *Transaction
 		return nil, &EncodeRequestError{Err: err}
 	}
 
-	cmd, err := protocol.EncodeTransaction(encodedCompares, encodedSuccess, encodedFailure)
-	if err != nil {
-		return nil, &EncodeRequestError{Err: err}
-	}
-
 	shardID := s.shardID
 	if req.ShardID != 0 {
 		shardID = req.ShardID
+	}
+
+	cmd, err := protocol.EncodeTransactionFlags(encodedCompares, encodedSuccess, encodedFailure, uniqueCheckFlags(s.host, shardID))
+	if err != nil {
+		return nil, &EncodeRequestError{Err: err}
 	}
 
 	result, proposeErr := propose(ctx, s.host, shardID, cmd)

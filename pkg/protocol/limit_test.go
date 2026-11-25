@@ -71,6 +71,68 @@ func TestIndexCreateOpts_CarriesTheIndexCap(t *testing.T) {
 	}
 }
 
+// The rescope flag round-trips with and without a cap; a rescope create
+// always carries the cap (zero when uncapped) and one flags byte.
+func TestIndexCreateOpts_RescopeRoundTrip(t *testing.T) {
+	for _, maxIndexes := range []uint32{0, 7} {
+		in := IndexCreateOptions{Owner: "o", KeyPrefix: "member/", MaxIndexes: maxIndexes, Rescope: true}
+		cmd, err := EncodeIndexCreateOpts("idx", "f", in)
+		if err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		_, _, opts, err := DecodeIndexCreateOpts(cmd[1:])
+		if err != nil || !opts.Rescope || opts.MaxIndexes != maxIndexes || opts.KeyPrefix != "member/" {
+			t.Fatalf("decode = (%+v, %v), want Rescope with MaxIndexes %d", opts, err, maxIndexes)
+		}
+		plain, _ := EncodeIndexCreateOpts("idx", "f", IndexCreateOptions{Owner: "o", KeyPrefix: "member/"})
+		if want := len(plain) + 5; len(cmd) != want {
+			t.Fatalf("encoded length = %d, want %d", len(cmd), want)
+		}
+	}
+}
+
+// Without Rescope the encoding is byte-identical to the one written before
+// the flag existed, capped and uncapped, so older replicas decode it as
+// before.
+func TestIndexCreateOpts_NoRescopeIsByteIdentical(t *testing.T) {
+	for _, maxIndexes := range []uint32{0, 3} {
+		opts := IndexCreateOptions{Unique: true, KeyPrefix: "p/", Owner: "o", MaxIndexes: maxIndexes}
+		want := []byte{OpIndexCreate, 3, 0, 'i', 'd', 'x', 1, 0, 'f', opts.Flags(), 2, 0, 'p', '/', 1, 0, 'o'}
+		if maxIndexes > 0 {
+			want = append(want, byte(maxIndexes), 0, 0, 0)
+		}
+		got, err := EncodeIndexCreateOpts("idx", "f", opts)
+		if err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		if string(got) != string(want) {
+			t.Fatalf("MaxIndexes %d: encoding = %v, want %v", maxIndexes, got, want)
+		}
+		_, _, dec, err := DecodeIndexCreateOpts(got[1:])
+		if err != nil || dec.Rescope {
+			t.Fatalf("decode = (%+v, %v), want no Rescope", dec, err)
+		}
+	}
+}
+
+// A flags byte with a bit this binary does not know is refused rather than
+// applied with a meaning the proposer did not intend.
+func TestDecodeIndexCreateOpts_UnknownFlagRefused(t *testing.T) {
+	cmd, err := EncodeIndexCreateOpts("idx", "f", IndexCreateOptions{Owner: "o", Rescope: true})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	for _, flags := range []byte{0x02, 0x80, 0x03} {
+		bad := append([]byte(nil), cmd...)
+		bad[len(bad)-1] = flags
+		_, _, _, err := DecodeIndexCreateOpts(bad[1:])
+		var invalid *InvalidCommandError
+		if !errors.As(err, &invalid) || invalid.Reason != "index create: unknown flags" {
+			t.Fatalf("flags %#x: err = %v, want unknown flags", flags, err)
+		}
+	}
+}
+
 func TestIndexCreateOpts_PayloadEndingAtTheOwnerHasNoCap(t *testing.T) {
 	cmd, err := EncodeIndexCreateOpts("idx", "f", IndexCreateOptions{MaxIndexes: 9})
 	if err != nil {

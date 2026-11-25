@@ -115,6 +115,34 @@ func TestUpdateIndexes_PreviousValueCleanup(t *testing.T) {
 	}
 }
 
+// TestUpdateIndexes_NonJSONReplacementRemovesOldEntry overwrites an indexed
+// JSON value with non-JSON bytes: the old entry must be removed and nothing
+// added for the new value.
+func TestUpdateIndexes_NonJSONReplacementRemovesOldEntry(t *testing.T) {
+	idx := index.NewMemoryIndex("by_name", false)
+	indexes := map[string]index.Index{"by_name": idx}
+	indexFields := map[string]string{"by_name": "name"}
+
+	key := []byte("user:1")
+	oldValue := []byte(`{"name":"alice"}`)
+	if err := UpdateIndexes(indexes, indexFields, nil, key, oldValue, nil); err != nil {
+		t.Fatalf("UpdateIndexes (first insert): %v", err)
+	}
+
+	prevKv := &service.KeyValue{Key: key, Value: oldValue}
+	if err := UpdateIndexes(indexes, indexFields, nil, key, []byte("not-json"), prevKv); err != nil {
+		t.Fatalf("UpdateIndexes (non-JSON overwrite): %v", err)
+	}
+
+	oldIDs, err := idx.Get([]byte("alice"))
+	if err != nil {
+		t.Fatalf("Get(alice): %v", err)
+	}
+	if len(oldIDs) != 0 {
+		t.Errorf("expected old index entry removed, got %d IDs", len(oldIDs))
+	}
+}
+
 func TestUpdateIndexes_MissingField(t *testing.T) {
 	idx := index.NewMemoryIndex("by_email", false)
 	indexes := map[string]index.Index{"by_email": idx}
@@ -551,6 +579,200 @@ func TestUpdateIndexesBatch_NonJSON(t *testing.T) {
 	}
 }
 
+// TestUpdateIndexesBatch_NonJSONReplacementRemovesOldEntry overwrites an
+// indexed JSON value with non-JSON bytes: the old entry must be removed and
+// nothing added for the new value.
+func TestUpdateIndexesBatch_NonJSONReplacementRemovesOldEntry(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		ordered bool
+		wantOld int
+	}{
+		{name: "ordered removes", ordered: true, wantOld: 0},
+		{name: "legacy keeps", ordered: false, wantOld: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stg := memory.NewStorage()
+			defer func() { _ = stg.Close() }()
+
+			log := indexTestLogger(t)
+			idx, err := index.NewStoragePebbleIndex(stg, index.IndexConfig{
+				Name:          "by_name",
+				Type:          index.IndexTypeNormal,
+				CaseSensitive: true,
+			}, log)
+			if err != nil {
+				t.Fatalf("NewStoragePebbleIndex: %v", err)
+			}
+
+			indexes := map[string]index.Index{"by_name": idx}
+			indexFields := map[string]string{"by_name": "name"}
+			key := []byte("user:1")
+			oldValue := []byte(`{"name":"alice"}`)
+
+			b1 := stg.Batch()
+			if bErr := UpdateIndexesBatch(b1, indexes, indexFields, nil, key, oldValue, nil); bErr != nil {
+				t.Fatalf("first UpdateIndexesBatch: %v", bErr)
+			}
+			if cErr := b1.Commit(); cErr != nil {
+				t.Fatalf("Commit: %v", cErr)
+			}
+
+			prevKv := &qkv.KeyValue{Key: key, Value: oldValue}
+			b2 := stg.Batch()
+			if bErr := updateIndexesBatch(b2, indexes, indexFields, nil, key, []byte("not-json"), prevKv, tc.ordered); bErr != nil {
+				t.Fatalf("second updateIndexesBatch: %v", bErr)
+			}
+			if cErr := b2.Commit(); cErr != nil {
+				t.Fatalf("Commit: %v", cErr)
+			}
+
+			ids, err := idx.Get([]byte("alice"))
+			if err != nil {
+				t.Fatalf("Get(alice): %v", err)
+			}
+			if len(ids) != tc.wantOld {
+				t.Errorf("Get(alice) = %v, want %d entries after the non-JSON overwrite", ids, tc.wantOld)
+			}
+			all, err := idx.GetAll()
+			if err != nil {
+				t.Fatalf("GetAll: %v", err)
+			}
+			if len(all) != tc.wantOld {
+				t.Errorf("GetAll = %v, want %d entries after the non-JSON overwrite", all, tc.wantOld)
+			}
+		})
+	}
+}
+
+// TestCheckUniqueViolationsBatch_CaseInsensitiveReleaseThenDuplicate pins that
+// pending claims are keyed by the index's normalized term: with A holding
+// "alpha" in a case-insensitive unique index, the set A->"beta", B->"ALPHA",
+// C->"alpha" claims one stored term twice and is refused by the pre-check,
+// not later by PutBatch as a fatal apply error.
+func TestCheckUniqueViolationsBatch_CaseInsensitiveReleaseThenDuplicate(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+	idx, err := index.NewStoragePebbleIndex(stg, index.IndexConfig{
+		Name: "users.Name", Type: index.IndexTypeUnique, Unique: true, CaseSensitive: false,
+	}, indexTestLogger(t))
+	if err != nil {
+		t.Fatalf("NewStoragePebbleIndex: %v", err)
+	}
+	indexes := map[string]index.Index{"users.Name": idx}
+	fields := map[string]string{"users.Name": "name"}
+
+	seed := stg.Batch()
+	if err := UpdateIndexesBatch(seed, indexes, fields, nil, []byte("A"), []byte(`{"name":"alpha"}`), nil); err != nil {
+		t.Fatalf("seed UpdateIndexesBatch: %v", err)
+	}
+	if err := seed.Set([]byte("A"), []byte(`{"name":"alpha"}`)); err != nil {
+		t.Fatalf("seed Set: %v", err)
+	}
+	if err := seed.Commit(); err != nil {
+		t.Fatalf("seed Commit: %v", err)
+	}
+
+	writes := []indexedWrite{
+		{Key: []byte("A"), Value: []byte(`{"name":"beta"}`)},
+		{Key: []byte("B"), Value: []byte(`{"name":"ALPHA"}`)},
+		{Key: []byte("C"), Value: []byte(`{"name":"alpha"}`)},
+	}
+	batch := stg.Batch()
+	defer func() { _ = batch.Close() }()
+	prev := func(k []byte) ([]byte, error) { return batch.Get(k) }
+	if err := CheckUniqueViolationsBatch(batch, indexes, fields, nil, writes[:2], prev); err != nil {
+		t.Fatalf("CheckUniqueViolationsBatch(A to beta, B to ALPHA) = %v, want nil (A releases alpha first)", err)
+	}
+	err = CheckUniqueViolationsBatch(batch, indexes, fields, nil, writes, prev)
+	var uce *UniqueConstraintError
+	if !errors.As(err, &uce) {
+		t.Fatalf("CheckUniqueViolationsBatch = %v, want *UniqueConstraintError (B and C claim one case-folded term)", err)
+	}
+}
+
+// TestCheckUniqueViolationsBatch_StaleEntryNotReleased: A holds "not-json"
+// with a stale x entry (left by a legacy plain non-JSON overwrite). Writing A
+// releases only the entries its prior value carries, none here, so B's claim
+// of x is refused: apply could not retract A's entry.
+func TestCheckUniqueViolationsBatch_StaleEntryNotReleased(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+	idx, err := index.NewStoragePebbleIndex(stg, index.IndexConfig{
+		Name: "users.Email", Type: index.IndexTypeUnique, Unique: true,
+	}, indexTestLogger(t))
+	if err != nil {
+		t.Fatalf("NewStoragePebbleIndex: %v", err)
+	}
+	indexes := map[string]index.Index{"users.Email": idx}
+	fields := map[string]string{"users.Email": "email"}
+
+	seed := stg.Batch()
+	if err := UpdateIndexesBatch(seed, indexes, fields, nil, []byte("A"), []byte(`{"email":"x"}`), nil); err != nil {
+		t.Fatalf("seed UpdateIndexesBatch: %v", err)
+	}
+	if err := seed.Set([]byte("A"), []byte("not-json")); err != nil {
+		t.Fatalf("seed Set: %v", err)
+	}
+	if err := seed.Commit(); err != nil {
+		t.Fatalf("seed Commit: %v", err)
+	}
+
+	writes := []indexedWrite{
+		{Key: []byte("A"), Value: []byte(`{"email":"y"}`)},
+		{Key: []byte("B"), Value: []byte(`{"email":"x"}`)},
+	}
+	batch := stg.Batch()
+	defer func() { _ = batch.Close() }()
+	err = CheckUniqueViolationsBatch(batch, indexes, fields, nil, writes, func(k []byte) ([]byte, error) { return batch.Get(k) })
+	var uce *UniqueConstraintError
+	if !errors.As(err, &uce) {
+		t.Fatalf("CheckUniqueViolationsBatch = %v, want *UniqueConstraintError (A's stale x entry stays held)", err)
+	}
+}
+
+// TestCheckUniqueViolationsBatch_NULKeyReleaseUnambiguous: key "a\x00b" with
+// term "x" and key "b" with term "x\x00a" joined to one NUL-separated release
+// marker; deleting "a\x00b" must release only its own entry, so a third key
+// claiming "x\x00a" still conflicts with "b".
+func TestCheckUniqueViolationsBatch_NULKeyReleaseUnambiguous(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+	idx, err := index.NewStoragePebbleIndex(stg, index.IndexConfig{
+		Name: "users.Email", Type: index.IndexTypeUnique, Unique: true,
+	}, indexTestLogger(t))
+	if err != nil {
+		t.Fatalf("NewStoragePebbleIndex: %v", err)
+	}
+	indexes := map[string]index.Index{"users.Email": idx}
+	fields := map[string]string{"users.Email": "email"}
+
+	seed := stg.Batch()
+	for _, kv := range [][2]string{{"a\x00b", `{"email":"x"}`}, {"b", `{"email":"x\u0000a"}`}} {
+		if err := UpdateIndexesBatch(seed, indexes, fields, nil, []byte(kv[0]), []byte(kv[1]), nil); err != nil {
+			t.Fatalf("seed UpdateIndexesBatch %q: %v", kv[0], err)
+		}
+		if err := seed.Set([]byte(kv[0]), []byte(kv[1])); err != nil {
+			t.Fatalf("seed Set %q: %v", kv[0], err)
+		}
+	}
+	if err := seed.Commit(); err != nil {
+		t.Fatalf("seed Commit: %v", err)
+	}
+
+	writes := []indexedWrite{
+		{Key: []byte("a\x00b"), Delete: true},
+		{Key: []byte("c"), Value: []byte(`{"email":"x\u0000a"}`)},
+	}
+	batch := stg.Batch()
+	defer func() { _ = batch.Close() }()
+	err = CheckUniqueViolationsBatch(batch, indexes, fields, nil, writes, func(k []byte) ([]byte, error) { return batch.Get(k) })
+	var uce *UniqueConstraintError
+	if !errors.As(err, &uce) {
+		t.Fatalf("CheckUniqueViolationsBatch = %v, want *UniqueConstraintError (b still holds x\\x00a)", err)
+	}
+}
+
 func TestUpdateIndexesBatch_WithPreviousValue(t *testing.T) {
 	stg := memory.NewStorage()
 	defer func() { _ = stg.Close() }()
@@ -726,6 +948,49 @@ func TestBackfillIndexWithPrefix(t *testing.T) {
 	if len(ids) != 0 {
 		t.Errorf("expected 0 IDs for widget (different prefix), got %d", len(ids))
 	}
+}
+
+func TestBackfillIndexWithPrefix_PutErrorReturned(t *testing.T) {
+	t.Run("unique violation", func(t *testing.T) {
+		stg := memory.NewStorage()
+		defer func() { _ = stg.Close() }()
+		for _, k := range []string{"users/1", "users/2"} {
+			if err := stg.Set([]byte(k), []byte(`{"email":"a@example.com"}`)); err != nil {
+				t.Fatalf("Set: %v", err)
+			}
+		}
+		idx, err := index.NewStoragePebbleIndex(stg, index.IndexConfig{
+			Name: "users.Email", Type: index.IndexTypeUnique, Unique: true, CaseSensitive: true,
+		}, indexTestLogger(t))
+		if err != nil {
+			t.Fatalf("NewStoragePebbleIndex: %v", err)
+		}
+		bErr := BackfillIndexWithPrefix(stg, idx, "email", []byte("users/"))
+		if bErr == nil {
+			t.Fatal("BackfillIndexWithPrefix over duplicate unique values: want error, got nil")
+		}
+		if !strings.Contains(bErr.Error(), "backfill users/2") {
+			t.Errorf("error %q does not name the entity key", bErr)
+		}
+	})
+
+	t.Run("storage write failure", func(t *testing.T) {
+		real := memory.NewStorage()
+		defer func() { _ = real.Close() }()
+		if err := real.Set([]byte("users/1"), []byte(`{"name":"alice"}`)); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+		fs := &indexSetFailingStorage{Storage: real, entityPrefix: []byte("users/"), failIndexSet: true}
+		idx, err := index.NewStoragePebbleIndex(fs, index.IndexConfig{
+			Name: "users.Name", Type: index.IndexTypeNormal, CaseSensitive: true,
+		}, indexTestLogger(t))
+		if err != nil {
+			t.Fatalf("NewStoragePebbleIndex: %v", err)
+		}
+		if bErr := BackfillIndexWithPrefix(fs, idx, "name", []byte("users/")); !errors.Is(bErr, errIndexSetInjected) {
+			t.Fatalf("BackfillIndexWithPrefix with failing index writes: want injected error, got %v", bErr)
+		}
+	})
 }
 
 func TestBackfillIndexWithPrefix_NonJSON(t *testing.T) {
@@ -1234,6 +1499,64 @@ func TestUpdateCompoundIndexesBatch_UpdateRemovesOldEntry(t *testing.T) {
 	}
 }
 
+// TestUpdateCompoundIndexesBatch_NonJSONReplacementRemovesOldEntry overwrites
+// an indexed JSON value with non-JSON bytes: the old compound entry must be
+// removed.
+func TestUpdateCompoundIndexesBatch_NonJSONReplacementRemovesOldEntry(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		ordered bool
+		wantOld int
+	}{
+		{name: "ordered removes", ordered: true, wantOld: 0},
+		{name: "legacy keeps", ordered: false, wantOld: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stg := memory.NewStorage()
+			defer func() { _ = stg.Close() }()
+
+			log := indexTestLogger(t)
+			idx, err := index.NewCompoundIndex(stg, index.IndexConfig{
+				Name:       "items.Cat_Tag",
+				FieldNames: []string{"Cat", "Tag"},
+			}, log)
+			if err != nil {
+				t.Fatalf("NewCompoundIndex: %v", err)
+			}
+
+			compoundIndexes := map[string]*index.CompoundIndex{"items.Cat_Tag": idx}
+			compoundFields := map[string][]string{"items.Cat_Tag": {"cat", "tag"}}
+			key := []byte("items/1")
+			oldValue := []byte(`{"cat":"electronics","tag":"phone"}`)
+
+			b1 := stg.Batch()
+			if err := UpdateCompoundIndexesBatch(b1, compoundIndexes, compoundFields, nil, key, oldValue, nil); err != nil {
+				t.Fatalf("first UpdateCompoundIndexesBatch: %v", err)
+			}
+			if err := b1.Commit(); err != nil {
+				t.Fatalf("Commit: %v", err)
+			}
+
+			prevKv := &qkv.KeyValue{Key: key, Value: oldValue}
+			b2 := stg.Batch()
+			if err := updateCompoundIndexesBatch(b2, compoundIndexes, compoundFields, nil, key, []byte("not-json"), prevKv, tc.ordered); err != nil {
+				t.Fatalf("second updateCompoundIndexesBatch: %v", err)
+			}
+			if err := b2.Commit(); err != nil {
+				t.Fatalf("Commit: %v", err)
+			}
+
+			old, err := idx.GetCompound([][]byte{[]byte("electronics"), []byte("phone")})
+			if err != nil {
+				t.Fatalf("GetCompound (old): %v", err)
+			}
+			if len(old) != tc.wantOld {
+				t.Errorf("GetCompound (old) = %v, want %d entries after the non-JSON overwrite", old, tc.wantOld)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // RemoveCompoundIndexesBatch
 // ---------------------------------------------------------------------------
@@ -1379,6 +1702,49 @@ func TestBackfillCompoundIndexWithPrefix_EmptyValueSkipped(t *testing.T) {
 	if err := BackfillCompoundIndexWithPrefix(stg, idx, []string{"x", "y"}, []byte("parts/")); err != nil {
 		t.Fatalf("BackfillCompoundIndexWithPrefix with empty value: %v", err)
 	}
+}
+
+func TestBackfillCompoundIndexWithPrefix_PutErrorReturned(t *testing.T) {
+	t.Run("unique violation", func(t *testing.T) {
+		stg := memory.NewStorage()
+		defer func() { _ = stg.Close() }()
+		for _, k := range []string{"parts/1", "parts/2"} {
+			if err := stg.Set([]byte(k), []byte(`{"x":"1","y":"2"}`)); err != nil {
+				t.Fatalf("Set: %v", err)
+			}
+		}
+		idx, err := index.NewCompoundIndex(stg, index.IndexConfig{
+			Name: "parts.X_Y", Type: index.IndexTypeUnique, FieldNames: []string{"X", "Y"}, Unique: true,
+		}, indexTestLogger(t))
+		if err != nil {
+			t.Fatalf("NewCompoundIndex: %v", err)
+		}
+		bErr := BackfillCompoundIndexWithPrefix(stg, idx, []string{"x", "y"}, []byte("parts/"))
+		if bErr == nil {
+			t.Fatal("BackfillCompoundIndexWithPrefix over duplicate unique values: want error, got nil")
+		}
+		if !strings.Contains(bErr.Error(), "backfill parts/2") {
+			t.Errorf("error %q does not name the entity key", bErr)
+		}
+	})
+
+	t.Run("storage write failure", func(t *testing.T) {
+		real := memory.NewStorage()
+		defer func() { _ = real.Close() }()
+		if err := real.Set([]byte("parts/1"), []byte(`{"x":"1","y":"2"}`)); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+		fs := &indexSetFailingStorage{Storage: real, entityPrefix: []byte("parts/"), failIndexSet: true}
+		idx, err := index.NewCompoundIndex(fs, index.IndexConfig{
+			Name: "parts.X_Y", FieldNames: []string{"X", "Y"},
+		}, indexTestLogger(t))
+		if err != nil {
+			t.Fatalf("NewCompoundIndex: %v", err)
+		}
+		if bErr := BackfillCompoundIndexWithPrefix(fs, idx, []string{"x", "y"}, []byte("parts/")); !errors.Is(bErr, errIndexSetInjected) {
+			t.Fatalf("BackfillCompoundIndexWithPrefix with failing index writes: want injected error, got %v", bErr)
+		}
+	})
 }
 
 func TestBackfillCompoundIndexWithPrefix_NonJSONSkipped(t *testing.T) {
@@ -1553,6 +1919,129 @@ func TestUpdateCompoundIndexesBatch_MissingFieldsKey(t *testing.T) {
 	err = UpdateCompoundIndexesBatch(batch, compoundIndexes, compoundFields, nil, key, value, nil)
 	if err != nil {
 		t.Fatalf("expected nil when field names missing, got %v", err)
+	}
+}
+
+// uniqueCompoundFixture returns a unique compound index over sessions/* on
+// {user_id, device_id}, seeded with sessions/1 = (u, d1).
+func uniqueCompoundFixture(t *testing.T) (*memory.MemoryStorage, map[string]*index.CompoundIndex, map[string][]string, map[string][]byte) {
+	t.Helper()
+	stg := memory.NewStorage()
+	t.Cleanup(func() { _ = stg.Close() })
+	idx, err := index.NewCompoundIndex(stg, index.IndexConfig{
+		Name:       "sessions.UserID_DeviceID",
+		Type:       index.IndexTypeUnique,
+		FieldNames: []string{"UserID", "DeviceID"},
+		Unique:     true,
+		KeyPrefix:  "sessions/",
+	}, indexTestLogger(t))
+	if err != nil {
+		t.Fatalf("NewCompoundIndex: %v", err)
+	}
+	indexes := map[string]*index.CompoundIndex{"sessions.UserID_DeviceID": idx}
+	fields := map[string][]string{"sessions.UserID_DeviceID": {"user_id", "device_id"}}
+	scopes := map[string][]byte{"sessions.UserID_DeviceID": []byte("sessions/")}
+	seed := stg.Batch()
+	if err := UpdateCompoundIndexesBatch(seed, indexes, fields, scopes, []byte("sessions/1"), []byte(`{"user_id":"u","device_id":"d1"}`), nil); err != nil {
+		t.Fatalf("seed index entry: %v", err)
+	}
+	if err := seed.Set([]byte("sessions/1"), []byte(`{"user_id":"u","device_id":"d1"}`)); err != nil {
+		t.Fatalf("seed key: %v", err)
+	}
+	if err := seed.Commit(); err != nil {
+		t.Fatalf("seed commit: %v", err)
+	}
+	return stg, indexes, fields, scopes
+}
+
+func TestCheckCompoundUniqueBatch(t *testing.T) {
+	put := func(k, v string) indexedWrite { return indexedWrite{Key: []byte(k), Value: []byte(v)} }
+	del := func(k string) indexedWrite { return indexedWrite{Key: []byte(k), Delete: true} }
+	tupleD1 := `{"user_id":"u","device_id":"d1"}`
+	tupleD2 := `{"user_id":"u","device_id":"d2"}`
+	cases := []struct {
+		name     string
+		writes   []indexedWrite
+		conflict bool
+		// stale overwrites sessions/1 with a non-JSON value before the check
+		// and keeps its d1 entry, as a legacy plain overwrite leaves it.
+		stale bool
+	}{
+		{"two new keys claim one tuple", []indexedWrite{put("sessions/2", tupleD2), put("sessions/3", tupleD2)}, true, false},
+		{"a new key takes a committed tuple", []indexedWrite{put("sessions/2", tupleD1)}, true, false},
+		{"case-folded duplicate", []indexedWrite{put("sessions/2", tupleD2), put("sessions/3", `{"user_id":"U","device_id":"D2"}`)}, true, false},
+		{"one key written twice", []indexedWrite{put("sessions/2", tupleD2), put("sessions/2", tupleD2)}, false, false},
+		{"overwrite then move", []indexedWrite{put("sessions/1", tupleD2), put("sessions/2", tupleD1)}, false, false},
+		{"delete then take", []indexedWrite{del("sessions/1"), put("sessions/2", tupleD1)}, false, false},
+		{"take before the release", []indexedWrite{put("sessions/2", tupleD1), del("sessions/1")}, true, false},
+		{"in-set claim released by overwrite", []indexedWrite{put("sessions/2", tupleD2), put("sessions/2", `{"user_id":"v"}`), put("sessions/3", tupleD2)}, false, false},
+		{"out of scope", []indexedWrite{put("other/2", tupleD1)}, false, false},
+		{"missing field is sparse", []indexedWrite{put("sessions/2", `{"user_id":"u"}`), put("sessions/3", `{"user_id":"u"}`)}, false, false},
+		{"stale tuple not released", []indexedWrite{put("sessions/1", tupleD2), put("sessions/2", tupleD1)}, true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stg, indexes, fields, scopes := uniqueCompoundFixture(t)
+			batch := stg.Batch()
+			defer func() { _ = batch.Close() }()
+			if tc.stale {
+				if err := batch.Set([]byte("sessions/1"), []byte("not-json")); err != nil {
+					t.Fatalf("stage the non-JSON overwrite: %v", err)
+				}
+			}
+			prev := func(k []byte) ([]byte, error) { return batch.Get(k) }
+			err := checkCompoundUniqueBatch(batch, indexes, fields, scopes, tc.writes, prev)
+			var uce *UniqueConstraintError
+			if tc.conflict && !errors.As(err, &uce) {
+				t.Fatalf("err = %v, want *UniqueConstraintError", err)
+			}
+			if !tc.conflict && err != nil {
+				t.Fatalf("err = %v, want nil", err)
+			}
+		})
+	}
+}
+
+// TestCheckCompoundUniqueBatch_NULKeyReleaseUnambiguous: compound string
+// fields are escaped and terminated, so tuple+"\x00"+key markers could not
+// collide; the test pins that a delete of a NUL-bearing key releases only its
+// own holder, and that the release set keeps two holders of NUL-bearing
+// tuples and keys distinct.
+func TestCheckCompoundUniqueBatch_NULKeyReleaseUnambiguous(t *testing.T) {
+	stg, indexes, fields, scopes := uniqueCompoundFixture(t)
+	seed := stg.Batch()
+	for _, kv := range [][2]string{
+		{"sessions/a\x00b", `{"user_id":"u","device_id":"x"}`},
+		{"sessions/b", `{"user_id":"u","device_id":"x\u0000a"}`},
+	} {
+		if err := UpdateCompoundIndexesBatch(seed, indexes, fields, scopes, []byte(kv[0]), []byte(kv[1]), nil); err != nil {
+			t.Fatalf("seed index entry %q: %v", kv[0], err)
+		}
+		if err := seed.Set([]byte(kv[0]), []byte(kv[1])); err != nil {
+			t.Fatalf("seed key %q: %v", kv[0], err)
+		}
+	}
+	if err := seed.Commit(); err != nil {
+		t.Fatalf("seed commit: %v", err)
+	}
+
+	released := make(map[uniqueHolder]struct{})
+	releaseCompoundUniqueEntries(released, indexes, fields, scopes, []byte("sessions/a\x00b"), []byte(`{"user_id":"u","device_id":"x"}`))
+	releaseCompoundUniqueEntries(released, indexes, fields, scopes, []byte("sessions/b"), []byte(`{"user_id":"u","device_id":"x\u0000a"}`))
+	if len(released) != 2 {
+		t.Fatalf("released holds %d holders, want 2 distinct", len(released))
+	}
+
+	writes := []indexedWrite{
+		{Key: []byte("sessions/a\x00b"), Delete: true},
+		{Key: []byte("sessions/c"), Value: []byte(`{"user_id":"u","device_id":"x\u0000a"}`)},
+	}
+	batch := stg.Batch()
+	defer func() { _ = batch.Close() }()
+	err := checkCompoundUniqueBatch(batch, indexes, fields, scopes, writes, func(k []byte) ([]byte, error) { return batch.Get(k) })
+	var uce *UniqueConstraintError
+	if !errors.As(err, &uce) {
+		t.Fatalf("err = %v, want *UniqueConstraintError (sessions/b still holds the tuple)", err)
 	}
 }
 

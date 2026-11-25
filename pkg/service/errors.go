@@ -23,6 +23,7 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
+	dberrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 )
@@ -131,6 +132,19 @@ func (e *CommandConflictError) Error() string { return "service: " + e.Message }
 
 // Is reports the ErrNotStored marker: the command changed nothing.
 func (e *CommandConflictError) Is(target error) bool { return target == ErrNotStored }
+
+// As presents the refusal as a *dberrors.QRDBError with Code ErrConflict, so
+// a unique-index conflict on the service store carries the same code as on
+// the embedded store (sdk.IsErrorCode(err, sdk.ErrConflict)), bare or wrapped
+// in a *kvstore.NotAppliedError.
+func (e *CommandConflictError) As(target any) bool {
+	qe, ok := target.(**dberrors.QRDBError)
+	if !ok {
+		return false
+	}
+	*qe = &dberrors.QRDBError{Code: dberrors.ErrConflict, Op: "service.command", Err: e}
+	return true
+}
 
 // SubsystemClosedError reports a command that reached a subsystem already
 // closed on this replica (a closed lessor or time-series store). Retry once

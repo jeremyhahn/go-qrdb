@@ -20,6 +20,7 @@ import (
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
@@ -92,11 +93,25 @@ func (s *IndexService) CreateIndex(ctx context.Context, name, fieldName string, 
 		// set the create applies over, so two creates proposed through
 		// different nodes cannot both take the last slot (go-qrdb#1088).
 		MaxIndexes: gatedCommandCap(s.host, s.shardID, s.maxIndexes),
+		// A re-create with a different key scope rebuilds the index only
+		// once every replica can apply it the same way.
+		Rescope: indexRescope(s.host, s.shardID),
 	})
 	if err != nil {
 		return &EncodeRequestError{Err: err}
 	}
 	return s.proposeIndexCommand(ctx, config.Owner, cmd)
+}
+
+// indexRescope reports whether an index create is proposed with the rescope
+// flag: on a gated host only once featuregate.IndexRescope is enabled for the
+// shard, since an older replica keeps the existing index for a scope-changing
+// re-create; a standalone or embedded host gets it at once.
+func indexRescope(host Host, shardID uint64) bool {
+	if gated, ok := host.(FeatureGatedHost); ok && !gated.FeatureEnabled(shardID, featuregate.IndexRescope) {
+		return false
+	}
+	return true
 }
 
 // DropIndex removes a secondary index through Raft consensus, whoever

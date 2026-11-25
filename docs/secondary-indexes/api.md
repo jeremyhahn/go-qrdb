@@ -32,15 +32,28 @@ call returns `embedded.NilServiceError` naming `IndexServicer`.
 
 ## Schemas
 
-`IndexCreate` request: index `name`, `field_name`, and the flags `unique`,
-`sparse`, `numeric` and `case_insensitive`, all at the top level:
+`IndexCreate` request: index `name`, `field_name`, the flags `unique`,
+`sparse`, `numeric` and `case_insensitive`, and the optional `key_prefix`, all
+at the top level:
 
 ```json
 { "name": "qrdb.User.Email", "field_name": "Email",
-  "unique": true, "sparse": false, "numeric": false, "case_insensitive": false }
+  "unique": true, "sparse": false, "numeric": false, "case_insensitive": false,
+  "key_prefix": "User/" }
 ```
 
 Index names are `{database}.{entityType}.{FieldName}`.
+
+`key_prefix` scopes the index to the keys under it: the server maintains the
+index, and checks a unique constraint, only over keys that start with the
+index name's namespace followed by `key_prefix`; a key outside the scope is
+neither indexed nor refused. Empty (the default) covers every key in the
+name's namespace. Every transport carries it (the REST and MCP `key_prefix`
+field, the gRPC / Unix `IndexCreateRequest.key_prefix`, the QUIC and embedded
+`transport.IndexConfig.KeyPrefix`; the CLI `qrdb index create --key-prefix`).
+A DAO over `Client.KVStore` sends its entity type's prefix (`"{entityType}/"`
+unless the index declares its own), so a unique index is per entity type on
+the client store as on the embedded and service stores.
 
 `numeric: true` builds the index with order-preserving numeric terms: values
 compare as numbers, and a value that is not a decimal number, or is `NaN`, is

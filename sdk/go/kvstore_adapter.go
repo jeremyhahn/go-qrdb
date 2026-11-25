@@ -18,7 +18,9 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -337,13 +339,31 @@ func (a *kvStoreAdapter) RegisterEntityIndexes(entityType string, indexes []kvst
 		// The polarity is inverted here on purpose: transport.IndexConfig
 		// marks the POSITIVE claim (CaseInsensitive) while kvstore.EntityIndex
 		// names the default (CaseSensitive).
+		//
+		// The index is scoped to the keys of this entity type, as the service
+		// store scopes it (pkg/server/lifecycle/kv_adapter.go): the server
+		// maintains an index over engine.IndexNamespace(name) followed by the
+		// key prefix sent here, so the absolute prefix the store declares
+		// ("{entityType}/" unless the caller supplied one) is sent RELATIVE
+		// to the name's namespace. Without it the server indexes every key of
+		// the database and a unique index refuses a value another entity
+		// type holds (#1649). A name whose namespace the keys do not live
+		// under is refused: the index would cover a keyspace no write of
+		// this entity type reaches and answer every query empty.
+		name := ei.ResolvedName(entityType)
+		absolute := ei.ResolvedPrefix(entityType)
+		ns := engine.IndexNamespace(name)
+		if !strings.HasPrefix(absolute, ns) {
+			return kvstore.ErrIndexUnsupported
+		}
 		cfg := transport.IndexConfig{
 			Unique:          ei.Unique,
 			Sparse:          ei.Sparse,
 			CaseInsensitive: !ei.CaseSensitive,
 			Numeric:         ei.Numeric,
+			KeyPrefix:       absolute[len(ns):],
 		}
-		if err := a.index.IndexCreate(ctx, ei.ResolvedName(entityType), ei.JSONFieldName, cfg); err != nil {
+		if err := a.index.IndexCreate(ctx, name, ei.JSONFieldName, cfg); err != nil {
 			return translateIndexCapabilityError(err)
 		}
 	}

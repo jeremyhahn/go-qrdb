@@ -60,6 +60,20 @@ func TestRefusal_userConcurrentUpdate(t *testing.T) {
 	}
 }
 
+func TestRefusal_commandConflict(t *testing.T) {
+	want := &service.CommandConflictError{Message: "unique index system/system/member.Email: value already taken"}
+	reason, md, ok := Refusal(&wrappedError{want})
+	if !ok || reason != transport.ReasonCommandConflict {
+		t.Fatalf("Refusal() = %q, %v; want %q, true", reason, ok, transport.ReasonCommandConflict)
+	}
+	if got := transport.CommandConflictFromMetadata(md); got.Message != want.Message {
+		t.Fatalf("metadata decodes to %+v, want Message %q", got, want.Message)
+	}
+	if got := Classify(want); got != AlreadyExists {
+		t.Fatalf("Classify(command conflict) = %v, want AlreadyExists", got)
+	}
+}
+
 func TestRefusal_barrierSentinels(t *testing.T) {
 	cases := map[error]string{
 		seal.ErrNotInitialized:           transport.ReasonBarrierNotInitialized,
