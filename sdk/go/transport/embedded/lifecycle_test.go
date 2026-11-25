@@ -107,3 +107,21 @@ func TestLifecycle_ShutWaitsForAnAdmittedEnter(t *testing.T) {
 		t.Fatalf("enter after shut: err = %v, want *transport.ClosedError", err)
 	}
 }
+
+func TestLifecycle_EnterAfterShutIsRefused(t *testing.T) {
+	l := &lifecycle{}
+	release, err := l.enter()
+	if err != nil {
+		t.Fatalf("enter: %v", err)
+	}
+	release()
+	l.shut()
+	release, err = l.enter()
+	var closed *transport.ClosedError
+	if !errors.As(err, &closed) {
+		t.Fatalf("enter after shut: err = %v, want *transport.ClosedError", err)
+	}
+	if release != nil {
+		release()
+	}
+}
