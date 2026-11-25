@@ -210,3 +210,64 @@ func TestSQLiteCmd_RestoreToRevision(t *testing.T) {
 		t.Fatalf("names after restore = %s, want alice", got)
 	}
 }
+
+func TestSQLiteCmd_RefusesREST(t *testing.T) {
+	c, root := newSQLiteTestServer(t)
+	saved := clientTransport
+	clientTransport = transportREST
+	t.Cleanup(func() { clientTransport = saved })
+	before, err := c.MVCC().CurrentRevision(t.Context())
+	if err != nil {
+		t.Fatalf("CurrentRevision: %v", err)
+	}
+	for _, args := range [][]string{
+		{"sqlite", "exec", "app", "CREATE TABLE t (id INTEGER PRIMARY KEY)"},
+		{"sqlite", "query", "app", "SELECT 1"},
+		{"sqlite", "restore", "app", "--revision", "1"},
+	} {
+		out, err := executeCommand(root(), args...)
+		if err == nil || !strings.Contains(err.Error(), "REST") {
+			t.Fatalf("qrdb %s over REST: err = %v (%s), want a refusal naming REST", strings.Join(args, " "), err, out)
+		}
+	}
+	after, err := c.MVCC().CurrentRevision(t.Context())
+	if err != nil {
+		t.Fatalf("CurrentRevision: %v", err)
+	}
+	if after != before {
+		t.Fatalf("revision moved from %d to %d, want nothing written over REST", before, after)
+	}
+}
+
+func TestSQLiteCmd_NameReachesOpenerUnchanged(t *testing.T) {
+	c, root := newSQLiteTestServer(t)
+	hasMeta := func(db string) bool {
+		t.Helper()
+		key, err := sqlitevfs.MetaKey(db)
+		if err != nil {
+			t.Fatalf("MetaKey(%q): %v", db, err)
+		}
+		resp, err := c.MVCC().Range(t.Context(), key, append(append([]byte(nil), key...), 0), transport.RangeOptions{Limit: 1})
+		if err != nil {
+			t.Fatalf("Range(%q): %v", key, err)
+		}
+		return len(resp.Kvs) == 1
+	}
+	runSQLite(t, root, "sqlite", "exec", "app", "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+	runSQLite(t, root, "sqlite", "exec", "app", "INSERT INTO t (name) VALUES ('alice')")
+	for _, name := range []string{"a%61pp", "app#x"} {
+		runSQLite(t, root, "sqlite", "exec", name, "CREATE TABLE u (id INTEGER PRIMARY KEY)")
+		if !hasMeta(name) {
+			t.Fatalf("no meta record under %q, want the database stored under its own name", name)
+		}
+		if _, err := executeCommand(root(), "sqlite", "query", name, "SELECT name FROM t"); err == nil {
+			t.Fatalf("query on %q read the table of app, want its own database", name)
+		}
+	}
+	if got := strings.Join(queryNames(t, root, "app"), ","); got != "alice" {
+		t.Fatalf("names in app = %s, want alice", got)
+	}
+	if hasMeta("x") || hasMeta("a") {
+		t.Fatal("a meta record exists under a truncated name")
+	}
+}

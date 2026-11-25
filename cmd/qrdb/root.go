@@ -189,6 +189,7 @@ Supported transports:
 				}
 			}
 			client = c
+			clientTransport = transportType
 
 			return nil
 		},

@@ -53,7 +53,22 @@ var sqliteBackend = func() (sqlitevfs.Backend, error) {
 	if client == nil {
 		return nil, errors.New("sqlite: not connected")
 	}
+	if err := sqliteTransportAllowed(); err != nil {
+		return nil, err
+	}
 	return sdksqlitevfs.NewBackend(client.MVCC(), client.Transaction())
+}
+
+// clientTransport is the transport type the connected client was built for.
+var clientTransport string
+
+// sqliteTransportAllowed refuses a transport whose transaction wire cannot
+// carry SQLite's binary page keys and values.
+func sqliteTransportAllowed() error {
+	if clientTransport == transportREST {
+		return errors.New("sqlite: SQLite needs a binary-safe transaction wire and the REST transport has none; use grpc, quic, unix or mcp")
+	}
+	return nil
 }
 
 // registerSQLiteVFS registers VFS qrdb once per process, over an Opener
@@ -128,6 +143,9 @@ func (f *sqliteOpenFlags) open(db string) (*sql.DB, error) {
 	if f.stageThreshold < 0 {
 		return nil, fmt.Errorf("--stage-threshold must not be negative, got %d", f.stageThreshold)
 	}
+	if err := sqliteTransportAllowed(); err != nil {
+		return nil, err
+	}
 	if err := registerSQLiteVFS(); err != nil {
 		return nil, err
 	}
@@ -137,7 +155,7 @@ func (f *sqliteOpenFlags) open(db string) (*sql.DB, error) {
 	if f.stageThreshold > 0 {
 		q.Set(sqliteStageThresholdParam, strconv.Itoa(f.stageThreshold))
 	}
-	conn, err := sql.Open(moderncvfs.DriverName, "file:"+db+"?"+q.Encode())
+	conn, err := sql.Open(moderncvfs.DriverName, "file:"+url.PathEscape(db)+"?"+q.Encode())
 	if err != nil {
 		return nil, err
 	}
@@ -322,6 +340,9 @@ command exits non-zero.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			db := args[0]
 			if err := sqlitevfs.ValidateDatabaseName(db); err != nil {
+				return err
+			}
+			if err := sqliteTransportAllowed(); err != nil {
 				return err
 			}
 			result, err := client.MVCC().RestoreToRevision(cmd.Context(), &transport.RestoreRevisionRequest{
