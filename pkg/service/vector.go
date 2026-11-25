@@ -1985,7 +1985,8 @@ func (v *vectorService) SearchSimilar(ctx context.Context, req *SearchSimilarReq
 // of the JSON scan and the verbatim legacy scan, de-duplicated and ordered by
 // ID; a compound filter with any non-string predicate scans JSON records
 // only, since a legacy record holds strings alone. Either way the result is
-// paged by offset and limit.
+// paged by offset and limit. While the gate is inactive a non-string predicate
+// is compared as its %v text against legacy records.
 func (v *vectorService) scanMetadataFilters(ctx context.Context, scoped string, raw map[string]interface{},
 	encoded []vector.MetadataFilter, limit, offset int) ([]*vector.VectorValue, error) {
 	want := offset + limit
@@ -1994,12 +1995,16 @@ func (v *vectorService) scanMetadataFilters(ctx context.Context, scoped string, 
 		return nil, err
 	}
 	legacy := make([]vector.MetadataFilter, 0, len(encoded))
+	legacyRules := v.metadataFormat() == vector.MetadataFormatLegacy
 	allStrings := true
 	for _, f := range encoded {
 		s, ok := raw[f.Field].(string)
 		if !ok {
-			allStrings = false
-			break
+			if !legacyRules {
+				allStrings = false
+				break
+			}
+			s = fmt.Sprintf("%v", raw[f.Field])
 		}
 		f.Value = s
 		legacy = append(legacy, f)
@@ -2007,7 +2012,7 @@ func (v *vectorService) scanMetadataFilters(ctx context.Context, scoped string, 
 	// An empty filter list matches every record, so legacy-format records
 	// written before the JSON format are listed alongside JSON ones. A
 	// legacy record holds only strings, so a filter with any non-string
-	// predicate cannot match one.
+	// predicate cannot match one while the gate is active.
 	if len(encoded) == 0 || allStrings {
 		old, err := v.scanFormat(ctx, scoped, legacy, vector.MetadataFormatLegacy, want)
 		if err != nil {

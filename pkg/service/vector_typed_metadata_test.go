@@ -337,6 +337,67 @@ func TestUpsert_MetadataFormatFollowsTheFeatureGate(t *testing.T) {
 	}
 }
 
+func TestSearchByMetadata_GateOffNumericFilterMatchesLegacyWrite(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		active bool
+		cases  []struct {
+			filters map[string]interface{}
+			want    []uint64
+		}
+	}{
+		{"gated off", false, []struct {
+			filters map[string]interface{}
+			want    []uint64
+		}{
+			{map[string]interface{}{"price": float64(5)}, []uint64{1}},
+			{map[string]interface{}{"topic": "news", "price": float64(5)}, []uint64{1}},
+			{map[string]interface{}{"price": "5"}, []uint64{1}},
+		}},
+		{"gated on", true, []struct {
+			filters map[string]interface{}
+			want    []uint64
+		}{
+			{map[string]interface{}{"price": float64(5)}, []uint64{1}},
+			{map[string]interface{}{"price": "5"}, nil},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := vector.NewMemoryVectorStorage()
+			gates := &gatedRaftNode{enabled: map[feature.Feature]bool{featuregate.VectorMetadataJSON: tc.active}}
+			svc, err := NewVectorService(store, newVecTestLogger(), WithFeatureGates(gates))
+			if err != nil {
+				t.Fatalf("NewVectorService: %v", err)
+			}
+			ctx := context.Background()
+			if _, err := svc.CreateNamespace(ctx, &CreateNamespaceRequest{
+				Namespace: "typed", Dimension: 2, DistanceMetric: "COSINE", IndexType: "HNSW",
+			}); err != nil {
+				t.Fatalf("CreateNamespace: %v", err)
+			}
+			if _, err := svc.UpsertVector(ctx, &UpsertVectorRequest{
+				Namespace: "typed", ID: 1, Vector: []float32{1, 0},
+				Metadata: map[string]interface{}{"topic": "news", "price": float64(5)},
+			}); err != nil {
+				t.Fatalf("UpsertVector: %v", err)
+			}
+			for _, c := range tc.cases {
+				resp, err := svc.SearchByMetadata(ctx, &SearchByMetadataRequest{Namespace: "typed", Filters: c.filters})
+				if err != nil {
+					t.Fatalf("SearchByMetadata(%#v): %v", c.filters, err)
+				}
+				var ids []uint64
+				for _, r := range resp.Results {
+					ids = append(ids, r.ID)
+				}
+				if !reflect.DeepEqual(ids, c.want) {
+					t.Fatalf("SearchByMetadata(%#v) matched IDs = %v, want %v", c.filters, ids, c.want)
+				}
+			}
+		})
+	}
+}
+
 // TestRaftBatchUpsert_MetadataFollowsTheFeatureGate checks that a batch
 // proposed through Raft carries its metadata only once vector-metadata-json
 // is active: a replica that predates the gate ignores a batch's metadata, so
