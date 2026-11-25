@@ -63,8 +63,9 @@ func TestBackupDestination_NodeWritesAndSecondNodeReads(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, info.ID, got.ID)
 
-	_, err = second.Services().Backup.VerifyBackup(ctx, info.ID)
+	verified, err := second.Services().Backup.VerifyBackup(ctx, info.ID)
 	require.NoError(t, err)
+	require.True(t, verified.Valid, "%v", verified.Errors)
 }
 
 // TestBackupDestination_ConflictWithWithBackupSink pins that a composer's

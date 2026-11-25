@@ -316,6 +316,8 @@ func TestBackupDestination_GCS_NodeWritesAndSecondNodeReads(t *testing.T) {
 		t.Fatalf("CreateBackup over a gcs backup.destination: %v", err)
 	}
 	require.NoError(t, first.Close())
+	// A standalone node's backup holds no shard; the raft round trip proves a payload.
+	require.Zero(t, info.ShardCount)
 	require.NotEmpty(t, stub.names(), "the gcs bucket holds no objects after the backup")
 
 	cfg2 := newTenantIsolationConfig(t)
@@ -336,8 +338,15 @@ func TestBackupDestination_GCS_NodeWritesAndSecondNodeReads(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, info.ID, got.ID)
 
-	_, err = second.Services().Backup.VerifyBackup(ctx, info.ID)
+	verified, err := second.Services().Backup.VerifyBackup(ctx, info.ID)
 	require.NoError(t, err)
+	require.True(t, verified.Valid, "%v", verified.Errors)
+}
+
+func TestBackupDestination_GCS_RaftNodeRoundTrip(t *testing.T) {
+	stub, srv := newGCSStub(t, "qrdb-backups")
+	t.Setenv("STORAGE_EMULATOR_HOST", srv.URL)
+	testRaftBackupDestinationRoundTrip(t, gcsDestination, stub.names)
 }
 
 func TestBackupDestination_GCS_PlaintextDeleteRemovesEveryObject(t *testing.T) {

@@ -271,6 +271,8 @@ func TestBackupDestination_Azure_NodeWritesAndSecondNodeReads(t *testing.T) {
 		t.Fatalf("CreateBackup over an azure backup.destination: %v", err)
 	}
 	require.NoError(t, first.Close())
+	// A standalone node's backup holds no shard; the raft round trip proves a payload.
+	require.Zero(t, info.ShardCount)
 	require.NotEmpty(t, stub.names(), "the azure container holds no objects after the backup")
 
 	cfg2 := newTenantIsolationConfig(t)
@@ -291,8 +293,18 @@ func TestBackupDestination_Azure_NodeWritesAndSecondNodeReads(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, info.ID, got.ID)
 
-	_, err = second.Services().Backup.VerifyBackup(ctx, info.ID)
+	verified, err := second.Services().Backup.VerifyBackup(ctx, info.ID)
 	require.NoError(t, err)
+	require.True(t, verified.Valid, "%v", verified.Errors)
+}
+
+func TestBackupDestination_Azure_RaftNodeRoundTrip(t *testing.T) {
+	stub, srv := newAzureBlobStub(t, "devstoreaccount1", "qrdb-backups")
+	endpoint := srv.URL + "/devstoreaccount1"
+	keyFile := azureAccountKeyFile(t)
+	testRaftBackupDestinationRoundTrip(t,
+		func() *qrdbconfig.ObjstoreConfig { return azureDestination(endpoint, keyFile) },
+		stub.names)
 }
 
 func TestBackupDestination_Azure_PlaintextDeleteRemovesEveryObject(t *testing.T) {
