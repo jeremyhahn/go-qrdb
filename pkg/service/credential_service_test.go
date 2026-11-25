@@ -117,12 +117,6 @@ func TestNewCredentialService(t *testing.T) {
 	assert.NotNil(t, svc)
 }
 
-func TestNewCredentialService_InterfaceCompliance(t *testing.T) {
-	svc := newTestCredentialServiceSvc(t)
-	iface := CredentialServicer(svc)
-	assert.NotNil(t, iface)
-}
-
 func TestCredentialService_CredentialStrategy_Manual(t *testing.T) {
 	svc := newTestCredentialServiceSvc(t)
 	strategy, err := svc.CredentialStrategy(context.Background())

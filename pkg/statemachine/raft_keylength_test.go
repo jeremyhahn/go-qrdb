@@ -26,11 +26,13 @@ package statemachine_test
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
+	"github.com/stretchr/testify/assert"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/raftharness"
@@ -72,20 +74,20 @@ func TestRaft_MaxLengthKeyAppliesAndSurvivesRestart(t *testing.T) {
 
 	propose := func(cmd []byte) error {
 		t.Helper()
-		var lastErr error
-		deadline := time.Now().Add(30 * time.Second)
-		for attempt := 0; time.Now().Before(deadline); attempt++ {
+		var lastErr lastError
+		attempt := 0
+		// The quiet reporter leaves the verdict to the caller, which reports
+		// the last error in its own words.
+		assert.EventuallyWithT(quietReporter{}, func(collect *assert.CollectT) {
 			h := c.Hosts[attempt%len(c.Hosts)]
+			attempt++
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			_, err := h.SyncPropose(ctx, shardID, cmd)
 			cancel()
-			if err == nil {
-				return nil
-			}
-			lastErr = err
-			time.Sleep(200 * time.Millisecond)
-		}
-		return lastErr
+			lastErr.set(err)
+			assert.NoError(collect, err)
+		}, 30*time.Second, 200*time.Millisecond)
+		return lastErr.get()
 	}
 	health := func(label string) {
 		t.Helper()
@@ -140,4 +142,30 @@ func TestRaft_MaxLengthKeyAppliesAndSurvivesRestart(t *testing.T) {
 	if gb, _ := got.([]byte); string(gb) != "v" {
 		t.Fatalf("restarted replica lost the max-length key: got %q", gb)
 	}
+}
+
+// quietReporter discards a timed-out poll's report so a retry loop that
+// returns its last error leaves the verdict, and its wording, to the caller.
+type quietReporter struct{}
+
+func (quietReporter) Errorf(string, ...interface{}) {}
+
+// lastError holds a poll's most recent attempt error. A timed-out poll
+// returns while its last attempt may still be running, so the read after it
+// and that attempt's write are guarded.
+type lastError struct {
+	mu  sync.Mutex
+	err error
+}
+
+func (l *lastError) set(err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.err = err
+}
+
+func (l *lastError) get() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.err
 }

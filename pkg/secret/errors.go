@@ -46,11 +46,6 @@ var errNullReference = errors.New("null is not a secret reference")
 // success but returns no SecretValue, which the SecretResolver contract forbids.
 var errNilResolvedValue = errors.New("resolver reported success with no value")
 
-// ErrNilSystemCredentialService is returned by a tenant-scoped
-// CredentialRetrieveFunc when a system-scope request arrives but no system
-// CredentialService was supplied to NewTenantScopedCredentialRetrieve.
-var ErrNilSystemCredentialService = errors.New("secret: nil system credential service")
-
 // InvalidSecretURIError is returned when a raw secret reference is syntactically
 // invalid — for example when the name portion after stripping the scheme prefix
 // is empty.

@@ -1778,11 +1778,160 @@ func credentialServiceOptions(infra Infra) []service.CredentialServiceOption {
 	return []service.CredentialServiceOption{service.WithCredentialTenantBarriers(infra.BarrierRegistry)}
 }
 
+// credentialStoreOnDataPlane reports whether the data plane infra describes
+// can hold the credential records: it must keep them encrypted at rest and
+// across a restart. Only a caller that names a persistent engine (pebble,
+// file or raft) and passes an enabled at-rest Encryptor (one bound to a
+// barrier) for those engines to write through proves both. An objstore backend writes the bytes it is given to its bucket
+// unencrypted, a memory backend keeps nothing across a restart, and a caller
+// that names no backend or passes no Encryptor (the desktop embedded binding
+// opens plaintext Pebble or file storage and an unencrypted Raft node) proves
+// neither, so binding any of them would lose a credential's confidentiality
+// or the credential itself (legacy migration deletes the barrier originals
+// once copied).
+func credentialStoreOnDataPlane(infra Infra) bool {
+	if !infra.Encryptor.Enabled() {
+		return false
+	}
+	switch infra.Backend {
+	case database.BackendPebble, database.BackendFile, database.BackendRaft:
+		return true
+	default:
+		return false
+	}
+}
+
+// sealGatedStore is the credential store bound on a data plane that
+// encrypts at rest: its records live on the node's KV, but every access
+// keeps the system seal barrier's own sealed-state check, exactly as
+// StorageBarrier's Get, Put and List refuse a sealed barrier with
+// seal.ErrSealed. Sealing neither closes the data plane nor makes an
+// ordinary KV read fail (a Pebble read ignores its SealWatch), so without
+// this gate a sealed node would still return a credential's current and
+// retained values through the credential verbs.
+type sealGatedStore struct {
+	credentials.Store
+	barrier *seal.StorageBarrier
+}
+
+// open reports seal.ErrSealed while the system barrier is sealed.
+func (s sealGatedStore) open() error {
+	if s.barrier.IsSealed() {
+		return seal.ErrSealed
+	}
+	return nil
+}
+
+func (s sealGatedStore) Get(ctx context.Context, key string) ([]byte, error) {
+	if err := s.open(); err != nil {
+		return nil, err
+	}
+	b, err := s.Store.Get(ctx, key)
+	// A seal that lands while the read is in flight withholds the bytes:
+	// the gate holds through the read, not only at its admission.
+	if sealErr := s.open(); sealErr != nil {
+		clear(b)
+		return nil, sealErr
+	}
+	return b, err
+}
+
+func (s sealGatedStore) Put(ctx context.Context, key string, value []byte) error {
+	if err := s.open(); err != nil {
+		return err
+	}
+	return s.Store.Put(ctx, key, value)
+}
+
+func (s sealGatedStore) Delete(ctx context.Context, key string) error {
+	if err := s.open(); err != nil {
+		return err
+	}
+	return s.Store.Delete(ctx, key)
+}
+
+func (s sealGatedStore) List(ctx context.Context, prefix string) ([]string, error) {
+	if err := s.open(); err != nil {
+		return nil, err
+	}
+	keys, err := s.Store.List(ctx, prefix)
+	if sealErr := s.open(); sealErr != nil {
+		return nil, sealErr
+	}
+	return keys, err
+}
+
+func (s sealGatedStore) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	if err := s.open(); err != nil {
+		return false, err
+	}
+	return s.Store.PutIfAbsent(ctx, key, value)
+}
+
+func (s sealGatedStore) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	if err := s.open(); err != nil {
+		return false, err
+	}
+	return s.Store.CompareAndSwap(ctx, key, expected, next)
+}
+
+func (s sealGatedStore) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	if err := s.open(); err != nil {
+		return false, err
+	}
+	return s.Store.PutAllIfAllUnchanged(ctx, guards, writes)
+}
+
 // buildSealServices constructs the security services that depend on the
 // seal barrier: BarrierService, CredentialService, CeremonyService,
 // TenantService, and CertProvider.
 func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Logger, authStore kvstore.KVStore) error {
 	if infra.CredentialCoreSvc != nil {
+		// One credential store per cluster (docs/credentials/architecture.md,
+		// "Storage"): the barrier strategy's records live on the system
+		// shard's replicated KV, and its conditional writes are Raft
+		// transactions, so a policy, claim or version written on one node is
+		// the same record on every node.
+		//
+		// The records are written to the data plane as they are, so the
+		// data plane must encrypt at rest and survive a restart. A
+		// standalone objstore backend does not encrypt, a memory backend
+		// does not persist, and a caller that names no backend or passes no
+		// Encryptor proves neither (credentialStoreOnDataPlane), so on any
+		// of them the system seal barrier, which
+		// encrypts every record it stores on its own durable store, is
+		// bound as the credential store instead. On a data plane that does
+		// encrypt at rest, the KV store is gated on the system barrier
+		// (sealGatedStore), so a sealed node refuses every credential read.
+		//
+		// The manual strategy keeps its credentials in protected memory
+		// and writes nothing to the data plane, so it binds no store and
+		// starts on any backend.
+		if infra.CredentialCoreSvc.Strategy() == credentials.StrategyBarrier {
+			var credStore credentials.Store = kvSealBackend{KVStore: newKVStoreAdapter(n.KV, n.Index), tx: n.Transaction}
+			switch {
+			case !credentialStoreOnDataPlane(infra):
+				if infra.SealBarrier == nil {
+					return &NilSealBarrierError{}
+				}
+				if err := infra.CredentialCoreSvc.BindStore(ctx, infra.SealBarrier); err != nil {
+					return err
+				}
+			case infra.SealBarrier != nil:
+				// An earlier build of this node may have fallen back to the
+				// seal barrier: its credentials, rotation policies and
+				// history move onto the data plane before the switch, even
+				// when the core's node-local migration already ran.
+				credStore = sealGatedStore{Store: credStore, barrier: infra.SealBarrier}
+				if err := infra.CredentialCoreSvc.BindStoreFrom(ctx, credStore, infra.SealBarrier); err != nil {
+					return err
+				}
+			default:
+				if err := infra.CredentialCoreSvc.BindStore(ctx, credStore); err != nil {
+					return err
+				}
+			}
+		}
 		n.Credential = service.NewCredentialService(infra.CredentialCoreSvc, credentialServiceOptions(infra)...)
 
 		ceremonyCoreSvc, err := ceremonyService(infra, log)

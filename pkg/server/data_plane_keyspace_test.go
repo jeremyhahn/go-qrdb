@@ -22,6 +22,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
+	"github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
@@ -94,7 +95,10 @@ func TestBuildDataPlaneServices_ImportSessionConfigWired(t *testing.T) {
 // sweeper's own poll interval -- deletes the staged chunk, and the session
 // then reads back as gone (go-qrdb#576's also-fix list).
 func TestBuildDataPlaneServices_ImportSession_LeaseExpiryReclaims(t *testing.T) {
-	lr := lease.NewLessor()
+	// The Lessor runs on a fake clock, so the TTL expires when the test
+	// advances it rather than after a wall-clock wait.
+	fake := clocktest.New()
+	lr := lease.NewLessor(lease.WithClock(fake))
 	eng, err := engine.NewMVCCEngine(memory.NewStorage(), engine.WithMVCCLessor(lr))
 	if err != nil {
 		t.Fatalf("NewMVCCEngine: %v", err)
@@ -116,10 +120,10 @@ func TestBuildDataPlaneServices_ImportSession_LeaseExpiryReclaims(t *testing.T) 
 		t.Fatalf("ImportAppend: %v", err)
 	}
 
-	// Wait out the 1-second TTL -- no KeepAlive is sent, exactly as an
+	// Advance past the 1-second TTL -- no KeepAlive is sent, exactly as an
 	// abandoned session (the caller crashed or never called
 	// Commit/Abort/Append again) never renews one.
-	time.Sleep(1100 * time.Millisecond)
+	fake.Advance(1100 * time.Millisecond)
 
 	expired := lr.ExpiredLeaseIDs()
 	if len(expired) != 1 {

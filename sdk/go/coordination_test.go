@@ -19,6 +19,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -1009,47 +1010,52 @@ func TestLease_LookupOutageWithoutRenewalStillClosesDone(t *testing.T) {
 // its caller as the stale news it is.
 
 // blockedRenewal starts a renewal whose reply is held, and returns the lease,
-// the channel that releases the reply, and the channel carrying the renewal's
+// the function that releases the reply, and the channel carrying the renewal's
 // outcome. The lease has a 4s TTL — a 1s poll interval and a confirmed lifetime
-// ending at roughly t0+4s — and every liveness lookup reads as uncertain, so
+// ending at exactly t0+4s — and every liveness lookup reads as uncertain, so
 // the deadline, not a lookup, is what decides. The renewal goes out at t0+2s,
 // halfway through the lifetime, and is still in flight when this returns.
 //
-// The renewal is deliberately sent at the halfway mark rather than close to the
-// deadline. It has to be late enough that crediting the SEND rather than the
-// acknowledgement would visibly overshoot the deadline — that is the mistake
-// these tests exist to catch — while leaving a couple of seconds for a loaded
-// machine to schedule the goroutine. Callers wait on Done rather than sleeping
-// toward it, so this is the only wall-clock margin in play.
-func blockedRenewal(t *testing.T, keepAliveErr error) (Lease, *fakeLease, chan struct{}, <-chan error) {
+// It must be called inside a synctest bubble: the lease is all fakes, so the
+// fake clock positions the renewal at exactly the halfway mark and every
+// deadline the callers assert is an exact instant rather than a wall-clock
+// range. The renewal is sent at the halfway mark rather than close to the
+// deadline so that crediting the SEND rather than the acknowledgement would
+// visibly overshoot the deadline — that is the mistake these tests exist to
+// catch. The cleanup it registers releases the held reply and the lease, so
+// every goroutine the lease started ends before the bubble does.
+func blockedRenewal(t *testing.T, keepAliveErr error) (Lease, *fakeLease, func(), <-chan error) {
 	t.Helper()
-	release := make(chan struct{})
+	block := make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(block) }) }
 	lease := &fakeLease{
 		grantedID:      12,
 		ttlRemaining:   0, // every lookup uncertain
-		keepAliveBlock: release,
+		keepAliveBlock: block,
 		keepAliveEr:    keepAliveErr,
 	}
 	start := time.Now()
 	l := acquireLease(t, lease, 4*time.Second)
+	t.Cleanup(func() {
+		release()
+		_ = l.Release(context.Background())
+	})
 
+	// Fake-clock advance to the halfway mark: the bubble's clock moves only
+	// once every goroutine in it is blocked, so this costs no real time.
 	time.Sleep(2 * time.Second)
 	outcome := make(chan error, 1)
 	go func() { outcome <- l.Renew(context.Background()) }()
 
 	// Let the keepalive reach the fake and block there, so what follows really
 	// does exercise the in-flight window rather than racing past it.
-	waitUntil := time.Now().Add(time.Second)
-	for lease.keepAlives() == 0 {
-		if time.Now().After(waitUntil) {
-			t.Fatal("the keepalive never reached the transport: the in-flight window was never entered")
-		}
-		time.Sleep(5 * time.Millisecond)
+	synctest.Wait()
+	if n := lease.keepAlives(); n != 1 {
+		t.Fatalf("keepalives=%d, want 1: the in-flight window was never entered", n)
 	}
-	if elapsed := time.Since(start); elapsed > 3*time.Second {
-		t.Fatalf("the renewal reached the transport only after %v of a 4s lifetime, "+
-			"leaving no room to reason about the deadline: this machine is too loaded "+
-			"for these timings rather than the contract being broken", elapsed)
+	if elapsed := time.Since(start); elapsed != 2*time.Second {
+		t.Fatalf("the renewal reached the transport at %v, want exactly 2s into the 4s lifetime", elapsed)
 	}
 	select {
 	case err := <-outcome:
@@ -1059,23 +1065,42 @@ func blockedRenewal(t *testing.T, keepAliveErr error) (Lease, *fakeLease, chan s
 	return l, lease, release, outcome
 }
 
-func TestLease_RenewalAcknowledgedBeforeTheDeadlineKeepsTheLease(t *testing.T) {
-	// The reply is released at once, so the ack lands around t0+2s — halfway
-	// through the confirmed lifetime — and extends the deadline.
-	l, _, release, outcome := blockedRenewal(t, nil)
-	close(release)
-
+// awaitDone waits on Done under a fake-time guard and returns when it closed,
+// measured from start.
+func awaitDone(t *testing.T, l Lease, start time.Time, guard time.Duration, msg string) time.Duration {
+	t.Helper()
 	select {
-	case err := <-outcome:
-		if err != nil {
-			t.Fatalf("an acknowledgement inside the lifetime must renew: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("Renew never returned")
+	case <-l.Done():
+	case <-time.After(guard):
+		t.Fatal(msg)
 	}
+	return time.Since(start)
+}
 
-	// The extension runs to roughly t0+6s, well past the original t0+4s.
-	assertNotClosed(t, l.Done(), time.Second)
+func TestLease_RenewalAcknowledgedBeforeTheDeadlineKeepsTheLease(t *testing.T) {
+	// The reply is released at once, so the ack lands at t0+2s — halfway
+	// through the confirmed lifetime — and extends the deadline.
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		l, _, release, outcome := blockedRenewal(t, nil)
+		release()
+
+		select {
+		case err := <-outcome:
+			if err != nil {
+				t.Fatalf("an acknowledgement inside the lifetime must renew: %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("Renew never returned")
+		}
+
+		// The extension runs to exactly t0+6s (the 2s send plus the 4s TTL),
+		// past the original t0+4s.
+		elapsed := awaitDone(t, l, start, 10*time.Second, "the renewed lease never reached its extended deadline")
+		if elapsed != 6*time.Second {
+			t.Fatalf("ownership ended after %v, want exactly 6s: the acknowledged renewal must extend the deadline to send+TTL", elapsed)
+		}
+	})
 }
 
 func TestLease_RenewalAcknowledgedAfterTheDeadlineReportsTheLeaseLost(t *testing.T) {
@@ -1083,35 +1108,37 @@ func TestLease_RenewalAcknowledgedAfterTheDeadlineReportsTheLeaseLost(t *testing
 	// reply is held until ownership has demonstrably ended, so the ack that
 	// follows is stale; saying "renewed" to it would send a holder that has
 	// already fenced back to work.
-	l, _, release, outcome := blockedRenewal(t, nil)
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		l, _, release, outcome := blockedRenewal(t, nil)
 
-	select {
-	case <-l.Done():
-	case <-time.After(8 * time.Second):
-		t.Fatal("an unacknowledged renewal must not hold ownership past the deadline")
-	}
-
-	close(release)
-	select {
-	case err := <-outcome:
-		var lost *LeaseLostError
-		if !errors.As(err, &lost) {
-			t.Fatalf("a late acknowledgement must report the lease lost, got %v", err)
+		elapsed := awaitDone(t, l, start, 8*time.Second, "an unacknowledged renewal must not hold ownership past the deadline")
+		if elapsed != 4*time.Second {
+			t.Fatalf("ownership ended after %v, want exactly 4s", elapsed)
 		}
-		if lost.Key != "k" {
-			t.Fatalf("LeaseLostError names %q, want k", lost.Key)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("Renew never returned")
-	}
 
-	// Whoever fences on Done must be looking at the same answer this caller
-	// just got, whichever of the two noticed first.
-	select {
-	case <-l.Done():
-	default:
-		t.Fatal("Renew reported the lease lost while Done was still open")
-	}
+		release()
+		select {
+		case err := <-outcome:
+			var lost *LeaseLostError
+			if !errors.As(err, &lost) {
+				t.Fatalf("a late acknowledgement must report the lease lost, got %v", err)
+			}
+			if lost.Key != "k" {
+				t.Fatalf("LeaseLostError names %q, want k", lost.Key)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("Renew never returned")
+		}
+
+		// Whoever fences on Done must be looking at the same answer this caller
+		// just got, whichever of the two noticed first.
+		select {
+		case <-l.Done():
+		default:
+			t.Fatal("Renew reported the lease lost while Done was still open")
+		}
+	})
 }
 
 func TestLease_UnacknowledgedRenewalEndsOwnershipAtTheDeadline(t *testing.T) {
@@ -1120,65 +1147,62 @@ func TestLease_UnacknowledgedRenewalEndsOwnershipAtTheDeadline(t *testing.T) {
 	// the deadline even by a poll interval. If it could, the server would
 	// expire this lease and hand the key to a contender while this holder still
 	// believed it owned it.
-	start := time.Now()
-	l, lease, release, _ := blockedRenewal(t, nil)
-	defer close(release)
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		l, lease, _, _ := blockedRenewal(t, nil)
 
-	select {
-	case <-l.Done():
-	case <-time.After(8 * time.Second):
-		t.Fatal("a stalled renewal held ownership open past the deadline")
-	}
-
-	elapsed := time.Since(start)
-	// The confirmed lifetime ends at t0+4s. Earlier would be premature; crediting
-	// the unacknowledged send instead would reach to t0+6s.
-	if elapsed < 3800*time.Millisecond {
-		t.Fatalf("ownership ended after %v, before the confirmed lifetime was spent", elapsed)
-	}
-	if elapsed > 4800*time.Millisecond {
-		t.Fatalf("ownership ended after %v, want the deadline at ~4s: an unacknowledged renewal deferred it", elapsed)
-	}
-	// The renewal really was outstanding across the deadline.
-	if n := lease.keepAlives(); n != 1 {
-		t.Fatalf("keepalives=%d, want exactly 1 outstanding across the deadline", n)
-	}
+		elapsed := awaitDone(t, l, start, 8*time.Second, "a stalled renewal held ownership open past the deadline")
+		// The confirmed lifetime ends at exactly t0+4s. Earlier would be
+		// premature; crediting the unacknowledged send instead would reach to
+		// t0+6s.
+		if elapsed != 4*time.Second {
+			t.Fatalf("ownership ended after %v, want exactly 4s: the deadline moved", elapsed)
+		}
+		// The renewal really was outstanding across the deadline.
+		if n := lease.keepAlives(); n != 1 {
+			t.Fatalf("keepalives=%d, want exactly 1 outstanding across the deadline", n)
+		}
+	})
 }
 
 func TestLease_FailedRenewalInFlightStillClosesDoneOnceItResolves(t *testing.T) {
 	// A renewal that resolves as a failure proves nothing, so the deadline
 	// governs — and under the hard deadline it has already governed by the time
 	// the failure lands.
-	l, _, release, outcome := blockedRenewal(t, errors.New("keepalive refused"))
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		l, _, release, outcome := blockedRenewal(t, errors.New("keepalive refused"))
 
-	close(release)
-	select {
-	case err := <-outcome:
-		if err == nil {
-			t.Fatal("Renew must report the failure")
+		release()
+		select {
+		case err := <-outcome:
+			if err == nil {
+				t.Fatal("Renew must report the failure")
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("Renew never returned")
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("Renew never returned")
-	}
 
-	select {
-	case <-l.Done():
-	case <-time.After(8 * time.Second):
-		t.Fatal("a renewal that resolved without extending the lease must not hold Done open")
-	}
+		elapsed := awaitDone(t, l, start, 8*time.Second, "a renewal that resolved without extending the lease must not hold Done open")
+		if elapsed != 4*time.Second {
+			t.Fatalf("ownership ended after %v, want exactly 4s: a failed renewal must not move the deadline", elapsed)
+		}
+	})
 }
 
 func TestLease_HungRenewalDoesNotDelayTheDeadline(t *testing.T) {
 	// A renewal on a context with no deadline that never resolves at all. It
-	// has no bearing on ownership: nothing unacknowledged does.
-	l, _, release, _ := blockedRenewal(t, nil)
-	defer close(release) // let the goroutine go at test end
+	// has no bearing on ownership: nothing unacknowledged does. The cleanup
+	// blockedRenewal registered lets the goroutine go at test end.
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		l, _, _, _ := blockedRenewal(t, nil)
 
-	select {
-	case <-l.Done():
-	case <-time.After(8 * time.Second):
-		t.Fatal("a renewal that never resolves must not delay the deadline")
-	}
+		elapsed := awaitDone(t, l, start, 8*time.Second, "a renewal that never resolves must not delay the deadline")
+		if elapsed != 4*time.Second {
+			t.Fatalf("ownership ended after %v, want exactly 4s", elapsed)
+		}
+	})
 }
 
 func TestLease_OwnershipEndsAtTheDeadlineNotTheNextPoll(t *testing.T) {
@@ -1186,29 +1210,24 @@ func TestLease_OwnershipEndsAtTheDeadlineNotTheNextPoll(t *testing.T) {
 	// polls every 2s — 2s, 4s, 6s, 8s — while the confirmed lifetime ends at
 	// 7s, so a monitor that only ever decides on a poll boundary would hold
 	// ownership a whole second past the point the server may have handed the
-	// key to somebody else. Lookups here answer instantly, so nothing but the
-	// cadence is in play.
-	lease := &fakeLease{grantedID: 14, ttlRemaining: 0} // every lookup uncertain
+	// key to somebody else. Lookups here answer instantly and the bubble's
+	// fake clock makes the deadline exact, so nothing but the cadence is in
+	// play.
+	synctest.Test(t, func(t *testing.T) {
+		lease := &fakeLease{grantedID: 14, ttlRemaining: 0} // every lookup uncertain
 
-	start := time.Now()
-	l := acquireLease(t, lease, 7*time.Second)
+		start := time.Now()
+		l := acquireLease(t, lease, 7*time.Second)
+		t.Cleanup(func() { _ = l.Release(context.Background()) })
 
-	select {
-	case <-l.Done():
-	case <-time.After(15 * time.Second):
-		t.Fatal("ownership outlasted the confirmed lifetime")
-	}
-
-	elapsed := time.Since(start)
-	if elapsed < 6800*time.Millisecond {
-		t.Fatalf("ownership ended after %v, before the confirmed lifetime was spent", elapsed)
-	}
-	if elapsed > 7600*time.Millisecond {
-		t.Fatalf("ownership ended after %v, want ~7s: it waited for the 8s poll", elapsed)
-	}
-	if n := lease.lookups(); n == 0 {
-		t.Fatal("no lookup was ever made: the poll loop never ran")
-	}
+		elapsed := awaitDone(t, l, start, 15*time.Second, "ownership outlasted the confirmed lifetime")
+		if elapsed != 7*time.Second {
+			t.Fatalf("ownership ended after %v, want exactly 7s, not the 8s poll", elapsed)
+		}
+		if n := lease.lookups(); n == 0 {
+			t.Fatal("no lookup was ever made: the poll loop never ran")
+		}
+	})
 }
 
 func TestLease_BlockedLookupCannotOutlastTheDeadline(t *testing.T) {

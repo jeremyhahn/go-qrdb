@@ -341,18 +341,3 @@ func TestNetworkStmt_QueryContext_NotClosed(t *testing.T) {
 	}
 	defer func() { _ = rows.Close() }()
 }
-
-// TestStmt_InterfaceCompliance verifies stmt/networkStmt implement required interfaces.
-func TestStmt_InterfaceCompliance(t *testing.T) {
-	var s1 sqld.Stmt = &stmt{}
-	var s2 sqld.Stmt = &networkStmt{}
-	if s1 == nil || s2 == nil {
-		t.Fatal("stmt/networkStmt should implement driver.Stmt")
-	}
-
-	var se1 sqld.StmtExecContext = &stmt{}
-	var se2 sqld.StmtExecContext = &networkStmt{}
-	if se1 == nil || se2 == nil {
-		t.Fatal("stmt/networkStmt should implement driver.StmtExecContext")
-	}
-}

@@ -23,7 +23,9 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // credentialTestError is a typed error used to verify error propagation
@@ -39,6 +41,10 @@ func (e *credentialTestError) Error() string { return e.msg }
 // services are nil; their handlers are not exercised by these tests.
 func newCredentialTestServer(t *testing.T, svc *mockCredentialService) *Server {
 	t.Helper()
+	return NewServer(nil, nil, "localhost:0", WithCredentialService(svc))
+}
+
+func newErrCredentialTestServer(svc *errCredentialService) *Server {
 	return NewServer(nil, nil, "localhost:0", WithCredentialService(svc))
 }
 
@@ -368,6 +374,186 @@ func TestHandleCredentialRotate_ServiceError(t *testing.T) {
 	}
 }
 
+func TestHandleCredentialSetRotationPolicy(t *testing.T) {
+	srv := newCredentialTestServer(t, &mockCredentialService{})
+	payload, _ := proto.Marshal(&pb.CredentialSetRotationPolicyRequest{Name: "k", Enabled: true, Interval: "720h", RetainVersions: 2})
+	if _, err := srv.handleCredentialSetRotationPolicy(context.Background(), payload); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+
+	payload, _ = proto.Marshal(&pb.CredentialSetRotationPolicyRequest{Name: "k", Enabled: true, Interval: "monthly", RetainVersions: 1})
+	_, err := srv.handleCredentialSetRotationPolicy(context.Background(), payload)
+	var invalid *credentials.InvalidRotationPolicyError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("expected *credentials.InvalidRotationPolicyError, got %v", err)
+	}
+
+	payload, _ = proto.Marshal(&pb.CredentialSetRotationPolicyRequest{Name: "missing"})
+	if _, err := srv.handleCredentialSetRotationPolicy(context.Background(), payload); !errors.Is(err, credentials.ErrCredentialNotFound) {
+		t.Fatalf("expected ErrCredentialNotFound, got %v", err)
+	}
+
+	if _, err := srv.handleCredentialSetRotationPolicy(context.Background(), []byte{0xff}); err == nil {
+		t.Fatal("expected unmarshal error")
+	}
+	if _, err := (&Server{}).handleCredentialSetRotationPolicy(context.Background(), nil); err == nil {
+		t.Fatal("expected not-configured error")
+	}
+}
+
+func TestHandleCredentialRotationPolicy(t *testing.T) {
+	srv := newCredentialTestServer(t, &mockCredentialService{})
+	payload, _ := proto.Marshal(&pb.CredentialRotationPolicyRequest{Name: "k"})
+	resp, err := srv.handleCredentialRotationPolicy(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	var got pb.CredentialRotationPolicyResponse
+	if err := proto.Unmarshal(resp, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.GetName() != "k" || !got.GetEnabled() || got.GetInterval() != "1h0m0s" || got.GetRetainVersions() != 2 {
+		t.Fatalf("unexpected response %+v", &got)
+	}
+
+	payload, _ = proto.Marshal(&pb.CredentialRotationPolicyRequest{Name: "missing"})
+	if _, err := srv.handleCredentialRotationPolicy(context.Background(), payload); !errors.Is(err, credentials.ErrCredentialNotFound) {
+		t.Fatalf("expected ErrCredentialNotFound, got %v", err)
+	}
+	if _, err := srv.handleCredentialRotationPolicy(context.Background(), []byte{0xff}); err == nil {
+		t.Fatal("expected unmarshal error")
+	}
+	if _, err := (&Server{}).handleCredentialRotationPolicy(context.Background(), nil); err == nil {
+		t.Fatal("expected not-configured error")
+	}
+}
+
+func TestHandleCredentialMigrationConflicts(t *testing.T) {
+	srv := newCredentialTestServer(t, &mockCredentialService{})
+	resp, err := srv.handleCredentialMigrationConflicts(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	var got pb.CredentialMigrationConflictsResponse
+	if err := proto.Unmarshal(resp, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	c := got.GetConflicts()
+	if len(c) != 1 || c[0].GetName() != "db" || !c[0].GetValue() || c[0].GetVersions() || !c[0].GetPolicy() {
+		t.Fatalf("unexpected response %+v", &got)
+	}
+	if _, err := (&Server{}).handleCredentialMigrationConflicts(context.Background(), nil); err == nil {
+		t.Fatal("expected not-configured error")
+	}
+}
+
+func TestHandleCredentialResolveMigrationConflict(t *testing.T) {
+	srv := newCredentialTestServer(t, &mockCredentialService{})
+	payload, _ := proto.Marshal(&pb.CredentialResolveMigrationConflictRequest{Name: "db", Resolution: "import"})
+	if resp, err := srv.handleCredentialResolveMigrationConflict(context.Background(), payload); err != nil || resp != nil {
+		t.Fatalf("resolve: resp=%v err=%v", resp, err)
+	}
+
+	payload, _ = proto.Marshal(&pb.CredentialResolveMigrationConflictRequest{Name: "missing", Resolution: "discard"})
+	if _, err := srv.handleCredentialResolveMigrationConflict(context.Background(), payload); !errors.Is(err, credentials.ErrMigrationConflictNotFound) {
+		t.Fatalf("expected ErrMigrationConflictNotFound, got %v", err)
+	}
+	if _, err := srv.handleCredentialResolveMigrationConflict(context.Background(), []byte{0xff}); err == nil {
+		t.Fatal("expected unmarshal error")
+	}
+	if _, err := (&Server{}).handleCredentialResolveMigrationConflict(context.Background(), nil); err == nil {
+		t.Fatal("expected not-configured error")
+	}
+}
+
+// errCredentialService fails the rotation-policy and migration-conflict verbs
+// with err; with no err it refuses a resolution other than import or
+// discard, as credentials.CredentialService does.
+type errCredentialService struct {
+	mockCredentialService
+	err error
+}
+
+func (m *errCredentialService) CredentialSetRotationPolicy(context.Context, string, credentials.RotationPolicy) error {
+	return m.err
+}
+
+func (m *errCredentialService) CredentialRotationPolicy(context.Context, string) (*service.CredentialRotationPolicyStatus, error) {
+	return nil, m.err
+}
+
+func (m *errCredentialService) CredentialMigrationConflicts(context.Context) ([]credentials.CredentialMigrationConflictError, error) {
+	return nil, m.err
+}
+
+func (m *errCredentialService) CredentialResolveMigrationConflict(_ context.Context, _ string, how credentials.MigrationResolution) error {
+	if m.err == nil && how != credentials.MigrationImport && how != credentials.MigrationDiscard {
+		return credentials.ErrInvalidMigrationResolution
+	}
+	return m.err
+}
+
+// TestHandleCredentialRotationAndConflictVerbs_TypedErrorStatus pins the wire
+// status of every credential typed error the four verbs can carry, the same
+// class REST, gRPC, MCP and Unix report (docs/credentials/api.md, "Status
+// and error mapping"). The last three are raised only at boot or by the
+// scheduler and keep the default internal class.
+func TestHandleCredentialRotationAndConflictVerbs_TypedErrorStatus(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want uint16
+	}{
+		{"invalid rotation policy", &credentials.InvalidRotationPolicyError{Reason: "x"}, wire.StatusInvalidArgument},
+		{"invalid resolution", credentials.ErrInvalidMigrationResolution, wire.StatusInvalidArgument},
+		{"conflict not found", credentials.ErrMigrationConflictNotFound, wire.StatusNotFound},
+		{"credential not found", credentials.ErrCredentialNotFound, wire.StatusNotFound},
+		{"empty name", credentials.ErrEmptyCredentialName, wire.StatusInvalidArgument},
+		{"meta contended", credentials.ErrRotationMetaContended, wire.StatusAborted},
+		{"no value source", credentials.ErrNoRotationValueSource, wire.StatusError},
+		{"layout conflict", &credentials.LayoutConflictError{Names: []string{"a"}}, wire.StatusError},
+		{"migration conflict", &credentials.CredentialMigrationConflictError{Name: "a", Value: true}, wire.StatusError},
+	}
+	set, _ := proto.Marshal(&pb.CredentialSetRotationPolicyRequest{Name: "db"})
+	get, _ := proto.Marshal(&pb.CredentialRotationPolicyRequest{Name: "db"})
+	resolve, _ := proto.Marshal(&pb.CredentialResolveMigrationConflictRequest{Name: "db", Resolution: "import"})
+	ctx := context.Background()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newErrCredentialTestServer(&errCredentialService{err: tc.err})
+			verbs := map[string]func() error{
+				"set":     func() error { _, err := srv.handleCredentialSetRotationPolicy(ctx, set); return err },
+				"get":     func() error { _, err := srv.handleCredentialRotationPolicy(ctx, get); return err },
+				"list":    func() error { _, err := srv.handleCredentialMigrationConflicts(ctx, nil); return err },
+				"resolve": func() error { _, err := srv.handleCredentialResolveMigrationConflict(ctx, resolve); return err },
+			}
+			for verb, call := range verbs {
+				if got := statusOf(call()); got != tc.want {
+					t.Errorf("%s: status %d, want %d", verb, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// TestHandleCredentialResolveMigrationConflict_RefusesUnknownResolution pins
+// that a resolution other than import or discard, and an empty name, are
+// INVALID_ARGUMENT on QUIC.
+func TestHandleCredentialResolveMigrationConflict_RefusesUnknownResolution(t *testing.T) {
+	srv := newErrCredentialTestServer(&errCredentialService{})
+	payload, _ := proto.Marshal(&pb.CredentialResolveMigrationConflictRequest{Name: "db", Resolution: "merge"})
+	_, err := srv.handleCredentialResolveMigrationConflict(context.Background(), payload)
+	if got := statusOf(err); got != wire.StatusInvalidArgument {
+		t.Fatalf("unknown resolution: status %d (%v), want INVALID_ARGUMENT", got, err)
+	}
+	empty := newErrCredentialTestServer(&errCredentialService{err: credentials.ErrEmptyCredentialName})
+	payload, _ = proto.Marshal(&pb.CredentialResolveMigrationConflictRequest{Resolution: "import"})
+	_, err = empty.handleCredentialResolveMigrationConflict(context.Background(), payload)
+	if got := statusOf(err); got != wire.StatusInvalidArgument {
+		t.Fatalf("empty name: status %d (%v), want INVALID_ARGUMENT", got, err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // handleCredentialRetrieveVersion
 // ---------------------------------------------------------------------------
@@ -673,6 +859,10 @@ func TestBuildHandlers_RegistersCredentialHandlersWhenServiceProvided(t *testing
 		"credential.Delete",
 		"credential.List",
 		"credential.Rotate",
+		"credential.SetRotationPolicy",
+		"credential.RotationPolicy",
+		"credential.MigrationConflicts",
+		"credential.ResolveMigrationConflict",
 		"credential.RetrieveVersion",
 		"credential.ListVersions",
 		"credential.GCExpired",

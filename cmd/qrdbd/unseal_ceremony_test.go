@@ -37,6 +37,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/jeremyhahn/go-qrdb/internal/netport"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 )
@@ -462,31 +465,22 @@ func initializeCeremony(t *testing.T, bundle *TLSBundle, adminPort int, secret s
 
 	// The listener accepts before the handler is necessarily wired, so this
 	// retries until the endpoint answers rather than betting on one attempt.
-	deadline := time.Now().Add(readinessTimeout)
-	var lastErr error
-	for time.Now().Before(deadline) {
+	require.EventuallyWithTf(t, func(c *assert.CollectT) {
 		req, rerr := http.NewRequestWithContext(context.Background(),
 			http.MethodPost, url, bytes.NewReader(body))
-		if rerr != nil {
-			t.Fatalf("new request: %v", rerr)
+		if !assert.NoError(c, rerr, "new request") {
+			return
 		}
 		req.Header.Set("Content-Type", "application/json")
 
 		resp, derr := client.Do(req)
-		if derr != nil {
-			lastErr = derr
-			time.Sleep(signalRetryInterval)
-			continue
-		}
-		_ = resp.Body.Close()
-
-		if resp.StatusCode < 300 {
+		if !assert.NoError(c, derr, "ceremony initialize request") {
 			return
 		}
-		lastErr = fmt.Errorf("status %d", resp.StatusCode)
-		time.Sleep(signalRetryInterval)
-	}
-	t.Fatalf("ceremony initialize never succeeded within %v: %v", readinessTimeout, lastErr)
+		_ = resp.Body.Close()
+		assert.Less(c, resp.StatusCode, 300, "ceremony initialize status %d", resp.StatusCode)
+	}, readinessTimeout, signalRetryInterval,
+		"ceremony initialize never succeeded within %v", readinessTimeout)
 }
 
 // systemSOCSRPEM returns a PEM CSR for the system SO over a fresh P-256 key,

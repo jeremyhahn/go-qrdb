@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
+	"github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
@@ -88,7 +89,10 @@ func TestStartLocalLeaseExpiry_StopWaitsAndStaysStopped(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = stg.Close() })
-	lr := lease.NewLessor()
+	// The sweeper ticks on the Lessor's clock; a fake one lets the test move
+	// time past the lease's TTL without a wall-clock wait.
+	fake := clocktest.New()
+	lr := lease.NewLessor(lease.WithClock(fake))
 	eng, err := lifecycle.NewLocalEngine(database.BackendMemory, stg, pdb, nil, lr)
 	if err != nil {
 		t.Fatal(err)
@@ -107,6 +111,13 @@ func TestStartLocalLeaseExpiry_StopWaitsAndStaysStopped(t *testing.T) {
 	}
 
 	stop := lifecycle.StartLocalLeaseExpiry(ctx, lr, leaseSvc, nil)
+	// Stop only once the sweeper has armed its ticker, so stop ends a running
+	// sweeper rather than one that has not started yet.
+	armCtx, armCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer armCancel()
+	if err := fake.BlockUntil(armCtx, 1); err != nil {
+		t.Fatalf("the sweeper never armed its ticker: %v", err)
+	}
 	done := make(chan struct{})
 	go func() {
 		stop()
@@ -119,9 +130,13 @@ func TestStartLocalLeaseExpiry_StopWaitsAndStaysStopped(t *testing.T) {
 		t.Fatal("stop did not return")
 	}
 
-	// The lease is past its TTL two sweep intervals from now; a sweeper that
-	// outlived stop would have revoked it by then.
-	time.Sleep(2*lease.DefaultExpiryInterval + 500*time.Millisecond)
+	// A stopped sweeper has released its ticker, so no tick can reach it.
+	if n := fake.Waiters(); n != 0 {
+		t.Fatalf("after stop %d clock waiters remain armed, want 0", n)
+	}
+	// Move the clock past the lease's TTL and several sweep intervals: a
+	// sweeper that outlived stop would revoke it on one of those ticks.
+	fake.Advance(time.Second + 4*lease.DefaultExpiryInterval)
 	if _, err := kvSvc.Get(ctx, "held"); err != nil {
 		t.Fatalf("a stopped sweeper revoked the lease: %v", err)
 	}

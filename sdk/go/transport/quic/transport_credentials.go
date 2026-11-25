@@ -177,6 +177,119 @@ func (t *Transport) CredentialRotate(ctx context.Context, req *transport.Credent
 	}, nil
 }
 
+// CredentialSetRotationPolicy sets a credential's scheduled rotation policy.
+func (t *Transport) CredentialSetRotationPolicy(ctx context.Context, req *transport.CredentialSetRotationPolicyRequest) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	if req == nil {
+		return &transport.RequestError{Method: "CredentialSetRotationPolicy", Err: &nilCredentialRequestError{Method: "CredentialSetRotationPolicy"}}
+	}
+
+	if err := transport.CheckRetainVersions(req.RetainVersions); err != nil {
+		return &transport.RequestError{Method: "CredentialSetRotationPolicy", Err: err}
+	}
+	payload, err := proto.Marshal(&pb.CredentialSetRotationPolicyRequest{
+		Name:           req.Name,
+		Enabled:        req.Enabled,
+		Interval:       req.Interval,
+		RetainVersions: int32(req.RetainVersions), //nolint:gosec // range-checked above
+	})
+	if err != nil {
+		return &marshalError{Err: err}
+	}
+
+	if _, err := t.call(ctx, "credential.SetRotationPolicy", payload); err != nil {
+		return err
+	}
+	return nil
+}
+
+// CredentialRotationPolicy reads a credential's scheduled rotation policy.
+func (t *Transport) CredentialRotationPolicy(ctx context.Context, name string) (*transport.CredentialRotationPolicyResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	payload, err := proto.Marshal(&pb.CredentialRotationPolicyRequest{Name: name})
+	if err != nil {
+		return nil, &marshalError{Err: err}
+	}
+
+	respBytes, err := t.call(ctx, "credential.RotationPolicy", payload)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp pb.CredentialRotationPolicyResponse
+	if err := proto.Unmarshal(respBytes, &resp); err != nil {
+		return nil, &unmarshalError{Err: err}
+	}
+	return &transport.CredentialRotationPolicyResponse{
+		Name:           resp.GetName(),
+		Enabled:        resp.GetEnabled(),
+		Interval:       resp.GetInterval(),
+		RetainVersions: int(resp.GetRetainVersions()),
+		NextRotation:   resp.GetNextRotation(),
+	}, nil
+}
+
+// CredentialMigrationConflicts lists the credentials whose node-local copy
+// differs from the replicated record.
+func (t *Transport) CredentialMigrationConflicts(ctx context.Context) (*transport.CredentialMigrationConflictsResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	payload, err := proto.Marshal(&pb.CredentialMigrationConflictsRequest{})
+	if err != nil {
+		return nil, &marshalError{Err: err}
+	}
+
+	respBytes, err := t.call(ctx, "credential.MigrationConflicts", payload)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp pb.CredentialMigrationConflictsResponse
+	if err := proto.Unmarshal(respBytes, &resp); err != nil {
+		return nil, &unmarshalError{Err: err}
+	}
+	out := &transport.CredentialMigrationConflictsResponse{
+		Conflicts: make([]transport.CredentialMigrationConflict, 0, len(resp.GetConflicts())),
+	}
+	for _, c := range resp.GetConflicts() {
+		out.Conflicts = append(out.Conflicts, transport.CredentialMigrationConflict{
+			Name: c.GetName(), Value: c.GetValue(), Versions: c.GetVersions(), Policy: c.GetPolicy(),
+		})
+	}
+	return out, nil
+}
+
+// CredentialResolveMigrationConflict settles one migration conflict by
+// import or discard.
+func (t *Transport) CredentialResolveMigrationConflict(ctx context.Context, req *transport.CredentialResolveMigrationConflictRequest) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	if req == nil {
+		return &transport.RequestError{Method: "CredentialResolveMigrationConflict", Err: &nilCredentialRequestError{Method: "CredentialResolveMigrationConflict"}}
+	}
+
+	payload, err := proto.Marshal(&pb.CredentialResolveMigrationConflictRequest{
+		Name:       req.Name,
+		Resolution: req.Resolution,
+	})
+	if err != nil {
+		return &marshalError{Err: err}
+	}
+
+	if _, err := t.call(ctx, "credential.ResolveMigrationConflict", payload); err != nil {
+		return err
+	}
+	return nil
+}
+
 // CredentialListVersions returns the version history (current + grace
 // versions) for a credential via the credential.ListVersions handler.
 // Value bytes are intentionally never returned by this call.
