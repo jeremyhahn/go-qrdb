@@ -124,6 +124,7 @@ The cluster engine and database system for every project in the stack: embedded,
 - **maintenance** — the standing maintenance row: dependency updates and CI configuration, worked on `row/1708-maintenance` (owner ruling 1234); it never gates a release — [#1708](../../issues/1708) — in progress
 - **seal-store-transports** — seal store data and management verbs are embedded-only and every remote transport refuses them; seal and unseal stay on every transport; permissions on all six transports (owner ruling 1234) — [#1647](../../issues/1647), PR [#1687](../../pulls/1687), [docs/barrier-seal/](docs/barrier-seal/) — in progress
 - **credentials** — named credentials, versioned rotation; scheduled rotation policies, their transport and CLI verbs, whole-store moves; consumer go-quicbaas — [#1201](../../issues/1201), [#1185](../../issues/1185), [docs/credentials/](docs/credentials/) — in progress
+- **object-storage-credential-handle** — the object-storage credential crosses the seam as the go-enclave protected-memory credential handle; adopts go-objstore#16 — [#1143](../../issues/1143), [docs/storage-engines/](docs/storage-engines/) — in progress
 
 ## Next
 
@@ -132,7 +133,6 @@ The cluster engine and database system for every project in the stack: embedded,
 
 - **webtransport-upstream** — drop the patched in-tree webtransport-go copy once an upstream release on go-qrdb's quic-go carries its six fixes — [#1688](../../issues/1688), [#1244](../../issues/1244), [docs/api-server/](docs/api-server/) — open
 - **release-readiness** — release readiness for the public release — [#565](../../issues/565), [docs/release/](docs/release/) — open
-- **object-storage-credential-handle** — the object-storage credential crosses the seam as the go-enclave protected-memory credential handle; adopts go-objstore#16 — [#1143](../../issues/1143), [docs/storage-engines/](docs/storage-engines/) — open
 - **rolling-upgrades** — mixed-version rolling upgrades between adjacent releases: wire-version negotiation, typed refusal of version gaps, a cross-release compatibility matrix (N to N+1 both ways, mid-upgrade cluster) — [#1628](../../issues/1628), PR [#1638](../../pulls/1638), [docs/rolling-upgrades/](docs/rolling-upgrades/) — in review
 - **object-storage-provider** — object storage is configurable as a backend storage provider of go-qrdb's storage API, the `pkg/storage.Storage` seam; go-objstore supplies the backends (owner ruling 228(3)) — [docs/storage-engines/](docs/storage-engines/) — open
 - **object-storage-provider-seam** — the provider side of the object-storage seam: go-quicbaas configures the provider per go-objstore backend; go-qrdb designs no backend of its own (owner ruling 228(2), 228(3)) — [docs/storage-engines/](docs/storage-engines/) — open
