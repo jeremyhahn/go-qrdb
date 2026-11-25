@@ -21,7 +21,9 @@ import (
 // (OD-1 A: one Raft group per database, whatever the tenant's isolation).
 func raftGroupRegistry(t *testing.T, tenantID string, isolation tenant.IsolationType, dataRoot string, register bool) (*restServiceRegistry, *RaftBackendFactory, *DatabaseServiceRegistry) {
 	t.Helper()
-	host, _ := newSharedTestHost(t)
+	// A volume tenant's group log always runs on a dedicated WAL, which the
+	// host's multiplex log DB carries.
+	host, mux := newSharedTestHostWithMux(t)
 	reg := newVolumePooledRegistry(t)
 	if register {
 		root, _ := registerVolumeTenant(t, reg, tenantID)
@@ -36,7 +38,7 @@ func raftGroupRegistry(t *testing.T, tenantID string, isolation tenant.Isolation
 	src.add(tenantID, "app", 1100, dataRoot)
 	lookup := func(context.Context, string) (tenant.IsolationType, error) { return isolation, nil }
 	f := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg, src, volTestLogger(),
-		WithTenantIsolation(lookup))
+		WithMultiplexLogDB(mux), WithTenantIsolation(lookup))
 	t.Cleanup(func() { _ = f.CloseAll() })
 
 	info := &tenant.TenantInfo{ID: tenantID, IsolationType: isolation}
