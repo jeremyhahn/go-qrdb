@@ -1507,7 +1507,7 @@ Breaking rows land in one MINOR release, recorded in the CHANGELOG.
   possession). Errors classify through `pkg/api/errclass`.
 - SDK: `transport.DatabaseClient` carries the ten holder methods (unenrolment
   included); the request types
-  embed the system holder requests. `internal/holderconv.DatabaseHolders`
+  embed the system holder requests. `sdk/go/transport/internal/holderconv.DatabaseHolders`
   carries the protobuf calls once for gRPC, Unix and QUIC (QUIC frames the same
   messages through a `DatabaseHolderRPC` of its own). A client refuses a
   request naming no database with `DatabaseNameRequiredError`.
