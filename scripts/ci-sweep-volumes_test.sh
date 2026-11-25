@@ -107,6 +107,7 @@ go-qrdb-ci-cache-gobuild $old 1 0
 $hex $old 1 0
 go-quicbaas-ci-9-1_x $old 1 0
 qrdb-ci-555-1-soak_gocache $old 0 0
+qrdb-ci-556-1-soak-3_gocache $old 1 0
 EOF
 unset IT_PROJECT
 run
@@ -124,6 +125,7 @@ for keep in go-qrdb-ci-cache-gobuild "$hex" go-quicbaas-ci-9-1_x; do
   if ! removed "$keep"; then ok "(5) $keep never removed"; else bad "(5) $keep never removed"; fi
 done
 if ! removed qrdb-ci-555-1-soak_gocache; then ok "non-dangling volume kept"; else bad "non-dangling volume kept"; fi
+if removed qrdb-ci-556-1-soak-3_gocache; then ok "stale soak iteration volume removed"; else bad "stale soak iteration volume removed"; fi
 
 # SWEEP_MIN_AGE moves the age bound.
 SWEEP_MIN_AGE=5m run
@@ -144,6 +146,20 @@ if ! removed qrdb-ci-777-1-40_gocache && ! removed qrdb-ci-778-1-4_gocache; then
 else
   bad "(6) other runs' young volumes kept"
 fi
+
+# (6) the soak job's project names each iteration "$IT_PROJECT-<i>".
+cat > "$D/vols" <<EOF
+qrdb-ci-777-1-soak_gocache $young 1 0
+qrdb-ci-777-1-soak-2_gocache $young 1 0
+qrdb-ci-777-1-soakx_gocache $young 1 0
+EOF
+IT_PROJECT=qrdb-ci-777-1-soak run --own
+if removed qrdb-ci-777-1-soak_gocache && removed qrdb-ci-777-1-soak-2_gocache; then
+  ok "(6) own soak iteration volumes removed"
+else
+  bad "(6) own soak iteration volumes removed"
+fi
+if ! removed qrdb-ci-777-1-soakx_gocache; then ok "(6) a longer project name is not own"; else bad "(6) a longer project name is not own"; fi
 
 # A daemon that cannot be reached never fails the job.
 cat > "$D/bin/docker" <<'STUB'

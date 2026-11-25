@@ -3,7 +3,7 @@
 # behind on a self-hosted runner when a job's teardown never ran (runner
 # killed, SIGKILL) or failed:
 #
-#   qrdb-ci-<run>-<attempt>-<shard|soak>_<vol>   integration compose projects
+#   qrdb-ci-<run>-<attempt>-<shard|soak[-i]>_<vol>  integration compose projects
 #   go-qrdb-ci-tc-<run>-<n>-mcast                 scripts/in-toolchain-image.sh
 #
 # Only dangling volumes with one of those names, created more than
@@ -48,12 +48,25 @@ age_seconds() {
 
 min_age=$(age_seconds "${SWEEP_MIN_AGE:-3h}")
 now=$(date +%s)
-own_prefix=
+own_project=
 if [ "$own" = 1 ] && [ -n "${IT_PROJECT:-}" ]; then
-  own_prefix="${IT_PROJECT}_"
+  own_project=$IT_PROJECT
 fi
 
-stale_re='^(qrdb-ci-[0-9]+-[0-9]+-([0-9]+|soak)_[a-z0-9-]+|go-qrdb-ci-tc-[0-9]+-[0-9]+-mcast)$'
+# The soak job runs each iteration as project "$IT_PROJECT-<i>".
+stale_re='^(qrdb-ci-[0-9]+-[0-9]+-([0-9]+|soak(-[0-9]+)?)_[a-z0-9-]+|go-qrdb-ci-tc-[0-9]+-[0-9]+-mcast)$'
+
+# is_own <name>: the volume belongs to "$IT_PROJECT" or "$IT_PROJECT-<i>".
+is_own() {
+  [ -n "$own_project" ] || return 1
+  local rest
+  case "$1" in
+  "$own_project"_*) return 0 ;;
+  "$own_project"-*) rest=${1#"$own_project"-} ;;
+  *) return 1 ;;
+  esac
+  [[ $rest =~ ^[0-9]+_ ]]
+}
 
 # remove <name> <why>: one rm, one line either way.
 remove() {
@@ -72,7 +85,7 @@ fi
 
 while read -r name; do
   [ -n "$name" ] || continue
-  if [ -n "$own_prefix" ] && [[ $name == "$own_prefix"* ]]; then
+  if is_own "$name"; then
     remove "$name" "this run"
     continue
   fi
