@@ -138,7 +138,17 @@ test.describe("Embedded server panel - saved config", () => {
 });
 
 test.describe("Embedded server panel - sealed embedded server", () => {
-  test.use({ mockState: { ...secondLaunchEmbeddedState } });
+  // The second-launch state reports the listed embedded profile (data dir
+  // /mock/data) as live. The Go binding saves the config of every embedded
+  // server it starts (StartEmbedded), so a live embedded server always has
+  // that config saved: Restore needs it.
+  test.use({
+    mockState: {
+      ...secondLaunchEmbeddedState,
+      embeddedSavedConfig: true,
+      embeddedSavedConfigValue: { dataDir: "/mock/data" },
+    } as typeof secondLaunchEmbeddedState,
+  });
 
   test("a live sealed embedded server shows running and Stop disconnects it", async ({ page }) => {
     await page.goto("/");

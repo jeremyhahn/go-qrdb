@@ -53,6 +53,7 @@ var wailsBindingTypes = map[string]reflect.Type{
 	"UserBinding":              reflect.TypeOf((*UserBinding)(nil)),
 	"InvitationBinding":        reflect.TypeOf((*InvitationBinding)(nil)),
 	"RoleBinding":              reflect.TypeOf((*RoleBinding)(nil)),
+	"GroupBinding":             reflect.TypeOf((*GroupBinding)(nil)),
 	"CertBinding":              reflect.TypeOf((*CertBinding)(nil)),
 	"DatabaseBinding":          reflect.TypeOf((*DatabaseBinding)(nil)),
 	"CollectionBinding":        reflect.TypeOf((*CollectionBinding)(nil)),

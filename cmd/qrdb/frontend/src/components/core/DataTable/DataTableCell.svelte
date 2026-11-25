@@ -100,12 +100,27 @@
   }
 
   /**
+   * True once the pointer has moved over the copy button itself. The
+   * button only takes pointer events while its cell is hovered, so a
+   * pointer that lands on a row and presses at once (no move over the
+   * button while it was showing) reaches the button without having aimed
+   * at it: that press is a row click, not a copy.
+   */
+  let copyArmed = $state(false);
+
+  /**
    * Copies the cell value to clipboard. Only the copy button calls this,
    * and its click stops there: it never also counts as a row click. A
-   * browser that refuses clipboard access (no permission, insecure
-   * context, headless) gets a quiet info toast, not an error.
+   * pointer click on a button the pointer never moved over (it appeared
+   * under the press) is left to the row instead. Keyboard activation
+   * (detail 0) always copies. A browser that refuses clipboard access (no
+   * permission, insecure context, headless) gets a quiet info toast, not
+   * an error.
    */
   async function copyToClipboard(event: MouseEvent): Promise<void> {
+    if (event.detail !== 0 && !copyArmed) {
+      return;
+    }
     event.stopPropagation();
     try {
       await navigator.clipboard.writeText(displayValue);
@@ -184,6 +199,12 @@
         type="button"
         class="btn btn-ghost btn-xs ml-auto shrink-0 pointer-events-none opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100"
         onclick={copyToClipboard}
+        onpointermove={() => {
+          copyArmed = true;
+        }}
+        onpointerleave={() => {
+          copyArmed = false;
+        }}
         onkeydown={stopKeyToRow}
         data-testid="cell-copy"
         title="Copy to clipboard"

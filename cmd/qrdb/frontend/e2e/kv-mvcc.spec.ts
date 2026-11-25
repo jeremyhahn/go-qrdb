@@ -264,6 +264,11 @@ test.describe("KV Explorer MVCC operations", () => {
     await page.locator("textarea[placeholder='Enter value (supports JSON)']").fill("v2");
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.getByText('Updated "lease/edit" with lease 42').last()).toBeVisible({ timeout: 5_000 });
+    // Save keeps the Details panel open and refreshes its metadata.
+    await expect(panel.getByTestId("kv-lease")).toHaveText("42");
+    // Close it (its backdrop covers the table) and read the entry afresh.
+    await panel.getByRole("button", { name: "Close", exact: true }).first().click();
+    await expect(panel).not.toBeVisible();
     const reopened = await openRow(page, "lease/edit");
     await expect(reopened.getByTestId("kv-lease")).toHaveText("42");
   });
