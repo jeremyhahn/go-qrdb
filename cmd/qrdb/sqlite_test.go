@@ -44,6 +44,9 @@ func newSQLiteTestServer(t *testing.T) (*sdk.Client, func() *cobra.Command) {
 	}
 	t.Cleanup(func() { _ = srv.Shutdown(ctx) })
 	c := srv.Client()
+	saved := clientTransport
+	t.Cleanup(func() { clientTransport = saved })
+	clientTransport = transportEmbedded
 	root := func() *cobra.Command {
 		r := newRootCmd()
 		r.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
