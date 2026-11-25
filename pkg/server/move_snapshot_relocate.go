@@ -61,13 +61,25 @@ func WithMoveSnapshotShards(s MoveSnapshotShards) MoveStoreCloserOption {
 // tenantID whose newest snapshot record names a file outside root, so no
 // record names the copy a move is about to remove.
 func (c *MoveStoreCloser) RelocateSnapshots(ctx context.Context, tenantID, root string) error {
-	if c.snapshots == nil || root == "" {
+	if root == "" {
 		return nil
 	}
+	// A volume tenant Host lists its own shard; in raft mode the tenant's
+	// dedicated shards run on the shared node Host and the raft factory
+	// lists them.
+	var sources []MoveSnapshotShards
+	if c.snapshots != nil {
+		sources = append(sources, c.snapshots)
+	}
+	if raft, ok := c.shards.(MoveSnapshotShards); ok && raft != nil {
+		sources = append(sources, raft)
+	}
 	var errs []error
-	for _, s := range c.snapshots.SnapshotShards(tenantID) {
-		if err := relocateShardSnapshot(ctx, s, root); err != nil {
-			errs = append(errs, fmt.Errorf("move: relocate the snapshot of shard %d of tenant %s: %w", s.ShardID, tenantID, err))
+	for _, src := range sources {
+		for _, s := range src.SnapshotShards(tenantID) {
+			if err := relocateShardSnapshot(ctx, s, root); err != nil {
+				errs = append(errs, fmt.Errorf("move: relocate the snapshot of shard %d of tenant %s: %w", s.ShardID, tenantID, err))
+			}
 		}
 	}
 	return errors.Join(errs...)
@@ -106,6 +118,26 @@ func pathUnder(path, root string) (string, bool) {
 		return "", false
 	}
 	return rel, true
+}
+
+// SnapshotShards lists the dedicated shards of tenantID started on this
+// node's shared Host, with the snapshot records the Host's multiplex LogDB
+// keeps for them. A factory with no multiplex LogDB lists none: it has no
+// record to read.
+func (f *RaftBackendFactory) SnapshotShards(tenantID string) []SnapshotShard {
+	if f == nil || f.host == nil || f.walMux == nil {
+		return nil
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []SnapshotShard
+	for k, rs := range f.shards {
+		if k.tenantID != tenantID {
+			continue
+		}
+		out = append(out, SnapshotShard{ShardID: rs.shardID, ReplicaID: rs.replicaID, Records: f.walMux, Host: f.host})
+	}
+	return out
 }
 
 // SnapshotShards lists the shard of tenantID's started volume Host.

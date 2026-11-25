@@ -93,3 +93,41 @@ func TestMoveStoreCloser_RelocateSnapshots(t *testing.T) {
 		})
 	}
 }
+
+// raftSnapshotShards is a raft-mode shard lifecycle: the tenant's dedicated
+// shards run on the shared node Host and are listed by the factory itself.
+type raftSnapshotShards struct {
+	fakeSnapshotShards
+	tenants []string
+}
+
+func (raftSnapshotShards) Attach(context.Context, string, string) error { return nil }
+func (raftSnapshotShards) Close(string, string) error                   { return nil }
+func (raftSnapshotShards) ListStarted() []StartedShard                  { return nil }
+
+func (r *raftSnapshotShards) SnapshotShards(tenantID string) []SnapshotShard {
+	r.tenants = append(r.tenants, tenantID)
+	return r.fakeSnapshotShards
+}
+
+// TestMoveStoreCloser_RelocateSnapshots_RaftShards: in raft mode no volume
+// Host lists the tenant's shards, so a settle re-snapshots the dedicated
+// shards the raft factory runs for it on the node Host.
+func TestMoveStoreCloser_RelocateSnapshots_RaftShards(t *testing.T) {
+	root := filepath.FromSlash("/pools/b/t1")
+	outside := filepath.FromSlash("/pools/a/t1/databases/db1/snapshots/snapshot-1")
+	host := &fakeSnapshotHost{}
+	shards := &raftSnapshotShards{fakeSnapshotShards: fakeSnapshotShards{
+		{ShardID: 7, ReplicaID: 2, Records: &fakeSnapshotRecords{rec: logdb.Snapshot{Filepath: outside}}, Host: host},
+	}}
+	closer := &MoveStoreCloser{shards: shards}
+	if err := closer.RelocateSnapshots(context.Background(), "t1", root); err != nil {
+		t.Fatalf("RelocateSnapshots: %v", err)
+	}
+	if host.snapshots != 1 {
+		t.Fatalf("raft shard snapshots = %d, want 1", host.snapshots)
+	}
+	if len(shards.tenants) != 1 || shards.tenants[0] != "t1" {
+		t.Fatalf("raft shards listed for %v, want [t1]", shards.tenants)
+	}
+}
