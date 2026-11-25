@@ -115,9 +115,6 @@ func (c *rbacClient) Authorize(ctx context.Context, identity *transport.Identity
 	if err != nil {
 		return err
 	}
-	if c.transport.closed.Load() {
-		return &transport.ClosedError{}
-	}
 	if err := validateIdentity(identity); err != nil {
 		return err
 	}
@@ -151,9 +148,6 @@ func (c *rbacClient) ListPermissions(ctx context.Context, identity *transport.Id
 	}
 	if err := c.transport.authorize(ctx, "RBACClient.ListPermissions"); err != nil {
 		return nil, err
-	}
-	if c.transport.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	if err := validateIdentity(identity); err != nil {
 		return nil, err
@@ -190,13 +184,10 @@ func (c *rbacClient) ListOwnPermissions(ctx context.Context) ([]transport.Permis
 	if err := c.transport.requireIdentity(ctx); err != nil {
 		return nil, err
 	}
-	if c.transport.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	if c.transport.roleSvc == nil {
 		return nil, &MissingRoleServiceForRBACError{}
 	}
-	perms, err := role.ListOwnPermissions(ctx, c.transport.roleSvc)
+	perms, err := role.ListOwnPermissions(ctx, c.transport.roleSvc, c.transport.authMW.StrictSeparation())
 	if err != nil {
 		return nil, err
 	}

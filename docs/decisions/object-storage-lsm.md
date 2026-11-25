@@ -8,8 +8,8 @@
 > its options, a recommendation and the reason, and the lower-project API each
 > option needs. On main and not yet wired: the go-objstore adapter, the
 > encrypting wrapper, `remotelsm.WithRemote`, the composition and the cache
-> (slices 1 to 4a3 of [../plans/924.md](../plans/924.md)). Not built: the
-> engine switch (the flat engine deleted, the per-database refusal lifted).
+> (SPEC row #924). Not built: the engine switch (the flat engine deleted, the
+> per-database refusal lifted).
 
 ## Problem
 

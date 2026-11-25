@@ -470,6 +470,12 @@ func (s *TenantService) unsealBarrier(ctx context.Context, info *TenantInfo, cre
 	if err != nil {
 		return err
 	}
+	if resolved.Credential == seal.CredentialNone {
+		// The provider binds this barrier to no credential: the root key was
+		// sealed without one, so the caller's bytes must not reach the
+		// strategy (a device binds whatever credential it is given).
+		creds = seal.Credentials{}
+	}
 	if err := s.registry.UnsealTenantWithStrategy(ctx, info.ID, resolved.Strategy, creds); err != nil {
 		return &BarrierError{TenantID: info.ID, Op: "unseal", Err: err}
 	}

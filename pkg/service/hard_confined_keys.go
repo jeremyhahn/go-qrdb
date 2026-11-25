@@ -134,6 +134,14 @@ var hardConfinedMaterialPrefixes = []string{
 // credential back. credentials.LayoutSourcePrefix holds a source store's
 // identity, which the marker keys name: a forged or replaced identity
 // would let a move pass claim another source's markers.
+//
+// The two first-boot handoff records are confined the same way, as exact
+// keys (no other "system/" key is): the pending system SO record
+// authorizes an SO enrolment (account, certificate, trust pool, PIN) and
+// the pending admin certificate record a bootstrap admin binding, so an
+// embedded caller holding only kv:put must not forge, read, replace or
+// delete either around roles:assign. First boot reads and writes them
+// through the node's raw store, never the wrapped one.
 var hardConfinedWholePrefixes = []string{
 	InternalKeyPrefixSystem + "credentials/",
 	credentials.MigrationClaimPrefix,
@@ -144,7 +152,24 @@ var hardConfinedWholePrefixes = []string{
 	credentials.LayoutMovedPrefix,
 	credentials.LayoutSourcePrefix,
 	delegationPolicyConfinedPrefix,
+	pendingSystemSOConfinedKey,
+	pendingAdminCertConfinedKey,
 }
+
+// pendingSystemSOConfinedKey is the raw key of the ceremony -> first-boot
+// system SO handoff: tenant.IdentityNamespace(tenantid.System) +
+// firstboot.PendingSystemSOKey, as sdk/go/node's systemPendingAdminCertStore
+// composes it on the node's own shard. It is reproduced, not composed, for
+// the same reason as delegationPolicyConfinedPrefix;
+// TestPendingAdminCertStore_SystemSORecordIsHardConfined fails if they drift.
+const pendingSystemSOConfinedKey = "system/pending-system-so"
+
+// pendingAdminCertConfinedKey is the raw key of the ceremony -> first-boot
+// bootstrap admin certificate handoff: tenant.IdentityNamespace(tenantid.System)
+// + firstboot.PendingAdminCertKey, composed the same way as
+// pendingSystemSOConfinedKey; TestPendingAdminCertStore_SystemSORecordIsHardConfined
+// fails if they drift.
+const pendingAdminCertConfinedKey = "system/pending-admin-cert"
 
 // delegationPolicyConfinedPrefix duplicates pkg/cert's unexported
 // prefixDelegationPolicy; TestDelegationPolicy_RecordsSitUnderTheConfinedPrefix
@@ -167,8 +192,9 @@ const hardConfinedMaterialSuffix = "/material"
 
 // hardConfinedPrefixEnds are the exclusive upper bounds of every key under
 // the matching entry of hardConfinedPrefixes: the smallest string that
-// sorts after all of them. Incrementing the prefix's last byte is correct
-// here because that byte is '/' (0x2F, not 0xFF) and can never overflow.
+// sorts after all of them. Incrementing the entry's last byte is correct
+// here because that byte is always below 0xFF ('/' for the prefixes, 'o'
+// and 't' for the exact handoff keys) and so can never overflow.
 // Used only by hardConfinedRangeOverlaps/hardConfinedOverlapRanges to
 // decide whether a RANGE could reach a confined key at all -- a coarser,
 // prefix-only test than isHardConfinedKey's, deliberately: narrowing a

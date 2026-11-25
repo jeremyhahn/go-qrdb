@@ -77,7 +77,7 @@ func TestSORoleGuard_AdminWriteOverlappingAnSOGrant(t *testing.T) {
 	}
 	store.beforeUpdate = func(u *user.User) { u.RoleIDs = append(slices.Clone(u.RoleIDs), f.so) }
 	_, err := store.UpdateUser(admin, &user.UpdateUserRequest{ID: 7, RoleIDs: roleIDs, Guard: f.mw.SORoleGuard(admin)})
-	wantErrorAs[*SORoleRequiredError](t, err)
+	wantErrorAs[*auth.SORoleRequiredError](t, err)
 	if !slices.Contains(store.rec.RoleIDs, f.so) {
 		t.Fatalf("the SO grant was removed: roles = %v", store.rec.RoleIDs)
 	}
@@ -96,7 +96,7 @@ func TestSORoleGuard_AdminUnassignOverlappingAnSOGrant(t *testing.T) {
 	}
 	store.beforeUpdate = func(u *user.User) { u.RoleIDs = []string{f.so} }
 	_, err := store.UpdateUser(admin, &user.UpdateUserRequest{ID: 7, RoleIDs: []string{}, Guard: f.mw.SORoleGuard(admin)})
-	wantErrorAs[*SORoleRequiredError](t, err)
+	wantErrorAs[*auth.SORoleRequiredError](t, err)
 	if !slices.Contains(store.rec.RoleIDs, f.so) {
 		t.Fatalf("the SO grant was removed: roles = %v", store.rec.RoleIDs)
 	}
@@ -113,13 +113,13 @@ func TestSORoleGuard_Transitions(t *testing.T) {
 		prior, next *user.User
 		check       func(t *testing.T, err error)
 	}{
-		{"admin grants SO", f.caller(f.admin), acme(), acme(f.so), wantErrorAs[*SORoleRequiredError]},
-		{"admin revokes SO", f.caller(f.admin), acme(f.so), acme(), wantErrorAs[*SORoleRequiredError]},
+		{"admin grants SO", f.caller(f.admin), acme(), acme(f.so), wantErrorAs[*auth.SORoleRequiredError]},
+		{"admin revokes SO", f.caller(f.admin), acme(f.so), acme(), wantErrorAs[*auth.SORoleRequiredError]},
 		{"admin changes another role of an SO", f.caller(f.admin), acme(f.so), acme(f.so, f.userRole), wantNoError},
 		{"admin leaves roles alone", f.caller(f.admin), acme(f.so), acme(f.so), wantNoError},
 		{"SO grants SO", f.caller(f.so), acme(), acme(f.so), wantNoError},
 		{"SO revokes SO", f.caller(f.so), acme(f.so), acme(), wantNoError},
-		{"system SO grants SO", f.caller(f.sysSO), acme(), acme(f.so), wantErrorAs[*SORoleRequiredError]},
+		{"system SO grants SO", f.caller(f.sysSO), acme(), acme(f.so), wantErrorAs[*auth.SORoleRequiredError]},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -154,7 +154,7 @@ func TestSORoleChange_CallerBindings(t *testing.T) {
 	acmeUser := func(roleIDs ...string) *userTenantFixture {
 		return &userTenantFixture{u: &user.User{ID: 7, TenantID: "acme", RoleIDs: roleIDs}}
 	}
-	boundSO := boundCaller([]string{f.admin}, auth.RoleBinding{RoleID: f.so, TenantID: "acme"})
+	boundSO := boundCaller(nil, auth.RoleBinding{RoleID: f.so, TenantID: "acme"})
 	foreignSO := role.SystemRoleID("globex", role.RoleNameSO)
 	foreignBound := boundCaller([]string{f.admin},
 		auth.RoleBinding{RoleID: f.so, TenantID: "globex"},
@@ -176,14 +176,14 @@ func TestSORoleChange_CallerBindings(t *testing.T) {
 		}, wantNoError},
 		{"foreign-bound SO assigns SO", func() error {
 			return f.mw.AuthorizeRoleAssignment(foreignBound, acmeUser(), f.roles, 7, f.so)
-		}, wantErrorAs[*SORoleRequiredError]},
+		}, wantErrorAs[*auth.SORoleRequiredError]},
 		{"foreign-bound SO unassigns SO", func() error {
 			return f.mw.AuthorizeRoleUnassignment(foreignBound, acmeUser(f.so), 7, f.so)
-		}, wantErrorAs[*SORoleRequiredError]},
-		{"admin with a bound role assigns SO", func() error { return f.mw.AuthorizeRoleAssignment(admin, acmeUser(), f.roles, 7, f.so) }, wantErrorAs[*SORoleRequiredError]},
+		}, wantErrorAs[*auth.SORoleRequiredError]},
+		{"admin with a bound role assigns SO", func() error { return f.mw.AuthorizeRoleAssignment(admin, acmeUser(), f.roles, 7, f.so) }, wantErrorAs[*auth.SORoleRequiredError]},
 		{"admin with a bound role guard revokes SO", func() error {
 			return f.mw.SORoleGuard(admin)(acmeUser(f.so).u, acmeUser().u)
-		}, wantErrorAs[*SORoleRequiredError]},
+		}, wantErrorAs[*auth.SORoleRequiredError]},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

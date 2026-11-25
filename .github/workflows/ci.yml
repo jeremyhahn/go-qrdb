@@ -1,4 +1,19 @@
-# ci-template: v1.53 + v1.59 runner selection + go-qrdb CUSTOMIZE blocks — canonical CI for all first-party Go repos.
+# ci-template: v1.56 + v1.59 runner selection + go-qrdb CUSTOMIZE blocks — canonical CI for all first-party Go repos.
+# v1.56: the lint job's step "SPEC and ROADMAP agree (roadmap.md §2a)" runs scripts/spec-roadmap-check.py.
+# v1.55 (2026-11-22, the Tenant Agent's 12:47Z order, owner: the Software
+# plan links every project's ROADMAP, SPEC and docs, and every piece of work
+# corresponds to a SPEC row, ruling 1136): the `row` job (Row [one SPEC row
+# per pull request]) joins CI Gate. A head branch row/<n>-* passes when
+# issue #n is named on the base commit in a docs/SPEC.md table row (SPEC
+# only, ruling 1143 (3): a ROADMAP.md mention does not count); a pull request labelled ci, main-fix or std (ROW_EXEMPT_LABELS),
+# or from a merge-train/ branch (ROW_EXEMPT_BRANCHES), passes; anything else
+# is red. It reads the base, never the head, runs on CI Gate's selected
+# runner (hosted for a fork's head) and reads the labels
+# live with the read-only job token. CI Gate checks it as `pull`: skipped
+# off pull_request only. testdata/row-job-tests.py holds the cases. Adopt as
+# a ci.yml-only bump that keeps the CUSTOMIZE blocks; CI configuration rolls
+# out at once (ruling 443). A repository with open PRs on non-row branches
+# labels each ci, main-fix or std, or moves it to its row, before it adopts.
 # Ported template steps, not the template's job structure: v1.48 to v1.53
 # (Tenant Agent ruling 1087, DS-9947) and v1.54's selection step (ruling
 # 1137, handbook 1ad68ab8); the handbook's template holds each version's
@@ -29,6 +44,7 @@
 # builds on a pool host masks the LAN addresses (scripts/ci-mask-lan.sh,
 # which also masks single-label and private-suffix host names).
 # Before ruling 1087: v1.35.1 + v1.42 hermetic gate + v1.43 hosted first + v1.47.
+# code-review.yml v5.12.11's regression tests run in preflight (#1666).
 # v1.47 runner gate (Tenant Agent ruling 1007, handbook ci-template v1.47): the step Runner labels (ruling 633) checks every workflow's runs-on label and waiver category together; codex and qwen run only in code-review.yml (codex with credential:, qwen with hardware:).
 # v1.43 hosted first (Tenant Agent rulings 833 and 834, which supersede ruling
 # 617's two-pool rule; the owner's 11-07 ruling that GitHub-hosted runners are
@@ -56,7 +72,8 @@
 # v1.40 scoped deps-check and deps-bump, v1.41 PR/main parity and v1.35.2/
 # v1.35.3's signatures.yml move are the full catch-up, still to come.
 # Ruling 640 (ci-template v1.39 deltas, adopted 2026-11-15): a
-# workflow_dispatch on ci/deps-bump is not refused: deps-bump.yml dispatches
+# workflow_dispatch on the maintenance row branch row/1708-maintenance (owner
+# ruling 1234; the bump's branch) is not refused: deps-bump.yml dispatches
 # this workflow there, because the PR it opens starts no pull_request run.
 # go-qrdb deviations from v1.35.1, one line each (the CUSTOMIZE blocks below
 # give each one's reason):
@@ -106,14 +123,16 @@
 #     restores main's newest entry, and only the nightly schedule on main
 #     saves one (CI_CACHE_SAVE), so a pull
 #     request never writes main's cache. On a
-#     self-hosted pool host, whose temp dir is on the root filesystem and
-#     outlives the job, they are a generation directory on /mnt/raid0 that
-#     every job shares: past CI_CACHE_MAX_GB (40 GB) a new generation becomes
-#     current, and an old one is deleted only once no job has used it for
-#     CI_CACHE_RECLAIM_HOURS (7, longer than any job), so no running stage
-#     loses its bind mount; or they are the stage's named Docker volumes when
-#     /mnt/raid0 is not writable. actions/cache is skipped there, and every
-#     job removes $RUNNER_TEMP/ci-cache at its end through
+#     self-hosted pool host, whose runners are containers sharing only the
+#     Docker daemon (so a runner's $RUNNER_TEMP is never a cache root): with
+#     CI_CACHE_ROOT (runner host env file) set they are a generation directory
+#     under it that every job shares: past CI_CACHE_MAX_GB (40 GB) a new
+#     generation becomes current, and an old one is deleted only once no job
+#     has used it for CI_CACHE_RECLAIM_HOURS (7, longer than any job), so no
+#     running stage loses its bind mount; with CI_CACHE_ROOT unset, or not
+#     writable, they are the stage's named Docker volumes on the daemon.
+#     actions/cache is skipped there, and every job removes the legacy
+#     $RUNNER_TEMP/ci-cache at its end through
 #     scripts/ci-cache-clean.sh, which deletes the stages' uid-10001 files as
 #     root in the toolchain image and only warns when it cannot;
 #   - every job that loads an image first frees a hosted runner's disk (the
@@ -146,9 +165,9 @@ on:
     # CUSTOMIZE (go-qrdb): no `labeled` (#853). A label change would start a
     # run that the `concurrency` block lets cancel the PR's run in progress,
     # and a run whose jobs an `if:` skips would post `skipped` over the real
-    # run's `CI / *` contexts, CI Gate included. The cost: adding `ci:full`
-    # waits for the PR's next push or update-branch, or takes effect through
-    # `workflow_dispatch`. A draft runs no CI; `ready_for_review` starts the
+    # run's `CI / *` contexts, CI Gate included. Since v1.41 a label selects
+    # no tier (every non-draft PR runs the full tier); `ci:full` only keeps a
+    # PR off the docs-only path from its next push or update-branch. A draft runs no CI; `ready_for_review` starts the
     # run when it is marked ready (v1.35.3, DS-8544), so no empty commit is
     # needed. test/buildgates/ci_tiers_test.go holds this line.
     types: [opened, synchronize, reopened, ready_for_review]
@@ -194,12 +213,16 @@ env:
   # build/docker/devcontainer/Dockerfile takes as ARG GO_IMAGE. Keep the two
   # equal; an exact patch release, never "stable".
   GO_VERSION: '1.27.4'
-  # v1.23: the full tier (ci-standard.md §8). Every event but pull_request
-  # (push to main, schedule, workflow_dispatch on main), and a PR labelled
-  # ci:full. Steps read it as env.CI_FULL_TIER; a job-level `if:` cannot read
-  # env, so each full-tier job repeats this expression. Keep them equal
+  # v1.41 (ruling 742 (2), Tenant Agent 20:45Z, #1708 item 3): the full tier
+  # (ci-standard.md §8) runs on every event, a non-draft pull request
+  # included, but a workflow_dispatch off main (deps-bump's dispatch on a row
+  # branch stays PR tier). A draft runs no CI and a docs-only PR skips it (the
+  # jobs' `if:`). Steps read it as env.CI_FULL_TIER; a job-level `if:` cannot
+  # read env, so each full-tier job repeats this expression. Keep them equal
   # (test/buildgates/ci_tiers_test.go).
-  CI_FULL_TIER: ${{ (github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+  CI_FULL_TIER: ${{ github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
+  # v1.41: `ci:full` on a PR turns off the docs-only path; it selects no tier.
+  CI_FULL_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ci:full') }}
   # CUSTOMIZE (go-qrdb): the one event that publishes, a push to main. It
   # alone pushes the CI images to GHCR; every other event, a fork's pull
   # request included, pushes none (test/buildgates/ci_image_digest_test.go).
@@ -221,7 +244,8 @@ env:
 
 jobs:
   # v1.24: a PR whose every changed file matches DOCS_ONLY_PATTERN runs lint
-  # only. Off pull_request, or on a ci:full PR, docs_only is always false. Any
+  # only. Off pull_request, or on a PR labelled ci:full (CI_FULL_LABEL, v1.41),
+  # docs_only is always false. Any
   # doubt (a failed diff, an empty list) reads as false, so the tier fails
   # toward running the tests.
   #
@@ -544,6 +568,24 @@ jobs:
       # userinfo and classifies the host after it, and every mask step runs it.
       - name: LAN mask tests (go-qrdb #1671)
         run: python3 -I .github/workflows/testdata/ci-mask-lan-tests.py
+      # v1.54: no job output carries a registry address (H1 to H5).
+      - name: Job output handoff tests (ci-template v1.54)
+        run: python3 -I .github/workflows/testdata/job-output-handoff-tests.py
+      # v1.55: the Row job's check, run against a stub base and label API.
+      - name: Row job tests (ci-template v1.55)
+        run: python3 -I .github/workflows/testdata/row-job-tests.py
+      # v1.56: the SPEC/ROADMAP agreement check, run against fixture trees.
+      - name: SPEC and ROADMAP check tests (ci-template v1.56)
+        run: python3 -I .github/workflows/testdata/spec-roadmap-check-tests.py
+      # The code review template's regression tests, against a fake curl forge; nothing reaches the network.
+      - name: Code review workflow tests (v5.12.11)
+        run: python3 -I .github/workflows/testdata/code-review-v51211-tests.py
+      # A cancelled review is no review, and the round limit (code-review v5.12.12).
+      - name: Code review round tests
+        run: python3 -I .github/workflows/testdata/code-review-v51212-tests.py .github/workflows/code-review.yml
+      # Codex round 3 P1 on #1709: the supersede job's cancel step (actions:write) ran in no test.
+      - name: Supersede job tests (#1708)
+        run: python3 -I .github/workflows/testdata/code-review-supersede-tests.py
       # Drafts are not reviewed, by job condition and by the live PR (code-review v5.12.13).
       - name: Code review draft tests
         run: python3 -I .github/workflows/testdata/code-review-v51213-tests.py .github/workflows/code-review.yml
@@ -1175,7 +1217,7 @@ jobs:
           EVENT: ${{ github.event_name }}
         run: |
           docs_only=false
-          if [ "$EVENT" = pull_request ] && [ "$CI_FULL_TIER" != true ]; then
+          if [ "$EVENT" = pull_request ] && [ "$CI_FULL_LABEL" != true ]; then
             if files=$(git diff --name-only --no-renames "$BASE...$HEAD") && [ -n "$files" ]; then
               if ! printf '%s\n' "$files" | grep -qvE "$DOCS_ONLY_PATTERN"; then
                 docs_only=true
@@ -1601,6 +1643,10 @@ jobs:
         # here: CI_REGISTRY comes from secrets.CI_IMAGE_REGISTRY, which the
         # runner masks, and the buildgates refuse any vars.CI_IMAGE_REGISTRY.
         run: scripts/ci-mask-lan.sh
+
+      # The SPEC/ROADMAP agreement check, from the checkout, with no token and no network.
+      - name: SPEC and ROADMAP agree (roadmap.md §2a)
+        run: python3 -I scripts/spec-roadmap-check.py
 
       - name: Free the runner's disk
         if: runner.environment == 'github-hosted'
@@ -2209,7 +2255,7 @@ jobs:
     # On the self-hosted bigdisk pool (no Docker daemon) for a push to main
     # and a same-repository PR; hosted otherwise. Hosted steps keep the
     # toolchain image; the pool runs the same target natively.
-    runs-on: ubuntu-latest   # CUSTOMIZE (go-qrdb): ruling 862, the coverage, test and fips legs stay hosted
+    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (startsWith(github.event_name, 'pull_request') && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(needs.preflight.outputs.runner_docker) || 'ubuntu-latest' }}   # ruling 862 (DS-10476): no toolchain image on the pool (native make, artifact download hosted-only), so the balanced selection for a push to main or a same-repository head; hosted otherwise
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build, coverage]
     timeout-minutes: 30
@@ -2296,7 +2342,7 @@ jobs:
     # On the self-hosted bigdisk pool (no Docker daemon) for a push to main
     # and a same-repository PR; hosted otherwise. Hosted steps keep the
     # toolchain image; the pool runs the same target natively.
-    runs-on: ubuntu-latest   # CUSTOMIZE (go-qrdb): ruling 862, the coverage, test and fips legs stay hosted
+    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (startsWith(github.event_name, 'pull_request') && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(needs.preflight.outputs.runner_docker) || 'ubuntu-latest' }}   # ruling 862 (DS-10476): no toolchain image on the pool (native make, artifact download hosted-only), so the balanced selection for a push to main or a same-repository head; hosted otherwise
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 20
@@ -2376,7 +2422,7 @@ jobs:
     # On the self-hosted bigdisk pool (no Docker daemon) for a push to main
     # and a same-repository PR; hosted otherwise. Hosted steps keep the
     # toolchain image; the pool runs the same target natively.
-    runs-on: ubuntu-latest   # CUSTOMIZE (go-qrdb): ruling 862, the coverage, test and fips legs stay hosted
+    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (startsWith(github.event_name, 'pull_request') && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(needs.preflight.outputs.runner_docker) || 'ubuntu-latest' }}   # ruling 862 (DS-10476): no toolchain image on the pool (native make, artifact download hosted-only), so the balanced selection for a push to main or a same-repository head; hosted otherwise
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 20
@@ -2697,7 +2743,7 @@ jobs:
   integration-features:
     name: Integration (shard ${{ matrix.shard }})
     runs-on: ${{ fromJSON(needs.preflight.outputs.runner_docker) }}   # v1.48 (ruling 1024)
-    if: ${{ ((github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
+    if: ${{ ((github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214
     needs: [docker-build, test-typescript, preflight]
     timeout-minutes: 120
     env:
@@ -2820,7 +2866,7 @@ jobs:
   integration-standalone:
     name: Integration (standalone stack)
     runs-on: ${{ fromJSON(needs.preflight.outputs.runner_docker) }}   # v1.48 (ruling 1024)
-    if: ${{ ((github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
+    if: ${{ ((github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214
     needs: [docker-build, test-typescript, preflight]
     timeout-minutes: 120
     steps:
@@ -2893,7 +2939,7 @@ jobs:
   fips:
     name: FIPS 140-3 (${{ matrix.leg }})
     runs-on: ubuntu-latest   # CUSTOMIZE (go-qrdb): ruling 862, the coverage, test and fips legs stay hosted
-    if: ${{ ((github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
+    if: ${{ ((github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214
     needs: [preflight, docker-build]   # v1.48: runs-on reads preflight's runner_docker
     strategy:
       fail-fast: false
@@ -3361,7 +3407,7 @@ jobs:
   deps-bump-dispatch:
     name: Dispatch deps-bump
     # Never on workflow_dispatch: deps-bump.yml dispatches ci.yml on
-    # ci/deps-bump, so the two would dispatch each other. Outside ci-gate
+    # the maintenance row branch, so the two would dispatch each other. Outside ci-gate
     # for the same reason (test/buildgates/ci_tiers_test.go outsideGate).
     if: ${{ github.event_name == 'schedule' && github.ref == 'refs/heads/main' && !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
@@ -3375,6 +3421,23 @@ jobs:
           REPO: ${{ github.repository }}
         run: gh workflow run deps-bump.yml --repo "$REPO" --ref main
 
+  # v1.53 (the Tenant Agent's read of the Codex P1 on go-trusted-platform
+  # #2311): a job output never carries a registry address. The LAN mask
+  # registers each internal registry as a secret, and GitHub drops a job
+  # output that contains a masked value, so a consumer would read an empty
+  # reference. A CUSTOMIZE job that hands an image to another job exports
+  # only an unmasked identifier (the tag, the digest or its hex suffix), and
+  # each consumer rebuilds the reference from the secret CI_IMAGE_REGISTRY
+  # after its own mask step. The registry is never read from `vars`: a step's
+  # env is printed in its log header before the run body, and only a secret
+  # is masked from the first byte. A GitHub-hosted run receives none, so it
+  # takes the artifact path as before:
+  #   producer:  echo "image_tag=$tag" >> "$GITHUB_OUTPUT"
+  #   consumer:  env: { IT_REGISTRY: ${{ runner.environment != 'github-hosted' && secrets.CI_IMAGE_REGISTRY || '' }},
+  #                     IT_IMAGE_TAG: ${{ needs.<producer>.outputs.image_tag }} }
+  #              run: ref="$IT_REGISTRY/<repo>/it-image:$IT_IMAGE_TAG"
+  # testdata/job-output-handoff-tests.py H1 to H5 holds the rule; run it
+  # with a copy's path to check that copy.
   signatures:
     name: Signatures
     runs-on: ubuntu-latest
@@ -3475,6 +3538,108 @@ jobs:
           done
           exit $BAD
 
+  # v1.55 (2026-11-22, the Tenant Agent's 12:47Z order, owner: every piece of
+  # work corresponds to a SPEC row, ruling 1136): the Row job. A pull request
+  # whose head branch is `row/<n>-*` passes when issue #n is named on the
+  # BASE commit, in a table row of docs/SPEC.md, and nowhere else (ruling
+  # 1143 (3): SPEC only; ROADMAP.md does not count) (`#n` not preceded by a word character or `/`, so `owner/repo#n` and
+  # `#123` for `#12` do not count). A pull request with a label in
+  # ROW_EXEMPT_LABELS (ci, main-fix, std), or from a branch that starts with
+  # one of ROW_EXEMPT_BRANCHES (merge-train/: a train carries row PRs that
+  # passed), passes too. Anything else is red with a ::error naming the rule.
+  # The base is checked out and read with `git show <base>:<path>`, so a
+  # pull request cannot add its own row and pass on it: the row lands first,
+  # through a docs PR. The job runs where CI Gate runs (the preflight
+  # selection's `runner` output: hosted for a fork's head, so a fork never
+  # reaches a self-hosted runner) and runs no code of the head. The labels are read live from
+  # the API with the job token (read-only), so a rerun after a label is
+  # added passes; when they cannot be read, the event's labels are used with
+  # a ::warning. pull_request has no `labeled` type (v1.25.4), so a label
+  # takes effect on the next push or a rerun of this job.
+  # testdata/row-job-tests.py holds the cases.
+  # CUSTOMIZE (go-qrdb): runs-on is CI Gate's own expression.
+  row:
+    name: Row [one SPEC row per pull request]
+    needs: [preflight]
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner || '"ubuntu-latest"') }}   # v1.55: CI Gate's runner
+    if: ${{ github.event_name == 'pull_request' && !github.event.pull_request.draft }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      ROW_EXEMPT_LABELS: 'ci main-fix std'   # space-separated; CUSTOMIZE only by Tenant Agent order
+      ROW_EXEMPT_BRANCHES: 'merge-train/'    # space-separated branch prefixes
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Row check (one SPEC row per pull request)
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          LABELS_URL: ${{ github.api_url }}/repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels?per_page=100
+          JOB_TOKEN: ${{ github.token }}
+        run: |
+          python3 -I - <<'PY'
+          import json, os, re, subprocess, sys, urllib.request
+          head = os.environ.get("HEAD_REF", "")
+          base = os.environ.get("BASE_SHA", "")
+          exempt = set(os.environ.get("ROW_EXEMPT_LABELS", "").split())
+          prefixes = os.environ.get("ROW_EXEMPT_BRANCHES", "").split()
+          rule = "every pull request corresponds to one SPEC row (ci-template v1.55, ruling 1136)"
+          # A successful live read is the label set alone: a label removed
+          # since the event no longer counts. The event's labels are only the
+          # fallback when there is no URL/token or the read fails.
+          event = set()
+          try:
+              event = {str(x) for x in json.loads(os.environ.get("EVENT_LABELS") or "[]") or []}
+          except ValueError:
+              pass
+          labels = None
+          url, tok = os.environ.get("LABELS_URL", ""), os.environ.get("JOB_TOKEN", "")
+          if url and tok:
+              try:
+                  req = urllib.request.Request(url, headers={"Authorization": "Bearer " + tok,
+                                                             "Accept": "application/vnd.github+json"})
+                  with urllib.request.urlopen(req, timeout=20) as r:
+                      labels = {l["name"] for l in json.load(r)}
+              except Exception as e:
+                  print(f"::warning::Row: the live labels could not be read ({type(e).__name__}); the event's labels are used")
+          if labels is None:
+              labels = event
+          hit = sorted(labels & exempt)
+          if hit:
+              print(f"Row: exempt label '{hit[0]}'; no row is required")
+              sys.exit(0)
+          for p in prefixes:
+              if head.startswith(p):
+                  print(f"Row: exempt branch prefix '{p}'; no row is required")
+                  sys.exit(0)
+          m = re.match(r"row/(\d+)-", head)
+          if not m:
+              print(f"::error::Row: head branch '{head}' is not row/<n>-* and the pull request carries none of the labels {' '.join(sorted(exempt))}; {rule}")
+              sys.exit(1)
+          if not re.fullmatch(r"[0-9a-f]{40}", base):
+              print(f"::error::Row: no base commit to read ('{base}'); {rule}")
+              sys.exit(1)
+          n = m[1]
+          pat = re.compile(rf"(?<![\w/])#{n}(?!\d)")
+          r = subprocess.run(["git", "show", f"{base}:docs/SPEC.md"], capture_output=True, text=True)
+          if r.returncode != 0:
+              print(f"Row: docs/SPEC.md is absent on the base {base[:12]}")
+          rows = [l for l in r.stdout.splitlines() if l.lstrip().startswith("|")] if r.returncode == 0 else []
+          if any(pat.search(l) for l in rows):
+              print(f"Row: issue #{n} is named in a docs/SPEC.md table row on the base {base[:12]}")
+              sys.exit(0)
+          print(f"::error::Row: issue #{n} (head branch '{head}') is named in no docs/SPEC.md table row on the base {base[:12]} (ROADMAP.md does not count); land the row in SPEC through a docs PR first, or label the pull request {' or '.join(sorted(exempt))}; {rule}")
+          sys.exit(1)
+          PY
+
   ci-gate:
     name: CI Gate
     # m2479 (m2475 h): the gate reads the jobs' results only: no checkout, no
@@ -3501,13 +3666,14 @@ jobs:
     # (RESULT_*: ${{ needs.<job>.result }}), tagged to match its tier: pr,
     # code (every event but a docs-only PR, DS-3160), full or nightly. A matrix
     # job is ONE entry: needs.<job>.result is the aggregate over its legs.
-    needs: [preflight, docker-build, lint, lint-gates, image, coverage, coverage-merge, test-clusterproof, coverage-fts, test-tags, test-sdk, test-typescript, integration-standalone, integration-features, fips, soak, clusterproof-soak, signatures]
+    needs: [preflight, row, docker-build, lint, lint-gates, image, coverage, coverage-merge, test-clusterproof, coverage-fts, test-tags, test-sdk, test-typescript, integration-standalone, integration-features, fips, soak, clusterproof-soak, signatures]
     steps:
       - name: Fail closed on any non-success
         env:
           # ruling 214: a draft PR runs no CI, so its gate fails rather than pass on skips.
           DRAFT: ${{ github.event.pull_request.draft == true }}
           RESULT_PREFLIGHT: ${{ needs.preflight.result }}
+          RESULT_ROW: ${{ needs.row.result }}
           RESULT_DOCKER_BUILD: ${{ needs.docker-build.result }}
           RESULT_LINT: ${{ needs.lint.result }}
           RESULT_LINT_GATES: ${{ needs.lint-gates.result }}
@@ -3525,16 +3691,20 @@ jobs:
           RESULT_SOAK: ${{ needs.soak.result }}
           RESULT_CLUSTERPROOF_SOAK: ${{ needs.clusterproof-soak.result }}
           RESULT_SIGNATURES: ${{ needs.signatures.result }}
-          # The full tier is CI_FULL_TIER (v1.23): every event but a PR, and a
-          # PR labelled ci:full. A job marked `full` may be skipped below only
-          # when it is not selected; a `pr` job may never be skipped.
-          FULL_TIER: ${{ env.CI_FULL_TIER }}
+          # The full tier is CI_FULL_TIER (v1.41): every event but a
+          # workflow_dispatch off main, a non-draft PR included; a docs-only
+          # PR skips the full jobs, so FULL_TIER is false there. A job marked
+          # `full` may be skipped below only when it is not selected; a `pr`
+          # job may never be skipped.
+          FULL_TIER: ${{ env.CI_FULL_TIER == 'true' && needs.preflight.outputs.docs_only != 'true' }}
           # v1.24: a `nightly` job runs on schedule and workflow_dispatch only.
           NIGHTLY: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
           # CUSTOMIZE (go-qrdb, DS-3160): a `code` job runs on every event but
           # a docs-only PR (the preflight job's docs_only, false off
-          # pull_request and on ci:full).
+          # pull_request and on a PR labelled ci:full, CI_FULL_LABEL).
           DOCS_ONLY: ${{ needs.preflight.outputs.docs_only }}
+          # v1.55: the Row job runs on pull_request only (a `pull` job).
+          PULL: ${{ github.event_name == 'pull_request' }}
           # #1619: preflight's clusterproof output, true on a PR changing the
           # cluster proof's script or harness, false off pull_request. A
           # `clusterproof` job's skip is excused only when neither it nor
@@ -3563,16 +3733,22 @@ jobs:
             true|false) ;;
             *) echo "FAIL: NIGHTLY is unreadable ('${NIGHTLY}')"; BAD=1;;
           esac
+          case "${PULL}" in
+            true|false) ;;
+            *) echo "FAIL: PULL is unreadable ('${PULL}')"; BAD=1;;
+          esac
           case "${CLUSTERPROOF}" in
             true|false) ;;
             *) echo "FAIL: CLUSTERPROOF is unreadable ('${CLUSTERPROOF}')"; BAD=1;;
           esac
-          check() { # <job> <result> <pr|code|full|nightly|clusterproof>
+          check() { # <job> <result> <pr|code|full|pull|nightly|clusterproof>
             case "$2" in
               success) echo "OK   $1";;
               skipped)
                 if [ "$3" = full ] && [ "${FULL_TIER}" != true ]; then
                   echo "SKIP $1 (full tier not selected)"
+                elif [ "$3" = pull ] && [ "${PULL}" != true ]; then
+                  echo "SKIP $1 (pull request only)"
                 elif [ "$3" = nightly ] && [ "${NIGHTLY}" != true ]; then
                   echo "SKIP $1 (nightly and dispatch only)"
                 elif [ "$3" = clusterproof ] && [ "${NIGHTLY}" != true ] && [ "${CLUSTERPROOF}" != true ]; then
@@ -3591,7 +3767,9 @@ jobs:
           # preflight's clusterproof selection (#1619) is clusterproof, one
           # skipped on a docs-only PR (go-qrdb, DS-3160) is code; every other
           # job is pr.
+          # v1.55: row runs on pull_request only, so it is pull.
           check preflight "$RESULT_PREFLIGHT" pr
+          check row "$RESULT_ROW" pull
           check docker-build "$RESULT_DOCKER_BUILD" pr
           check lint "$RESULT_LINT" pr
           check lint-gates "$RESULT_LINT_GATES" pr

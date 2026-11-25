@@ -32,9 +32,6 @@ func (t *Transport) NodeCompaction(ctx context.Context) (*transport.DatabaseComp
 	if err := t.authorize(ctx, "NodeCompaction"); err != nil {
 		return nil, err
 	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	policy, err := t.adminSvc.NodeCompaction(ctx)
 	if err != nil {
 		return nil, translateError(err)
@@ -52,9 +49,6 @@ func (t *Transport) SetNodeCompaction(ctx context.Context, policy *transport.Dat
 	}
 	if err := t.authorize(ctx, "SetNodeCompaction"); err != nil {
 		return nil, err
-	}
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
 	}
 	p := fromTransportCompactionConfig(policy)
 	if err := t.adminSvc.SetNodeCompaction(ctx, p); err != nil {

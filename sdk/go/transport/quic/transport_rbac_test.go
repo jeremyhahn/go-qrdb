@@ -110,6 +110,41 @@ func TestE2E_RBAC_AuthorizeErrors(t *testing.T) {
 	}
 }
 
+func TestE2E_RBAC_PermissionDeniedKeepsStatus(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	for _, method := range []string{"role.ListOwnPermissions", "role.ListPermissionCatalog", "role.Authorize"} {
+		srv.SetResponder(method, func([]byte) (uint16, []byte) {
+			return wire.StatusPermissionDenied, []byte("permissions:resolve")
+		})
+	}
+	ctx := context.Background()
+	calls := map[string]func() error{
+		"ListOwnPermissions": func() error {
+			_, err := tr.RBACClient().ListOwnPermissions(ctx)
+			return err
+		},
+		"ListPermissionCatalog": func() error {
+			_, err := rbacEndpoints{t: tr}.ListPermissionCatalog(ctx)
+			return err
+		},
+		"Authorize": func() error {
+			return tr.RBACClient().Authorize(ctx, rbacBob, "kv", "get")
+		},
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			err := call()
+			var re *transport.RequestError
+			if !errors.As(err, &re) {
+				t.Fatalf("%s = %v, want a *transport.RequestError", name, err)
+			}
+			if re.StatusCode != int(wire.StatusPermissionDenied) {
+				t.Fatalf("%s status = %d, want %d (permission denied)", name, re.StatusCode, wire.StatusPermissionDenied)
+			}
+		})
+	}
+}
+
 func TestE2E_RBAC_ClosedTransport(t *testing.T) {
 	c := newClosedTransport().RBACClient()
 	var ce *transport.ClosedError

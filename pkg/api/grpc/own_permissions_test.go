@@ -38,7 +38,7 @@ import (
 // reference the handler's response is held to.
 func ownPermissionNames(t *testing.T, roles role.RoleServicer, id *auth.Identity) []string {
 	t.Helper()
-	perms, err := role.ListOwnPermissions(auth.WithIdentity(context.Background(), id), roles)
+	perms, err := role.ListOwnPermissions(auth.WithIdentity(context.Background(), id), roles, false)
 	if err != nil {
 		t.Fatalf("role.ListOwnPermissions: %v", err)
 	}
