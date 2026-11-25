@@ -36,7 +36,6 @@ import (
 	"context"
 	"encoding/gob"
 	"encoding/json"
-	"errors"
 	"sort"
 	"strings"
 
@@ -184,26 +183,25 @@ func (s *Sink) List(ctx context.Context) ([]service.BackupInfo, error) {
 // any -- deleting an absent envelope key is a no-op for every
 // storage.Storage implementation this sink is used with). A retry after a
 // partial failure removes the remaining objects.
-func (s *Sink) Delete(ctx context.Context, id string) error {
-	_, err := s.ReadInfo(ctx, id)
-	var nf *service.BackupNotFoundError
-	switch {
-	case err == nil:
+func (s *Sink) Delete(_ context.Context, id string) error {
+	present, err := s.store.Exists([]byte(metaPrefix + id))
+	if err != nil {
+		return err
+	}
+	if present {
 		// Delete metadata first so a partially-deleted backup is not listed.
 		if err := s.store.Delete([]byte(metaPrefix + id)); err != nil {
 			return err
 		}
-	case errors.As(err, &nf):
+	} else {
 		// Metadata is gone: an ID with no envelope or payload left is unknown.
 		remaining, probeErr := s.hasArtifacts(id)
 		if probeErr != nil {
 			return probeErr
 		}
 		if !remaining {
-			return err
+			return &service.BackupNotFoundError{ID: id}
 		}
-	default:
-		return err
 	}
 	if err := s.store.Delete([]byte(envelopePrefix + id)); err != nil {
 		return err
