@@ -232,6 +232,11 @@ func (f *LocalBindingFactory) RecordRoot(cfg database.DatabaseConfig) (string, e
 		}
 		// A raft database's group store lives at the root its binding resolves to.
 		b, err := f.DescribeBinding(cfg)
+		var unresolved *database.BindingRootUnresolvedError
+		if errors.As(err, &unresolved) {
+			// A tenant with no data root on this node holds no group root here.
+			return "", nil
+		}
 		if err != nil {
 			return "", err
 		}

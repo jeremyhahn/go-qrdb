@@ -1476,6 +1476,24 @@ func TestLocalBindingFactory_RaftModeLocalBackendMaterializes(t *testing.T) {
 	}
 }
 
+// TestLocalBindingFactory_RecordRootOfUnrootedRaftTenantRaftDatabase proves a
+// raft database whose tenant has no data root on this node has no root to
+// check, so the root check never refuses its create.
+func TestLocalBindingFactory_RecordRootOfUnrootedRaftTenantRaftDatabase(t *testing.T) {
+	raftTenants := func(id string) (database.BindingTenant, error) {
+		return database.BindingTenant{ID: id, Isolation: tenant.IsolationRaft}, nil
+	}
+	cfg := database.DatabaseConfig{TenantID: bindingTenant, Name: "ledger", Backend: database.BackendRaft}
+	for _, raftMode := range []bool{true, false} {
+		f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: t.TempDir(), RaftMode: raftMode}, nil, qrdbconfig.StorageConfig{}, raftTenants)
+		root, err := f.RecordRoot(cfg)
+		_ = f.Close()
+		if err != nil || root != "" {
+			t.Fatalf("RecordRoot(raft) raftMode=%v = %q, %v; want no root", raftMode, root, err)
+		}
+	}
+}
+
 // countingShardClaimer hands out increasing shard IDs.
 type countingShardClaimer struct {
 	mu   sync.Mutex
