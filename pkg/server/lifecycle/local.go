@@ -77,7 +77,8 @@ func NewLocalStorage(backendType database.BackendType, dataDir string, enc *atre
 		if err != nil {
 			return nil, nil, &LocalStorageError{Backend: backendType, Err: err}
 		}
-		return stg, stg.DB(), nil
+		db := stg.DB()
+		return stg, db, nil
 
 	case database.BackendPebble:
 		cfg := localPebbleConfig(filepath.Join(dataDir, "pebble"), enc, storageCfg)
