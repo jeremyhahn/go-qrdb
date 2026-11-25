@@ -23,6 +23,10 @@ import (
 	"math"
 	"sort"
 	"sync"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/quic"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 )
 
 // Backend is the versioned key-value store the page store reads and commits
@@ -103,10 +107,15 @@ const (
 	// DefaultStageThreshold is the default dirty-page byte total above
 	// which a commit stages its pages before one publish.
 	DefaultStageThreshold = 4 << 20
+	// transportRequestBytes is the smallest default request limit of the
+	// transports a remote page store commits through.
+	transportRequestBytes = min(grpc.DefaultMaxMessageBytes, rest.DefaultMaxBodyBytes, quic.DefaultMaxPayloadBytes)
+
 	// DefaultStageChunkBytes is the default page bytes per staging commit:
-	// half of go-quicraft's 8 MiB proto.MaxEntrySize per Raft entry, so a
-	// staging write with its key overhead fits one entry.
-	DefaultStageChunkBytes = 4 << 20
+	// half the smallest default transport request limit, so the pages
+	// base64 encoded by the JSON codec plus their keys and framing fit one
+	// request, and well under go-quicraft's 8 MiB proto.MaxEntrySize.
+	DefaultStageChunkBytes = transportRequestBytes / 2
 )
 
 // Option configures a Store built by NewStore.
