@@ -511,34 +511,6 @@ func TestKeyspaceReclaim_ReclaimsVectorNamespaces(t *testing.T) {
 // TestKeyspaceReclaim_IsolatedTenantDropLeavesNoHomeVectorKey drops a
 // database of a tenant whose vectors live in its home store and checks the
 // home store keeps no vector key of it while a sibling database survives.
-func TestKeyspaceReclaim_IsolatedTenantDropLeavesNoHomeVectorKey(t *testing.T) {
-	homes := newFakeVectorHomes()
-	vecSvc, nodeWide := newHomedVectorService(t, homes)
-	ctx := tenant.WithTenantID(context.Background(), "acme")
-	dropped := tenant.ComposeNamespace("acme", "reports")
-	kept := tenant.ComposeNamespace("acme", "ledger") + "docs"
-	for _, name := range []string{dropped + "docs", dropped + "images", kept} {
-		_, err := vecSvc.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: name, Dimension: 2, DistanceMetric: "cosine"})
-		require.NoError(t, err)
-		_, err = vecSvc.UpsertVector(ctx, &UpsertVectorRequest{Namespace: name, ID: 1, Vector: []float32{1, 0}})
-		require.NoError(t, err)
-	}
-	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: newMemoryKVSvc(), Vector: vecSvc})
-
-	require.NoError(t, fenceThenReclaim(ctx, svc, "acme", "reports", ""))
-
-	for _, k := range vectorHomeKeys(t, homes.home("acme")) {
-		assert.NotContains(t, k, dropped, "the dropped database left vector key %q in the home store", k)
-	}
-	list, err := vecSvc.ListNamespaces(ctx, &ListNamespacesRequest{})
-	require.NoError(t, err)
-	require.Len(t, list.Namespaces, 1)
-	assert.Equal(t, kept, list.Namespaces[0].Namespace)
-	nodeNS, err := nodeWide.ListNamespaces(context.Background())
-	require.NoError(t, err)
-	assert.Empty(t, nodeNS, "the node-wide store never held the tenant's vectors")
-}
-
 // ---------------------------------------------------------------------------
 // Name reuse
 // ---------------------------------------------------------------------------

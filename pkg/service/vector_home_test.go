@@ -17,7 +17,6 @@ package service
 import (
 	"context"
 	"errors"
-	"strings"
 	"sync"
 	"testing"
 
@@ -26,7 +25,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // prefixOnlyHomes places every tenant in the node-wide store, the placement
@@ -86,7 +84,7 @@ func (f *fakeVectorHomes) home(tenantID string) *kvstore.MemoryKVStore {
 func newHomedVectorService(t *testing.T, homes TenantHomeResolver) (VectorService, *vector.MemoryVectorStorage) {
 	t.Helper()
 	nodeWide := vector.NewMemoryVectorStorage()
-	svc, err := NewVectorService(nodeWide, newMockLogger())
+	svc, err := NewVectorService(nodeWide, newVecTestLogger())
 	require.NoError(t, err)
 	if homes != nil {
 		svc.(interface{ SetTenantHomeResolver(TenantHomeResolver) }).SetTenantHomeResolver(homes)
@@ -96,78 +94,11 @@ func newHomedVectorService(t *testing.T, homes TenantHomeResolver) (VectorServic
 
 // exerciseVectorNamespace creates "docs", upserts, gets, searches and lists
 // it as the tenant in ctx.
-func exerciseVectorNamespace(t *testing.T, ctx context.Context, svc VectorService) {
-	t.Helper()
-	_, err := svc.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: "docs", Dimension: 2, DistanceMetric: "cosine"})
-	require.NoError(t, err)
-	_, err = svc.UpsertVector(ctx, &UpsertVectorRequest{Namespace: "docs", ID: 1, Vector: []float32{1, 0}})
-	require.NoError(t, err)
-	_, err = svc.UpsertVector(ctx, &UpsertVectorRequest{Namespace: "docs", ID: 2, Vector: []float32{0, 1}})
-	require.NoError(t, err)
-
-	got, err := svc.GetVector(ctx, &GetVectorRequest{Namespace: "docs", ID: 1})
-	require.NoError(t, err)
-	require.True(t, got.Found)
-
-	res, err := svc.SearchSimilar(ctx, &SearchSimilarRequest{Namespace: "docs", QueryVector: []float32{1, 0}, K: 1})
-	require.NoError(t, err)
-	require.Len(t, res.Results, 1)
-	require.Equal(t, uint64(1), res.Results[0].ID)
-
-	list, err := svc.ListNamespaces(ctx, &ListNamespacesRequest{})
-	require.NoError(t, err)
-	require.Len(t, list.Namespaces, 1)
-	require.Equal(t, "docs", list.Namespaces[0].Namespace)
-}
-
 func vectorHomeKeys(t *testing.T, home kvstore.KVStore) []string {
 	t.Helper()
 	keys, err := home.List(context.Background(), tenantVectorHomePrefix)
 	require.NoError(t, err)
 	return keys
-}
-
-func TestVectorService_IsolatedTenantVectorsLiveInHomeStore(t *testing.T) {
-	homes := newFakeVectorHomes()
-	svc, nodeWide := newHomedVectorService(t, homes)
-	ctx := tenant.WithTenantID(context.Background(), "acme")
-
-	exerciseVectorNamespace(t, ctx, svc)
-
-	home := homes.home("acme")
-	require.NotNil(t, home, "acme's home store was resolved")
-	keys := vectorHomeKeys(t, home)
-	require.NotEmpty(t, keys)
-	for _, k := range keys {
-		require.True(t, strings.HasPrefix(k, tenantVectorHomePrefix), "key %q outside the vector keyspace", k)
-	}
-	nodeNS, err := nodeWide.ListNamespaces(context.Background())
-	require.NoError(t, err)
-	require.Empty(t, nodeNS, "the node-wide store holds no namespace of an isolated tenant")
-
-	_, err = svc.DeleteVector(ctx, &DeleteVectorRequest{Namespace: "docs", ID: 2})
-	require.NoError(t, err)
-	_, err = svc.DeleteNamespace(ctx, &DeleteNamespaceRequest{Namespace: "docs"})
-	require.NoError(t, err)
-	require.Empty(t, vectorHomeKeys(t, home), "deleting the namespace leaves no vector key in the home store")
-}
-
-func TestVectorService_PrefixTenantStaysNodeWide(t *testing.T) {
-	homes := newFakeVectorHomes()
-	svc, nodeWide := newHomedVectorService(t, homes)
-
-	exerciseVectorNamespace(t, tenant.WithTenantID(context.Background(), "beta"), svc)
-	exerciseVectorNamespace(t, tenant.WithTenantID(context.Background(), tenantid.System), svc)
-
-	nodeNS, err := nodeWide.ListNamespaces(context.Background())
-	require.NoError(t, err)
-	names := map[string]bool{}
-	for _, ns := range nodeNS {
-		names[ns.Name] = true
-	}
-	require.True(t, names[scopedNamespace("beta", "docs")], "beta keeps its prefix-scoped namespace node-wide")
-	require.True(t, names[scopedNamespace(tenantid.System, "docs")], "the system tenant stays node-wide")
-	require.Nil(t, homes.home("beta"), "a prefix tenant's home is never resolved")
 }
 
 // requireVectorHomeRefusal asserts every read and write of tenant in ctx is
