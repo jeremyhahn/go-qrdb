@@ -56,6 +56,7 @@ var unmaskedJobs = map[string]string{
 	"ci-gate":            "prints only the jobs' results",
 	"deps-bump-dispatch": "no checkout and no forge credential; dispatches deps-bump.yml with github.token",
 	"signatures":         "uses only the read-only github.token to read commit metadata; prints signers and shas, no credential",
+	"row":                "ci-template v1.55: checks out the base with no persisted credential and reads the labels with the read-only github.token; prints the head branch, labels and base sha, no credential",
 }
 
 const maskStepName = "Mask the forge credentials"

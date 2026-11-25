@@ -235,8 +235,9 @@ func WithMembershipSealProbe(p SealProbe) MembershipOption {
 }
 
 // WithMembershipSettler hands s to the manager's advertiser (see
-// WithAdvertiseSettler), so the local node's registration waits out the
-// system shard electing a leader rather than failing the start.
+// WithAdvertiseSettler) and uses it for its own withdrawal, so the local
+// node's registration and deregistration wait out the system shard electing
+// a leader rather than failing the start or the close.
 func WithMembershipSettler(s Settler) MembershipOption {
 	return func(m *MembershipManager) {
 		m.settle = s
@@ -714,13 +715,21 @@ func (m *MembershipManager) Close() error {
 // deregister withdraws this node's record on a fresh context. While the node
 // barrier is sealed the withdrawal is not proposed: the record is left to
 // expire with its lease, and the refusal is reported as *NodeSealedError.
+// Otherwise the delete waits out the system shard electing a leader through
+// the manager's Settler.
 func (m *MembershipManager) deregister() error {
 	if m.seal != nil && m.seal.IsSealed() {
 		return &NodeSealedError{Op: "deregister"}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), reconfigTimeout)
 	defer cancel()
-	if err := m.store.DeleteMember(ctx, m.self.NodeID); err != nil {
+	settle := m.settle
+	if settle == nil {
+		settle = settleOnce
+	}
+	if err := settle(ctx, func(attemptCtx context.Context) error {
+		return m.store.DeleteMember(attemptCtx, m.self.NodeID)
+	}); err != nil {
 		return &MembershipCauseError{Reason: "failed to deregister self", Cause: err}
 	}
 	return nil

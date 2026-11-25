@@ -1333,8 +1333,8 @@ suite is not served there — the listener still opens, for the P-256 suite — 
   (`.github/workflows/ci.yml`), whose six shard legs each run a list of
   features (`clustering`, `multi-tenancy` and `barrier-seal` among them), required by the `ci-gate` job in CI's full
   tier, so cluster behaviour is
-  exercised on every push to `main`, every dispatch, and every pull request
-  labelled `ci:full`.
+  exercised on every push to `main`, every dispatch on `main`, and every
+  non-draft pull request that is not docs-only.
 
 ## Observability
 

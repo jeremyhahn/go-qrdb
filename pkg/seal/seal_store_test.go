@@ -12,6 +12,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
+	"strings"
+	"sync"
 	"testing"
 )
 
@@ -58,6 +61,175 @@ func newTestSealStoreWithBarrier(t *testing.T) (*SealStore, *StorageBarrier) {
 		t.Fatalf("NewSealStore: %v", err)
 	}
 	return ss, b
+}
+
+// gatedSealBackend is a MemoryBackend that can fail the next write of one
+// key, or hold the next read of one key until the test releases it. It
+// stores and returns exactly what the barrier gives it.
+type gatedSealBackend struct {
+	*MemoryBackend
+	key string
+
+	mu        sync.Mutex
+	failPut   bool
+	holdGet   bool
+	reading   chan struct{}
+	release   chan struct{}
+	failedPut chan struct{}
+}
+
+var errGatedPut = errors.New("gated backend: write refused")
+
+func (g *gatedSealBackend) Put(ctx context.Context, key string, data []byte) error {
+	g.mu.Lock()
+	fail := g.failPut && strings.Contains(key, g.key)
+	if fail {
+		g.failPut = false
+	}
+	g.mu.Unlock()
+	if fail {
+		close(g.failedPut)
+		return errGatedPut
+	}
+	return g.MemoryBackend.Put(ctx, key, data)
+}
+
+func (g *gatedSealBackend) Get(ctx context.Context, key string) ([]byte, error) {
+	g.mu.Lock()
+	hold := g.holdGet && strings.Contains(key, g.key)
+	if hold {
+		g.holdGet = false
+	}
+	g.mu.Unlock()
+	if hold {
+		close(g.reading)
+		<-g.release
+	}
+	return g.MemoryBackend.Get(ctx, key)
+}
+
+func newGatedSealStore(t *testing.T, key string) (*SealStore, *gatedSealBackend) {
+	t.Helper()
+	g := &gatedSealBackend{
+		MemoryBackend: NewMemoryBackend(),
+		key:           SealStoreDefaultPrefix + key,
+		reading:       make(chan struct{}),
+		release:       make(chan struct{}),
+		failedPut:     make(chan struct{}),
+	}
+	b, err := NewStorageBarrier(testLogger(), g, BarrierConfig{RootKeyPath: "test/root-key"}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	if err := b.Initialize(context.Background(), MustCredentials(context.Background(), []byte("test-password"))); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	ss, err := NewSealStore(b, "", testLogger())
+	if err != nil {
+		t.Fatalf("NewSealStore: %v", err)
+	}
+	return ss, g
+}
+
+// TestSealStore_ResealFailedWriteKeepsSecret proves a reseal whose write
+// fails leaves the old record in place: the secret still reads back.
+func TestSealStore_ResealFailedWriteKeepsSecret(t *testing.T) {
+	ss, g := newGatedSealStore(t, "keep")
+	ctx := context.Background()
+	if err := ss.Put(ctx, "keep", []byte("still-here")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	g.mu.Lock()
+	g.failPut = true
+	g.mu.Unlock()
+
+	err := ss.Reseal(ctx, "keep")
+	if !errors.Is(err, errGatedPut) {
+		t.Fatalf("Reseal = %v, want the backend's write error", err)
+	}
+	<-g.failedPut
+	got, err := ss.Get(ctx, "keep")
+	if err != nil {
+		t.Fatalf("Get after failed Reseal: %v", err)
+	}
+	if !bytes.Equal(got, []byte("still-here")) {
+		t.Fatalf("Get after failed Reseal = %q, want still-here", got)
+	}
+}
+
+// TestSealStore_ResealAndPutAreSerialized proves a Put racing a Reseal is
+// never overwritten with the stale value: the Put waits for the reseal that
+// holds the store, and the final value is the Put's.
+func TestSealStore_ResealAndPutAreSerialized(t *testing.T) {
+	ss, g := newGatedSealStore(t, "race")
+	ctx := context.Background()
+	if err := ss.Put(ctx, "race", []byte("old")); err != nil {
+		t.Fatalf("Put old: %v", err)
+	}
+	g.mu.Lock()
+	g.holdGet = true
+	g.mu.Unlock()
+
+	resealDone := make(chan error, 1)
+	go func() { resealDone <- ss.Reseal(ctx, "race") }()
+	<-g.reading
+	// The reseal is mid-read: it holds the store, so a writer must wait.
+	if ss.mu.TryLock() {
+		ss.mu.Unlock()
+		t.Fatal("Reseal does not hold the store while it reads")
+	}
+	putDone := make(chan error, 1)
+	go func() { putDone <- ss.Put(ctx, "race", []byte("new")) }()
+	close(g.release)
+
+	if err := <-resealDone; err != nil {
+		t.Fatalf("Reseal: %v", err)
+	}
+	if err := <-putDone; err != nil {
+		t.Fatalf("Put new: %v", err)
+	}
+	got, err := ss.Get(ctx, "race")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !bytes.Equal(got, []byte("new")) {
+		t.Fatalf("final value = %q, want the Put's value new", got)
+	}
+}
+
+// TestSealStore_SecretNames proves the store accepts a name only when it is
+// one opaque path segment.
+func TestSealStore_SecretNames(t *testing.T) {
+	ss := newTestSealStore(t, "")
+	ctx := context.Background()
+	rejected := []string{"", ".", "..", "alpha/reseal", "/alpha", "alpha/", `a\b`, "a\x00b", "a\nb", "a\tb", "a\x7fb", "a\u0085b"}
+	for _, name := range rejected {
+		if err := ss.Put(ctx, name, []byte("v")); !errors.Is(err, ErrInvalidSecretName) {
+			t.Errorf("Put(%q) = %v, want ErrInvalidSecretName", name, err)
+		}
+		if _, err := ss.Get(ctx, name); !errors.Is(err, ErrInvalidSecretName) {
+			t.Errorf("Get(%q) = %v, want ErrInvalidSecretName", name, err)
+		}
+		if err := ss.Delete(ctx, name); !errors.Is(err, ErrInvalidSecretName) {
+			t.Errorf("Delete(%q) = %v, want ErrInvalidSecretName", name, err)
+		}
+		if err := ss.Reseal(ctx, name); !errors.Is(err, ErrInvalidSecretName) {
+			t.Errorf("Reseal(%q) = %v, want ErrInvalidSecretName", name, err)
+		}
+	}
+	accepted := []string{"alpha", "a b", "a.b", "...", ".hidden", "db-key_1", "ключ", "a%2Fb"}
+	for _, name := range accepted {
+		if err := ss.Put(ctx, name, []byte("v-"+name)); err != nil {
+			t.Errorf("Put(%q) = %v, want nil", name, err)
+			continue
+		}
+		if got, err := ss.Get(ctx, name); err != nil || string(got) != "v-"+name {
+			t.Errorf("Get(%q) = %q, %v", name, got, err)
+		}
+		if err := ss.Reseal(ctx, name); err != nil {
+			t.Errorf("Reseal(%q) = %v, want nil", name, err)
+		}
+	}
 }
 
 // ---------- Constructor tests ----------
@@ -312,6 +484,107 @@ func TestSealStore_Reseal_EmptyName(t *testing.T) {
 	err := ss.Reseal(ctx, "")
 	if err != ErrInvalidSecretName {
 		t.Errorf("expected ErrInvalidSecretName, got %v", err)
+	}
+}
+
+// TestSealStore_LegacySlashName_Upgrade covers an upgraded embedded
+// deployment: records stored before the one-segment name rule (for example
+// "tls/key") stay readable, resealable and deletable, while no new record
+// with such a name can be created and a never-stored one is still refused.
+func TestSealStore_LegacySlashName_Upgrade(t *testing.T) {
+	ss, b := newTestSealStoreWithBarrier(t)
+	ctx := context.Background()
+
+	legacy := map[string][]byte{
+		"tls/key": []byte("legacy-tls-key"),
+		`a\b`:     []byte("legacy-backslash"),
+	}
+	for name, value := range legacy {
+		if err := b.Put(ctx, SealStoreDefaultPrefix+name, value); err != nil {
+			t.Fatalf("barrier.Put(%q): %v", name, err)
+		}
+	}
+
+	names, err := ss.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for name := range legacy {
+		if !slices.Contains(names, name) {
+			t.Errorf("List = %v, want it to contain %q", names, name)
+		}
+	}
+
+	for name, want := range legacy {
+		got, err := ss.Get(ctx, name)
+		if err != nil {
+			t.Fatalf("Get(%q): %v", name, err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Errorf("Get(%q) = %q, want %q", name, got, want)
+		}
+		if err := ss.Reseal(ctx, name); err != nil {
+			t.Fatalf("Reseal(%q): %v", name, err)
+		}
+		got, err = ss.Get(ctx, name)
+		if err != nil {
+			t.Fatalf("Get(%q) after Reseal: %v", name, err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Errorf("Get(%q) after Reseal = %q, want %q", name, got, want)
+		}
+		replaced := []byte("replaced-" + name)
+		if err := ss.Put(ctx, name, replaced); err != nil {
+			t.Fatalf("Put(%q) over legacy record: %v", name, err)
+		}
+		got, err = ss.Get(ctx, name)
+		if err != nil {
+			t.Fatalf("Get(%q) after Put: %v", name, err)
+		}
+		if !bytes.Equal(got, replaced) {
+			t.Errorf("Get(%q) after Put = %q, want %q", name, got, replaced)
+		}
+		if err := ss.Delete(ctx, name); err != nil {
+			t.Fatalf("Delete(%q): %v", name, err)
+		}
+		if _, err := ss.Get(ctx, name); !errors.Is(err, ErrInvalidSecretName) {
+			t.Errorf("Get(%q) after Delete = %v, want ErrInvalidSecretName", name, err)
+		}
+		if err := ss.Put(ctx, name, replaced); !errors.Is(err, ErrInvalidSecretName) {
+			t.Errorf("Put(%q) after Delete = %v, want ErrInvalidSecretName", name, err)
+		}
+	}
+
+	if err := ss.Put(ctx, "tls/new", []byte("v")); !errors.Is(err, ErrInvalidSecretName) {
+		t.Errorf("Put(tls/new) = %v, want ErrInvalidSecretName", err)
+	}
+	if _, err := ss.Get(ctx, "x/y"); !errors.Is(err, ErrInvalidSecretName) {
+		t.Errorf("Get(x/y) = %v, want ErrInvalidSecretName", err)
+	}
+	if err := ss.Delete(ctx, "x/y"); !errors.Is(err, ErrInvalidSecretName) {
+		t.Errorf("Delete(x/y) = %v, want ErrInvalidSecretName", err)
+	}
+	if err := ss.Reseal(ctx, "x/y"); !errors.Is(err, ErrInvalidSecretName) {
+		t.Errorf("Reseal(x/y) = %v, want ErrInvalidSecretName", err)
+	}
+
+	if err := b.Put(ctx, SealStoreDefaultPrefix+"tls/key", []byte("again")); err != nil {
+		t.Fatalf("barrier.Put: %v", err)
+	}
+	if err := b.Seal(); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	if _, err := ss.Get(ctx, "tls/key"); !errors.Is(err, ErrSealStoreBarrierSealed) {
+		t.Errorf("sealed Get(tls/key) = %v, want ErrSealStoreBarrierSealed", err)
+	}
+	if err := ss.Delete(ctx, "tls/key"); !errors.Is(err, ErrSealStoreBarrierSealed) {
+		t.Errorf("sealed Delete(tls/key) = %v, want ErrSealStoreBarrierSealed", err)
+	}
+	if err := ss.Reseal(ctx, "tls/key"); !errors.Is(err, ErrSealStoreBarrierSealed) {
+		t.Errorf("sealed Reseal(tls/key) = %v, want ErrSealStoreBarrierSealed", err)
+	}
+	if err := ss.Put(ctx, "tls/key", []byte("v")); !errors.Is(err, ErrSealStoreBarrierSealed) {
+		t.Errorf("sealed Put(tls/key) = %v, want ErrSealStoreBarrierSealed", err)
 	}
 }
 

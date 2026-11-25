@@ -41,6 +41,13 @@ import (
 // A ReplicatedLogger holds no per-tenant state; every call resolves fresh,
 // so the entitlement and isolation-mode decisions it depends on are always
 // current.
+// ungatedHostAppliesAuditInstance reports whether this binary writes a
+// single-binary host's audit trail as the tenant's audit instance (the
+// AuditAppend sub-type) rather than OpAuditAppend. It is false in a build
+// without qrdb_vlog, the verifiable-log feature; the qrdb_vlog build turns
+// it on (vlog_database_store.go).
+var ungatedHostAppliesAuditInstance = false
+
 type ReplicatedLogger struct {
 	resolver AuditShardResolver
 }
@@ -94,9 +101,16 @@ func (l *ReplicatedLogger) Emit(ctx context.Context, ev audit.AuditEvent) error 
 	// no replica writes a tree node for it. VerifiableLog alone is not
 	// enough: a binary that has it but predates the audit instance would
 	// refuse the append while its peers chain it. A host that gates nothing
-	// is a single-binary composition: it keeps OpAuditAppend.
+	// is a single-binary composition (a standalone node): every replica is
+	// this process, so its trail is the audit instance too once this binary
+	// carries the verifiable-log feature (ungatedHostAppliesAuditInstance);
+	// a build without it keeps OpAuditAppend.
 	var cmd []byte
-	if isGated && gated.FeatureEnabled(shardID, featuregate.VerifiableLogAudit) {
+	instance := ungatedHostAppliesAuditInstance
+	if isGated {
+		instance = gated.FeatureEnabled(shardID, featuregate.VerifiableLogAudit)
+	}
+	if instance {
 		body, marshalErr := json.Marshal(ev)
 		if marshalErr != nil {
 			return &EncodeRequestError{Err: marshalErr}

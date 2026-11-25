@@ -129,6 +129,8 @@ func (p Policy) Bound(scope []string, ttl time.Duration) (Grant, time.Duration, 
 // pkg/service/hard_confined_keys.go — the whole policy prefix is hard-confined
 // on the embedded transport (every verb, scan root and transaction refused,
 // broader sweeps filtered); TenantKeyPrefixes reclaims a tenant's policies.
+// The first-boot handoff records system/pending-system-so (the pending system
+// SO) and system/pending-admin-cert are hard-confined beside it, as exact keys.
 // sdk/go/node: Node.MintDelegation — the first mint, in process, as the
 // service principal.
 ```
@@ -993,8 +995,11 @@ Unix socket, MCP and the embedded transport — carries the full surface.
   not "an unauthenticated request"; the guard is what keeps those two apart and
   is pinned by a test.
 - **The all-tenant reconcile is a platform-operator verb, gated twice.**
-  `roles:reconcile_all` is cross-scope and granted only to the system tenant's
-  built-in Admin; independently of the role store, `role.ReconcileAllTenants`
+  `roles:reconcile_all` is cross-scope and granted to the built-in Admin role,
+  so in the standard posture only the system tenant's Admin holds it
+  effectively; under strict separation the authorizer extends it to the system
+  SO (`permission.StrictSOGrants`) and the transports call `AuthorizeSOExclusive` first, so it runs
+  only as a separate system SO. Independently of the role store, `role.ReconcileAllTenants`
   refuses a caller bound to any other tenant with
   `tenant.PlatformOperatorRequiredError`. Each tenant converges through its own
   store with the per-tenant `ReconcileBuiltInRoles`, the system tenant first; a
@@ -1076,6 +1081,24 @@ record as the request writes it, before any index mutation, and the commit is
 conditional on those bytes, so a Security Officer grant that lands after the
 gate is either seen by the guard (`SORoleRequiredError`) or fails the write
 (`ConcurrentUpdateError`); it is never overwritten.
+
+The same posture forbids one account holding `so` together with the Admin role
+of its tenant (the `system` Admin for a `system`-tenant account; owner ruling
+132). `authorizeSORoleChange`, which the gates and `SORoleGuard` share, refuses
+any role change that leaves the target holding both with
+`SORoleConflictError{TenantID}`, whoever the caller, and judges the caller of
+an `so` grant or revocation through `requireSeparateSO`: the caller must be of
+the target tenant, hold its `so` role (`holdsSO`) and not its Admin role
+(`holdsAdmin`), or the change is refused with `SORoleRequiredError` or
+`SORoleConflictError`. `AuthMiddleware.AuthorizeSOExclusive(ctx, tenantID, op)`
+applies `requireSeparateSO` to the two SO-exclusive operations, `CreateRole`
+and `ReconcileBuiltInRoles`, after `tenant.EffectiveTenant` resolves the
+tenant they act on; the REST and QUIC handlers, the gRPC service, the MCP role
+tools and the embedded transport each call it after their permission check
+and before the role service. It returns nil outside strict separation, where
+`roles:create` alone decides. `SORoleConflictError` classifies as
+`AuthFailureUnauthorized` (403 / `PermissionDenied`); a role store that cannot
+answer `holdsAdmin` is `SORoleUnresolvedError` (503), never an admission.
 
 The resolved posture is recorded and its changes are audited.
 `wiring.RecordSeparationPosture` compares the posture
@@ -1248,8 +1271,12 @@ instead of a refusal on a misconfigured node. `authorize()` itself fails
 CLOSED on an unregistered method key (`UnregisteredOperationError`) rather than silently admitting one,
 making the declaration gates load-bearing rather than advisory.
 
-`SealStore*` has no `pkg/permission` entry of its own because no network
-route exposes it (REST, gRPC, QUIC, MCP). It is gated by
+`SealStore*` is embedded-only (ruling 1234, `transport.EmbeddedOnlyOperations`):
+no network route exposes it (REST, gRPC, unix, QUIC, MCP), and every remote
+SDK transport refuses each verb with `*transport.EmbeddedOnlyError` before any
+I/O. Its two consumers are in-process: the client of an `sdk/go/node` node and
+the desktop/GUI build's embedded binding; the shipped `qrdb` CLI has no
+seal-store group. On the embedded transport it is gated by
 `permission.SealStoreManage` (`seal:store_manage`, `ScopeCross`,
 SO-exclusive — not granted to the narrower Admin role), not by the bare
 `IdentityGated` floor.

@@ -44,9 +44,6 @@ func (c *permissionClient) List(ctx context.Context) ([]transport.PermissionInfo
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if c.transport.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
 	all := permission.All()
 	out := make([]transport.PermissionInfo, len(all))
 	for i, p := range all {
@@ -71,9 +68,6 @@ func (c *permissionClient) Lookup(ctx context.Context, name string) (transport.P
 	}
 	if err := ctx.Err(); err != nil {
 		return transport.PermissionInfo{}, err
-	}
-	if c.transport.closed.Load() {
-		return transport.PermissionInfo{}, &transport.ClosedError{}
 	}
 	p := permission.Permission(name)
 	if !permission.IsRegistered(p) {
@@ -101,9 +95,6 @@ func (c *permissionClient) LookupScope(ctx context.Context, name string) (transp
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err
-	}
-	if c.transport.closed.Load() {
-		return "", &transport.ClosedError{}
 	}
 	scope, err := permission.LookupScopeByName(name)
 	if err != nil {

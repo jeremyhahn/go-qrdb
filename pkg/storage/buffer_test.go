@@ -471,6 +471,55 @@ func TestSliceIterator_ErrorBlocksAllMovement(t *testing.T) {
 	}
 }
 
+func TestNewSliceIterator_WalksBothWays(t *testing.T) {
+	keys := [][]byte{[]byte("a"), []byte("b"), []byte("c")}
+	values := [][]byte{[]byte("1"), []byte("2"), []byte("3")}
+	it := NewSliceIterator(keys, values, nil)
+	defer func() {
+		if err := it.Close(); err != nil {
+			t.Errorf("Close() = %v", err)
+		}
+	}()
+
+	var got []string
+	for ok := it.SeekToFirst(); ok; ok = it.Next() {
+		got = append(got, string(it.Key())+"="+string(it.Value()))
+	}
+	if want := []string{"a=1", "b=2", "c=3"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("forward = %q, want %q", got, want)
+	}
+	if !it.SeekToLast() || string(it.Key()) != "c" || !it.Prev() || string(it.Value()) != "2" {
+		t.Error("reverse walk did not reach c then b")
+	}
+	if !it.Seek([]byte("bb")) || string(it.Key()) != "c" {
+		t.Error("Seek(bb) did not land on c")
+	}
+	if it.Error() != nil {
+		t.Errorf("Error() = %v, want nil", it.Error())
+	}
+}
+
+func TestNewSliceIterator_Empty(t *testing.T) {
+	it := NewSliceIterator(nil, nil, nil)
+	if it.SeekToFirst() || it.SeekToLast() || it.Valid() {
+		t.Error("an empty iterator became valid")
+	}
+	if it.Error() != nil {
+		t.Errorf("Error() = %v, want nil", it.Error())
+	}
+}
+
+func TestNewSliceIterator_ErrorLeavesItInvalid(t *testing.T) {
+	sentinel := errors.New("scan failed")
+	it := NewSliceIterator([][]byte{[]byte("a")}, [][]byte{[]byte("1")}, sentinel)
+	if it.SeekToFirst() || it.Valid() {
+		t.Error("a failed iterator became valid")
+	}
+	if !errors.Is(it.Error(), sentinel) {
+		t.Errorf("Error() = %v, want %v", it.Error(), sentinel)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // withinBounds
 // ---------------------------------------------------------------------------

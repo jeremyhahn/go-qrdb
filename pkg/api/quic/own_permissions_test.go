@@ -47,7 +47,7 @@ func TestHandleListOwnPermissions_ReturnsTheCallersOwnGrants(t *testing.T) {
 		t.Fatalf("unmarshal response: %v", err)
 	}
 
-	want, err := role.ListOwnPermissions(ctx, roles)
+	want, err := role.ListOwnPermissions(ctx, roles, false)
 	if err != nil {
 		t.Fatalf("role.ListOwnPermissions: %v", err)
 	}

@@ -83,7 +83,7 @@ func TestCluster_OneNodeManagedTLSFounderGrows(t *testing.T) {
 	ca := loadDaemonCA(t, dataDirs[0])
 	founderIdentity, founderPin := nodeIdentityAndPin(t, founderLeaf)
 	pollUntilSealedListenerUp(t, cli, sealedArgs(0), 30*time.Second)
-	bootAdminIdentityVia(t, cli, sealedArgs(0), soPin, userPin, adminCertPath, adminKeyPath, "",
+	founderInit := bootAdminIdentityVia(t, cli, sealedArgs(0), soPin, userPin, adminCertPath, adminKeyPath, "",
 		"--barrier-strategy", "none")
 	waitForHealthy(t, dataDirs[0], 60*time.Second)
 
@@ -161,7 +161,7 @@ func TestCluster_OneNodeManagedTLSFounderGrows(t *testing.T) {
 	}
 	pollUntilSealedListenerUp(t, cli, sealedArgs(1), 30*time.Second)
 	bootAdminIdentityVia(t, cli, sealedArgs(1), soPin, userPin, filepath.Join(t.TempDir(), "admin-cert.pem"), "", "",
-		"--admin-cert", adminCertPath, "--barrier-strategy", "none")
+		append([]string{"--admin-cert", adminCertPath, "--barrier-strategy", "none"}, systemSOCertArgs(t, founderInit)...)...)
 	waitForHealthy(t, dataDirs[1], 60*time.Second)
 
 	// --- Both members elect one leader and serve each other's writes -------

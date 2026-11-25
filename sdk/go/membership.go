@@ -17,6 +17,7 @@ package sdk
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"sync"
@@ -170,18 +171,42 @@ func (s *sdkMembershipStore) PutMember(ctx context.Context, nodeID uint64, data 
 }
 
 // DeleteMember revokes the member's lease, deleting the entry and notifying
-// watchers. It clears local lease state so a second call (e.g. a double Close)
-// is a no-op rather than revoking a stale lease ID.
+// watchers. A revocation its shard electing a leader turned away keeps the
+// lease, so the settler's next attempt revokes it again; any other answer
+// clears it, so a second call (e.g. a double Close) is a no-op rather than
+// revoking a stale lease ID.
 func (s *sdkMembershipStore) DeleteMember(ctx context.Context, _ uint64) error {
 	s.mu.Lock()
 	id, granted := s.leaseID, s.granted
-	s.granted = false
-	s.leaseID = 0
 	s.mu.Unlock()
 	if !granted {
 		return nil
 	}
-	return s.client.Lease().LeaseRevoke(ctx, id)
+	keep, err := revokeOutcome(s.client.Lease().LeaseRevoke(ctx, id))
+	if !keep {
+		s.mu.Lock()
+		if s.granted && s.leaseID == id {
+			s.granted = false
+			s.leaseID = 0
+		}
+		s.mu.Unlock()
+	}
+	return err
+}
+
+// revokeOutcome decides from a lease revocation's answer whether the lease is
+// kept for another attempt and what the withdrawal reports: a lease already
+// gone was revoked by an earlier attempt whose answer was lost.
+func revokeOutcome(err error) (keep bool, result error) {
+	var notFound *service.LeaseNotFoundError
+	switch {
+	case err == nil, errors.As(err, &notFound):
+		return false, nil
+	case service.LeadershipTransient(err):
+		return true, err
+	default:
+		return false, err
+	}
 }
 
 // ListMembers returns the current membership snapshot by scanning the

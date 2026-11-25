@@ -53,6 +53,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // expectedMethodPerms is the authoritative method -> permission table for the
@@ -603,6 +604,39 @@ func TestMethodMappingGuard_QUICPermissionsHaveGRPCCounterparts(t *testing.T) {
 				continue
 			}
 			t.Errorf("QUIC method %q maps to %q which has no gRPC counterpart", method, perm)
+		}
+	}
+}
+
+// namesSealStore reports whether name, lowercased with non-letters removed,
+// contains "sealstore".
+func namesSealStore(name string) bool {
+	letters := make([]byte, 0, len(name))
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c >= 'a' && c <= 'z' {
+			letters = append(letters, c)
+		}
+	}
+	return strings.Contains(string(letters), "sealstore")
+}
+
+// TestMethodMappingGuard_NoEmbeddedOnlyMethods: the seal-store verbs are
+// embedded-only (ruling 1234, transport.EmbeddedOnlyOperations), so no QUIC
+// method serves or authorizes them.
+func TestMethodMappingGuard_NoEmbeddedOnlyMethods(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{})
+	for method := range srv.handlers {
+		if namesSealStore(method) {
+			t.Errorf("QUIC method %q serves an embedded-only seal-store verb (%v)", method, transport.EmbeddedOnlyOperations)
+		}
+	}
+	for method := range expectedMethodPerms {
+		if namesSealStore(method) {
+			t.Errorf("expectedMethodPerms lists embedded-only seal-store method %q", method)
 		}
 	}
 }

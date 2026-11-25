@@ -88,7 +88,7 @@ INTTEST_attested_caller     :=
 INTTEST_audit               := audit_cli_test.go audit_tenant_confinement_cli_test.go audit_replicated_cluster_test.go
 INTTEST_auth_factors        := auth_cli_test.go auth_factor_condition_cli_test.go
 INTTEST_backup_restore      := backup_cli_test.go backup_restore_test.go
-INTTEST_barrier_seal        := barrier_cli_test.go barrier_change_passphrase_cli_test.go barrier_permutations_cli_test.go cluster_seal_cli_test.go cluster_seal_test.go cluster_enable_encryption_test.go cluster_rolling_encryption_test.go enable_encryption_cli_test.go enable_encryption_test.go tenant_barrier_sealed_window_cli_test.go tenant_barrier_restart_cli_test.go fips_kdf_test.go seal_drain_cli_test.go
+INTTEST_barrier_seal        := barrier_cli_test.go barrier_change_passphrase_cli_test.go barrier_permutations_cli_test.go cluster_seal_cli_test.go cluster_seal_test.go cluster_enable_encryption_test.go cluster_rolling_encryption_test.go enable_encryption_cli_test.go enable_encryption_test.go tenant_barrier_sealed_window_cli_test.go tenant_barrier_restart_cli_test.go fips_kdf_test.go seal_drain_cli_test.go seal_store_sdk_test.go
 INTTEST_ceremony            := officer_ceremony_cli_test.go ceremony_forwarding_test.go ceremony_follower_forward_test.go
 INTTEST_certificate_authority := ca_cli_test.go ca_delegate_cli_test.go clusterca_test.go cluster_ca_anchor_spof_test.go
 INTTEST_capabilities        := cli_multiprotocol_test.go
@@ -103,7 +103,7 @@ INTTEST_configuration       :=
 # conformance coverage also lives in sdk/go/conformance/coordination_parity_test.go.
 INTTEST_coordination        := coordination_sdk_test.go
 INTTEST_credentials         := credential_cli_test.go
-INTTEST_databases           := database_barrier_cli_test.go database_barrier_holders_cli_test.go database_catalog_cli_test.go database_lifecycle_cli_test.go database_owner_forwarding_test.go multidb_scope_test.go dao_cluster_test.go vlog_cli_test.go vlog_tenant_confinement_cli_test.go
+INTTEST_databases           := database_barrier_cli_test.go database_barrier_holders_cli_test.go database_catalog_cli_test.go database_lifecycle_cli_test.go database_owner_forwarding_test.go multidb_scope_test.go dao_cluster_test.go vlog_barrier_tenant_cli_test.go vlog_cli_test.go vlog_tenant_confinement_cli_test.go
 INTTEST_deployment          :=
 INTTEST_desktop_gui         :=
 INTTEST_distributed_locks   := lock_cli_test.go

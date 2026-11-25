@@ -236,7 +236,11 @@ qrdb barrier enable-encryption --tenant acme --strategy passphrase --passphrase 
   `BarrierRegistry` and run when the tenant barrier is re-registered — before
   the tenant's data stores open. A crash in the commit window (directory swaps
   done, root key not yet adopted) rolls forward from the staged root-key blob;
-  an uncommitted crash rolls back to the untouched source stores.
+  an uncommitted crash rolls back to the untouched source stores. A refused
+  roll-forward (an unreadable staging root key, or a Shamir target whose
+  staged wrapped key is missing or empty) stops daemon and embedded-node
+  startup with nothing changed. The journal stays, and the next start retries
+  the recovery.
 
 ### Observing completion
 
