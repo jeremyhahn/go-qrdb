@@ -14,8 +14,9 @@
 
 // Package sqlitevfs builds the SQLite page store's Backend and writer lock
 // over a Go SDK client, so a SQLite database opened through the qrdb VFS
-// lives in a remote qrdb server reached over any transport -- gRPC, Unix,
-// QUIC, REST, MCP or the embedded one.
+// lives in a remote qrdb server reached over gRPC, Unix, QUIC or the
+// embedded transport. REST and MCP carry keys and range bounds as text, so
+// they cannot carry the binary page keys and are not supported.
 //
 // NewBackend adapts a transport.MVCCClient and transport.TransactionClient
 // to pkg/sqlitevfs.ServiceKV and ServiceTxn and returns the

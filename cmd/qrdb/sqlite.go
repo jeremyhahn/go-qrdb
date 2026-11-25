@@ -65,8 +65,8 @@ var clientTransport string
 // sqliteTransportAllowed refuses a transport whose transaction wire cannot
 // carry SQLite's binary page keys and values.
 func sqliteTransportAllowed() error {
-	if clientTransport == transportREST {
-		return errors.New("sqlite: SQLite needs a binary-safe transaction wire and the REST transport has none; use grpc, quic, unix or mcp")
+	if clientTransport == transportREST || clientTransport == transportMCP {
+		return fmt.Errorf("sqlite: SQLite needs a binary-safe transaction and range wire and the %s transport has none; use grpc, quic or unix", clientTransport)
 	}
 	return nil
 }

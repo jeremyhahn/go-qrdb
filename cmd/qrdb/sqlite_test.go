@@ -214,20 +214,22 @@ func TestSQLiteCmd_RestoreToRevision(t *testing.T) {
 func TestSQLiteCmd_RefusesREST(t *testing.T) {
 	c, root := newSQLiteTestServer(t)
 	saved := clientTransport
-	clientTransport = transportREST
 	t.Cleanup(func() { clientTransport = saved })
 	before, err := c.MVCC().CurrentRevision(t.Context())
 	if err != nil {
 		t.Fatalf("CurrentRevision: %v", err)
 	}
-	for _, args := range [][]string{
-		{"sqlite", "exec", "app", "CREATE TABLE t (id INTEGER PRIMARY KEY)"},
-		{"sqlite", "query", "app", "SELECT 1"},
-		{"sqlite", "restore", "app", "--revision", "1"},
-	} {
-		out, err := executeCommand(root(), args...)
-		if err == nil || !strings.Contains(err.Error(), "REST") {
-			t.Fatalf("qrdb %s over REST: err = %v (%s), want a refusal naming REST", strings.Join(args, " "), err, out)
+	for _, tr := range []string{transportREST, transportMCP} {
+		clientTransport = tr
+		for _, args := range [][]string{
+			{"sqlite", "exec", "app", "CREATE TABLE t (id INTEGER PRIMARY KEY)"},
+			{"sqlite", "query", "app", "SELECT 1"},
+			{"sqlite", "restore", "app", "--revision", "1"},
+		} {
+			out, err := executeCommand(root(), args...)
+			if err == nil || !strings.Contains(err.Error(), "the "+tr+" transport") {
+				t.Fatalf("qrdb %s over %s: err = %v (%s), want a refusal naming %s", strings.Join(args, " "), tr, err, out, tr)
+			}
 		}
 	}
 	after, err := c.MVCC().CurrentRevision(t.Context())
@@ -235,7 +237,7 @@ func TestSQLiteCmd_RefusesREST(t *testing.T) {
 		t.Fatalf("CurrentRevision: %v", err)
 	}
 	if after != before {
-		t.Fatalf("revision moved from %d to %d, want nothing written over REST", before, after)
+		t.Fatalf("revision moved from %d to %d, want nothing written over REST or MCP", before, after)
 	}
 }
 

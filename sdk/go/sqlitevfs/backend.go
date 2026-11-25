@@ -41,7 +41,7 @@ type kvAdapter struct {
 }
 
 // GetAtRevision reads key at revision as a one-key range [key, key+"\x00"),
-// whose bounds every transport carries as bytes, so a page key that is not
+// whose bounds the gRPC, Unix and QUIC transports carry as bytes, so a page key that is not
 // valid UTF-8 reads back exactly. An absent key is the server's not-found
 // error, so the backend reads it as not found.
 func (a kvAdapter) GetAtRevision(ctx context.Context, key string, revision int64) (*service.KeyValue, error) {

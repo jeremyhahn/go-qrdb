@@ -62,7 +62,7 @@ var sdkOpTypeToString = map[transport.OpType]string{
 // txCompareWire is the JSON representation of a compare for the MCP
 // tool argument.
 type txCompareWire struct {
-	Key            []byte `json:"key"`
+	Key            string `json:"key"`
 	Target         string `json:"target"`
 	Result         string `json:"result"`
 	Value          []byte `json:"value,omitempty"`
@@ -75,7 +75,7 @@ type txCompareWire struct {
 // tool argument.
 type txOpWire struct {
 	Type     string `json:"type"`
-	Key      []byte `json:"key"`
+	Key      string `json:"key"`
 	Value    []byte `json:"value,omitempty"`
 	RangeEnd []byte `json:"range_end,omitempty"`
 	LeaseID  int64  `json:"lease_id,omitempty"`
@@ -118,7 +118,7 @@ func (t *Transport) ExecuteTransaction(ctx context.Context, req *transport.Trans
 	comparesWire := make([]txCompareWire, len(req.Compares))
 	for i, c := range req.Compares {
 		comparesWire[i] = txCompareWire{
-			Key:            c.Key,
+			Key:            string(c.Key),
 			Target:         sdkCompareTargetToString[c.Target],
 			Result:         sdkCompareResultToString[c.Result],
 			Value:          c.Value,
@@ -194,7 +194,7 @@ func marshalOpsWire(ops []transport.Op) ([]byte, error) {
 	for i, op := range ops {
 		wire[i] = txOpWire{
 			Type:     sdkOpTypeToString[op.Type],
-			Key:      op.Key,
+			Key:      string(op.Key),
 			Value:    op.Value,
 			RangeEnd: op.RangeEnd,
 			LeaseID:  op.LeaseID,
