@@ -20,6 +20,8 @@ import (
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
+	dberrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 )
 
@@ -378,6 +380,33 @@ func TestCheckResultError_NonAppErrorData(t *testing.T) {
 		if err := checkResultError(sm.Result{Data: data}); err != nil {
 			t.Fatalf("Data %v must not be an error, got %v", data, err)
 		}
+	}
+}
+
+func TestCommandConflictError_IsErrConflict(t *testing.T) {
+	conflict := &CommandConflictError{Message: "unique index taken"}
+	for name, err := range map[string]error{
+		"bare":        conflict,
+		"not applied": &kvstore.NotAppliedError{Err: conflict},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if !dberrors.Is(err, dberrors.ErrConflict) {
+				t.Fatalf("%v is not ErrConflict", err)
+			}
+			if !errors.Is(err, ErrNotStored) {
+				t.Fatalf("%v lost ErrNotStored", err)
+			}
+			qe, ok := errors.AsType[*dberrors.QRDBError](err)
+			if !ok || qe.Op != "service.command" {
+				t.Fatalf("As QRDBError = %+v, want Op service.command", qe)
+			}
+			if inner, ok := errors.AsType[*CommandConflictError](qe); !ok || inner != conflict {
+				t.Fatalf("QRDBError unwraps to %+v, want the conflict", inner)
+			}
+		})
+	}
+	if !errors.Is(&kvstore.NotAppliedError{Err: conflict}, kvstore.ErrNotApplied) {
+		t.Fatal("NotAppliedError lost ErrNotApplied")
 	}
 }
 

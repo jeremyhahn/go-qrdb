@@ -85,8 +85,12 @@ func TestE2E_IndexCreate_EveryConfigFieldReachesTheWire(t *testing.T) {
 		Sparse:          true,
 		Numeric:         true,
 		CaseInsensitive: true,
+		KeyPrefix:       "member/",
 	})
 
+	if got.GetKeyPrefix() != "member/" {
+		t.Errorf("KeyPrefix = %q; want member/ — the scope never reached the wire", got.GetKeyPrefix())
+	}
 	if got.GetName() != "by_email" || got.GetFieldName() != "email" {
 		t.Errorf("name/field = %q/%q; want by_email/email", got.GetName(), got.GetFieldName())
 	}

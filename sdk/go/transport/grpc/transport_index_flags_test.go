@@ -113,6 +113,7 @@ func TestGRPCIndexCreate_FlagsSurviveTheRoundTrip(t *testing.T) {
 		Sparse:          true,
 		Numeric:         true,
 		CaseInsensitive: true,
+		KeyPrefix:       "member/",
 	})
 	if err != nil {
 		t.Fatalf("IndexCreate: %v", err)
@@ -132,6 +133,9 @@ func TestGRPCIndexCreate_FlagsSurviveTheRoundTrip(t *testing.T) {
 		t.Error("a case-insensitive request produced CaseSensitive:true; the engine " +
 			"would build a case-SENSITIVE index and answer a folded lookup empty " +
 			"with a nil error")
+	}
+	if got.KeyPrefix != "member/" {
+		t.Errorf("KeyPrefix = %q; want member/ — the scope never reached the service", got.KeyPrefix)
 	}
 }
 

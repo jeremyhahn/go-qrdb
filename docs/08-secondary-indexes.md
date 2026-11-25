@@ -320,7 +320,7 @@ Per-index settings are API-only; the configuration file has none.
 
 ```bash
 # Create index
-qrdb index create qrdb.User.Email --field Email --unique   # also --sparse, --numeric
+qrdb index create qrdb.User.Email --field Email --unique   # also --sparse, --numeric, --key-prefix
 
 # List indexes
 qrdb index list

@@ -2339,6 +2339,13 @@ func (s *PebbleStateMachine) pebbleHandleIndexCreate(_ *PebbleStateMachine, _ *p
 	}
 
 	valueType := engine.IndexCreateValueType(opts)
+	// The key scope composes the namespace half read back off name (every
+	// transport namespaces both keys and index names identically) with the
+	// declared half the creator named (opts.KeyPrefix, go-qrdb#410). Both
+	// maintenance on every subsequent write and this create's own backfill
+	// below apply it, which is what keeps an index named for one database
+	// from indexing another database's keys sharing this same shard.
+	scope := engine.ComposeIndexScope(name, opts.KeyPrefix)
 	existing, exists := s.indexes[name]
 	// The shard's index cap is checked against the index set the create
 	// applies over, so every replica reaches the same verdict.
@@ -2352,14 +2359,30 @@ func (s *PebbleStateMachine) pebbleHandleIndexCreate(_ *PebbleStateMachine, _ *p
 		if index.CheckCreateOwner(name, owner, opts.Owner) != nil {
 			return sm.Result{Data: protocol.EncodeIndexOwnershipError(name, owner)}, nil, nil
 		}
-		// Index already present under the same owner and value type —
-		// idempotent success so Raft Apply does not stall on duplicate create
-		// proposals. Existence is otherwise keyed by name only: a same-owner
-		// re-create diverging in field or uniqueness is a no-op (original
-		// wins). A different value type falls through and rebuilds the index
-		// at the requested one (engine.IndexCreateValueType).
-		if s.indexValueTypes[name] == valueType {
+		// Index already present under the same owner, value type and key
+		// scope — idempotent success so Raft Apply does not stall on
+		// duplicate create proposals. Existence is otherwise keyed by name
+		// only: a same-owner re-create diverging in field or uniqueness is a
+		// no-op (original wins). A different value type
+		// (engine.IndexCreateValueType) or key scope falls through and
+		// rebuilds the index at the requested one: the clear below removes
+		// the old terms and the backfill covers only the new scope. A
+		// key-scope difference rebuilds only for a command carrying
+		// protocol.IndexCreateOptions.Rescope, proposed once
+		// featuregate.IndexRescope is enabled: one without it (an older
+		// proposer, a historical log) keeps the existing index and its
+		// original scope, as every replica of the merge base does.
+		if s.indexValueTypes[name] == valueType && (!opts.Rescope || bytes.Equal(s.indexScopes[name], scope)) {
 			return sm.Result{Value: 1}, nil, nil
+		}
+		if opts.Rescope && opts.Unique && !bytes.Equal(s.indexScopes[name], scope) {
+			conflict, err := s.rescopeHasDuplicates(fieldName, scope, index.IndexConfig{ValueType: valueType, CaseSensitive: !opts.CaseInsensitive})
+			if err != nil {
+				return sm.Result{}, nil, err
+			}
+			if conflict {
+				return engine.RescopeConflictResult(name), nil, nil
+			}
 		}
 		if err := existing.Close(); err != nil {
 			return sm.Result{}, nil, err
@@ -2395,14 +2418,8 @@ func (s *PebbleStateMachine) pebbleHandleIndexCreate(_ *PebbleStateMachine, _ *p
 		return sm.Result{}, nil, err
 	}
 
-	// The key scope composes the namespace half read back off name (every
-	// transport namespaces both keys and index names identically) with the
-	// declared half the creator named (opts.KeyPrefix, go-qrdb#410). Both
-	// maintenance on every subsequent write and this create's own backfill
-	// below apply it, which is what keeps an index named for one database
-	// from indexing another database's keys sharing this same shard.
-	scope := engine.ComposeIndexScope(name, opts.KeyPrefix)
-
+	// The composed scope bounds maintenance on every subsequent write and
+	// this create's own backfill below.
 	s.indexes[name] = idx
 	s.indexOwners[name] = opts.Owner
 	s.indexFields[name] = fieldName
@@ -2494,6 +2511,32 @@ func (s *PebbleStateMachine) backfillIndex(idx index.Index, fieldName string, sc
 		slog.Warn("pebble: index backfill scan failed partway; index built without the remainder",
 			"field", fieldName, "error", err)
 	}
+}
+
+// rescopeHasDuplicates reports whether two keys of scope hold the same normalized value of fieldName, over the keys backfillIndex reads.
+func (s *PebbleStateMachine) rescopeHasDuplicates(fieldName string, scope []byte, cfg index.IndexConfig) (bool, error) {
+	start, end := pebbleBackfillRange(scope)
+	iter, err := s.db.NewIter(&pebble.IterOptions{LowerBound: start, UpperBound: end})
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = iter.Close() }()
+
+	check := engine.NewUniqueScopeCheck(fieldName, scope, cfg)
+	for iter.First(); iter.Valid(); iter.Next() {
+		key := iter.Key()
+		if statemachine.IsReservedKey(key) {
+			continue
+		}
+		val, verr := iter.ValueAndErr()
+		if verr != nil {
+			continue
+		}
+		if check.Conflict(key, val) {
+			return true, nil
+		}
+	}
+	return false, iter.Error()
 }
 
 // pebbleBackfillRange returns the [start, end) key range an index-create

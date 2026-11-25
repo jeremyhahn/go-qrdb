@@ -40,6 +40,7 @@ func TestIndexCreate_FlagsSurviveTheRoundTrip(t *testing.T) {
 		Sparse:          true,
 		Numeric:         true,
 		CaseInsensitive: true,
+		KeyPrefix:       "member/",
 	})
 	if err != nil {
 		t.Fatalf("IndexCreate: %v", err)
@@ -48,6 +49,10 @@ func TestIndexCreate_FlagsSurviveTheRoundTrip(t *testing.T) {
 	svc.mu.Lock()
 	got := svc.lastCreateCfg
 	svc.mu.Unlock()
+
+	if got.KeyPrefix != "member/" {
+		t.Errorf("KeyPrefix = %q; want member/ — the scope never reached the service", got.KeyPrefix)
+	}
 
 	if !got.Unique || !got.Sparse {
 		t.Errorf("unique/sparse lost: %+v", got)
