@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -15,7 +16,7 @@ import (
 )
 
 func TestOpenBackupStore_LocalDestination(t *testing.T) {
-	f := &startFlags{backupDestination: &qrdbconfig.ObjstoreConfig{Provider: "local", Settings: map[string]string{"path": t.TempDir()}}}
+	f := &startFlags{backupDestination: &qrdbconfig.ObjstoreConfig{Provider: "local", Settings: map[string]string{"path": filepath.Join(t.TempDir(), "repo")}}}
 	store, err := openBackupStore(f)
 	if err != nil || store == nil {
 		t.Fatalf("openBackupStore() = %v, %v, want the destination store", store, err)
@@ -36,7 +37,7 @@ func TestOpenBackupStore_BackupDir(t *testing.T) {
 }
 
 func TestOpenBackupStore_RefusesBothRepositories(t *testing.T) {
-	f := &startFlags{backupDir: t.TempDir(), backupDestination: &qrdbconfig.ObjstoreConfig{Provider: "local", Settings: map[string]string{"path": t.TempDir()}}}
+	f := &startFlags{backupDir: t.TempDir(), backupDestination: &qrdbconfig.ObjstoreConfig{Provider: "local", Settings: map[string]string{"path": filepath.Join(t.TempDir(), "repo")}}}
 	store, err := openBackupStore(f)
 	var conflict *BackupDestinationConflictError
 	if store != nil || !errors.As(err, &conflict) {

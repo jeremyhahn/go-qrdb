@@ -18,9 +18,9 @@ var errBackupDestinationProvider = errors.New("provider is required")
 // reads them back from. It is the one opener both composers (qrdbd and the
 // embedded SDK node) use, so neither imports go-objstore itself.
 //
-// Unlike a storage.objstore engine, the local provider gets no default path:
-// the settings are passed to the provider as configured. The caller owns the
-// returned engine and closes it.
+// The local provider gets no default path, and its tree (data and journal) is
+// created owner-only, a group- or world-accessible root refused. The caller
+// owns the returned engine and closes it.
 func OpenBackupDestination(cfg qrdbconfig.ObjstoreConfig) (*objstore.Engine, error) {
 	if cfg.Provider == "" {
 		return nil, &BackupDestinationError{Err: errBackupDestinationProvider}
@@ -32,7 +32,7 @@ func OpenBackupDestination(cfg qrdbconfig.ObjstoreConfig) (*objstore.Engine, err
 	engine, err := objstore.New(cfg.Provider, settings, objstore.WithCredentialFiles(objstore.CredentialFiles{
 		KeyFile:    cfg.Credentials.KeyFile,
 		SecretFile: cfg.Credentials.SecretFile,
-	}))
+	}), objstore.WithOwnerOnlyTree())
 	if err != nil {
 		return nil, &BackupDestinationError{Provider: cfg.Provider, Err: err}
 	}

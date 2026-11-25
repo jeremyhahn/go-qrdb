@@ -18,7 +18,7 @@ import (
 // --backup-dir, and checks the artifacts land in the destination.
 func TestBackupDestination_CLI_PerProtocol(t *testing.T) {
 	t.Parallel()
-	destination := t.TempDir()
+	destination := filepath.Join(t.TempDir(), "repo")
 	node := startMultiProtocolNodeWithConfig(t, "", backupDestinationYAML(destination))
 
 	for _, proto := range multiProtocols {

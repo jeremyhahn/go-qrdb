@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
@@ -27,7 +28,7 @@ func localDestination(path string) *qrdbconfig.ObjstoreConfig {
 // destination lists, reads and verifies them.
 func TestBackupDestination_NodeWritesAndSecondNodeReads(t *testing.T) {
 	ctx := context.Background()
-	destination := t.TempDir()
+	destination := filepath.Join(t.TempDir(), "repo")
 
 	cfg := newTenantIsolationConfig(t)
 	cfg.Backup.Destination = localDestination(destination)
@@ -80,7 +81,7 @@ func TestBackupDestination_ConflictWithWithBackupSink(t *testing.T) {
 	for _, s := range sinks {
 		t.Run("standalone "+s.name, func(t *testing.T) {
 			cfg := newTenantIsolationConfig(t)
-			cfg.Backup.Destination = localDestination(t.TempDir())
+			cfg.Backup.Destination = localDestination(filepath.Join(t.TempDir(), "repo"))
 			n, err := NewStandaloneNode(context.Background(), cfg, nil, s.opt)
 			if n != nil {
 				_ = n.Close()
@@ -91,7 +92,7 @@ func TestBackupDestination_ConflictWithWithBackupSink(t *testing.T) {
 		})
 		t.Run("clustered "+s.name, func(t *testing.T) {
 			cfg := &qrdbconfig.Config{}
-			cfg.Backup.Destination = localDestination(t.TempDir())
+			cfg.Backup.Destination = localDestination(filepath.Join(t.TempDir(), "repo"))
 			n, err := NewClusteredNode(context.Background(), cfg, map[uint64]string{1: "127.0.0.1:1"}, nil, s.opt)
 			if n != nil {
 				_ = n.Close()
@@ -114,7 +115,7 @@ func TestBackupDestination_ConflictWithServerWithBackupSink(t *testing.T) {
 	for _, s := range sinks {
 		t.Run("standalone "+s.name, func(t *testing.T) {
 			cfg := newTenantIsolationConfig(t)
-			cfg.Backup.Destination = localDestination(t.TempDir())
+			cfg.Backup.Destination = localDestination(filepath.Join(t.TempDir(), "repo"))
 			n, err := NewStandaloneNode(context.Background(), cfg, []server.ServerOption{s.opt})
 			if n != nil {
 				_ = n.Close()
@@ -125,7 +126,7 @@ func TestBackupDestination_ConflictWithServerWithBackupSink(t *testing.T) {
 		})
 		t.Run("clustered "+s.name, func(t *testing.T) {
 			cfg := &qrdbconfig.Config{}
-			cfg.Backup.Destination = localDestination(t.TempDir())
+			cfg.Backup.Destination = localDestination(filepath.Join(t.TempDir(), "repo"))
 			n, err := NewClusteredNode(context.Background(), cfg, map[uint64]string{1: "127.0.0.1:1"}, []server.ServerOption{s.opt})
 			if n != nil {
 				_ = n.Close()

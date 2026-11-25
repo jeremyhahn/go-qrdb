@@ -155,6 +155,8 @@ func startRestoreDRNodeFrom(t *testing.T, bin string, prefix string, source rest
 	cfgPath := writeNoneSealConfig(t)
 	backupArgs := []string{"--backup-dir", backupDir}
 	if source == restoreDRFromDestination {
+		// A local destination's root must not exist yet or be owner-only.
+		backupDir = filepath.Join(backupDir, "repo")
 		appendBackupDestination(t, cfgPath, backupDir)
 		backupArgs = nil
 	}

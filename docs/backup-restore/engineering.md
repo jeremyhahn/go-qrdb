@@ -204,7 +204,10 @@ The durable sink an artifact is persisted to is a composition seam,
   fails to open (including an unreadable credential file), is
   `lifecycle.BackupDestinationError`, which names the provider and wraps the
   cause. A credential pasted under `settings` is refused earlier, at
-  configuration validation.
+  configuration validation. A `local` destination's directory tree, including
+  its `<path>.journal` sibling, is created owner-only (directories 0700,
+  objects 0600), and a root group or other users can access is refused with
+  `objstore.GroupAccessibleRootError`.
 
 Both sources set is `BackupDestinationConflictError` (`cmd/qrdbd` for
 `--backup-dir` plus `backup.destination`; `sdk/go/node` for
