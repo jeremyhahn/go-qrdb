@@ -16,9 +16,13 @@ package user
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 func TestGroupMembership_AddRemoveRevoke(t *testing.T) {
@@ -158,5 +162,137 @@ func TestGroupMembership_PendingJoins(t *testing.T) {
 	}
 	if got := get(carol); len(got.GroupIDs) != 0 || len(got.PendingGroupIDs) != 0 {
 		t.Fatalf("carol after drop = GroupIDs %v pending %v; want neither", got.GroupIDs, got.PendingGroupIDs)
+	}
+}
+
+// foreignServicer is a UserServicer that is not one of this package's stores.
+type foreignServicer struct{ UserServicer }
+
+func TestNewGroupMembership_RefusesForeignServicer(t *testing.T) {
+	gm, err := NewGroupMembership(foreignServicer{})
+	var unsupported *GroupMembershipUnsupportedError
+	if gm != nil || !errors.As(err, &unsupported) {
+		t.Fatalf("NewGroupMembership = %v, %v; want *GroupMembershipUnsupportedError", gm, err)
+	}
+	if unsupported.Error() == "" {
+		t.Fatal("GroupMembershipUnsupportedError has an empty message")
+	}
+}
+
+func TestGroupMembership_Validation(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestStore(t)
+	gm, err := NewGroupMembership(svc)
+	if err != nil {
+		t.Fatalf("NewGroupMembership: %v", err)
+	}
+	u, err := svc.CreateUser(ctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "alice", TenantID: "acme"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	var verr *ValidationError
+	if _, err := gm.AddMember(ctx, u.ID, ""); !errors.As(err, &verr) {
+		t.Fatalf("add with empty group: %v, want *ValidationError", err)
+	}
+	if _, err := gm.AddMember(ctx, 0, "g-eng"); !errors.As(err, &verr) {
+		t.Fatalf("add user 0: %v, want *ValidationError", err)
+	}
+	if _, err := gm.RevokeGroup(ctx, "acme", ""); !errors.As(err, &verr) {
+		t.Fatalf("revoke empty group: %v, want *ValidationError", err)
+	}
+	if _, err := gm.Members(ctx, "acme", ""); !errors.As(err, &verr) {
+		t.Fatalf("members of empty group: %v, want *ValidationError", err)
+	}
+	var nf *UserNotFoundError
+	if _, err := gm.PromoteMember(ctx, 999999, "g-eng"); !errors.As(err, &nf) {
+		t.Fatalf("promote unknown user: %v, want *UserNotFoundError", err)
+	}
+	if changed, err := gm.RemoveMember(ctx, u.ID, "g-eng"); err != nil || changed {
+		t.Fatalf("remove non-member: changed=%v err=%v, want unchanged", changed, err)
+	}
+	if changed, err := gm.DropPendingMember(ctx, u.ID, "g-eng"); err != nil || changed {
+		t.Fatalf("drop absent pending join: changed=%v err=%v, want unchanged", changed, err)
+	}
+}
+
+func TestMembershipRequest_TerminalAndUnknownOp(t *testing.T) {
+	deleting, err := json.Marshal(&User{ID: 1, TenantID: "acme", Lifecycle: LifecycleDeleting})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if req, err := membershipRequest(1, deleting, "g-eng", opAdd); req != nil || err != nil {
+		t.Fatalf("terminal record: req=%v err=%v, want nil, nil", req, err)
+	}
+	active, err := json.Marshal(&User{ID: 1, TenantID: "acme", Lifecycle: LifecycleActive})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var verr *ValidationError
+	if _, err := membershipRequest(1, active, "g-eng", membershipOp(0)); !errors.As(err, &verr) {
+		t.Fatalf("unknown op: %v, want *ValidationError", err)
+	}
+	var serr *StoreError
+	if _, err := membershipRequest(1, []byte("{"), "g-eng", opAdd); !errors.As(err, &serr) {
+		t.Fatalf("corrupt record: %v, want *StoreError", err)
+	}
+}
+
+func TestRoutingUserService_GroupMembership(t *testing.T) {
+	resolver := &fakeResolver{
+		shared:  newFakeKVStore(),
+		tenants: map[string]kvstore.KVStore{"acme": newFakeKVStore()},
+		sealed:  map[string]bool{},
+	}
+	svc, err := NewRoutingService(resolver, newTestIDGen(t))
+	if err != nil {
+		t.Fatalf("NewRoutingService: %v", err)
+	}
+	gm, err := NewGroupMembership(svc)
+	if err != nil {
+		t.Fatalf("NewGroupMembership: %v", err)
+	}
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	mk := func(name string) *User {
+		u, err := svc.CreateUser(ctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: name, TenantID: "acme"})
+		if err != nil {
+			t.Fatalf("create %s: %v", name, err)
+		}
+		return u
+	}
+	alice, bob := mk("alice"), mk("bob")
+
+	if changed, err := gm.AddMember(ctx, alice.ID, "g-eng"); err != nil || !changed {
+		t.Fatalf("add alice: changed=%v err=%v", changed, err)
+	}
+	if changed, err := gm.AddPendingMember(ctx, bob.ID, "g-eng"); err != nil || !changed {
+		t.Fatalf("pending bob: changed=%v err=%v", changed, err)
+	}
+	if changed, err := gm.PromoteMember(ctx, bob.ID, "g-eng"); err != nil || !changed {
+		t.Fatalf("promote bob: changed=%v err=%v", changed, err)
+	}
+	members, err := gm.Members(ctx, "acme", "g-eng")
+	if err != nil || len(members) != 2 {
+		t.Fatalf("members = %v, %v; want alice and bob", members, err)
+	}
+	if changed, err := gm.RemoveMember(ctx, bob.ID, "g-eng"); err != nil || !changed {
+		t.Fatalf("remove bob: changed=%v err=%v", changed, err)
+	}
+	if n, err := gm.RevokeGroup(ctx, "acme", "g-eng"); err != nil || n != 1 {
+		t.Fatalf("revoke = %d, %v; want 1", n, err)
+	}
+	var nf *UserNotFoundError
+	if _, err := gm.AddMember(ctx, 999999, "g-eng"); !errors.As(err, &nf) {
+		t.Fatalf("add unknown user: %v, want *UserNotFoundError", err)
+	}
+
+	resolver.sealed["acme"] = true
+	if _, err := gm.AddMember(ctx, alice.ID, "g-ops"); err == nil {
+		t.Fatal("add member in a sealed tenant succeeded")
+	}
+	if _, err := gm.RevokeGroup(ctx, "acme", "g-eng"); err == nil {
+		t.Fatal("revoke in a sealed tenant succeeded")
+	}
+	if _, err := gm.Members(ctx, "acme", "g-eng"); err == nil {
+		t.Fatal("members in a sealed tenant succeeded")
 	}
 }
