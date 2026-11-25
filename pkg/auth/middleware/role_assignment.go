@@ -16,9 +16,11 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"slices"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -172,6 +174,133 @@ func (m *AuthMiddleware) AuthorizeRoleUnassignment(ctx context.Context, userSvc 
 	return m.authorizeSORoleChange(ctx, target, heldRoleIDs(target, existing.RoleIDs, existing.RoleBindings), heldRoleIDs(target, afterIDs, existing.RoleBindings))
 }
 
+// AuthorizeGroupRoles is the escalation guard for a group's role set: before
+// CreateGroup or UpdateGroup gives a group of tenantID the roles roleIDs, the
+// caller must be allowed to assign every one of them, exactly as AssignRole
+// requires (role.ValidateAssignable, and strict separation's SO rule: only an
+// SO may put the SO role on a group). A group carries only roles of its own
+// tenant; the group store refuses any other. groupID names the group being
+// updated ("" on create, which has no members yet): when the caller is a
+// member of it, the roles reach the caller, so they are judged with
+// role.ValidateSelfAssignable, the rule direct self-assignment uses. The
+// caller is a member when its identity lists the group, or when its current
+// user record (userSvc, when non-nil) does: the identity is a snapshot taken
+// at authentication and misses a join committed since. A user lookup error
+// other than not-found fails the check closed.
+func (m *AuthMiddleware) AuthorizeGroupRoles(ctx context.Context, userSvc user.UserServicer, roleSvc role.RoleServicer, tenantID, groupID string, roleIDs []string) error {
+	if m == nil || len(roleIDs) == 0 {
+		return nil
+	}
+	target := tenantid.Normalize(tenantID)
+	if err := m.authorizeSORoleChange(ctx, target, nil, slices.Clone(roleIDs)); err != nil {
+		return err
+	}
+	validate := assignValidator(role.ValidateAssignable)
+	member, err := callerInGroup(ctx, userSvc, target, groupID)
+	if err != nil {
+		return err
+	}
+	if member {
+		// The caller is a member of the group: a role it puts on the group
+		// reaches its own identity, so it is judged as a self-assignment,
+		// exactly as AuthorizeGroupMembership judges a self-join.
+		validate = role.ValidateSelfAssignable
+	}
+	return validateRoleAssignment(ctx, roleSvc, m.Authorizer(), validate, target, roleIDs, nil)
+}
+
+// callerInGroup reports whether the caller is a member of group groupID of
+// tenant target: its identity snapshot lists the group, or its current user
+// record (looked up through userSvc when non-nil) does.
+func callerInGroup(ctx context.Context, userSvc user.UserServicer, target, groupID string) (bool, error) {
+	id := auth.IdentityFromContext(ctx)
+	if id == nil || groupID == "" || tenantid.Normalize(id.TenantID) != target {
+		return false, nil
+	}
+	if slices.Contains(id.Groups, groupID) {
+		return true, nil
+	}
+	if userSvc == nil || id.UserID == 0 {
+		return false, nil
+	}
+	u, err := userSvc.GetUser(ctx, id.UserID)
+	var notFound *user.UserNotFoundError
+	if errors.As(err, &notFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	// A pending join counts: it becomes a membership once promoted.
+	return u != nil && tenantid.Normalize(u.TenantID) == target && (slices.Contains(u.GroupIDs, groupID) || slices.Contains(u.PendingGroupIDs, groupID)), nil
+}
+
+// AuthorizeGroupMembership is the escalation guard for AddGroupMember: the
+// caller needs groups:add_member in the user's tenant, the user must be of
+// the group's tenant, and the caller must be allowed to assign every role
+// the group carries, exactly as AssignRole requires of each one.
+func (m *AuthMiddleware) AuthorizeGroupMembership(
+	ctx context.Context,
+	userSvc user.UserServicer,
+	roleSvc role.RoleServicer,
+	userID uint64,
+	g *group.Group,
+) error {
+	if m == nil {
+		return nil
+	}
+	existing, err := assignee(ctx, userSvc, userID)
+	if err != nil {
+		return err
+	}
+	target := tenantid.Normalize(existing.TenantID)
+	if err := m.AuthorizeTenant(ctx, target, permission.GroupsAddMember); err != nil {
+		return err
+	}
+	if g.TenantID != target {
+		return &group.GroupNotFoundError{ID: g.ID}
+	}
+	before := heldRoleIDs(target, existing.RoleIDs, existing.RoleBindings)
+	if err := m.authorizeSORoleChange(ctx, target, before, append(slices.Clip(before), g.RoleIDs...)); err != nil {
+		return err
+	}
+	validate := assignValidator(role.ValidateAssignable)
+	if assignsToSelf(ctx, existing) {
+		validate = role.ValidateSelfAssignable
+	}
+	return validateRoleAssignment(ctx, roleSvc, m.Authorizer(), validate, target, g.RoleIDs, nil)
+}
+
+// AuthorizeGroupMemberRemoval is the guard for RemoveGroupMember: the caller
+// needs groups:remove_member in the user's tenant, and under strict
+// separation only an SO may take the SO role away through a group.
+func (m *AuthMiddleware) AuthorizeGroupMemberRemoval(ctx context.Context, userSvc user.UserServicer, userID uint64, g *group.Group) error {
+	if m == nil {
+		return nil
+	}
+	existing, err := assignee(ctx, userSvc, userID)
+	if err != nil {
+		return err
+	}
+	target := tenantid.Normalize(existing.TenantID)
+	if err := m.AuthorizeTenant(ctx, target, permission.GroupsRemoveMember); err != nil {
+		return err
+	}
+	held := heldRoleIDs(target, existing.RoleIDs, existing.RoleBindings)
+	return m.authorizeSORoleChange(ctx, target, append(slices.Clip(held), g.RoleIDs...), held)
+}
+
+// AuthorizeGroupRoleRemoval gates removing roles from group g, either by an
+// update that drops them or by deleting the group. Every member loses the
+// removed roles, so it is a role unassignment for each member: under strict
+// separation only the SO may remove the so role through a group.
+func (m *AuthMiddleware) AuthorizeGroupRoleRemoval(ctx context.Context, g *group.Group, removed []string) error {
+	if m == nil || g == nil || len(removed) == 0 {
+		return nil
+	}
+	return m.authorizeSORoleChange(ctx, tenantid.Normalize(g.TenantID), slices.Clone(removed), nil)
+}
+
 // AuthorizeRoleAssignmentWriteOnCreate authorizes and validates a
 // CreateUser request's RoleIDs, applying AuthorizeRoleAssignmentWrite's gate
 // to the create path: roles:assign in the tenant the record will be created
@@ -223,7 +352,7 @@ func (m *AuthMiddleware) AuthorizeRoleAssignmentWriteOnCreate(
 // conditional commit swaps against, so the rule holds for the version written.
 // Every UpdateUser that follows one of those gates carries it.
 //
-// The guard refuses with *SORoleRequiredError or *SORoleUnresolvedError, as
+// The guard refuses with *auth.SORoleRequiredError or *SORoleUnresolvedError, as
 // the gates do. A nil m enforces no RBAC and returns nil.
 func (m *AuthMiddleware) SORoleGuard(ctx context.Context) user.UpdateGuard {
 	if m == nil {
@@ -259,10 +388,18 @@ func (m *AuthMiddleware) authorizeRolesAssign(ctx context.Context, target string
 // over the roles it holds in target, its Roles and its bindings scoped to
 // target (callerRoleIDs), as the account's own membership is counted.
 //
-// The refusal is *SORoleRequiredError (403 / PermissionDenied); a role
-// store that cannot say who holds the SO role is *SORoleUnresolvedError
-// (503), never an admission. A nil m authorizes nothing, as every
-// AuthMiddleware gate does when no RBAC is configured.
+// Under the same posture no account holds the SO role together with the
+// Admin role of its tenant -- the system Admin for a system-tenant account,
+// the tenant Admin otherwise (go-qrdb#1128, owner ruling 132). Any write that
+// changes the account's roles and leaves it holding both is refused with
+// *auth.SORoleConflictError, whoever the caller, and a caller that holds both
+// itself is no separate SO (requireSeparateSO).
+//
+// The refusal is *auth.SORoleRequiredError or *auth.SORoleConflictError (403 /
+// PermissionDenied); a role store that cannot say who holds the SO or Admin
+// role is *SORoleUnresolvedError (503), never an admission. A nil m
+// authorizes nothing, as every AuthMiddleware gate does when no RBAC is
+// configured.
 func (m *AuthMiddleware) authorizeSORoleChange(ctx context.Context, target string, before, after []string) error {
 	if m == nil || !m.strictSeparation || slices.Equal(before, after) {
 		return nil
@@ -275,19 +412,68 @@ func (m *AuthMiddleware) authorizeSORoleChange(ctx context.Context, target strin
 	if err != nil {
 		return err
 	}
+	if holds {
+		admin, err := m.holdsAdmin(ctx, target, after)
+		if err != nil {
+			return err
+		}
+		if admin {
+			return &auth.SORoleConflictError{TenantID: target}
+		}
+	}
 	if held == holds {
 		return nil
 	}
+	return m.requireSeparateSO(ctx, target)
+}
+
+// AuthorizeSOExclusive admits an SO-exclusive operation -- roles:create and
+// the built-in role reconcile, which share that permission -- under strict
+// separation of duties only for a separate SO of the tenant the operation
+// acts on (go-qrdb#1128, owner ruling 132). requestedTenantID is the tenant
+// the request names, empty for the caller's own, resolved as the role
+// service resolves it (tenant.EffectiveTenant); op names the operation in
+// that resolution's refusal. The route's own permission check still runs
+// first and decides alone under the standard posture, where the Admin
+// creates roles and runs the reconcile as before.
+//
+// The refusals are requireSeparateSO's. A nil m authorizes nothing.
+func (m *AuthMiddleware) AuthorizeSOExclusive(ctx context.Context, requestedTenantID, op string) error {
+	if m == nil || !m.strictSeparation {
+		return nil
+	}
+	target, err := tenant.EffectiveTenant(ctx, requestedTenantID, op)
+	if err != nil {
+		return err
+	}
+	return m.requireSeparateSO(ctx, tenantid.Normalize(target))
+}
+
+// requireSeparateSO admits the caller only when it is target's Security
+// Officer and does not also hold target's Admin role: an SO-exclusive act
+// runs as a separate SO principal. A caller of another tenant, the system
+// tenant's included, or one without the SO role is refused with
+// *auth.SORoleRequiredError; an SO that is also Admin -- an account left holding
+// both from the standard posture -- with *auth.SORoleConflictError.
+func (m *AuthMiddleware) requireSeparateSO(ctx context.Context, target string) error {
 	identity := auth.IdentityFromContext(ctx)
 	if identity == nil || tenantid.Normalize(identity.TenantID) != target {
-		return &SORoleRequiredError{}
+		return &auth.SORoleRequiredError{}
 	}
-	isSO, err := m.holdsSO(ctx, target, callerRoleIDs(identity, target))
+	callerRoles := callerRoleIDs(identity, target)
+	isSO, err := m.holdsSO(ctx, target, callerRoles)
 	if err != nil {
 		return err
 	}
 	if !isSO {
-		return &SORoleRequiredError{}
+		return &auth.SORoleRequiredError{}
+	}
+	admin, err := m.holdsAdmin(ctx, target, callerRoles)
+	if err != nil {
+		return err
+	}
+	if admin {
+		return &auth.SORoleConflictError{TenantID: target}
 	}
 	return nil
 }
@@ -295,6 +481,17 @@ func (m *AuthMiddleware) authorizeSORoleChange(ctx context.Context, target strin
 // holdsSO reports whether roleIDs include tenantID's SO role.
 func (m *AuthMiddleware) holdsSO(ctx context.Context, tenantID string, roleIDs []string) (bool, error) {
 	ok, err := role.HoldsSystemRole(ctx, m.roles, tenantID, roleIDs, role.RoleNameSO)
+	if err != nil {
+		return false, &SORoleUnresolvedError{Err: err}
+	}
+	return ok, nil
+}
+
+// holdsAdmin reports whether roleIDs include tenantID's built-in Admin role.
+// A role store failure is *SORoleUnresolvedError, as for holdsSO: the
+// separation check it feeds cannot be answered without it.
+func (m *AuthMiddleware) holdsAdmin(ctx context.Context, tenantID string, roleIDs []string) (bool, error) {
+	ok, err := role.HoldsSystemRole(ctx, m.roles, tenantID, roleIDs, role.RoleNameAdmin)
 	if err != nil {
 		return false, &SORoleUnresolvedError{Err: err}
 	}

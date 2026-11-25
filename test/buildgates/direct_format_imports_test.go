@@ -27,8 +27,7 @@ import (
 
 // goCodecGapSites are the only non-test files that may import a
 // serialization library directly (issue #1646: go-codec owns the formats).
-// Each needs an API go-codec does not expose yet; docs/plans/1646.md names
-// the go-codec feature that would remove the entry. The list only shrinks.
+// Each value names the go-codec API the file needs. The list only shrinks.
 var goCodecGapSites = map[string]string{
 	"pkg/config/strict.go":                 "walks a yaml.Node tree for known-field checks; go-codec yaml exposes no Node",
 	"pkg/auth/abac/loader.go":              "reads a multi-document stream on one yaml.Decoder; go-codec Decode opens a new decoder per call",
@@ -59,8 +58,7 @@ func directFormatImport(path string) bool {
 // goCodecTestGapSites are the only _test.go files that may import a
 // serialization library directly. Each walks yaml.Node trees (or exercises
 // the msgpack hooks of a goCodecGapSites file) through an API go-codec does
-// not expose yet; docs/plans/1646.md names the go-codec feature that would
-// remove the entry. The list only shrinks.
+// not expose yet; each value names that API. The list only shrinks.
 var goCodecTestGapSites = map[string]string{
 	"pkg/config/strict_yaml_features_test.go":           "builds and walks yaml.Node trees for the strict decoder; go-codec yaml exposes no Node",
 	"pkg/dao/secret_bytes_discard_test.go":              "asserts a direct msgpack decode bypasses the gap site's CustomDecoder tracking; go-codec msgpack exposes no hooks",

@@ -745,7 +745,7 @@ func TestE2E_BulkServerErr_RemainingMethods(t *testing.T) {
 	t.Run("tenant.List", func(t *testing.T) {
 		srv, tr := startE2EServer(t)
 		serverErr(srv, "tenant.List", "err")
-		if _, err := tr.ListTenants(context.Background()); err == nil {
+		if _, err := tr.ListTenants(context.Background(), nil); err == nil {
 			t.Fatal("expected err")
 		}
 	})

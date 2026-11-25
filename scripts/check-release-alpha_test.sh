@@ -72,6 +72,14 @@ done
 WORK=$(mktemp -d)
 trap 'rm -rf "${WORK}"' EXIT INT TERM
 
+# release-alpha runs check-public-releasable first, and that scan needs a fleet
+# pattern file. The harness writes a SYNTHETIC one (invented values only, one
+# rule per class) outside every fixture tree, so it is never tracked, and points
+# run() at it; an empty XDG dir keeps any file on this host out of the run.
+printf 'lab-address\t(^|[^0-9.])10\\.123\\.45\\.[0-9]{1,3}([^0-9]|$)\nlab-host\t(^|[^a-z0-9-])labhost-[0-9]{2}([^a-z0-9-]|$)\nowner-path\t/home/fixtureowne[r]\n' \
+	> "${WORK}/public-release-patterns"
+mkdir -p "${WORK}/xdg-empty"
+
 FAILURES=0
 CANARY="${WORK}/canary"
 # The literal text of an injected payload. It is built here rather than written
@@ -222,7 +230,10 @@ chmod +x "${WORK}/agent-git.sh"
 # merged, SIGNED and on the remote's main. VERSION is authoritative, so the
 # recipe tags that commit and writes nothing. `fixture NAME unbumped` stops
 # before the bump, which is the state the recipe must refuse. stray-tag exists
-# because `push --tags` would publish it.
+# because `push --tags` would publish it. release-alpha runs
+# check-public-releasable first, so the scanner is copied in and committed:
+# it refuses to run unless it is itself a tracked file. Its pattern file is the
+# synthetic one under WORK, outside the tree, which run() points it at.
 fixture() {
 	DIR="${WORK}/$1"
 	mkdir -p "${DIR}/scripts"
@@ -240,6 +251,9 @@ fixture() {
 	cp "${SCRIPT_DIR}/check-tag-lockstep.sh" "${DIR}/scripts/"
 	cp "${SCRIPT_DIR}/check-version-reconciled.sh" "${DIR}/scripts/"
 	cp "${SCRIPT_DIR}/lockstep-modules.sh" "${DIR}/scripts/"
+	# release-alpha depends on check-public-releasable, and the scanner refuses
+	# unless it is itself a tracked file; the git add -A below tracks it.
+	cp "${SCRIPT_DIR}/check-public-releasable.sh" "${DIR}/scripts/"
 	# The lockstep set is DISCOVERED from the module tree now, not declared, so
 	# a fixture needs a real one. sdk/go alone by default; a case that wants to
 	# prove discovery picks up a new module adds one and re-commits.
@@ -326,6 +340,8 @@ run() {
 				-u MAKEFLAGS -u MAKELEVEL -u MFLAGS \
 				GIT_TERMINAL_PROMPT=0 \
 				GOPROXY=off GOFLAGS=-mod=mod \
+				PUBLIC_RELEASE_PATTERNS_FILE="${PUBLIC_RELEASE_PATTERNS_OVERRIDE-${WORK}/public-release-patterns}" \
+				XDG_CONFIG_HOME="${WORK}/xdg-empty" \
 				${ENV_PRESET:-} \
 				FAKE_GIT_LOG="${DIR}.gitlog" \
 				FAKE_SIGNING_KEY="${WORK}/signing.key" \
@@ -336,6 +352,7 @@ run() {
 	set -e
 	FAIL_MODE=''
 	ENV_PRESET=''
+	unset PUBLIC_RELEASE_PATTERNS_OVERRIDE
 }
 
 # refuse NAME DIR EXPECTED_TEXT [make variables...]
@@ -1237,6 +1254,24 @@ fi
 mv "${WORK}/push-unqueryable.git.gone" "${WORK}/push-unqueryable.git" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
+# The public-releasability scan is a prerequisite of the cut
+# ---------------------------------------------------------------------------
+
+# A tracked file names the synthetic lab address. The tree is otherwise a clean,
+# landed release (signed, on dev main), so only the scan can refuse it.
+fixture scan-hit
+printf 'endpoint = "10.123.45.67:7000"\n' > "${WORK}/scan-hit/endpoint.conf"
+land "${WORK}/scan-hit" "chore: name a lab address"
+refuse "a tree the public-releasability scan rejects is refused" \
+	"${WORK}/scan-hit" "not publicly releasable" VERSION=v0.2.0-alpha
+
+# No pattern file: the scan cannot run, and the cut must not go ahead without it.
+fixture scan-nopatterns
+PUBLIC_RELEASE_PATTERNS_OVERRIDE=/nonexistent/patterns
+refuse "a missing pattern file stops the cut" \
+	"${WORK}/scan-nopatterns" "no fleet pattern file" VERSION=v0.2.0-alpha
+
+# ---------------------------------------------------------------------------
 # The successful cut
 # ---------------------------------------------------------------------------
 
@@ -1252,6 +1287,10 @@ else
 	RELEASED=1
 	ok "a clean release succeeds"
 fi
+case "${OUTPUT}" in
+*"publicly releasable"*) ok "the clean release passed the public-releasability scan" ;;
+*) bad "the clean release passed the public-releasability scan" "output does not contain 'publicly releasable'" ;;
+esac
 
 # Everything below inspects objects the release was supposed to create. If it
 # did not run, they cannot be judged -- and reading a missing ref under `set -e`

@@ -320,11 +320,13 @@ func procState(t *testing.T, p *os.Process) byte {
 func waitState(t *testing.T, p *os.Process, want byte) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
+	poll := time.NewTicker(5 * time.Millisecond)
+	defer poll.Stop()
 	for procState(t, p) != want {
 		if time.Now().After(deadline) {
 			t.Fatalf("process state = %c, want %c", procState(t, p), want)
 		}
-		time.Sleep(5 * time.Millisecond)
+		<-poll.C
 	}
 }
 

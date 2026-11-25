@@ -23,6 +23,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -74,14 +76,50 @@ func TestCredentialServiceOptions_NilRegistryBindsNothing(t *testing.T) {
 // With a barrier registry the option binds it, so a tenant with its own
 // barrier is served from a barrier-strategy store over that barrier while
 // the system tenant keeps the node-wide store.
+// credentialOptionsHomes is a tenant.HomeStoreSource that serves one store.
+type credentialOptionsHomes struct{ store kvstore.KVStore }
+
+func (h credentialOptionsHomes) EnsureHome(context.Context, string) error { return nil }
+
+func (h credentialOptionsHomes) HomeStore(context.Context, string) (kvstore.KVStore, error) {
+	return h.store, nil
+}
+
 func TestCredentialServiceOptions_RegistryBindsTenantStores(t *testing.T) {
 	opts := credentialServiceOptions(Infra{BarrierRegistry: newCredentialOptionsRegistry(t)})
 	require.Len(t, opts, 1)
 
 	svc := service.NewCredentialService(newCredentialOptionsCore(t), opts...)
-	got, err := svc.CredentialStrategy(tenant.WithTenantID(context.Background(), "acme"))
+	acme := tenant.WithTenantID(context.Background(), "acme")
+
+	// Before the homes are attached the tenant barrier alone is no store
+	// of record: it is node-local, so every node would keep its own.
+	_, err := svc.CredentialStrategy(acme)
+	require.Error(t, err)
+
+	// The store of record is the tenant's replicated home store, attached
+	// through the node the way lifecycle attaches it once the stores that
+	// host the homes have started.
+	home := kvstoretest.NewGuardedMemoryStore()
+	n := &Node{StoreResolver: &homeRouterResolver{}, Credential: svc}
+	require.True(t, attachHomeSource(n, credentialOptionsHomes{home}, nil))
+
+	got, err := svc.CredentialStrategy(acme)
 	require.NoError(t, err)
 	assert.Equal(t, credentials.StrategyBarrier, got)
+
+	require.NoError(t, svc.CredentialStore(acme, "db-password", []byte("s3cret")))
+	keys, err := home.List(context.Background(), "")
+	require.NoError(t, err)
+	assert.NotEmpty(t, keys, "a tenant's credential must be written to its home store")
+
+	// A second service bound to the same home store, as another node's
+	// would be, reads the same record.
+	peer := service.NewCredentialService(newCredentialOptionsCore(t), opts...)
+	require.True(t, attachHomeSource(&Node{StoreResolver: &homeRouterResolver{}, Credential: peer}, credentialOptionsHomes{home}, nil))
+	names, err := peer.CredentialList(acme)
+	require.NoError(t, err)
+	assert.Contains(t, names, "db-password")
 
 	got, err = svc.CredentialStrategy(context.Background())
 	require.NoError(t, err)

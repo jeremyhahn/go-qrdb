@@ -53,6 +53,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // guardEncMigrator is a minimal no-op service.EncryptionMigrator, wired
@@ -345,6 +346,17 @@ func TestRouteMappingGuard_RoutePermissions(t *testing.T) {
 		{"GET", "/users/by-cert-thumbprint/AbC-_123", permission.UsersGetByCertThumbprint},
 		{"GET", "/users/by-username/admin", permission.UsersRead},
 
+		// IAM groups, including the per-group family.
+		{"POST", "/groups", permission.GroupsCreate},
+		{"GET", "/groups/list", permission.GroupsList},
+		{"GET", "/groups/by-name", permission.GroupsRead},
+		{"GET", "/groups/members", permission.GroupsRead},
+		{"POST", "/groups/members/add", permission.GroupsAddMember},
+		{"POST", "/groups/members/remove", permission.GroupsRemoveMember},
+		{"GET", "/groups/g-1", permission.GroupsRead},
+		{"PUT", "/groups/g-1", permission.GroupsUpdate},
+		{"DELETE", "/groups/g-1", permission.GroupsDelete},
+
 		// Roles, including the per-role family.
 		{"POST", "/roles", permission.RolesCreate},
 		{"GET", "/roles/list", permission.RolesList},
@@ -609,5 +621,42 @@ func TestRouteMappingGuard_ExemptRoutesAreExactlyDeclared(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("chi.Walk: %v", err)
+	}
+}
+
+// namesSealStore reports whether name, lowercased with non-letters removed,
+// contains "sealstore".
+func namesSealStore(name string) bool {
+	letters := make([]byte, 0, len(name))
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c >= 'a' && c <= 'z' {
+			letters = append(letters, c)
+		}
+	}
+	return strings.Contains(string(letters), "sealstore")
+}
+
+// TestRouteMappingGuard_NoEmbeddedOnlyRoutes: the seal-store verbs are
+// embedded-only (ruling 1234, transport.EmbeddedOnlyOperations), so no REST
+// route serves them and the permission registry names none.
+func TestRouteMappingGuard_NoEmbeddedOnlyRoutes(t *testing.T) {
+	srv := newFullyWiredGuardServer(t)
+	err := chi.Walk(srv.router, func(method, routePattern string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+		if namesSealStore(routePattern) {
+			t.Errorf("REST route %s %s serves an embedded-only seal-store verb (%v)", method, routePattern, transport.EmbeddedOnlyOperations)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("chi.Walk: %v", err)
+	}
+	for _, path := range []string{"/v1/seal-store/secrets", "/v1/seal-store/secrets/alpha", "/v1/seal-store/secrets/alpha/reseal", "/v1/seal-store/status"} {
+		if srv.routePerms.PathHasRoutes(path) {
+			t.Errorf("REST permission registry covers embedded-only seal-store path %s", path)
+		}
 	}
 }

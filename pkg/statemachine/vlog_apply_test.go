@@ -20,9 +20,14 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"errors"
+	"slices"
 	"testing"
 
+	"github.com/transparency-dev/merkle/proof"
+	"github.com/transparency-dev/merkle/rfc6962"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
@@ -142,6 +147,21 @@ func TestApplyVerifiableLog_DispatchesEverySubtype(t *testing.T) {
 	}
 	if head.CheckpointSize != 4 || string(head.Checkpoint) != "signed-4" || head.BodiesFrom != 2 {
 		t.Fatalf("head = %+v, want checkpoint 4 and bodies from 2", head)
+	}
+
+	// The database's drop reclaims the log: the first step deletes its
+	// records, the next reports nothing left, and the name is free again.
+	if v := apply(p(protocol.EncodeVerifiableLogDropDatabase(applyLog.TenantID, applyLog.Database, ""))); v == 0 {
+		t.Fatal("DropDatabase deleted no records")
+	}
+	if v := apply(p(protocol.EncodeVerifiableLogDropDatabase(applyLog.TenantID, applyLog.Database, ""))); v != 0 {
+		t.Fatalf("second DropDatabase = %d, want 0", v)
+	}
+	if _, err := vlog.ReadHead(stg, applyLog); err == nil {
+		t.Fatal("ReadHead of the dropped log succeeded")
+	}
+	if v := apply(p(protocol.EncodeVerifiableLogCreate(applyLog, applyDescriptor(true)))); v != 0 {
+		t.Fatalf("Create after the drop = %d, want 0", v)
 	}
 }
 
@@ -264,6 +284,248 @@ func TestApplyVerifiableLog_Refusals(t *testing.T) {
 			t.Fatalf("result %+v, want a capability refusal", res)
 		}
 	})
+}
+
+// TestApplyVerifiableLog_StaleDropKeepsARecreatedDatabasesLogs pins the
+// incarnation guard of the drop sub-type: a drop naming the dropped
+// incarnation leaves the logs of the database created again under the name,
+// which recorded its own incarnation, untouched, and a drop naming that
+// incarnation reclaims them.
+func TestApplyVerifiableLog_StaleDropKeepsARecreatedDatabasesLogs(t *testing.T) {
+	p := payloadOf(t)
+	logs, stg := vlog.NewChain(), memory.NewStorage()
+	desc := applyDescriptor(false)
+	desc.Incarnation = "inc-new"
+	if v := mustApply(t, logs, stg, p(protocol.EncodeVerifiableLogCreate(applyLog, desc))); v != 0 {
+		t.Fatalf("Create = %d, want 0", v)
+	}
+	mustApply(t, logs, stg, p(protocol.EncodeVerifiableLogAppend(applyLog, [][]byte{[]byte("a")})))
+
+	if v := mustApply(t, logs, stg, p(protocol.EncodeVerifiableLogDropDatabase(applyLog.TenantID, applyLog.Database, "inc-old"))); v != 0 {
+		t.Fatalf("stale DropDatabase deleted %d records, want 0", v)
+	}
+	if head, err := vlog.ReadHead(stg, applyLog); err != nil || head.Size != 1 {
+		t.Fatalf("ReadHead after the stale drop = %+v, %v; want the log intact", head, err)
+	}
+	if v := mustApply(t, logs, stg, p(protocol.EncodeVerifiableLogDropDatabase(applyLog.TenantID, applyLog.Database, "inc-new"))); v == 0 {
+		t.Fatal("DropDatabase of the log's own incarnation deleted nothing")
+	}
+	if _, err := vlog.ReadHead(stg, applyLog); err == nil {
+		t.Fatal("ReadHead of the dropped log succeeded")
+	}
+}
+
+// mustApply applies payload and fails on a Go error or a refusal.
+func mustApply(t *testing.T, logs *vlog.Chain, stg *memory.MemoryStorage, payload []byte) uint64 {
+	t.Helper()
+	res, err := ApplyVerifiableLog(logs, stg, stg, payload)
+	if err != nil {
+		t.Fatalf("ApplyVerifiableLog: %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(res.Data); ok {
+		t.Fatalf("refused: %+v", res)
+	}
+	return res.Value
+}
+
+// bufferedBatch is an apply batch: writes are buffered and reach the storage
+// only at commit, so a reader of the storage does not see them before.
+type bufferedBatch struct {
+	ops []struct {
+		key, value []byte
+		del        bool
+	}
+}
+
+func (b *bufferedBatch) Set(key, value []byte) error {
+	b.ops = append(b.ops, struct {
+		key, value []byte
+		del        bool
+	}{key: bytes.Clone(key), value: bytes.Clone(value)})
+	return nil
+}
+
+func (b *bufferedBatch) Delete(key []byte) error {
+	b.ops = append(b.ops, struct {
+		key, value []byte
+		del        bool
+	}{key: bytes.Clone(key), del: true})
+	return nil
+}
+
+func (b *bufferedBatch) commit(t *testing.T, stg *memory.MemoryStorage) {
+	t.Helper()
+	for _, op := range b.ops {
+		var err error
+		if op.del {
+			err = stg.Delete(op.key)
+		} else {
+			err = stg.Set(op.key, op.value)
+		}
+		if err != nil {
+			t.Fatalf("commit: %v", err)
+		}
+	}
+	b.ops = nil
+}
+
+func TestApplyVerifiableLog_AppendAndDropInOneBatch(t *testing.T) {
+	p := payloadOf(t)
+	run := func(packed bool) (*memory.MemoryStorage, uint64) {
+		logs, stg := vlog.NewChain(), memory.NewStorage()
+		desc := applyDescriptor(false)
+		desc.Incarnation = "inc-1"
+		mustApply(t, logs, stg, p(protocol.EncodeVerifiableLogCreate(applyLog, desc)))
+		mustApply(t, logs, stg, p(protocol.EncodeVerifiableLogAppend(applyLog, [][]byte{[]byte("a")})))
+
+		var deleted uint64
+		logs.BeginUpdate()
+		b := &bufferedBatch{}
+		for _, payload := range [][]byte{
+			p(protocol.EncodeVerifiableLogAppend(applyLog, [][]byte{[]byte("b"), []byte("c"), []byte("d")})),
+			p(protocol.EncodeVerifiableLogDropDatabase(applyLog.TenantID, applyLog.Database, "inc-1")),
+		} {
+			res, err := ApplyVerifiableLog(logs, stg, b, payload)
+			if err != nil {
+				t.Fatalf("ApplyVerifiableLog: %v", err)
+			}
+			if _, ok := protocol.DecodeAppError(res.Data); ok {
+				t.Fatalf("refused: %+v", res)
+			}
+			deleted = res.Value
+			if !packed {
+				b.commit(t, stg)
+				logs.BeginUpdate()
+			}
+		}
+		b.commit(t, stg)
+		if err := vlog.NewChain().Restore(stg); err != nil {
+			t.Fatalf("Restore after the drop: %v", err)
+		}
+		if _, err := vlog.ReadHead(stg, applyLog); err == nil {
+			t.Fatal("ReadHead of the dropped log succeeded")
+		}
+		return stg, deleted
+	}
+	packedStg, packed := run(true)
+	separateStg, separate := run(false)
+	if packed != separate {
+		t.Fatalf("packed drop deleted %d records; separate applies %d", packed, separate)
+	}
+	keys := func(stg *memory.MemoryStorage) []string {
+		it := stg.NewIterator(&storage.IteratorOptions{})
+		var out []string
+		for ok := it.SeekToFirst(); ok && it.Valid(); ok = it.Next() {
+			out = append(out, string(it.Key()))
+		}
+		_ = it.Close()
+		return out
+	}
+	pk, sk := keys(packedStg), keys(separateStg)
+	if !slices.Equal(pk, sk) {
+		t.Fatalf("packed apply leaves %q; separate applies leave %q", pk, sk)
+	}
+}
+
+func TestApplyVerifiableLog_AppendSealedFoldsTheGivenLeafHash(t *testing.T) {
+	p := payloadOf(t)
+	logs, stg := vlog.NewChain(), memory.NewStorage()
+	mustApply(t, logs, stg, p(protocol.EncodeVerifiableLogCreate(applyLog, applyDescriptor(false))))
+	mustApply(t, logs, stg, p(protocol.EncodeVerifiableLogAppend(applyLog, [][]byte{[]byte("a")})))
+
+	plain := [][]byte{[]byte("secret-1"), []byte("secret-2")}
+	leaves := make([]vlog.SealedLeaf, len(plain))
+	for i, e := range plain {
+		leaves[i] = vlog.SealedLeaf{Hash: vlog.LeafHash(e), Body: append([]byte("ct:"), e...)}
+	}
+	if first := mustApply(t, logs, stg, p(protocol.EncodeVerifiableLogAppendSealed(applyLog, leaves))); first != 1 {
+		t.Fatalf("first index = %d, want 1", first)
+	}
+	head, err := vlog.ReadHead(stg, applyLog)
+	if err != nil || head.Size != 3 {
+		t.Fatalf("ReadHead = %+v, %v, want size 3", head, err)
+	}
+	for i, e := range plain {
+		idx := uint64(i + 1)
+		path, err := vlog.Inclusion(stg, applyLog, idx, head.Size)
+		if err != nil {
+			t.Fatalf("Inclusion(%d): %v", idx, err)
+		}
+		if err := proof.VerifyInclusion(rfc6962.DefaultHasher, idx, head.Size, vlog.LeafHash(e), path, head.Root); err != nil {
+			t.Fatalf("inclusion of plaintext %d: %v", idx, err)
+		}
+	}
+	got, err := vlog.Get(stg, applyLog, 1, 2)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("Get = %v, %v", got, err)
+	}
+	for i, e := range got {
+		if !bytes.Equal(e.Body, leaves[i].Body) {
+			t.Fatalf("body %d = %q, want the sealed bytes %q", i, e.Body, leaves[i].Body)
+		}
+	}
+	// A malformed body is refused like Append's, applying nothing.
+	res, err := ApplyVerifiableLog(logs, stg, stg, p(protocol.EncodeVerifiableLogAppendSealed(applyLog, leaves))[:20])
+	if err != nil {
+		t.Fatalf("ApplyVerifiableLog(truncated): %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(res.Data); !ok {
+		t.Fatalf("truncated sealed append: %+v, want a refusal", res)
+	}
+}
+
+// TestApplyVerifiableLog_SealedKeyRecordsAreStoredUnopened pins sub-types
+// CreateSealedKey and RotateSealedKey: apply stores a key record whose PKCS8
+// is sealed as it is, checking only its version, while Create and RotateKey
+// still refuse a record they cannot decode.
+func TestApplyVerifiableLog_SealedKeyRecordsAreStoredUnopened(t *testing.T) {
+	p := payloadOf(t)
+	gen := func(version uint32) vlog.SigningKey {
+		t.Helper()
+		k, err := vlog.GenerateSigningKey(vlog.SignatureEd25519, version)
+		if err != nil {
+			t.Fatalf("GenerateSigningKey: %v", err)
+		}
+		return k
+	}
+	first, second := gen(vlog.FirstKeyVersion), gen(vlog.FirstKeyVersion+1)
+	desc := applyDescriptor(false)
+	desc.Keys = []vlog.HeadKey{applyHeadKey(t, first)}
+	sealedFirst := vlog.SigningKey{Version: first.Version, PKCS8: []byte("sealed-record-first")}
+	sealedSecond := vlog.SigningKey{Version: second.Version, PKCS8: []byte("sealed-record-second")}
+	refused := func(name string, payload []byte) {
+		t.Helper()
+		logs, stg := vlog.NewChain(), memory.NewStorage()
+		res, err := ApplyVerifiableLog(logs, stg, stg, payload)
+		if err != nil {
+			t.Fatalf("%s: ApplyVerifiableLog = %v, want a refusal result", name, err)
+		}
+		if _, ok := protocol.DecodeAppError(res.Data); !ok {
+			t.Fatalf("%s: %+v, want a refusal", name, res)
+		}
+	}
+	refused("Create with a sealed record", p(protocol.EncodeVerifiableLogCreateWithKey(applyLog, desc, sealedFirst)))
+	refused("CreateSealedKey at another version", p(protocol.EncodeVerifiableLogCreateSealedKey(applyLog, desc, sealedSecond)))
+
+	logs, stg := vlog.NewChain(), memory.NewStorage()
+	mustApply(t, logs, stg, p(protocol.EncodeVerifiableLogCreateSealedKey(applyLog, desc, sealedFirst)))
+	if got, err := vlog.ReadSigningKey(stg, applyLog, first.Version); err != nil || !bytes.Equal(got.PKCS8, sealedFirst.PKCS8) {
+		t.Fatalf("key record 1 = %v, %v; want the sealed bytes", got, err)
+	}
+	next := applyHeadKey(t, second)
+	if v := mustApply(t, logs, stg, p(protocol.EncodeVerifiableLogRotateSealedKey(applyLog, next, sealedSecond))); v != uint64(second.Version) {
+		t.Fatalf("RotateSealedKey value = %d, want %d", v, second.Version)
+	}
+	if got, err := vlog.ReadSigningKey(stg, applyLog, second.Version); err != nil || !bytes.Equal(got.PKCS8, sealedSecond.PKCS8) {
+		t.Fatalf("key record 2 = %v, %v; want the sealed bytes", got, err)
+	}
+	res, err := ApplyVerifiableLog(logs, stg, stg, p(protocol.EncodeVerifiableLogRotateKey(applyLog, applyHeadKey(t, gen(3)), &vlog.SigningKey{Version: 3, PKCS8: []byte("sealed-record-third")})))
+	if err != nil {
+		t.Fatalf("RotateKey with a sealed record: %v", err)
+	}
+	if _, ok := protocol.DecodeAppError(res.Data); !ok {
+		t.Fatalf("RotateKey with a sealed record: %+v, want a refusal", res)
+	}
 }
 
 // TestApplyVerifiableLog_CreateWithKey covers a Create carrying the log's

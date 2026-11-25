@@ -245,11 +245,15 @@ func (t *Transport) GetTenant(ctx context.Context, tenantID string) (*transport.
 }
 
 // ListTenants returns all tenants. Maps to GET /v1/tenants/list.
-func (t *Transport) ListTenants(ctx context.Context) (*transport.ListTenantsResponse, error) {
+func (t *Transport) ListTenants(ctx context.Context, req *transport.ListTenantsRequest) (*transport.ListTenantsResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, t.baseURL+"/v1/tenants/list", nil)
+	target := t.baseURL + "/v1/tenants/list"
+	if s := req.GetStatus(); s != "" {
+		target += "?" + url.Values{"status": {string(s)}}.Encode()
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return nil, &transport.RequestError{Method: "ListTenants", Err: err}
 	}
@@ -277,7 +281,7 @@ func (t *Transport) ListTenants(ctx context.Context) (*transport.ListTenantsResp
 		}
 		out.Tenants = append(out.Tenants, rt.toTenantInfo())
 	}
-	return out, nil
+	return transport.EnforceStatusFilter(req, out)
 }
 
 // ListDeletedTenants returns one page of retired tenant ids. Maps to

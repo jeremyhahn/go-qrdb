@@ -92,7 +92,10 @@ type Manager struct {
 	claimer    atomic.Pointer[claimerRef]
 	catalogRef atomic.Pointer[catalogRef]
 	reclaimer  KeyspaceReclaimer
-	localNode  atomic.Pointer[string] // see SetLocalNode
+	// logReclaimer deletes a dropped database's verifiable logs inside the
+	// fenced teardown (see SetLogReclaimer); nil reclaims none.
+	logReclaimer atomic.Pointer[logReclaimerRef]
+	localNode    atomic.Pointer[string] // see SetLocalNode
 	// defaults are the node's database_defaults, filled into a new
 	// database's record at create (WithDefaults).
 	defaults Defaults
@@ -891,6 +894,40 @@ func (m *Manager) Get(name string) (*Database, error) {
 // permanently refused.
 //
 // The default database cannot be dropped (CheckDroppable).
+// DatabaseLogReclaimer deletes every verifiable log a dropped database held.
+// Drop runs it inside the fenced teardown, before the catalog record is
+// deleted and the name released, so a database created again under the name
+// never sees an old log and a failed reclamation leaves the database fenced
+// and droppable on retry. incarnation is the dropped database's: the
+// reclamation deletes only logs created under it, so a stale drop of an
+// earlier incarnation leaves a successor's logs alone.
+type DatabaseLogReclaimer interface {
+	DropDatabaseLogs(ctx context.Context, tenantID, database, incarnation string) error
+}
+
+type logReclaimerRef struct{ r DatabaseLogReclaimer }
+
+// SetLogReclaimer sets or replaces the DatabaseLogReclaimer Drop runs; nil
+// removes it.
+func (m *Manager) SetLogReclaimer(r DatabaseLogReclaimer) {
+	if r == nil {
+		m.logReclaimer.Store(nil)
+		return
+	}
+	m.logReclaimer.Store(&logReclaimerRef{r: r})
+}
+
+// reclaimLogs runs the wired DatabaseLogReclaimer for db, if any. A database
+// with no tenant is reclaimed too: the reclaimer resolves its tenant ("" is
+// the system tenant's logs).
+func (m *Manager) reclaimLogs(ctx context.Context, db *Database) error {
+	ref := m.logReclaimer.Load()
+	if ref == nil {
+		return nil
+	}
+	return ref.r.DropDatabaseLogs(ctx, db.TenantID(), db.Name(), db.Incarnation())
+}
+
 func (m *Manager) Drop(ctx context.Context, name string) error {
 	if err := CheckDroppable(name); err != nil {
 		return err
@@ -1076,6 +1113,14 @@ func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 	}
 	if err := m.requireIncarnation(ctx, cat, db); err != nil {
 		return err
+	}
+
+	// 1c. The database's verifiable logs, while the record and the name are
+	//     still this incarnation's: a failure leaves the database fenced, so
+	//     a retry takes the claim over and reclaims again (the reclamation is
+	//     idempotent), and no create can reuse the name in between.
+	if err := m.reclaimLogs(ctx, db); err != nil {
+		return &DropError{Name: name, Err: err}
 	}
 
 	// 2. Close the database's own backend, so a dedicated store releases its

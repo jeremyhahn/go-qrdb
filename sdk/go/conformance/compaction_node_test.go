@@ -114,6 +114,8 @@ func TestNodeKeyspaceCompaction_OnEveryTransport(t *testing.T) {
 			// With no policy set, the raw keyspace keeps its history across
 			// many scheduler passes.
 			window := time.Now().Add(noPolicyWindow)
+			windowPoll := time.NewTicker(compactionInterval)
+			defer windowPoll.Stop()
 			for {
 				kv, err := raw.MVCC().GetAtRevision(ctx, "node/raw-key", first.ModRevision)
 				if err != nil || kv == nil || string(kv.Value) != "r1" {
@@ -122,7 +124,7 @@ func TestNodeKeyspaceCompaction_OnEveryTransport(t *testing.T) {
 				if time.Now().After(window) {
 					break
 				}
-				time.Sleep(compactionInterval)
+				<-windowPoll.C
 			}
 
 			// The system tenant sets it, and reads it back.
@@ -138,6 +140,8 @@ func TestNodeKeyspaceCompaction_OnEveryTransport(t *testing.T) {
 			}
 
 			deadline := time.Now().Add(callTimeout)
+			poll := time.NewTicker(25 * time.Millisecond)
+			defer poll.Stop()
 			for {
 				_, err := raw.MVCC().GetAtRevision(ctx, "node/raw-key", first.ModRevision)
 				if isCompacted(err) {
@@ -146,7 +150,7 @@ func TestNodeKeyspaceCompaction_OnEveryTransport(t *testing.T) {
 				if time.Now().After(deadline) {
 					t.Fatalf("%s: the platform's node-keyspace policy never compacted the raw keyspace (last: %v)", tk, err)
 				}
-				time.Sleep(25 * time.Millisecond)
+				<-poll.C
 			}
 			if v, err := raw.KV().Get(ctx, "node/raw-key"); err != nil || string(v) != "r2" {
 				t.Fatalf("%s: the raw key lost its current value: %q, %v", tk, v, err)

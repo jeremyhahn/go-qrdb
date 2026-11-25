@@ -233,6 +233,60 @@ func TestBarrierBackend_PutGet_VerifyEncryption(t *testing.T) {
 	}
 }
 
+// TestBarrierBackend_SealValueOpensOnlyUnderTheBarrier: SealValue and
+// OpenValue apply the barrier's value encryption, refuse while the barrier
+// is sealed, and Hold takes the quiesce lease a closed gate refuses.
+func TestBarrierBackend_SealValueOpensOnlyUnderTheBarrier(t *testing.T) {
+	barrier := &xorBarrier{mask: 0x5A}
+	b := NewBarrierBackend(newTestBackend(t), barrier)
+	plain := []byte("log entry")
+	ct, err := b.SealValue(plain)
+	if err != nil {
+		t.Fatalf("SealValue: %v", err)
+	}
+	if bytes.Equal(ct, plain) {
+		t.Fatal("SealValue returned the plaintext")
+	}
+	if got, err := b.OpenValue(ct); err != nil || !bytes.Equal(got, plain) {
+		t.Fatalf("OpenValue = %q, %v; want %q", got, err, plain)
+	}
+	release, err := b.Hold()
+	if err != nil {
+		t.Fatalf("Hold without a gate: %v", err)
+	}
+	release()
+
+	barrier.sealed = true
+	var sealed *SealedError
+	if _, err := b.SealValue(plain); !errors.As(err, &sealed) {
+		t.Fatalf("SealValue while sealed = %v; want *SealedError", err)
+	}
+	if _, err := b.OpenValue(ct); !errors.As(err, &sealed) {
+		t.Fatalf("OpenValue while sealed = %v; want *SealedError", err)
+	}
+
+	if _, err := NewBarrierBackend(newTestBackend(t), &failBarrier{}).OpenValue(ct); err == nil || errors.As(err, &sealed) {
+		t.Fatalf("OpenValue of a body that does not open = %v; want a decrypt error", err)
+	}
+
+	_, gated, gate := newGatedDatabase(t, &gateProbeBackend{StandaloneBackend: newTestBackend(t)})
+	release, err = gated.Hold()
+	if err != nil {
+		t.Fatalf("Hold on an open gate: %v", err)
+	}
+	if err := gate.Drain(0); err == nil {
+		t.Fatal("Drain with a Hold in flight finished; want it held")
+	}
+	release()
+	gate.Close()
+	if _, err := gated.Hold(); !errors.As(err, &sealed) {
+		t.Fatalf("Hold on a closed gate = %v; want *SealedError", err)
+	}
+	if err := gate.Drain(-1); err != nil {
+		t.Fatalf("Drain after the release = %v; want nil", err)
+	}
+}
+
 func TestBarrierBackend_Get_NonExistent(t *testing.T) {
 	barrier := &xorBarrier{mask: 0xAA}
 	b := newBarrierTestBackend(t, barrier)

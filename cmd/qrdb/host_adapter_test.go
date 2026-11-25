@@ -49,22 +49,6 @@ var (
 // hostAdapter interface satisfaction tests
 // ---------------------------------------------------------------------------
 
-func TestHostAdapter_ImplementsServiceHost(t *testing.T) {
-	// The compile-time check (var _ service.Host = (*hostAdapter)(nil))
-	// above is the real assertion. This test exists to provide a clear
-	// test name in the output and to verify the assignment compiles.
-	var h service.Host = (*hostAdapter)(nil)
-	_ = h
-}
-
-func TestBootstrapHostAdapter_ImplementsServiceHost(t *testing.T) {
-	// The compile-time check (var _ service.Host = (*bootstrapHostAdapter)(nil))
-	// above is the real assertion. This test exists to provide a clear
-	// test name in the output and to verify the assignment compiles.
-	var h service.Host = (*bootstrapHostAdapter)(nil)
-	_ = h
-}
-
 // ---------------------------------------------------------------------------
 // resolveStorageSM tests
 // ---------------------------------------------------------------------------

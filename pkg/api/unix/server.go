@@ -17,7 +17,11 @@
 // socket. The socket file mode (0700 directory) is defense-in-depth;
 // the transport is "verified TLS 1.3 only" with the same mTLS-derived
 // authentication and RBAC authorization as the TCP gRPC server, applied
-// via the identical interceptor chain.
+// via the identical interceptor chain. On Linux the socket additionally
+// reads the connecting process's peer credential (SO_PEERCRED uid/gid)
+// before the TLS handshake and binds it into every request, so a
+// certificate-less caller may be admitted by its peer credential when the
+// node maps that uid or gid to a go-qrdb account (auth.PeerCredentialMapping).
 package unix
 
 import (
@@ -50,6 +54,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/clientlimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
+	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
@@ -73,6 +78,7 @@ type Server struct {
 	socketPath        string
 	userSvc           user.UserServicer
 	roleSvc           role.RoleServicer
+	groupSvc          group.GroupServicer
 	certProv          cert.CertProvider
 	certEnroll        service.CertEnrollmentServicer
 	invitationSvc     service.InvitationServicer
@@ -194,7 +200,9 @@ func WithMaxMessageBytes(n int) ServerOption {
 // The Unix transport is "verified TLS 1.3 only": the socket-file mode
 // (0700 directory) is defense-in-depth, but the TLS client certificate
 // is the identity the auth middleware authenticates against, exactly as
-// on the TCP gRPC server.
+// on the TCP gRPC server. A caller presenting no certificate (when the
+// listener's ClientAuth permits that) may instead be admitted by its
+// peer credential, when the node maps the peer's uid or gid to an account.
 //
 // cfg is cloned — the caller's copy is never mutated or retained — and its
 // MinVersion is enforced: unset defaults to tls.VersionTLS13; an explicit
@@ -286,6 +294,11 @@ func WithUserService(svc user.UserServicer) ServerOption {
 // WithRoleService configures the Unix socket server with a role management service.
 func WithRoleService(svc role.RoleServicer) ServerOption {
 	return func(s *Server) { s.roleSvc = svc }
+}
+
+// WithGroupService sets the IAM group store.
+func WithGroupService(svc group.GroupServicer) ServerOption {
+	return func(s *Server) { s.groupSvc = svc }
 }
 
 // WithSOGate installs the SO dual-factor gate (authmw.SOGate) on every RPC
@@ -709,7 +722,9 @@ func (s *Server) Start() error {
 	// an observer to miss. Connections are reported to observing modules
 	// through the credentials, never by wrapping the listener, so grpc-go
 	// receives the accepted socket unchanged.
-	creds := apimodule.ConnObserversOf(s.modules).Credentials(credentials.NewTLS(s.tls), apimodule.TransportUnix)
+	// The peer-credential wrapper sits inside the observers so it reads
+	// SO_PEERCRED from the accepted socket itself (see peerCredCredentials).
+	creds := apimodule.ConnObserversOf(s.modules).Credentials(newPeerCredCredentials(credentials.NewTLS(s.tls)), apimodule.TransportUnix)
 	serverOpts = append(serverOpts, grpc.Creds(creds))
 
 	s.server = grpc.NewServer(serverOpts...)
@@ -729,6 +744,9 @@ func (s *Server) Start() error {
 	}
 	if s.roleSvc != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterRoleService(s.roleSvc))
+	}
+	if s.groupSvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterGroupService(s.groupSvc))
 	}
 	if s.certProv != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterCertProvider(s.certProv))
@@ -934,9 +952,11 @@ func (s *Server) admissionChains() (grpc.UnaryServerInterceptor, grpc.StreamServ
 	// sees the peer's TLS state and this socket's chain verifier.
 	// Ahead of even that, the client-address limiter (go-qrdb#1197), exactly
 	// as on TCP gRPC.
+	// Beside the TLS state, the peer credential the socket reported
+	// (SO_PEERCRED) is bound for the peer-credential authenticator.
 	v := s.chainVerifier()
-	return grpcpkg.ChainUnaryServerInterceptors(grpcpkg.ClientLimitUnaryInterceptor(s.clientLimit), authmw.PeerTLSUnaryInterceptor(v), unaryChain),
-		grpcpkg.ChainStreamServerInterceptors(grpcpkg.ClientLimitStreamInterceptor(s.clientLimit), authmw.PeerTLSStreamInterceptor(v), streamChain)
+	return grpcpkg.ChainUnaryServerInterceptors(grpcpkg.ClientLimitUnaryInterceptor(s.clientLimit), peerCredUnaryInterceptor, authmw.PeerTLSUnaryInterceptor(v), unaryChain),
+		grpcpkg.ChainStreamServerInterceptors(grpcpkg.ClientLimitStreamInterceptor(s.clientLimit), peerCredStreamInterceptor, authmw.PeerTLSStreamInterceptor(v), streamChain)
 }
 
 // chainVerifier is the verifier the socket binds to every call:

@@ -58,6 +58,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
@@ -143,6 +144,7 @@ type Server struct {
 	ceremonyCA        ceremony.CeremonyCA
 	userSvc           user.UserServicer
 	roleSvc           role.RoleServicer
+	groupSvc          group.GroupServicer
 	tenantSvc         tenant.TenantServicer
 	volumeSvc         volume.Service
 	backupSvc         service.BackupServicer
@@ -157,9 +159,16 @@ type Server struct {
 	corsConfig        *CORSConfig
 	grpcWebConfig     grpcweb.Config
 	grpcWebBackend    http.Handler
-	gatherer          prometheus.Gatherer
-	resolver          LeaderAdminResolver
-	forwardClient     *http.Client
+	webTransportPath  string
+	webTransportFunc  WebTransportHandler
+	webTransportErr   error
+	webTransport      *webTransportServer
+	// webTransportSettingsDeadline, when set, replaces the
+	// webTransportHandshakeTimeout timer of the client-SETTINGS wait.
+	webTransportSettingsDeadline <-chan time.Time
+	gatherer                     prometheus.Gatherer
+	resolver                     LeaderAdminResolver
+	forwardClient                *http.Client
 
 	// forwardSigner is this node's own private key, used to sign the
 	// on-behalf CallerAssertion attached to forwarded write requests. It is
@@ -704,6 +713,11 @@ func WithRoleService(svc role.RoleServicer) ServerOption {
 	return func(s *Server) { s.roleSvc = svc }
 }
 
+// WithGroupService sets the IAM group store.
+func WithGroupService(svc group.GroupServicer) ServerOption {
+	return func(s *Server) { s.groupSvc = svc }
+}
+
 // WithTenantService attaches a TenantServicer for tenant lifecycle management
 // operations including create, get, list, delete, and quota updates.
 func WithTenantService(svc tenant.TenantServicer) ServerOption {
@@ -1195,6 +1209,7 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	}
 	s.registeringModule = ""
 	s.registerRoutes()
+	s.registerWebTransport()
 	s.assertNoDirectRouteCollisions(directRoutes)
 
 	// Requests matching no route fall through to the embedded web UI when
@@ -1359,6 +1374,10 @@ func (s *Server) Start() error {
 		s.closePrebound()
 		return s.tlsErr
 	}
+	if s.webTransportErr != nil {
+		s.closePrebound()
+		return s.webTransportErr
+	}
 	if s.caBootstrapSources > 1 {
 		s.closePrebound()
 		return &CABootstrapConflictError{}
@@ -1449,7 +1468,7 @@ func (s *Server) Start() error {
 		// shaped like a quic.Listener, which connlimit.QUICListener
 		// satisfies directly.
 		h3Transport := &quicgo.Transport{Conn: h3Conn}
-		h3ln, h3LnErr := h3Transport.Listen(http3.ConfigureTLSConfig(s.tlsConfig), http3QUICConfig())
+		h3ln, h3LnErr := h3Transport.Listen(http3.ConfigureTLSConfig(s.tlsConfig), http3QUICConfig(s.webTransportFunc != nil))
 		if h3LnErr != nil {
 			_ = h3Transport.Close()
 			_ = h3Conn.Close()
@@ -1468,7 +1487,7 @@ func (s *Server) Start() error {
 		s.http3Server = &http3.Server{
 			Addr:       h3Conn.LocalAddr().String(),
 			Handler:    s.server.Handler,
-			QUICConfig: http3QUICConfig(),
+			QUICConfig: http3QUICConfig(s.webTransportFunc != nil),
 		}
 		if len(observers) > 0 {
 			// ConnContext runs once per accepted connection, and the
@@ -1482,8 +1501,13 @@ func (s *Server) Start() error {
 		// once it has closed it, and reading the field from here would race
 		// that write.
 		h3srv, h3l := s.http3Server, s.http3Listener
+		serve := h3srv.ServeListener
+		if s.webTransportFunc != nil {
+			s.webTransport = newWebTransportServer(h3srv)
+			serve = s.webTransport.serveListener
+		}
 		go func() {
-			if serveErr := h3srv.ServeListener(h3l); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) && !errors.Is(serveErr, net.ErrClosed) {
+			if serveErr := serve(h3l); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) && !errors.Is(serveErr, net.ErrClosed) {
 				slog.Error("HTTP/3 server error", "error", serveErr)
 			}
 		}()
@@ -1502,12 +1526,18 @@ func (s *Server) Start() error {
 // stream limits match the native QUIC listener (pkg/api/quic); unidirectional
 // streams keep quic-go's default, which HTTP/3's control and QPACK streams
 // need.
-func http3QUICConfig() *quicgo.Config {
+func http3QUICConfig(webTransport bool) *quicgo.Config {
 	return &quicgo.Config{
 		MaxIdleTimeout:     30 * time.Second,
 		KeepAlivePeriod:    10 * time.Second,
 		MaxIncomingStreams: 1000,
 		Allow0RTT:          false,
+		// draft-ietf-webtrans-http3-16 section 3: a WebTransport endpoint
+		// sends max_datagram_frame_size above 0 (RFC 9221) and
+		// reset_stream_at. Advertised only when a session handler is
+		// registered, so a node without one is unchanged.
+		EnableDatagrams:                  webTransport,
+		EnableStreamResetPartialDelivery: webTransport,
 	}
 }
 
@@ -1644,7 +1674,12 @@ func (s *Server) Stop() {
 	if s.replicaForwarder != nil {
 		s.replicaForwarder.close()
 	}
-	// Stop HTTP/3 first.
+	// Stop HTTP/3 first, its WebTransport sessions before the server.
+	if s.webTransport != nil {
+		if err := s.webTransport.close(); err != nil {
+			slog.Error("WebTransport server close error", "error", err)
+		}
+	}
 	if s.http3Server != nil {
 		if err := s.http3Server.Close(); err != nil {
 			slog.Error("HTTP/3 server close error", "error", err)
@@ -2299,6 +2334,17 @@ func (s *Server) registerRoutes() {
 	// another identity is gated in the evaluator by permissions:resolve.
 	s.route(http.MethodPost, "/permissions/authorize", permission.IdentityGated, s.handleAuthorize)
 
+	// IAM groups (the handlers nil-check the group service and report 501).
+	s.route(http.MethodPost, "/groups", permission.GroupsCreate, s.handleCreateGroup)
+	s.route(http.MethodGet, "/groups/list", permission.GroupsList, s.handleListGroups)
+	s.route(http.MethodGet, "/groups/by-name", permission.GroupsRead, s.handleGetGroupByName)
+	s.route(http.MethodGet, "/groups/members", permission.GroupsRead, s.handleListGroupMembers)
+	s.route(http.MethodPost, "/groups/members/add", permission.GroupsAddMember, s.handleAddGroupMember)
+	s.route(http.MethodPost, "/groups/members/remove", permission.GroupsRemoveMember, s.handleRemoveGroupMember)
+	s.route(http.MethodGet, "/groups/{id}", permission.GroupsRead, s.handleGroup)
+	s.route(http.MethodPut, "/groups/{id}", permission.GroupsUpdate, s.handleGroup)
+	s.route(http.MethodDelete, "/groups/{id}", permission.GroupsDelete, s.handleGroup)
+
 	// Role path-param routes (the handler nil-checks the role service).
 	s.route(http.MethodGet, "/roles/{id}", permission.RolesRead, s.handleRole)
 	s.route(http.MethodPut, "/roles/{id}", permission.RolesUpdate, s.handleRole)
@@ -2565,11 +2611,15 @@ func (s *Server) registerRoutes() {
 	s.routeIf(credOn, http.MethodPost, "/v1/credentials/submit", permission.CredentialsSubmit, s.handleCredentialSubmit)
 	s.routeIf(credOn, http.MethodPost, "/v1/credentials/store", permission.CredentialsStore, s.handleCredentialStore)
 	s.routeIf(credOn, http.MethodGet, "/v1/credentials/strategy", permission.CredentialsStrategy, s.handleCredentialStrategy)
+	s.routeIf(credOn, http.MethodGet, "/v1/credentials/migration-conflicts", permission.CredentialsList, s.handleCredentialMigrationConflicts)
 	s.routeIf(credOn, http.MethodGet, "/v1/credentials", permission.CredentialsList, s.handleCredentialList)
 
 	// Credential path-param routes (the handler nil-checks the service).
 	s.route(http.MethodDelete, "/v1/credentials/{name}", permission.CredentialsDelete, s.handleCredentialByPath)
 	s.route(http.MethodPost, "/v1/credentials/{name}/rotate", permission.CredentialsRotate, s.handleCredentialByPath)
+	s.route(http.MethodPut, "/v1/credentials/{name}/rotation-policy", permission.CredentialsRotate, s.handleCredentialByPath)
+	s.route(http.MethodGet, "/v1/credentials/{name}/rotation-policy", permission.CredentialsRotate, s.handleCredentialByPath)
+	s.route(http.MethodPost, "/v1/credentials/{name}/migration-resolve", permission.CredentialsRotate, s.handleCredentialByPath)
 	s.route(http.MethodPost, "/v1/credentials/{name}/gc", permission.CredentialsGCExpired, s.handleCredentialByPath)
 	s.route(http.MethodGet, "/v1/credentials/{name}/versions", permission.CredentialsListVersions, s.handleCredentialByPath)
 	s.route(http.MethodGet, "/v1/credentials/{name}/versions/{version}", permission.CredentialsRetrieveVersion, s.handleCredentialByPath)

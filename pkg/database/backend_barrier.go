@@ -123,6 +123,46 @@ func (b *BarrierBackend) Put(ctx context.Context, key, value []byte) error {
 	return b.inner.Put(ctx, key, encrypted)
 }
 
+// SealValue encrypts plaintext as Put encrypts a value, for a value the
+// caller stores outside this backend (a barrier database's log entry or
+// signing key record, proposed to its parent group). It refuses with
+// *SealedError while the barrier is sealed.
+func (b *BarrierBackend) SealValue(plaintext []byte) ([]byte, error) {
+	if b.barrier.IsSealed() {
+		return nil, &SealedError{}
+	}
+	ciphertext, err := b.barrier.Encrypt(nil, plaintext)
+	if err != nil {
+		return nil, &BarrierEncryptError{Err: err}
+	}
+	return ciphertext, nil
+}
+
+// OpenValue decrypts a SealValue ciphertext as Get decrypts a value. It
+// refuses with *SealedError while the barrier is sealed, and a ciphertext
+// that does not open is a *BarrierDecryptError, never passed through.
+func (b *BarrierBackend) OpenValue(ciphertext []byte) ([]byte, error) {
+	if b.barrier.IsSealed() {
+		return nil, &SealedError{}
+	}
+	plaintext, err := b.barrier.Decrypt(nil, ciphertext)
+	if err != nil {
+		return nil, &BarrierDecryptError{Err: err}
+	}
+	return plaintext, nil
+}
+
+// Hold enters the backend's quiesce lease as Put does, for a write the
+// caller makes outside this backend, so a seal's drain waits for it. It
+// refuses with *SealedError once the gate is closed; release, called once,
+// ends the hold. Without a gate on the barrier, release is a no-op.
+func (b *BarrierBackend) Hold() (release func(), err error) {
+	if err := b.lease.Acquire(); err != nil {
+		return nil, &SealedError{}
+	}
+	return b.lease.Release, nil
+}
+
 // PutIfAbsent encrypts value and stores it only when key is absent, forwarding
 // the conditional write to the inner backend so the atomicity guarantee is the
 // inner store's rather than something this wrapper invents.
@@ -337,6 +377,12 @@ func (b *BarrierBackend) Batch(ctx context.Context, ops []BatchOp) error {
 func (b *BarrierBackend) Close() error {
 	b.lease.Unregister()
 	return b.inner.Close()
+}
+
+// IsSealed reports whether the database's barrier is sealed: every call is
+// refused with SealedError while it is.
+func (b *BarrierBackend) IsSealed() bool {
+	return b.barrier.IsSealed()
 }
 
 // Reclaim forwards a drop's reclamation (backendReclaimer) to the wrapped

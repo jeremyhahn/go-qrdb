@@ -153,6 +153,34 @@ func TestDecorator_AllowBeyondRBACDeny(t *testing.T) {
 	}
 }
 
+// TestDecorator_GroupSubjectFromIdentityGroups: a rule scoped to an IAM
+// group matches an identity whose Groups carry it, and only such identities.
+func TestDecorator_GroupSubjectFromIdentityGroups(t *testing.T) {
+	inner := &fakeAuthorizer{} // inner would ALLOW
+	policy := testPolicy("contractors", "tenant-a", Rule{
+		Name:      "deny-contractors",
+		Effect:    EffectDeny,
+		Actions:   []string{"read"},
+		Resources: []string{"/secret/**"},
+	})
+	policy.Spec.Subjects = SubjectSelector{Groups: []string{"g-contractors"}}
+	authz, err := Decorate(inner, WithPolicies([]*Policy{policy}))
+	if err != nil {
+		t.Fatalf("Decorate() error = %v", err)
+	}
+	ctx := tenant.WithTenantID(context.Background(), "tenant-a")
+	member := testIdentity("bob", "tenant-a")
+	member.Groups = []string{"g-staff", "g-contractors"}
+	if err := authz.Authorize(ctx, member, "/secret/plan", "read"); err == nil {
+		t.Error("group-scoped deny did not match a member of the group")
+	}
+	outsider := testIdentity("carol", "tenant-a")
+	outsider.Groups = []string{"g-staff"}
+	if err := authz.Authorize(ctx, outsider, "/secret/plan", "read"); err != nil {
+		t.Errorf("group-scoped deny matched a non-member: %v", err)
+	}
+}
+
 func TestDecorator_NoMatchDelegates(t *testing.T) {
 	policy := testPolicy("narrow", "tenant-a", Rule{
 		Name:      "read-public",

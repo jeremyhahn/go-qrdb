@@ -518,6 +518,8 @@ func waitForAdminHealthy(b *testing.B, client *http.Client, port int, timeout ti
 	b.Helper()
 	url := fmt.Sprintf("https://127.0.0.1:%d/health", port)
 	deadline := time.Now().Add(timeout)
+	poll := time.NewTicker(50 * time.Millisecond)
+	defer poll.Stop()
 	for time.Now().Before(deadline) {
 		resp, err := client.Get(url)
 		if err == nil {
@@ -526,7 +528,7 @@ func waitForAdminHealthy(b *testing.B, client *http.Client, port int, timeout ti
 				return
 			}
 		}
-		time.Sleep(50 * time.Millisecond)
+		<-poll.C
 	}
 	b.Fatalf("timed out waiting for admin at port %d", port)
 }
@@ -536,6 +538,8 @@ func waitForAdminHealthy(b *testing.B, client *http.Client, port int, timeout ti
 func waitForLeader(b *testing.B, client *http.Client, ports []int, timeout time.Duration) int {
 	b.Helper()
 	deadline := time.Now().Add(timeout)
+	poll := time.NewTicker(100 * time.Millisecond)
+	defer poll.Stop()
 	for time.Now().Before(deadline) {
 		for _, port := range ports {
 			url := fmt.Sprintf("https://127.0.0.1:%d/status", port)
@@ -549,7 +553,7 @@ func waitForLeader(b *testing.B, client *http.Client, ports []int, timeout time.
 				return port
 			}
 		}
-		time.Sleep(100 * time.Millisecond)
+		<-poll.C
 	}
 	b.Fatalf("timed out waiting for leader")
 	return 0
@@ -563,6 +567,8 @@ func warmupWrite(b *testing.B, client *http.Client, port int, timeout time.Durat
 	b.Helper()
 	url := fmt.Sprintf("https://127.0.0.1:%d/kv/__warmup__", port)
 	deadline := time.Now().Add(timeout)
+	poll := time.NewTicker(200 * time.Millisecond)
+	defer poll.Stop()
 	for time.Now().Before(deadline) {
 		req, _ := http.NewRequest(http.MethodPut, url, bytes.NewReader([]byte("1")))
 		resp, err := client.Do(req)
@@ -577,7 +583,7 @@ func warmupWrite(b *testing.B, client *http.Client, port int, timeout time.Durat
 				return
 			}
 		}
-		time.Sleep(200 * time.Millisecond)
+		<-poll.C
 	}
 	b.Fatalf("timed out waiting for warmup write on port %d", port)
 }

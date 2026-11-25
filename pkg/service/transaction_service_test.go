@@ -33,13 +33,6 @@ import (
 // NewTransactionService
 // ---------------------------------------------------------------------------
 
-func TestNewTransactionService_ReturnsNonNil(t *testing.T) {
-	svc := NewTransactionService(&mockHost{}, 1)
-	if svc == nil {
-		t.Fatal("expected non-nil TransactionService")
-	}
-}
-
 func TestNewTransactionService_PreservesShardID(t *testing.T) {
 	var capturedShardID uint64
 	host := &mockHost{

@@ -220,7 +220,9 @@ func (e *AuthFactorWiringError) Unwrap() error { return e.Err }
 // another node already having won the create-if-absent race (which is
 // tolerated, not an error). Without this record FirstBootWithCeremony on
 // whichever node runs first boot has nothing to resolve the admin's
-// certificate from.
+// certificate from. It also carries a failed write of the system SO the
+// ceremony issued (firstboot.WriteIssuedSystemSOIfAny, go-qrdb#1128); the
+// wrapped error names which record.
 type PendingAdminCertWriteError struct {
 	Err error
 }

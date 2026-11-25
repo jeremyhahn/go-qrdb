@@ -150,6 +150,11 @@ func (s *Server) handleCreateRole(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
 
+	if err := s.authMW.AuthorizeSOExclusive(ctx, req.TenantID, "create role"); err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+
 	rl, err := s.roleSvc.CreateRole(ctx, &role.CreateRoleRequest{
 		ID:          req.ID,
 		Name:        req.Name,
@@ -517,7 +522,7 @@ func (s *Server) handleListOwnPermissions(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
 
-	perms, err := role.ListOwnPermissions(ctx, s.roleSvc)
+	perms, err := role.ListOwnPermissions(ctx, s.roleSvc, s.authMW.StrictSeparation())
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -600,6 +605,11 @@ func (s *Server) handleReconcileRoles(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
 
+	if err := s.authMW.AuthorizeSOExclusive(ctx, req.TenantID, "reconcile built-in roles"); err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+
 	report, err := s.roleSvc.ReconcileBuiltInRoles(ctx, req.TenantID)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -667,6 +677,10 @@ func (s *Server) handleReconcileRolesAllTenants(w http.ResponseWriter, r *http.R
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
 
+	if err := s.authMW.AuthorizeSOExclusive(ctx, "", "reconcile built-in roles in every tenant"); err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
 	report, err := role.ReconcileAllTenants(ctx, s.roleSvc, s.tenantSvc)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)

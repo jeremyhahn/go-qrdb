@@ -244,3 +244,27 @@ func TestServerKVAdapter_NonAbsenceErrorsPropagate(t *testing.T) {
 		t.Error("Exists = true alongside an error")
 	}
 }
+
+// scanErrKVSvc returns one chosen error from every Scan.
+type scanErrKVSvc struct {
+	service.KVServicer
+	err error
+}
+
+func (m *scanErrKVSvc) Scan(context.Context, string) (map[string][]byte, error) { return nil, m.err }
+
+func TestServerKVAdapter_ScanErrorPropagates(t *testing.T) {
+	boom := errors.New("scan failed")
+	a := newServerKVAdapter(&scanErrKVSvc{err: boom})
+	called := false
+	err := a.Scan(context.Background(), "p/", func(string, []byte) error {
+		called = true
+		return nil
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("Scan = %v, want %v", err, boom)
+	}
+	if called {
+		t.Fatal("Scan invoked the callback after the service failed")
+	}
+}

@@ -206,8 +206,9 @@ func serveVlog(t *testing.T, roles role.RoleServicer, roleName string, rt vlogRo
 		TenantID: vlogRESTTenant,
 		Roles:    []string{role.SystemRoleID(vlogRESTTenant, roleName)},
 	}
+	fa := authtest.NewFixedAuthenticator(caller)
 	srv := NewServer(nil, nil, "127.0.0.1:0",
-		WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(authtest.NewFixedAuthenticator(caller)))),
+		WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(fa), authmw.WithUserService(fa.Users()))),
 		WithLogService(svc))
 	req := httptest.NewRequest(rt.method, rt.target, strings.NewReader(rt.body))
 	req.Header.Set(HeaderDatabase, "ledger")

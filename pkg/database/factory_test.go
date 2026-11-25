@@ -115,9 +115,7 @@ func (m *mockRemoteTransport) Close() error {
 // EmbeddedBackendFactory tests
 // ---------------------------------------------------------------------------
 
-func TestEmbeddedBackendFactory_InterfaceCompliance(t *testing.T) {
-	var _ BackendFactory = (*EmbeddedBackendFactory)(nil)
-}
+var _ BackendFactory = (*EmbeddedBackendFactory)(nil)
 
 func TestEmbeddedBackendFactory_Create_Memory(t *testing.T) {
 	factory := NewEmbeddedBackendFactory()
@@ -265,9 +263,7 @@ func TestEmbeddedBackendFactory_Close(t *testing.T) {
 // RemoteBackend tests
 // ---------------------------------------------------------------------------
 
-func TestRemoteBackend_InterfaceCompliance(t *testing.T) {
-	var _ Backend = (*RemoteBackend)(nil)
-}
+var _ Backend = (*RemoteBackend)(nil)
 
 func TestRemoteBackend_Get(t *testing.T) {
 	mock := &mockRemoteTransport{

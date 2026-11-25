@@ -214,11 +214,16 @@ func joinerCSR(nodeURI string) ([]byte, error) {
 
 // retryUntil calls f until it succeeds or ctx ends.
 func retryUntil(ctx context.Context, f func() error) error {
+	poll := time.NewTicker(25 * time.Millisecond)
+	defer poll.Stop()
 	for {
 		err := f()
 		if err == nil || ctx.Err() != nil {
 			return err
 		}
-		time.Sleep(25 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+		case <-poll.C:
+		}
 	}
 }
