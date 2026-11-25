@@ -26,7 +26,9 @@ import (
 	"errors"
 	"math/big"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
@@ -49,11 +51,15 @@ type flakyClusterCAProvider struct {
 	transientErr   error // when set, answered instead of NotLeaderError for those calls
 	permanentErr   error // when set, answered immediately, never retried
 	calls          int
+	onCall         func() // when set, run at the top of every Certificate call
 }
 
 func (f *flakyClusterCAProvider) Signer(context.Context) (crypto.Signer, error) { return nil, nil }
 
 func (f *flakyClusterCAProvider) Certificate(context.Context) (*x509.Certificate, error) {
+	if f.onCall != nil {
+		f.onCall()
+	}
 	f.calls++
 	if f.permanentErr != nil {
 		return nil, f.permanentErr
@@ -354,23 +360,48 @@ func TestAwaitClusterCACertificate_DeadlineExceeded(t *testing.T) {
 // cancellation during the backoff wait is honored immediately rather than
 // waiting out the (here, long) remaining delay.
 func TestAwaitClusterCACertificate_CtxCanceledDuringBackoff(t *testing.T) {
-	stub := &flakyClusterCAProvider{notLeaderCalls: 1000000}
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		time.Sleep(10 * time.Millisecond)
+	// The first Certificate call answers NotLeaderError; ctx is cancelled
+	// only once the await is durably blocked in the minute-long backoff that
+	// follows, so the backoff's cancel case is where the cancel lands.
+	synctest.Test(t, func(t *testing.T) {
+		var reads atomic.Int32
+		stub := &flakyClusterCAProvider{notLeaderCalls: 1000000, onCall: func() { reads.Add(1) }}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		done := make(chan error, 1)
+		start := time.Now()
+		go func() {
+			_, err := AwaitClusterCACertificate(ctx, stub, time.Hour, time.Minute, time.Minute)
+			done <- err
+		}()
+		synctest.Wait()
+		if got := reads.Load(); got != 1 {
+			t.Fatalf("Certificate calls before the cancel = %d, want 1 (blocked in the backoff)", got)
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("AwaitClusterCACertificate returned %v before the cancel, want it blocked in the backoff", err)
+		default:
+		}
 		cancel()
-	}()
-
-	start := time.Now()
-	_, err := AwaitClusterCACertificate(ctx, stub, time.Minute, time.Second, 5*time.Second)
-	elapsed := time.Since(start)
-	var notLeader *service.NotLeaderError
-	if !errors.As(err, &notLeader) {
-		t.Fatalf("AwaitClusterCACertificate = %v (%T), want *service.NotLeaderError", err, err)
-	}
-	if elapsed > 500*time.Millisecond {
-		t.Errorf("AwaitClusterCACertificate took %s, want an immediate return once ctx was canceled", elapsed)
-	}
+		synctest.Wait()
+		var err error
+		select {
+		case err = <-done:
+		default:
+			t.Fatal("AwaitClusterCACertificate did not return once ctx was canceled during the backoff")
+		}
+		var notLeader *service.NotLeaderError
+		if !errors.As(err, &notLeader) {
+			t.Fatalf("AwaitClusterCACertificate = %v (%T), want *service.NotLeaderError", err, err)
+		}
+		if got := reads.Load(); got != 1 {
+			t.Errorf("Certificate calls = %d, want 1", got)
+		}
+		if elapsed := time.Since(start); elapsed != 0 {
+			t.Errorf("fake time advanced %s, want an immediate return once ctx was canceled", elapsed)
+		}
+	})
 }
 
 // TestClusterCAEstablishError_Error proves the message names both the

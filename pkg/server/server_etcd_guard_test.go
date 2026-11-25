@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -162,13 +163,8 @@ func TestEtcdRequestAuthorizer_GuardStreamEndsOnClusterSeal(t *testing.T) {
 			t.Fatalf("subscriptions = %d", streams.Len())
 		}
 		cancel()
-		deadline := time.Now().Add(5 * time.Second)
-		for streams.Len() != 0 && time.Now().Before(deadline) {
-			time.Sleep(time.Millisecond)
-		}
-		if streams.Len() != 0 {
-			t.Fatal("the subscription outlived its stream")
-		}
+		require.Eventually(t, func() bool { return streams.Len() == 0 }, 5*time.Second, time.Millisecond,
+			"the subscription outlived its stream")
 	})
 }
 

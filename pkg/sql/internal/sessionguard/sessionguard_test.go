@@ -21,9 +21,14 @@ import (
 	"errors"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 )
@@ -32,19 +37,39 @@ type testProbe struct{ sealed atomic.Bool }
 
 func (p *testProbe) IsSealed() bool { return p.sealed.Load() }
 
-// closeCounter counts closes of one connection.
-type closeCounter struct{ n atomic.Int32 }
+// closeCounter counts closes of one connection; its closed channel is
+// closed on the first close so a test can wait for it. The zero value is
+// usable: the channel is made on first use.
+type closeCounter struct {
+	n         atomic.Int32
+	initOnce  sync.Once
+	closeOnce sync.Once
+	ch        chan struct{}
+}
 
-func (c *closeCounter) close() { c.n.Add(1) }
+func newCloseCounter() *closeCounter {
+	c := &closeCounter{}
+	c.closed()
+	return c
+}
+
+// closed returns the channel closed by the first close.
+func (c *closeCounter) closed() chan struct{} {
+	c.initOnce.Do(func() { c.ch = make(chan struct{}) })
+	return c.ch
+}
+
+func (c *closeCounter) close() {
+	c.n.Add(1)
+	c.closeOnce.Do(func() { close(c.closed()) })
+}
 
 func waitClosed(t *testing.T, c *closeCounter) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for c.n.Load() == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the connection was not closed")
-		}
-		time.Sleep(time.Millisecond)
+	select {
+	case <-c.closed():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the connection was not closed")
 	}
 }
 
@@ -90,15 +115,12 @@ func TestWatchAdmission_SealedSkipsTheAdmission(t *testing.T) {
 	admission := &countingAdmission{}
 	g := New(probe, nil, time.Millisecond, WithAdmission(admission))
 	g.Start()
-	deadline := time.Now().Add(5 * time.Second)
-	for probe.byAdmission.Load() < 3 || probe.byProbe.Load() < 3 {
-		if time.Now().After(deadline) {
-			g.Stop()
-			t.Fatalf("watch loops read the probe %d (admission) and %d (probe) times",
-				probe.byAdmission.Load(), probe.byProbe.Load())
-		}
-		time.Sleep(time.Millisecond)
-	}
+	// Stop is idempotent: deferred so a failed poll still stops both loops.
+	defer g.Stop()
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		assert.GreaterOrEqual(c, probe.byAdmission.Load(), int32(3), "probe reads by the admission loop")
+		assert.GreaterOrEqual(c, probe.byProbe.Load(), int32(3), "probe reads by the probe loop")
+	}, 5*time.Second, time.Millisecond, "watch loops did not read the probe often enough")
 	g.Stop()
 	if n := admission.n.Load(); n != 0 {
 		t.Fatalf("a sealed node consulted the admission %d times", n)
@@ -129,7 +151,7 @@ func TestOpen_RefusesWhileSealed(t *testing.T) {
 func TestProbeCloseEndsEverySession(t *testing.T) {
 	p := &testProbe{}
 	g := newStarted(t, p, nil)
-	a, b := &closeCounter{}, &closeCounter{}
+	a, b := newCloseCounter(), newCloseCounter()
 	if _, err := g.Open("acme", a.close); err != nil {
 		t.Fatal(err)
 	}
@@ -145,47 +167,60 @@ func TestProbeCloseEndsEverySession(t *testing.T) {
 // database closes that tenant's connections, whichever database they use,
 // and leaves another tenant's open; a node seal closes all.
 func TestStreamEndClosesOnlyItsTenantsSessions(t *testing.T) {
-	streams := clusterseal.NewStreams()
-	g := newStarted(t, &testProbe{}, streams)
-	acme, globex := &closeCounter{}, &closeCounter{}
-	if _, err := g.Open("acme", acme.close); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := g.Open("globex", globex.close); err != nil {
-		t.Fatal(err)
-	}
-	streams.EndDatabase("acme", "ledger", errors.New("sealed"))
-	waitClosed(t, acme)
-	time.Sleep(20 * time.Millisecond)
-	if globex.n.Load() != 0 {
-		t.Fatal("another tenant's seal closed the connection")
-	}
-	streams.EndAll(errors.New("node sealed"))
-	waitClosed(t, globex)
+	// The bubble's fake clock drives the guard's 1ms tickers: the
+	// absence window below is twenty probe and admission ticks of fake
+	// time, and synctest.Wait proves every guard goroutine has settled
+	// before globex is checked.
+	synctest.Test(t, func(t *testing.T) {
+		streams := clusterseal.NewStreams()
+		g := newStarted(t, &testProbe{}, streams)
+		acme, globex := newCloseCounter(), newCloseCounter()
+		if _, err := g.Open("acme", acme.close); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := g.Open("globex", globex.close); err != nil {
+			t.Fatal(err)
+		}
+		streams.EndDatabase("acme", "ledger", errors.New("sealed"))
+		waitClosed(t, acme)
+		time.Sleep(20 * time.Millisecond) // fake clock: twenty guard ticks
+		synctest.Wait()
+		if globex.n.Load() != 0 {
+			t.Fatal("another tenant's seal closed the connection")
+		}
+		streams.EndAll(errors.New("node sealed"))
+		waitClosed(t, globex)
+	})
 }
 
 // TestRelease_ForgetsTheSession: a released session is no longer closed by a
 // seal and leaves no subscription; Release is idempotent.
 func TestRelease_ForgetsTheSession(t *testing.T) {
-	streams := clusterseal.NewStreams()
-	p := &testProbe{}
-	g := newStarted(t, p, streams)
-	c := &closeCounter{}
-	s, err := g.Open("acme", c.close)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.Release()
-	s.Release()
-	if g.Len() != 0 || streams.Len() != 0 {
-		t.Fatalf("after Release: sessions %d, subscriptions %d", g.Len(), streams.Len())
-	}
-	streams.EndAll(errors.New("sealed"))
-	p.sealed.Store(true)
-	time.Sleep(20 * time.Millisecond)
-	if c.n.Load() != 0 {
-		t.Fatal("a released session was closed")
-	}
+	// The fake clock advances twenty probe ticks after the seal, so the
+	// watchProbe loop reads the sealed probe and runs endAll; synctest.Wait
+	// proves it has finished before the released session is checked.
+	synctest.Test(t, func(t *testing.T) {
+		streams := clusterseal.NewStreams()
+		p := &testProbe{}
+		g := newStarted(t, p, streams)
+		c := newCloseCounter()
+		s, err := g.Open("acme", c.close)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.Release()
+		s.Release()
+		if g.Len() != 0 || streams.Len() != 0 {
+			t.Fatalf("after Release: sessions %d, subscriptions %d", g.Len(), streams.Len())
+		}
+		streams.EndAll(errors.New("sealed"))
+		p.sealed.Store(true)
+		time.Sleep(20 * time.Millisecond) // fake clock: twenty probe ticks
+		synctest.Wait()
+		if c.n.Load() != 0 {
+			t.Fatal("a released session was closed")
+		}
+	})
 }
 
 // TestOpen_SubscribesBeforeItAsksTheProbe: a seal that lands as the session
@@ -196,7 +231,7 @@ func TestOpen_SubscribesBeforeItAsksTheProbe(t *testing.T) {
 	g := New(p, streams, time.Hour) // the probe watch must not be what closes it
 	g.Start()
 	t.Cleanup(g.Stop)
-	c := &closeCounter{}
+	c := newCloseCounter()
 	if _, err := g.Open("acme", c.close); err != nil {
 		return // refused outright: as good as closed
 	}

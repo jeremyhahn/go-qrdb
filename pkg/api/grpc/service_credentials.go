@@ -16,6 +16,7 @@ package grpc
 
 import (
 	"context"
+	"math"
 	"time"
 
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -110,6 +111,75 @@ func (s *qrdbServiceServer) CredentialRotate(ctx context.Context, req *pb.Creden
 		NewVersion:      result.NewVersion,
 		GraceUntilUnix:  graceUntilUnix,
 	}, nil
+}
+
+// CredentialSetRotationPolicy sets a credential's scheduled rotation policy.
+// A refused policy is codes.InvalidArgument.
+func (s *qrdbServiceServer) CredentialSetRotationPolicy(ctx context.Context, req *pb.CredentialSetRotationPolicyRequest) (*emptypb.Empty, error) {
+	if s.credentialSvc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "credential"})
+	}
+	policy, err := service.CredentialRotationPolicyFromWire(req.GetEnabled(), req.GetInterval(), int(req.GetRetainVersions()))
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	if err := s.credentialSvc.CredentialSetRotationPolicy(ctx, req.GetName(), policy); err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &emptypb.Empty{}, nil
+}
+
+// CredentialRotationPolicy returns a credential's scheduled rotation policy
+// and the time of its next scheduled rotation.
+func (s *qrdbServiceServer) CredentialRotationPolicy(ctx context.Context, req *pb.CredentialRotationPolicyRequest) (*pb.CredentialRotationPolicyResponse, error) {
+	if s.credentialSvc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "credential"})
+	}
+	status, err := s.credentialSvc.CredentialRotationPolicy(ctx, req.GetName())
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &pb.CredentialRotationPolicyResponse{
+		Name:           req.GetName(),
+		Enabled:        status.Policy.Enabled,
+		Interval:       status.WireInterval(),
+		RetainVersions: int32(min(status.Policy.RetainVersions, math.MaxInt32)), //nolint:gosec // clamped to the int32 range
+		NextRotation:   status.WireNextRotation(),
+	}, nil
+}
+
+// CredentialMigrationConflicts lists the caller's store's migration
+// conflicts. No value is returned.
+func (s *qrdbServiceServer) CredentialMigrationConflicts(ctx context.Context, _ *pb.CredentialMigrationConflictsRequest) (*pb.CredentialMigrationConflictsResponse, error) {
+	if s.credentialSvc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "credential"})
+	}
+	conflicts, err := s.credentialSvc.CredentialMigrationConflicts(ctx)
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	resp := &pb.CredentialMigrationConflictsResponse{
+		Conflicts: make([]*pb.CredentialMigrationConflict, 0, len(conflicts)),
+	}
+	for _, c := range conflicts {
+		resp.Conflicts = append(resp.Conflicts, &pb.CredentialMigrationConflict{
+			Name: c.Name, Value: c.Value, Versions: c.Versions, Policy: c.Policy,
+		})
+	}
+	return resp, nil
+}
+
+// CredentialResolveMigrationConflict settles one migration conflict by
+// import or discard.
+func (s *qrdbServiceServer) CredentialResolveMigrationConflict(ctx context.Context, req *pb.CredentialResolveMigrationConflictRequest) (*emptypb.Empty, error) {
+	if s.credentialSvc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "credential"})
+	}
+	how := credentials.MigrationResolution(req.GetResolution())
+	if err := s.credentialSvc.CredentialResolveMigrationConflict(ctx, req.GetName(), how); err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &emptypb.Empty{}, nil
 }
 
 // CredentialRetrieveVersion returns the stored credential value for a

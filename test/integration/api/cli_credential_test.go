@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -465,6 +466,123 @@ func TestCLIMultiProtocolCredentialRotateWithGracePeriod(t *testing.T) {
 	}
 }
 
+// TestCLIMultiProtocolCredentialScheduledRotationNoValueSource drives a
+// scheduled rotation on a qrdbd that ships no rotation value source: an
+// enabled policy falls due, the
+// scheduler's passes over it rotate nothing, and the value, the version list
+// and the next rotation read back over every protocol stay as they were.
+//
+// config.test.yaml sets seal.credential_rotation_check_period to 1s; a stack
+// started with another period names it in QRDB_CREDENTIAL_ROTATION_CHECK_PERIOD.
+// The wait ends on the server-reported next rotation lying two check periods
+// in the past. The protocols run in parallel.
+func TestCLIMultiProtocolCredentialScheduledRotationNoValueSource(t *testing.T) {
+	cfg := LoadTestConfig()
+	requireCLI(t, cfg)
+	period, err := time.ParseDuration(getEnv("QRDB_CREDENTIAL_ROTATION_CHECK_PERIOD", "1s"))
+	if err != nil || period <= 0 {
+		t.Fatalf("QRDB_CREDENTIAL_ROTATION_CHECK_PERIOD: %v, want a positive Go duration", err)
+	}
+
+	for _, proto := range AllProtocols() {
+		t.Run(string(proto), func(t *testing.T) {
+			t.Parallel()
+			if !cfg.IsProtocolAvailable(t, proto) {
+				t.Fatalf("server not available for protocol %s", proto)
+			}
+			name := fmt.Sprintf("cred-sched-nosrc-%s-%d", proto, testTimestamp())
+			t.Cleanup(func() {
+				execCLIWithProtocol(t, cfg, proto, "credential", "delete", name) //nolint:errcheck
+			})
+			cli := func(args ...string) string {
+				t.Helper()
+				stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, args...)
+				if err != nil {
+					t.Fatalf("[%s] %v failed: %v\nstdout: %s\nstderr: %s", proto, args, err, stdout, stderr)
+				}
+				return stdout
+			}
+
+			cli("credential", "rotate", name, "--value", "v1")
+			// One second is the smallest interval the wire form carries.
+			cli("credential", "rotation-policy", "set", name, "--enabled", "--interval", "1s", "--retain-versions", "1")
+
+			type observed struct {
+				value    string
+				versions []uint64
+				next     string
+			}
+			observe := func() observed {
+				t.Helper()
+				var o observed
+				o.value = strings.TrimSpace(cli("credential", "retrieve", name))
+				for _, v := range parseCredentialListVersionsResponse(t, proto, cli("--output", "json", "credential", "versions", name)).Versions {
+					o.versions = append(o.versions, v.Version)
+				}
+				var policy map[string]any
+				if err := json.Unmarshal([]byte(cli("--output", "json", "credential", "rotation-policy", "get", name)), &policy); err != nil {
+					t.Fatalf("[%s] rotation-policy get --output json: %v", proto, err)
+				}
+				if enabled, _ := policy["enabled"].(bool); !enabled {
+					t.Fatalf("[%s] rotation-policy get reports the policy disabled: %v", proto, policy)
+				}
+				for _, key := range []string{"next_rotation", "nextRotation"} {
+					if s, ok := policy[key].(string); ok {
+						o.next = s
+					}
+				}
+				if o.next == "" {
+					t.Fatalf("[%s] rotation-policy get reports no next rotation: %v", proto, policy)
+				}
+				return o
+			}
+
+			before := observe()
+			assertEqual(t, "v1", before.value, fmt.Sprintf("[%s] stored value", proto))
+			assertEqual(t, 1, len(before.versions), fmt.Sprintf("[%s] versions before the policy falls due", proto))
+
+			due, err := time.Parse(time.RFC3339Nano, before.next)
+			if err != nil {
+				t.Fatalf("[%s] next rotation %q: %v", proto, before.next, err)
+			}
+			// Every poll asserts nothing changed; the wait ends on the
+			// server's own next rotation lying two check periods in the
+			// past, by which time at least one scheduler pass ran on the
+			// due policy.
+			overdue := eventuallyCredential(time.Second+4*period+30*time.Second, 250*time.Millisecond, func() bool {
+				now := observe()
+				assertEqual(t, before.value, now.value, fmt.Sprintf("[%s] value changed with no value source", proto))
+				assertEqual(t, fmt.Sprint(before.versions), fmt.Sprint(now.versions), fmt.Sprintf("[%s] versions changed with no value source", proto))
+				assertEqual(t, before.next, now.next, fmt.Sprintf("[%s] next rotation moved with no value source", proto))
+				return time.Since(due) >= 2*period
+			})
+			if !overdue {
+				t.Fatalf("[%s] next rotation %s never fell two check periods (%s) overdue", proto, before.next, period)
+			}
+		})
+	}
+}
+
+// eventuallyCredential calls cond on every tick of interval until it
+// reports true (true) or wait has passed (false). It sleeps on no fixed
+// window: a condition met on the first call returns at once.
+func eventuallyCredential(wait, interval time.Duration, cond func() bool) bool {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	expired := time.NewTimer(wait)
+	defer expired.Stop()
+	for {
+		if cond() {
+			return true
+		}
+		select {
+		case <-ticker.C:
+		case <-expired.C:
+			return false
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // negative cases
 // ---------------------------------------------------------------------------
@@ -484,8 +602,8 @@ func TestCLIMultiProtocolCredentialNegativeCases(t *testing.T) {
 
 			// retrieve of a name that was never stored.
 			missing := fmt.Sprintf("cred-missing-%s-%d", proto, testTimestamp())
-			_, _, err := execCLIWithProtocol(t, cfg, proto, "credential", "retrieve", missing)
-			assertError(t, err, fmt.Sprintf("[%s] credential retrieve of a missing name should error", proto))
+			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "credential", "retrieve", missing)
+			requireCLINotFound(t, proto, "credential retrieve of a missing name", stdout, stderr, err)
 
 			// retrieve-version of a version that was never written, for an
 			// otherwise-existing credential.
@@ -493,13 +611,30 @@ func TestCLIMultiProtocolCredentialNegativeCases(t *testing.T) {
 			t.Cleanup(func() {
 				execCLIWithProtocol(t, cfg, proto, "credential", "delete", name) //nolint:errcheck
 			})
-			_, stderr, err := execCLIWithProtocol(t, cfg, proto, "credential", "store", name, "--value", "v1")
+			_, stderr, err = execCLIWithProtocol(t, cfg, proto, "credential", "store", name, "--value", "v1")
 			if err != nil {
 				t.Logf("stderr: %s", stderr)
 				t.Fatalf("[%s] credential store failed: %v", proto, err)
 			}
-			_, _, err = execCLIWithProtocol(t, cfg, proto, "credential", "retrieve-version", name, "--version", "999")
-			assertError(t, err, fmt.Sprintf("[%s] credential retrieve-version with an unwritten version should error", proto))
+			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "credential", "retrieve-version", name, "--version", "999")
+			requireCLINotFound(t, proto, "credential retrieve-version of an unwritten version", stdout, stderr, err)
+			stdout, _, err = execCLIWithProtocol(t, cfg, proto, "credential", "retrieve", name)
+			if err != nil || strings.TrimSpace(stdout) != "v1" {
+				t.Fatalf("[%s] the refused retrieve-version changed %s: %q, %v", proto, name, stdout, err)
+			}
 		})
+	}
+}
+
+// requireCLINotFound fails the test unless a CLI call exited non-zero with
+// a not-found refusal. Every transport names it "not found"; their SDK
+// error types differ.
+func requireCLINotFound(t *testing.T, proto ProtocolType, what, stdout, stderr string, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("[%s] %s must be refused, got: %s", proto, what, stdout)
+	}
+	if !strings.Contains(strings.ToLower(stdout+stderr+err.Error()), "not found") {
+		t.Fatalf("[%s] %s refusal = %v\nstdout: %s\nstderr: %s\nwant a not-found refusal", proto, what, err, stdout, stderr)
 	}
 }

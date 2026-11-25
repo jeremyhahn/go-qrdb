@@ -24,6 +24,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -154,7 +155,14 @@ func TestForwardEvents_WatchEndedForAReasonIsCanceledWithIt(t *testing.T) {
 	}
 }
 
-// overlapDetectingStream records whether two Sends ever overlapped.
+// overlapDetectingStream records whether two Sends ever overlapped. Send holds
+// each call in flight for a 50us window so two overlapping calls are
+// observable. In TestSerialWatchStream_DetectorSeesUnserializedOverlap the
+// window is fake time inside a synctest bubble. In
+// TestSerialWatchStream_SendsOneAtATime it stays real time: serialWatchStream
+// serialises with a sync.Mutex, and a goroutine waiting on a mutex is not
+// durably blocked, so the bubble's clock could never advance past one holder's
+// sleep while the other senders queue on the mutex.
 type overlapDetectingStream struct {
 	pb.Watch_WatchServer
 	inFlight atomic.Int32
@@ -188,21 +196,29 @@ func TestSerialWatchStream_SendsOneAtATime(t *testing.T) {
 	if inner.overlap.Load() {
 		t.Fatal("two Sends on one stream overlapped")
 	}
+}
 
-	// The control: the same senders on the bare stream do overlap, so the
-	// detector can fail.
-	bare := &overlapDetectingStream{}
-	for range 16 {
-		wg.Go(func() {
-			for range 20 {
-				_ = bare.Send(&pb.WatchResponse{})
-			}
-		})
-	}
-	wg.Wait()
-	if !bare.overlap.Load() {
-		t.Fatal("the detector saw no overlap on an unserialized stream; it cannot fail")
-	}
+// TestSerialWatchStream_DetectorSeesUnserializedOverlap is the control for
+// TestSerialWatchStream_SendsOneAtATime: the same senders on the bare stream
+// do overlap, so the detector can fail. It runs in a synctest bubble: every
+// sender enters Send and blocks in the fake 50us sleep before the clock
+// moves, so all 16 are in flight together and the overlap is certain.
+func TestSerialWatchStream_DetectorSeesUnserializedOverlap(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		bare := &overlapDetectingStream{}
+		var wg sync.WaitGroup
+		for range 16 {
+			wg.Go(func() {
+				for range 20 {
+					_ = bare.Send(&pb.WatchResponse{})
+				}
+			})
+		}
+		wg.Wait()
+		if !bare.overlap.Load() {
+			t.Fatal("the detector saw no overlap on an unserialized stream; it cannot fail")
+		}
+	})
 }
 
 // etcdWatcher serves srv's Watch over an in-memory gRPC connection and returns

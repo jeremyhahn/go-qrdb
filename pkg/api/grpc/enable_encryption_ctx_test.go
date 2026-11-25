@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc/peer"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -44,10 +45,8 @@ func TestBarrierEnableEncryption_MigrationKeepsTheRequestValues(t *testing.T) {
 		if _, ok := peer.FromContext(call.ctx); !ok {
 			t.Fatal("the migration context lost the request's values (no peer)")
 		}
-		time.Sleep(50 * time.Millisecond)
-		if call.ctx.Err() != nil {
-			t.Fatalf("the migration context was cancelled with the request: %v", call.ctx.Err())
-		}
+		assert.Never(t, func() bool { return call.ctx.Err() != nil }, 50*time.Millisecond, time.Millisecond,
+			"the migration context was cancelled with the request")
 	case <-time.After(5 * time.Second):
 		t.Fatal("migrator never invoked")
 	}

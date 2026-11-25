@@ -26,6 +26,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -34,7 +35,10 @@ import (
 	"github.com/jeremyhahn/go-qrdb/test/clusterproof/workload"
 )
 
-// opDelay paces the fake store so a run's history stays small.
+// opDelay is the fake store's per-op latency. Every test that reaches it runs
+// Run or Main inside a synctest bubble (bubbleRun, TestMainRunsAndReports),
+// so it is fake time: no real time passes, yet it still paces the workload
+// so a run's history stays small.
 const opDelay = 200 * time.Microsecond
 
 // fakeKV is one linearizable register map every node serves. While lossy it
@@ -216,7 +220,14 @@ func testOptions(t *testing.T, kv *fakeKV, fault *fakeNemesis) Options {
 // run runs o and checks that its bundle verifies and reproduces the verdict.
 func run(t *testing.T, o Options) Verdict {
 	t.Helper()
-	res, err := Run(context.Background(), o)
+	v, _ := runElapsed(t, o)
+	return v
+}
+
+// runElapsed is run that also returns the fake time Run took in its bubble.
+func runElapsed(t *testing.T, o Options) (Verdict, time.Duration) {
+	t.Helper()
+	res, elapsed, err := bubbleRun(t, context.Background, o)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -233,7 +244,23 @@ func run(t *testing.T, o Options) Verdict {
 	if chk.Verdict.Exit != res.Verdict.Exit || chk.Verdict.Outcome != res.Verdict.Outcome {
 		t.Fatalf("check verdict %s/%d, run verdict %s/%d", chk.Verdict.Outcome, chk.Verdict.Exit, res.Verdict.Outcome, res.Verdict.Exit)
 	}
-	return res.Verdict
+	return res.Verdict, elapsed
+}
+
+// bubbleRun runs Run inside a synctest bubble, so the fake store's opDelay
+// and Run's own pacing (time.Now, time.After, time.NewTicker) elapse on the
+// bubble's fake clock and no real time passes. ctx is called inside the
+// bubble, so a context it creates (and cancels) belongs to the bubble. The
+// options, and so o.Bundle under the caller's t.TempDir, are built outside,
+// so the bundle outlives the bubble. elapsed is the fake time Run took.
+func bubbleRun(t *testing.T, ctx func() context.Context, o Options) (res Result, elapsed time.Duration, err error) {
+	t.Helper()
+	synctest.Test(t, func(*testing.T) {
+		start := time.Now()
+		res, err = Run(ctx(), o)
+		elapsed = time.Since(start)
+	})
+	return res, elapsed, err
 }
 
 func criterion(t *testing.T, v Verdict, id string) Criterion {
@@ -253,7 +280,13 @@ func hasReason(v Verdict, substr string) bool {
 
 func TestRunCleanIsProven(t *testing.T) {
 	fault := &fakeNemesis{}
-	v := run(t, testOptions(t, newFakeKV(), fault))
+	o := testOptions(t, newFakeKV(), fault)
+	v, elapsed := runElapsed(t, o)
+	// The whole run, opDelay included, elapsed on the bubble's fake clock:
+	// Run paces itself to o.Duration, so the fake elapsed is at least that.
+	if elapsed < o.Duration {
+		t.Fatalf("fake elapsed %v, want >= the run's %v", elapsed, o.Duration)
+	}
 	if v.Exit != ExitProven || v.Outcome != OutcomeProven || len(v.Reasons) != 0 {
 		t.Fatalf("clean run: %s exit %d, reasons %q", v.Outcome, v.Exit, v.Reasons)
 	}
@@ -387,9 +420,11 @@ func TestJudgeHistoryE2(t *testing.T) {
 
 func TestRunInterruptedIsInvalid(t *testing.T) {
 	o := testOptions(t, newFakeKV(), &fakeNemesis{})
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	res, err := Run(ctx, o)
+	res, _, err := bubbleRun(t, func() context.Context {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		return ctx
+	}, o)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}

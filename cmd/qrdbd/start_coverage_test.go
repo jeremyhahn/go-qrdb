@@ -24,6 +24,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"log/slog"
 	"math/big"
 	"net/url"
 	"os"
@@ -1724,11 +1725,6 @@ func TestResolveAutoConfig_PartialExplicitFlags(t *testing.T) {
 // newKVServiceAdapter: ensure adapter creation and identity
 // ---------------------------------------------------------------------------
 
-func TestNewKVServiceAdapter_ReturnsNonNil(t *testing.T) {
-	adapter := newKVServiceAdapter(&mockKVServicer{}, nil, nil)
-	require.NotNil(t, adapter)
-}
-
 // ---------------------------------------------------------------------------
 // generateAdminClientCert: valid CA cert but CA key is a different key than
 // what signed the CA cert (will fail at CreateCertificate or earlier)
@@ -2022,12 +2018,56 @@ func TestInitializeNode_UnknownSMType(t *testing.T) {
 // inside the debounce callback (cert_reload.go:192-194).
 // ---------------------------------------------------------------------------
 
+// recordingHandler is a test-only slog.Handler that sends each record's
+// message on a buffered channel, so a test can wait for the watch goroutine
+// to log a given message instead of sleeping. A full channel drops the
+// message rather than blocking the logger.
+type recordingHandler struct {
+	messages chan string
+}
+
+func newRecordingHandler() *recordingHandler {
+	return &recordingHandler{messages: make(chan string, 64)}
+}
+
+func (h *recordingHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *recordingHandler) Handle(_ context.Context, r slog.Record) error {
+	select {
+	case h.messages <- r.Message:
+	default:
+	}
+	return nil
+}
+
+func (h *recordingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+func (h *recordingHandler) WithGroup(string) slog.Handler { return h }
+
+// waitFor blocks until msg is logged, skipping other messages, and fails
+// the test if it is not logged within 5 s.
+func (h *recordingHandler) waitFor(t *testing.T, msg string) {
+	t.Helper()
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case got := <-h.messages:
+			if got == msg {
+				return
+			}
+		case <-timeout:
+			t.Fatalf("log message %q never recorded", msg)
+		}
+	}
+}
+
 func TestCertReloader_FileWatch_DebounceReloadError(t *testing.T) {
 	dir := t.TempDir()
 	certPEM, keyPEM := testCertPair(t)
 	certPath, keyPath := writeCertFiles(t, dir, certPEM, keyPEM)
 
-	r, err := NewCertReloader(certPath, keyPath, testLogger())
+	h := newRecordingHandler()
+	r, err := NewCertReloader(certPath, keyPath, slog.New(h))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = r.Stop() })
 
@@ -2038,8 +2078,8 @@ func TestCertReloader_FileWatch_DebounceReloadError(t *testing.T) {
 	require.NoError(t, os.WriteFile(certPath, []byte("invalid-cert"), 0o600))
 	require.NoError(t, os.WriteFile(keyPath, []byte("invalid-key"), 0o600))
 
-	// Wait for debounce + a little margin. The debounce interval is 100ms.
-	time.Sleep(500 * time.Millisecond)
+	// Wait for the debounced Reload to report its failure.
+	h.waitFor(t, "debounced reload failed")
 
 	// The original certificate must still be served because the reload
 	// failed and the old cert is preserved.
@@ -2060,15 +2100,16 @@ func TestCertReloader_FileWatch_WatcherError(t *testing.T) {
 	certPEM, keyPEM := testCertPair(t)
 	certPath, keyPath := writeCertFiles(t, dir, certPEM, keyPEM)
 
-	r, err := NewCertReloader(certPath, keyPath, testLogger())
+	h := newRecordingHandler()
+	r, err := NewCertReloader(certPath, keyPath, slog.New(h))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = r.Stop() })
 
 	// Send a synthetic error through the watcher's error channel.
 	r.watcher.Errors <- errors.New("synthetic watcher error")
 
-	// Give the watch goroutine time to process the error.
-	time.Sleep(100 * time.Millisecond)
+	// Wait for the watch goroutine to log the error.
+	h.waitFor(t, "filesystem watcher error")
 
 	// The reloader should still be functional.
 	cert, err := r.GetCertificate(nil)
