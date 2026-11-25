@@ -1593,6 +1593,9 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 			v.SetClusterIsolationPolicyReader(reader)
 		}
 	}
+	if err := attachVectorTenantHomes(n); err != nil {
+		return nil, err
+	}
 
 	// infra.SealEnabled is the composer's own seal.enabled config decision,
 	// read BEFORE it attempted to build a barrier -- NOT an inference from

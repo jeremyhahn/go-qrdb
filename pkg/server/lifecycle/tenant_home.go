@@ -246,6 +246,32 @@ func attachHomeSource(n *Node, source tenant.HomeStoreSource, served []tenant.St
 	return true
 }
 
+// attachVectorTenantHomes hands the vector service the node's StoreResolver,
+// through which an isolated tenant's vectors reach its home store in both
+// standalone and raft mode. A resolver that cannot locate tenant homes is
+// refused rather than leaving isolated tenants' vectors node-wide.
+// ErrStoreResolverLocatesNoHomes refuses a node whose StoreResolver cannot
+// tell an isolated tenant from a prefix tenant, so its vectors have no home.
+var ErrStoreResolverLocatesNoHomes = errors.New("lifecycle: the store resolver does not locate tenant homes")
+
+func attachVectorTenantHomes(n *Node) error {
+	if n.StoreResolver == nil {
+		return nil
+	}
+	v, ok := n.Vector.(interface {
+		SetTenantHomeResolver(service.TenantHomeResolver)
+	})
+	if !ok {
+		return nil
+	}
+	homes, ok := n.StoreResolver.(service.TenantHomeResolver)
+	if !ok {
+		return &VectorServiceError{Err: ErrStoreResolverLocatesNoHomes}
+	}
+	v.SetTenantHomeResolver(homes)
+	return nil
+}
+
 // tenantHomesSetter is the credential service's attach point for the tenant
 // home stores (service.CredentialService.SetTenantHomes).
 type tenantHomesSetter interface {
