@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/sqlitevfs"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
@@ -150,5 +151,62 @@ func TestSQLiteKeyGuard_AdmissionGuardsKVAndBatch(t *testing.T) {
 	var owned *service.SQLiteKeyError
 	if err := svcs.KV.Put(context.Background(), "sqlite/app/meta", []byte("x")); !errors.As(err, &owned) {
 		t.Fatalf("Put through the admitted services = %v, want a SQLiteKeyError", err)
+	}
+}
+
+// TestSQLiteKeyGuard_MVCCWritesIntoADatabaseAreRefused covers the MVCC
+// service's own writes on every scene: a write into a SQLite database is
+// refused, one outside it lands, and the VFS still creates and commits.
+func TestSQLiteKeyGuard_MVCCWritesIntoADatabaseAreRefused(t *testing.T) {
+	for name, build := range lockScenes {
+		t.Run(name, func(t *testing.T) {
+			svcs := gatedServices(t, build(t).registry, lockTenantA, &admitFakes{allowed: true, max: 4})
+			w := gatedStore(t, svcs)
+			if err := createDatabase(t, w, 0x11); err != nil {
+				t.Fatalf("VFS create through the gated services: %v", err)
+			}
+			metaKey, err := sqlitevfs.MetaKey(wiringDB)
+			if err != nil {
+				t.Fatalf("MetaKey: %v", err)
+			}
+			ctx := t.Context()
+			key := string(metaKey)
+			_, putLease := svcs.MVCC.PutWithLease(ctx, key, []byte("x"), 0)
+			_, putLeaseMode := svcs.MVCC.PutWithLeaseAndMode(ctx, key, []byte("x"), 0, writemode.Sync)
+			writes := map[string]error{
+				"Put":                 svcs.MVCC.Put(ctx, key, []byte("x")),
+				"PutWithMode":         svcs.MVCC.PutWithMode(ctx, key, []byte("x"), writemode.Sync),
+				"Delete":              svcs.MVCC.Delete(ctx, key),
+				"DeleteWithMode":      svcs.MVCC.DeleteWithMode(ctx, key, writemode.Sync),
+				"PutWithLease":        putLease,
+				"PutWithLeaseAndMode": putLeaseMode,
+			}
+			_, writes["PutIfAbsent"] = svcs.MVCC.PutIfAbsent(ctx, key, []byte("x"))
+			_, writes["CompareAndSwap"] = svcs.MVCC.CompareAndSwap(ctx, key, []byte("x"), []byte("y"))
+			_, writes["CompareAndDelete"] = svcs.MVCC.CompareAndDelete(ctx, key, []byte("x"))
+			for op, err := range writes {
+				var owned *service.SQLiteKeyError
+				if !errors.As(err, &owned) || owned.Key != key {
+					t.Errorf("MVCC %s(%q) = %v, want a SQLiteKeyError", op, key, err)
+				}
+			}
+			if _, err := svcs.MVCC.GetRevision(ctx, key); err != nil {
+				t.Fatalf("meta record after the refused writes: %v", err)
+			}
+			if err := svcs.MVCC.Put(ctx, "app/meta", []byte("x")); err != nil {
+				t.Fatalf("MVCC Put outside a SQLite database = %v, want nil", err)
+			}
+			if err := svcs.MVCC.Delete(ctx, "app/meta"); err != nil {
+				t.Fatalf("MVCC Delete outside a SQLite database = %v, want nil", err)
+			}
+			txn, err := gatedStore(t, svcs).store.Begin(ctx)
+			if err != nil {
+				t.Fatalf("Begin: %v", err)
+			}
+			wiringWrite(t, txn, 0x21, 0x22)
+			if _, err := txn.Commit(ctx); err != nil {
+				t.Fatalf("VFS commit after the refused writes: %v", err)
+			}
+		})
 	}
 }
