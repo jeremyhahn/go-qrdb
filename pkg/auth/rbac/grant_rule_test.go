@@ -116,6 +116,45 @@ func TestGrantRule_TenantAdminCannotCreateRoleWithKeysSign(t *testing.T) {
 	}
 }
 
+// TestGrantRule_SOCannotGrantACryptoPermissionItsRolesCover proves the grant
+// check is the effective-permission check (SPEC.md:132): an SO+User identity
+// whose User role covers keys:sign is still denied the sign, so it cannot
+// grant keys:sign either, and no role is created.
+func TestGrantRule_SOCannotGrantACryptoPermissionItsRolesCover(t *testing.T) {
+	f := newGrantFixture(t)
+	so := role.SystemRoleID("acme", role.RoleNameSO)
+	usr := role.SystemRoleID("acme", role.RoleNameUser)
+	officer := &auth.Identity{Subject: "officer", TenantID: "acme", Roles: []string{so, usr}}
+	sign := func(id *auth.Identity) error {
+		return f.authz.Authorize(as(id), id, permission.Resource(permission.KeysSign), permission.Action(permission.KeysSign))
+	}
+	if err := sign(&auth.Identity{Subject: "u", TenantID: "acme", Roles: []string{usr}}); err != nil {
+		t.Fatalf("precondition: acme's User role does not cover keys:sign: %v", err)
+	}
+	if err := sign(officer); !errors.Is(err, auth.ErrUnauthorized) {
+		t.Fatalf("Authorize(keys:sign) for the SO = %v, want a denial", err)
+	}
+	_, err := f.roles.CreateRole(as(officer), &role.CreateRoleRequest{
+		Name: "signer", TenantID: "acme", Permissions: []permission.Permission{permission.KeysSign},
+	})
+	wantGrantRefused(t, err, permission.KeysSign)
+	if r, _ := f.roles.GetRoleByName(system(), "acme", "signer"); r != nil {
+		t.Fatal("the refused role was created")
+	}
+}
+
+// TestGrantRule_SOCannotGrantACryptoPermissionItsRolesLack proves the grant
+// refuses an SO whose roles do not cover keys:sign with
+// GrantExceedsHolderError.
+func TestGrantRule_SOCannotGrantACryptoPermissionItsRolesLack(t *testing.T) {
+	f := newGrantFixture(t)
+	officer := &auth.Identity{Subject: "officer", TenantID: "acme", Roles: []string{role.SystemRoleID("acme", role.RoleNameSO)}}
+	_, err := f.roles.CreateRole(as(officer), &role.CreateRoleRequest{
+		Name: "signer", TenantID: "acme", Permissions: []permission.Permission{permission.KeysSign},
+	})
+	wantGrantRefused(t, err, permission.KeysSign)
+}
+
 // A tenant Admin cannot widen an existing role past what it holds, nor
 // assign a role the SO created that carries a permission the Admin lacks.
 func TestGrantRule_TenantAdminCannotGrantThroughAnotherRole(t *testing.T) {

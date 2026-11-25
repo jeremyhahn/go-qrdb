@@ -1248,11 +1248,12 @@ shrink together.
   `isolation_raft_cluster_test.go`, `isolation_raft_dedicated_wal_test.go`,
   `isolation_raft_rebalance_test.go`, `isolation_raft_scale_test.go`,
   `isolation_raft_shard_ids_test.go` — run with the feature's other suites. CI runs them in its **full tier** — every push to
-  `main`, every `workflow_dispatch`, and a pull request labelled `ci:full` —
+  `main`, every `workflow_dispatch` on `main`, and every non-draft pull
+  request that is not docs-only —
   in one shard of the `integration-features` job
   (`make integration-test-multi-tenancy`, the files `features.mk` maps to this
-  feature), each shard under its own 30-minute limit. A plain pull request push runs none of them, so a change to tenant
-  isolation carries `ci:full`. `test/buildgates/feature_jobs_gate_test.go`
+  feature), each shard under its own 30-minute limit, so a change to tenant
+  isolation runs them before merge. `test/buildgates/feature_jobs_gate_test.go`
   fails when the job's matrix drops a feature that maps a file, when the job's
   `if:` is not exactly the full-tier condition, or when the workflow's
   top-level `on:` stops naming `push` and `pull_request`, and

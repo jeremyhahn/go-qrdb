@@ -17,6 +17,7 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -62,6 +63,44 @@ func (m *internalMemKV) Get(_ context.Context, k string) ([]byte, error) {
 	v := m.data[k]
 	m.mu.RUnlock()
 	return v, nil
+}
+func (m *internalMemKV) PutIfAbsent(_ context.Context, k string, v []byte) (bool, error) {
+	if m.putErr != nil {
+		return false, m.putErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.data[k]; ok {
+		return false, nil
+	}
+	m.data[k] = append([]byte(nil), v...)
+	return true, nil
+}
+func (m *internalMemKV) CompareAndDelete(_ context.Context, k string, expected []byte) (bool, error) {
+	if m.putErr != nil {
+		return false, m.putErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.data[k]
+	if !ok || !bytes.Equal(cur, expected) {
+		return false, nil
+	}
+	delete(m.data, k)
+	return true, nil
+}
+func (m *internalMemKV) CompareAndSwap(_ context.Context, k string, expected, next []byte) (bool, error) {
+	if m.putErr != nil {
+		return false, m.putErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.data[k]
+	if !ok || !bytes.Equal(cur, expected) {
+		return false, nil
+	}
+	m.data[k] = append([]byte(nil), next...)
+	return true, nil
 }
 func (m *internalMemKV) Delete(_ context.Context, k string) error {
 	m.mu.Lock()

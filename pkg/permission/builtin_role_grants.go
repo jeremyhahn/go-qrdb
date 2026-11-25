@@ -42,6 +42,16 @@ package permission
 // init()-time failure, not a review item. Cryptographic operations are also
 // rejected at authorization time by the RBAC deny-list even if a grant reaches
 // a role by some other path (defense-in-depth).
+// StrictSOGrants are the permissions the SO holds only under strict
+// separation of duties (docs/SPEC.md separation-of-duties). The built-in
+// role reconcile across every tenant is the system Admin's in the standard
+// posture (registerAdminGrants); in the strict posture it is SO-exclusive, so
+// the authorizer extends it to an identity holding the SO role
+// (rbac.WithStrictSeparation) and the transports refuse it to every caller
+// but a separate SO principal. It is not a static grant on the SO role,
+// which would hand it to the SO in the standard posture too.
+var StrictSOGrants = []Permission{RolesReconcileAll}
+
 func registerSOGrants() {
 	RegisterRoleGrant(RoleSO,
 		// Seal management (SO-exclusive)
@@ -60,11 +70,14 @@ func registerSOGrants() {
 		// Trust anchors: which outside CAs vouch for this tenant's logins.
 		TrustAnchorsAdd, TrustAnchorsList, TrustAnchorsRemove,
 		// Role management (roles:delete is SO-exclusive; the tenant Admin
-		// also creates and updates roles in its own tenant). roles:assign
+		// also creates and updates roles in its own tenant, except under
+		// strict separation, where roles:create and the built-in role
+		// reconcile run only as a separate SO principal). roles:assign
 		// and roles:unassign are shared with the Admin, but only the
 		// tenant's own SO grants or revokes the SO role itself: the
 		// role-assignment gate in pkg/auth/middleware refuses that change
-		// to every other caller with SORoleRequiredError.
+		// to every other caller with SORoleRequiredError, and refuses an
+		// SO that also holds the admin role with SORoleConflictError.
 		RolesCreate, RolesRead, RolesUpdate,
 		RolesDelete, RolesList, RolesAssign,
 		RolesUnassign, PermissionsList,
@@ -72,6 +85,9 @@ func registerSOGrants() {
 		GroupsCreate, GroupsRead, GroupsUpdate,
 		GroupsDelete, GroupsList, GroupsAddMember,
 		GroupsRemoveMember,
+		// roles:reconcile_all is NOT here: it is the system Admin's
+		// (registerAdminGrants). Only under strict separation does the
+		// authorizer extend it to the SO (StrictSOGrants).
 		// User management
 		UsersCreate, UsersRead, UsersUpdate,
 		UsersDelete, UsersList, UsersEnable,
@@ -298,7 +314,8 @@ func registerAdminGrants() {
 		TenantsSetStatus,
 		TenantsListDeleted, TenantsReconcileDeleted,
 		// Cross-tenant built-in role convergence -- only effective for
-		// system-tenant Admin.
+		// system-tenant Admin. Under strict separation the transports
+		// refuse it to every caller but a separate SO (StrictSOGrants).
 		RolesReconcileAll,
 		// Cross-scope volume pool management — only effective for system-tenant Admin.
 		VolumePoolCreate, VolumePoolList, VolumePoolRead,

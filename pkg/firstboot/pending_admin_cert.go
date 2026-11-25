@@ -33,7 +33,9 @@ import (
 // own system barrier and master key, never shared -- see
 // docs/barrier-seal/architecture.md), and NOT a file in data_dir.
 // Composers write it under the system tenant's identity namespace, the same
-// store first boot's own role and user records live in.
+// store first boot's own role and user records live in. Its raw key
+// ("system/" + PendingAdminCertKey) is hard-confined on the embedded
+// transport, like PendingSystemSOKey's.
 const PendingAdminCertKey = "pending-admin-cert"
 
 // pendingAdminCertConsumedMarker is the value ClearPendingAdminCert writes
@@ -144,6 +146,12 @@ func WritePendingAdminCert(ctx context.Context, store PendingAdminCertStore, cer
 // package cannot import (pkg/service imports it). A timed-out attempt may
 // still have committed; its retry then loses the create-if-absent race to
 // itself, which is tolerated above, so the retry is idempotent.
+//
+// While core's system SO handoff is not durable
+// (ceremony.CeremonyService.SystemSOHandoffPending) it publishes nothing and
+// returns *SystemSOHandoffPendingError: first boot would otherwise bind the
+// admin with no SO, and a strict node's API would refuse the retried
+// CeremonyInitialize that records the SO (go-qrdb#1129).
 func WriteIssuedAdminCertIfAny(ctx context.Context, core *ceremony.CeremonyService, store PendingAdminCertStore, transient func(error) bool) error {
 	if core == nil || store == nil {
 		return nil
@@ -152,14 +160,44 @@ func WriteIssuedAdminCertIfAny(ctx context.Context, core *ceremony.CeremonyServi
 	if len(certPEM) == 0 {
 		return nil
 	}
+	// An admin published while the system SO record is not yet durable
+	// would be bound by first boot with no SO, and a strict node's API
+	// would then refuse the Initialize retry that records the SO.
+	if core.SystemSOHandoffPending(ctx) {
+		return &SystemSOHandoffPendingError{}
+	}
 	if recorded, err := store.Get(ctx, PendingAdminCertKey); err == nil && len(recorded) > 0 {
 		return nil
 	}
-	deadline := time.Now().Add(pendingAdminCertSettleBudget)
-	for {
+	return writeSettled(ctx, transient, func() error {
 		err := WritePendingAdminCert(ctx, store, certPEM)
 		var alreadyPending *AdminCredentialAlreadyPendingError
-		if err == nil || errors.As(err, &alreadyPending) {
+		if errors.As(err, &alreadyPending) {
+			return nil
+		}
+		return err
+	})
+}
+
+// SystemSOHandoffPendingError refuses to publish the bootstrap admin
+// credential while the initial ceremony's system SO handoff is not durable
+// (ceremony.CeremonyService.SystemSOHandoffPending): the retried
+// CeremonyInitialize that records the SO must complete first, on the
+// sealed-window listener.
+type SystemSOHandoffPendingError struct{}
+
+func (e *SystemSOHandoffPendingError) Error() string {
+	return "firstboot: the system SO record is not durable; retry CeremonyInitialize before the admin credential is published"
+}
+
+// writeSettled runs write until it succeeds, its error is not transient,
+// or pendingAdminCertSettleBudget runs out, waiting
+// pendingAdminCertSettleInterval between attempts.
+func writeSettled(ctx context.Context, transient func(error) bool, write func() error) error {
+	deadline := time.Now().Add(pendingAdminCertSettleBudget)
+	for {
+		err := write()
+		if err == nil {
 			return nil
 		}
 		if transient == nil || !transient(err) || ctx.Err() != nil {

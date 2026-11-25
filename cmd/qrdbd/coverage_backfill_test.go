@@ -77,7 +77,7 @@ func TestBootstrapUserRoleStores_ZeroReplicaID(t *testing.T) {
 		context.Background(), mock, mock, tx, node, testLeaderWait,
 		1, 0, // shardID=1, replicaID=0
 		&mockTenantServicer{}, false, nil, "", nil,
-		auth.MTLSBindingEnrolled, nil, nil, nil,
+		auth.MTLSBindingEnrolled, nil, nil, nil, soTrustSeams{},
 	)
 	require.NoError(t, err)
 	require.NotNil(t, mgmt)
@@ -98,7 +98,7 @@ func TestBootstrapUserRoleStores_OversizedReplicaID(t *testing.T) {
 		context.Background(), mock, mock, tx, node, testLeaderWait,
 		1, 1024,
 		&mockTenantServicer{}, false, nil, "", nil,
-		auth.MTLSBindingEnrolled, nil, nil, nil,
+		auth.MTLSBindingEnrolled, nil, nil, nil, soTrustSeams{},
 	)
 	require.Error(t, err)
 	var abe *AuthBootstrapError
@@ -122,7 +122,7 @@ func TestBootstrapAuthEnforcement_WithClusterTrustDomain(t *testing.T) {
 	mgmt, err := bootstrapUserRoleStores(
 		context.Background(), mock, mock, tx, node, testLeaderWait,
 		1, 1, &mockTenantServicer{}, false, nil, "", nil,
-		auth.MTLSBindingEnrolled, nil, nil, nil,
+		auth.MTLSBindingEnrolled, nil, nil, nil, soTrustSeams{},
 	)
 	require.NoError(t, err)
 
@@ -165,7 +165,7 @@ func TestBootstrapAuthEnforcement_NilComplianceAudit(t *testing.T) {
 	mgmt, err := bootstrapUserRoleStores(
 		context.Background(), mock, mock, tx, node, testLeaderWait,
 		1, 1, &mockTenantServicer{}, false, nil, "", nil,
-		auth.MTLSBindingEnrolled, nil, nil, nil,
+		auth.MTLSBindingEnrolled, nil, nil, nil, soTrustSeams{},
 	)
 	require.NoError(t, err)
 

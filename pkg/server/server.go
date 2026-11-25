@@ -410,6 +410,9 @@ type serverOptions struct {
 	// by ServeSealedWindow. Its gates refuse every request once the barrier
 	// is unsealed, and it serves no SQL wire protocol.
 	sealedWindowListener bool
+	// sealedWindowCeremony, when set (withSealedWindowCeremony), is the
+	// ceremony core the sealed-window listener probe reads.
+	sealedWindowCeremony sealedWindowCeremony
 
 	// clusterSeal enforces cluster seals on this node; see WithClusterSeal.
 	clusterSeal ClusterSeal
@@ -776,7 +779,24 @@ func withSealedWindowListener(probe SealedWindowProbe) ServerOption {
 type sealedWindowListenerProbe struct {
 	SealedWindowProbe
 	*sealedwindow.Admission
-	ceremony *ceremony.CeremonyService
+	ceremony sealedWindowCeremony
+}
+
+// sealedWindowCeremony is what the sealed-window listener probe reads from
+// the ceremony core (*ceremony.CeremonyService).
+type sealedWindowCeremony interface {
+	EnrollmentOpen(ctx context.Context) bool
+	HoldsSealedWindow(ctx context.Context) bool
+}
+
+var _ sealedWindowCeremony = (*ceremony.CeremonyService)(nil)
+
+// withSealedWindowCeremony replaces the ceremony core the sealed-window
+// listener probe reads, which otherwise comes from WithCeremonyService.
+func withSealedWindowCeremony(c sealedWindowCeremony) ServerOption {
+	return func(o *serverOptions) {
+		o.sealedWindowCeremony = c
+	}
 }
 
 // barrierInitializedProbe is the part of *seal.StorageBarrier the
@@ -806,6 +826,23 @@ func (p sealedWindowListenerProbe) EnrollmentOpen(ctx context.Context) bool {
 }
 
 var _ sealedwindow.ListenerProbe = sealedWindowListenerProbe{}
+
+// IsSealed implements sealedwindow.ListenerProbe: the window stays sealed --
+// the gate serves its allowlist, not the full API -- while the barrier is
+// sealed or, with a ceremony core, while the core holds the window
+// (ceremony.CeremonyService.HoldsSealedWindow): an initial ceremony whose
+// system SO record is not yet durable keeps its retry on this listener.
+func (p sealedWindowListenerProbe) IsSealed() bool {
+	if p.SealedWindowProbe.IsSealed() {
+		return true
+	}
+	if p.ceremony == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), enrollmentProbeTimeout)
+	defer cancel()
+	return p.ceremony.HoldsSealedWindow(ctx)
+}
 
 // NewSealedWindowListenerProbe returns the probe that gates a sealed-window
 // surface: sealed reports the barrier's state, and ceremonySvc (which may be
@@ -837,7 +874,7 @@ func NewSealedWindowListenerProbe(sealed SealedWindowProbe, ceremonySvc service.
 	}
 	p := sealedWindowListenerProbe{SealedWindowProbe: sealed, Admission: &sealedwindow.Admission{}}
 	if ceremonySvc != nil {
-		if core, ok := service.CeremonyServiceCore(ceremonySvc); ok {
+		if core, ok := service.CeremonyServiceCore(ceremonySvc); ok && core != nil {
 			p.ceremony = core
 		}
 	}
@@ -1528,6 +1565,10 @@ func New(cfg *config.Config, kvSvc service.KVServicer, adminSvc service.AdminSer
 	// authenticated path, where barrier-cluster-unseal is served.
 	if s.opts.sealedWindowProbe != nil || s.opts.sealedWindowListener {
 		s.sealedListener = NewSealedWindowListenerProbe(s.opts.sealedWindowProbe, s.opts.ceremonySvc)
+		if p, ok := s.sealedListener.(sealedWindowListenerProbe); ok && s.opts.sealedWindowCeremony != nil {
+			p.ceremony = s.opts.sealedWindowCeremony
+			s.sealedListener = p
+		}
 	}
 	s.opts.applyClusterSeal()
 

@@ -328,6 +328,14 @@ case("G11 a Gitea-only job (github.server_url != github.com) passes",
      {"code-review.yml": wf(PR_ON, job("qwen  # self-hosted: hardware: the GPU host",
                                        "needs.review.outputs.agent == 'opencode' && github.server_url != 'https://github.com'", name="review-opencode"))},
      0, [], ["(g)"])
+# v1.51: every runs-on is read under pull_request_target too, a fork's head included.
+PRT_RO = "${{ github.event_name == 'pull_request_target' && 'bigdisk' || 'ubuntu-latest' }}"
+case("G12 v1.51: a runs-on that picks a self-hosted label only under pull_request_target fails (c)",
+     {"t.yml": wf(PRT_ON, job(PRT_RO, name="pick"))}, 1,
+     ["t.yml:pick: (c)", "pull_request_target (refs/heads/main, fork, pull_request_target: a fork never reaches a self-hosted runner): bigdisk"])
+case("G13 v1.51: a runs-on hosted under pull_request_target passes",
+     {"t.yml": wf(PRT_ON, job("${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}", name="pick"))},
+     0, [], ["t.yml:pick:"])
 
 print(f"{'ALL PASS' if not FAILS else f'{FAILS} FAILED'}")
 sys.exit(1 if FAILS else 0)

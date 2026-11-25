@@ -63,7 +63,8 @@ func (s *Server) handleCeremonyInitialize(w http.ResponseWriter, r *http.Request
 	// propagates.
 	//
 	// admin_csr_pem/admin_cert_pem/admin_cert_pool_pem/admin_generate/secret
-	// round-trip through transport.CeremonyInitializeRequest/Response and
+	// and the system SO's so_username/so_csr_pem/so_cert_pem/so_chain_pem
+	// (go-qrdb#1128) round-trip through transport.CeremonyInitializeRequest/Response and
 	// the holderwire.CeremonyInitFrom/To conversions below, shared by REST,
 	// MCP and the embedded transport, and through the matching
 	// CeremonyInitializeRequest/Response protobuf fields and

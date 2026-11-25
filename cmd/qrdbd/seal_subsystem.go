@@ -26,6 +26,7 @@ import (
 	"strconv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/wiring"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
@@ -397,6 +398,18 @@ func unsealNoneBarrier(ctx context.Context, barrier *seal.StorageBarrier) error 
 	if !barrier.IsSealed() || barrier.PersistedStrategy(ctx) != seal.StrategyNone {
 		return nil
 	}
+	// A single-admin initialization that requested a system SO and never
+	// made its record durable (a failed write, or a crash between the
+	// barrier's initialization and the write) leaves its intent standing.
+	// Unsealing here would skip the sealed window and boot without that SO:
+	// the barrier stays sealed instead, and the sealed window serves the
+	// initialization retry that completes the handoff. An unreadable intent
+	// is treated as standing.
+	if pending, err := barrier.SystemSOIntent(ctx); err != nil || pending {
+		slog.Warn("none barrier kept sealed at boot: a requested system SO was never recorded; retry the initialization",
+			"intent_read_error", err)
+		return nil
+	}
 	if err := barrier.Unseal(ctx, seal.Credentials{}); err != nil && !errors.Is(err, seal.ErrAlreadyUnsealed) {
 		return &SealBarrierError{Err: err}
 	}
@@ -523,6 +536,9 @@ func awaitUnseal(sigCtx context.Context, f *startFlags, bundle *TLSBundle, sub *
 		DefaultTenantQuotas:       f.tenantConfig.DefaultQuotas.ToQuotas(),
 		DefaultTenantEntitlements: f.tenantConfig.DefaultEntitlements.ToEntitlements(),
 		SignedInitTTL:             f.tenantConfig.SignedInitTTLDuration(),
+		// The initial ceremony runs in this window: a strict node must
+		// refuse one that names no system SO here, before any write.
+		SeparationOfDuties: wiring.ResolveStrictSeparation(f.separationOfDuties),
 	})
 	if err != nil {
 		return nil, &SealedListenerStartupError{Err: err}

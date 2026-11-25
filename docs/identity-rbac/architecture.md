@@ -690,7 +690,11 @@ follow in order, each one independently:
   exit.
 
 It is gated twice. First by the cross-scope permission `roles:reconcile_all`,
-granted only to the system tenant's built-in Admin. Second, inside the function,
+granted to the built-in Admin role and effective only in the system tenant;
+under strict separation of duties it is the system SO's instead (the
+authorizer extends `permission.StrictSOGrants` to the SO) and the transports
+also require a
+separate SO (`AuthorizeSOExclusive`), so the system Admin is refused. Second, inside the function,
 by a refusal of any caller whose context is bound to a tenant other than the
 system tenant (`tenant.PlatformOperatorRequiredError`, a 403). The second gate
 does not depend on the role store being correct, which is what this verb
