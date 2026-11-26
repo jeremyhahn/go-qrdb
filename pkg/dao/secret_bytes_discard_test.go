@@ -447,7 +447,7 @@ func TestDiscard_UnitOfWorkNaturalKeyCheckLeaksNoSecrets(t *testing.T) {
 
 func TestDiscard_ConditionCheckLeaksNoSecrets(t *testing.T) {
 	ctx := context.Background()
-	d, err := NewTransactional(kvstore.NewMemoryKVStore(), "discard_tx", newSecretEntity, WithCodec(CodecMsgPack))
+	d, err := NewTransactional(kvstoretest.NewGuardedMemoryStore(), "discard_tx", newSecretEntity, WithCodec(CodecMsgPack))
 	if err != nil {
 		t.Fatalf("NewTransactional: %v", err)
 	}

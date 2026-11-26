@@ -19,9 +19,11 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/internal/wireconflict"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	dberrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
@@ -65,11 +67,16 @@ func TestRefusal_userConcurrentUpdate(t *testing.T) {
 func TestRefusal_commandConflict(t *testing.T) {
 	want := &service.CommandConflictError{Message: "unique index system/system/member.Email: value already taken"}
 	reason, md, ok := Refusal(&wrappedError{want})
-	if !ok || reason != transport.ReasonCommandConflict {
-		t.Fatalf("Refusal() = %q, %v; want %q, true", reason, ok, transport.ReasonCommandConflict)
+	if !ok || reason != wireconflict.Reason {
+		t.Fatalf("Refusal() = %q, %v; want %q, true", reason, ok, wireconflict.Reason)
 	}
-	if got := transport.CommandConflictFromMetadata(md); got.Message != want.Message {
-		t.Fatalf("metadata decodes to %+v, want Message %q", got, want.Message)
+	if got := wireconflict.Message(md); got != want.Message {
+		t.Fatalf("metadata decodes to %q, want Message %q", got, want.Message)
+	}
+	// The client rebuild of the same refusal is the public conflict error.
+	var qe *dberrors.QRDBError
+	if rebuilt := transport.RefusalError(reason, md); !errors.As(rebuilt, &qe) || qe.Code != dberrors.ErrConflict {
+		t.Fatalf("client rebuild = %v, want a *QRDBError with Code ErrConflict", rebuilt)
 	}
 	if got := Classify(want); got != AlreadyExists {
 		t.Fatalf("Classify(command conflict) = %v, want AlreadyExists", got)

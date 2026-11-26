@@ -17,6 +17,7 @@ package transport
 import (
 	"errors"
 
+	"github.com/jeremyhahn/go-qrdb/internal/wireconflict"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
@@ -105,8 +106,8 @@ var refusalErrors = map[string]func(md map[string]string) error{
 	ReasonUserConcurrentUpdate: func(md map[string]string) error {
 		return UserConcurrentUpdateFromMetadata(md)
 	},
-	ReasonCommandConflict: func(md map[string]string) error {
-		return CommandConflictFromMetadata(md)
+	wireconflict.Reason: func(md map[string]string) error {
+		return &commandConflictError{message: wireconflict.Message(md)}
 	},
 	lock.ReasonLockHeld: func(md map[string]string) error {
 		return lock.LockHeldFromMetadata(md)
