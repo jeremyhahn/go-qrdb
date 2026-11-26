@@ -293,7 +293,7 @@ func (m *Manager) SetBarrierManager(bm *DatabaseBarrierManager) {
 		// calls (e.g. a cluster migration rebuilding the registry against a
 		// new root key) idempotent instead of nesting BarrierBackend
 		// wrappers.
-		db.setActiveBackend(NewBarrierBackend(db.rawDataBackend(), encryptor))
+		db.setActiveBackend(layerDatabaseBarrier(db.rawDataBackend(), encryptor))
 		db.setBarrierMetaBackend(barrierMetaBackend)
 		db.SetBarrierEnabled(true)
 		db.SetStatus(StatusSealed)
@@ -564,7 +564,7 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 		if encryptor == nil {
 			return nil, undo.run(ctx, &BarrierEncryptorUnavailableError{Name: cfg.Name})
 		}
-		dataBackend = NewBarrierBackend(backend, encryptor)
+		dataBackend = layerDatabaseBarrier(backend, encryptor)
 	}
 
 	db := NewDatabase(cfg, dataBackend, dataDir)
@@ -749,7 +749,7 @@ func (m *Manager) openMeta(key dbKey, meta DatabaseMeta) (*Database, error) {
 			_ = barrierMetaBackend.Close()
 			return nil, &BarrierEncryptorUnavailableError{Name: name}
 		}
-		dataBackend = NewBarrierBackend(backend, encryptor)
+		dataBackend = layerDatabaseBarrier(backend, encryptor)
 	}
 
 	db := NewDatabase(cfg, dataBackend, dataDir)

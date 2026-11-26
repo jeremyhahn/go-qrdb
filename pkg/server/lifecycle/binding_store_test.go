@@ -195,16 +195,12 @@ func TestLocalBindingFactory_NonQualifyingDelegates(t *testing.T) {
 	}{
 		{"barrier tenant", database.BindingNode{}, barrierTenants,
 			database.DatabaseConfig{TenantID: bindingTenant, Name: "d", Backend: database.BackendPebble}},
-		{"database barrier", database.BindingNode{}, prefixTenants,
-			database.DatabaseConfig{TenantID: bindingTenant, Name: "d", Backend: database.BackendPebble,
-				Barrier: &database.DatabaseBarrierConfig{Enabled: true}}},
 		{"system database", database.BindingNode{}, prefixTenants,
 			database.DatabaseConfig{TenantID: "", Name: lifecycle.SystemDatabase, Backend: database.BackendPebble}},
 		{"system tenant home", database.BindingNode{}, prefixTenants,
 			database.DatabaseConfig{TenantID: "", Name: database.TenantHomeName, Backend: database.BackendPebble}},
-		{"explicit data_dir with database barrier", database.BindingNode{}, prefixTenants,
-			database.DatabaseConfig{TenantID: bindingTenant, Name: "d", Backend: database.BackendPebble, DataDir: "explicit",
-				Barrier: &database.DatabaseBarrierConfig{Enabled: true}}},
+		// A database with its own barrier materializes too
+		// (TestDatabaseBarrierBinding_ServesTheFullBundleAndRefusesSealed).
 		// A raft-mode node materializes local kinds
 		// (TestLocalBindingFactory_RaftModeLocalBackendMaterializes); a
 		// raft database stays on the Manager's raft path.

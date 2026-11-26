@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
@@ -304,7 +305,7 @@ func (f *LocalBindingFactory) resolveLocal(cfg *database.DatabaseConfig) (*datab
 	if err != nil {
 		return nil, err
 	}
-	if b.Kind != database.BindingLocal || b.DatabaseBarrier {
+	if b.Kind != database.BindingLocal {
 		return nil, nil
 	}
 	if b.Backend == database.BackendObjstore {
@@ -537,28 +538,39 @@ func (f *LocalBindingFactory) open(b *database.Binding) (*MaterializedBinding, e
 			return err
 		}}
 	}
-	hub := watch.NewHub(f.hubOpts...)
-	lr := lease.NewLessor()
-	eng, err := NewLocalEngine(b.Backend, stg, pdb, hub, lr)
-	if err != nil {
-		return nil, openErr(errors.Join(err, stg.Close()))
+	m := &MaterializedBinding{binding: b, hub: watch.NewHub(f.hubOpts...)}
+	if b.DatabaseBarrier {
+		// The database's barrier is layered on the binding's own store,
+		// under the full bundle; the Manager attaches it (LayerBarrier).
+		m.barrier = &databaseBarrierStorage{Storage: stg}
+		stg = m.barrier
 	}
-	local := backend.NewLocalBackend(eng)
-	vec, closeVec, err := newBindingVector(local, f.policy)
-	if err != nil {
-		return nil, openErr(errors.Join(err, local.Close(), stg.Close()))
+	m.stg = stg
+	m.StandaloneBackend = database.NewStandaloneBackend(stg)
+	m.build = func() error {
+		lr := lease.NewLessor()
+		eng, err := NewLocalEngine(b.Backend, stg, pdb, m.hub, lr)
+		if err != nil {
+			return openErr(err)
+		}
+		local := backend.NewLocalBackend(eng)
+		vec, closeVec, err := newBindingVector(local, f.policy)
+		if err != nil {
+			return openErr(errors.Join(err, local.Close()))
+		}
+		m.local, m.vector, m.closeVector = local, vec, closeVec
+		m.stop = StartLocalLeaseExpiry(context.Background(), lr, service.NewLeaseService(local, shard.ShardKV), slog.Default())
+		return nil
 	}
-	stop := StartLocalLeaseExpiry(context.Background(), lr, service.NewLeaseService(local, shard.ShardKV), slog.Default())
-	return &MaterializedBinding{
-		StandaloneBackend: database.NewStandaloneBackend(stg),
-		local:             local,
-		stg:               stg,
-		hub:               hub,
-		binding:           b,
-		vector:            vec,
-		closeVector:       closeVec,
-		stop:              stop,
-	}, nil
+	// A barrier binding opens its engine once its barrier is attached and
+	// unsealed (Ready): the engine reads the store at open.
+	if m.barrier == nil {
+		if err := m.Ready(); err != nil {
+			m.hub.Close()
+			return nil, errors.Join(err, stg.Close())
+		}
+	}
+	return m, nil
 }
 
 // newBindingVector builds the binding's own vector service with the
@@ -801,10 +813,25 @@ type MaterializedBinding struct {
 	stop        func()
 	closeOnce   sync.Once
 	closeErr    error
+
+	// barrier is the database barrier layered on stg, nil for a binding
+	// without one. build opens the engine, host and vector service; Ready
+	// runs it once, under mu, and ready records that it ran.
+	barrier *databaseBarrierStorage
+	build   func() error
+	mu      sync.Mutex
+	ready   atomic.Bool
+	closed  bool
 }
 
-// Host returns the database's own service host.
-func (m *MaterializedBinding) Host() service.Host { return m.local }
+// Host returns the database's own service host. A barrier binding whose
+// barrier is sealed returns a host that refuses every call as sealed.
+func (m *MaterializedBinding) Host() service.Host {
+	if err := m.Ready(); err != nil {
+		return sealedHost{id: m.binding.Database, err: err}
+	}
+	return m.local
+}
 
 // ShardID returns the shard the database's data lives on in Host.
 func (m *MaterializedBinding) ShardID() uint64 { return shard.ShardKV }
@@ -822,7 +849,12 @@ func (m *MaterializedBinding) DataRoot() string { return m.binding.DataRoot }
 // once; later calls return the first result.
 func (m *MaterializedBinding) Close() error {
 	m.closeOnce.Do(func() {
-		m.stop()
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.closed = true
+		if m.stop != nil {
+			m.stop()
+		}
 		// The hub is this database's own: closing it cancels its watchers
 		// and frees their node-wide WatcherLimit slots, and refuses new
 		// watches against the dropped database.
@@ -833,11 +865,20 @@ func (m *MaterializedBinding) Close() error {
 		if m.closeVector != nil {
 			vecErr = m.closeVector()
 		}
-		m.closeErr = errors.Join(vecErr, m.local.Close(), m.StandaloneBackend.Close())
+		var hostErr error
+		if m.local != nil {
+			hostErr = m.local.Close()
+		}
+		m.closeErr = errors.Join(vecErr, hostErr, m.StandaloneBackend.Close())
 	})
 	return m.closeErr
 }
 
 // Vector returns the database's own vector service, built over storage
-// under its binding root.
-func (m *MaterializedBinding) Vector() service.VectorServicer { return m.vector }
+// under its binding root; nil while a barrier binding is sealed.
+func (m *MaterializedBinding) Vector() service.VectorServicer {
+	if m.Ready() != nil {
+		return nil
+	}
+	return m.vector
+}

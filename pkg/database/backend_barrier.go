@@ -84,6 +84,26 @@ func NewBarrierBackend(inner Backend, barrier BarrierEncryptor) *BarrierBackend 
 	return b
 }
 
+// BarrierLayered is a Backend that takes its database's barrier onto its own
+// store (a materialized binding serving the full service bundle), so the
+// Manager layers the barrier there instead of wrapping the backend in a
+// BarrierBackend. LayerBarrier replaces a barrier layered before.
+type BarrierLayered interface {
+	Backend
+	LayerBarrier(BarrierEncryptor)
+}
+
+// layerDatabaseBarrier returns inner with the database barrier enc layered
+// on: on inner's own store when it is BarrierLayered, else as a
+// BarrierBackend over it.
+func layerDatabaseBarrier(inner Backend, enc BarrierEncryptor) Backend {
+	if l, ok := inner.(BarrierLayered); ok {
+		l.LayerBarrier(enc)
+		return l
+	}
+	return NewBarrierBackend(inner, enc)
+}
+
 // Get retrieves and decrypts the value for the given key.
 func (b *BarrierBackend) Get(ctx context.Context, key []byte) ([]byte, error) {
 	if b.barrier.IsSealed() {

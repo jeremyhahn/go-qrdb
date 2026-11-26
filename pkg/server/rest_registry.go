@@ -280,6 +280,14 @@ type materializedStore interface {
 // prefix; every write still carries the database's drop fence guard, the
 // same guard the shared store's views carry.
 func (r *restServiceRegistry) resolveMaterialized(tenantID, db string, info *tenant.TenantInfo, dbase *database.Database, ms materializedStore) (*DatabaseServices, error) {
+	// A barrier binding opens its engine once its database barrier is
+	// unsealed; until then it refuses as sealed, and no bundle is cached
+	// over a host that cannot serve.
+	if rd, ok := ms.(interface{ Ready() error }); ok {
+		if err := rd.Ready(); err != nil {
+			return nil, err
+		}
+	}
 	base := r.materialized.getOrBuild(dbase, func() *DatabaseServices {
 		svcs := buildDataPlaneServices(ms.Host(), ms.ShardID(), ms.WatchHub(),
 			r.bindingImportSession, r.bindingIndex, r.bindingTimeSeries, service.WithDedicatedKeyspace())
@@ -616,6 +624,12 @@ func (r *restServiceRegistry) isRaftGroupDatabase(tenantID, db string, isolation
 func (r *restServiceRegistry) resolveDedicatedDatabaseBarrier(tenantID, db string, info *tenant.TenantInfo) (*DatabaseServices, error) {
 	dbase, ok := r.ownedDatabase(tenantID, db)
 	if !ok {
+		return nil, errNotDedicatedDatabaseBarrier
+	}
+	// A barrier database whose binding is materialized serves the full
+	// bundle from its own host, the barrier layered on its store
+	// (resolveMaterialized), never this KV+collections bundle.
+	if _, materialized := materializedStoreOf(dbase); materialized {
 		return nil, errNotDedicatedDatabaseBarrier
 	}
 
