@@ -30,12 +30,16 @@
     ChevronRight,
     Copy,
     Download,
+    Ticket,
   } from "lucide-svelte";
+  import RedeemInvitationModal from "./RedeemInvitationModal.svelte";
+  import EmbeddedServerPanel from "./EmbeddedServerPanel.svelte";
   import {
     connManagerStore,
     connectProfile,
     disconnectProfile,
     deleteProfile,
+    saveProfile,
     setActiveProfile,
   } from "$stores/connection-manager.svelte.ts";
   import type {
@@ -370,6 +374,9 @@
   // ---------------------------------------------------------------------------
   // Embedded wizard navigation
   // ---------------------------------------------------------------------------
+
+  /** Whether the redeem-an-invitation modal is open (RedeemInvitationModal). */
+  let showRedeem: boolean = $state(false);
 
   function showEmbeddedPanel(): void {
     activePanel = activePanel === "embedded" ? "none" : "embedded";
@@ -722,8 +729,7 @@
         } satisfies ExternalConnectionConfig,
         createdAt: new Date().toISOString(),
       };
-      await client.connectionManager.saveProfile(profile as never);
-      connManagerStore.profiles = [...connManagerStore.profiles, profile];
+      await saveProfile(client, profile);
       activePanel = "none";
       const state = await connectProfile(client, profile.id);
       if (
@@ -794,8 +800,22 @@
                 <Server class="h-4 w-4" />
                 Connect to Server
               </button>
+              <button
+                class="btn btn-ghost btn-block"
+                onclick={() => (showRedeem = true)}
+              >
+                <Ticket class="h-4 w-4" />
+                Redeem Invitation
+              </button>
             </div>
           </div>
+        </div>
+        <div class="mt-6 w-full max-w-md">
+          <EmbeddedServerPanel
+            {client}
+            available={connManagerStore.embeddedAvailable}
+            onStartNew={showEmbeddedPanel}
+          />
         </div>
       </div>
 
@@ -822,8 +842,21 @@
             <Plus class="h-3.5 w-3.5" />
             Server
           </button>
+          <button
+            class="btn btn-sm btn-ghost"
+            onclick={() => (showRedeem = true)}
+          >
+            <Ticket class="h-3.5 w-3.5" />
+            Redeem Invitation
+          </button>
         </div>
       </div>
+
+      <EmbeddedServerPanel
+        {client}
+        available={connManagerStore.embeddedAvailable}
+        onStartNew={() => { if (activePanel !== "embedded") showEmbeddedPanel(); }}
+      />
 
       <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {#each connManagerStore.profiles as profile (profile.id)}
@@ -1877,3 +1910,5 @@
     ></button>
   </div>
 {/if}
+
+<RedeemInvitationModal {client} open={showRedeem} onClose={() => (showRedeem = false)} />

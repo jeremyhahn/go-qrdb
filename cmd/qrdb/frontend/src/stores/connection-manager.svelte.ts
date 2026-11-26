@@ -26,7 +26,7 @@
  */
 
 import type { Client } from "@qrdb/sdk";
-import { isDesktop } from "@qrdb/sdk";
+import { isDesktop, TransportError } from "@qrdb/sdk";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -138,6 +138,12 @@ export interface ConnManagerState {
     activeServerMode: 'standalone' | 'raft' | '';
     /** Number of cluster nodes for the currently active profile. */
     activeClusterNodeCount: number;
+    /**
+     * Per profile, the admin views whose own read route the server refused
+     * the caller (403) at connect time; those views are not offered. Kept in
+     * memory only: a different credential on the next load is probed afresh.
+     */
+    refusedAdminViews: Record<string, string[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -261,6 +267,7 @@ export const connManagerStore: ConnManagerState = $state({
     loading: true,
     activeServerMode: '',
     activeClusterNodeCount: 0,
+    refusedAdminViews: {},
 });
 
 // ---------------------------------------------------------------------------
@@ -352,6 +359,13 @@ async function loadWebProfiles(client: Client): Promise<void> {
     }
     connManagerStore.activeProfileId = activeId;
 
+    // App.initialize connected to webStartupTarget(); retarget in case the
+    // saved active profile was missing and fell back to 'self'.
+    const active = profiles.find((p) => p.id === activeId);
+    if (active !== undefined) {
+        await retargetWebClient(client, active);
+    }
+
     // Resolve connection state for each profile by probing the server.
     // The active profile (self) connects via the REST client that was already
     // initialised before loadProfiles was called. Non-active external profiles
@@ -398,16 +412,35 @@ async function loadWebProfiles(client: Client): Promise<void> {
  * standalone/clustered choice). The built-in web "This Server" profile has no
  * such record, so without this probe a browser connected to a real multi-node
  * cluster would always present the standalone UI. We derive the mode from the
- * live topology: a server is "raft" when more than one distinct replica is
- * known across its Raft groups; a single-node deployment (or a minimal
- * embeddable server with no topology endpoint) resolves to "standalone".
+ * live topology: a server whose topology loads with at least one replica is
+ * "raft", so a single-node Raft server still exposes the Cluster surfaces
+ * (minting its first join token is how it grows). Only a server with no
+ * readable topology (a minimal embeddable server, forbidden or unreachable)
+ * resolves to "standalone". The database wizard keys its multi-node steps on
+ * the node count, not on this mode (see isMultiNodeServer).
  *
  * @returns The detected mode and the distinct cluster node count (0 when the
  *   topology could not be read).
  */
 async function detectWebServerMode(
     client: Client,
-): Promise<{ serverMode: 'standalone' | 'raft'; nodeCount: number }> {
+): Promise<{ serverMode: 'standalone' | 'raft'; nodeCount: number; topologyRefused: boolean; refusedViews: Promise<string[]> }> {
+    let serverMode: 'standalone' | 'raft' = 'standalone';
+    let nodeCount = 0;
+    let topologyRefused = false;
+    // Every probe runs at once; the connect does not wait for them.
+    const probes = adminViewProbes(client);
+    const settled = Promise.allSettled(probes.map(([, probe]) => probe()));
+    // Each admin view is offered only when the server allows the caller the
+    // view's own read route: a refusal (403) hides that view; any other
+    // error keeps it, so the view shows its own error.
+    const refusedViews = settled.then((results) => {
+        const refused: string[] = [];
+        results.forEach((r, i) => {
+            if (r.status === 'rejected' && isRefused(r.reason)) refused.push(probes[i]![0]);
+        });
+        return refused;
+    });
     try {
         const topology = await client.admin.getTopology();
         const replicaIds = new Set<string>();
@@ -416,13 +449,107 @@ async function detectWebServerMode(
                 replicaIds.add(replicaId);
             }
         }
-        const nodeCount = replicaIds.size;
-        return { serverMode: nodeCount > 1 ? 'raft' : 'standalone', nodeCount };
-    } catch {
+        nodeCount = replicaIds.size;
+        serverMode = nodeCount >= 1 ? 'raft' : 'standalone';
+    } catch (err) {
         // No topology endpoint (minimal embeddable server), forbidden, or
         // unreachable → treat as standalone; cluster surfaces stay hidden.
-        return { serverMode: 'standalone', nodeCount: 0 };
+        if (isRefused(err)) topologyRefused = true;
     }
+    return { serverMode, nodeCount, topologyRefused, refusedViews };
+}
+
+/**
+ * The read route each probed admin view loads first. Views not listed
+ * (settings, daemon) are local to the client and never hidden by a probe.
+ */
+function adminViewProbes(client: Client): Array<[string, () => Promise<unknown>]> {
+    return [
+        ['dashboard', () => client.admin.status()],
+        ['cluster', () => client.admin.peers()],
+        ['rebalance', () => client.rebalance.getImbalanceReport()],
+        ['seal-manager', () => client.seal.status()],
+        ['tenants', () => client.tenants.list()],
+        ['users', () => client.users.list({})],
+        ['roles', () => client.roles.list({})],
+        ['groups', () => client.groups.list({})],
+        ['volume-pools', () => client.volumePools.list()],
+        ['certificates', () => client.certs.list('')],
+        ['credentials', () => client.credentials.list()],
+        ['databases', () => client.database.list()],
+        ['backups', () => client.backups.list()],
+        ['audit-log', () => client.audit.query({})],
+    ];
+}
+
+/** Whether the server allowed the caller this admin view's read route. */
+export function adminViewAllowed(profileId: string, view: string): boolean {
+    return !(connManagerStore.refusedAdminViews[profileId] ?? []).includes(view);
+}
+
+/**
+ * Admin views a delegated role may be granted on its own, without the
+ * topology or the tenant list: the probe ids of {@link adminViewProbes} minus
+ * dashboard, seal-manager and databases, whose read routes a plain user may
+ * reach.
+ */
+const DELEGATED_ADMIN_VIEWS: readonly string[] = [
+    'cluster',
+    'rebalance',
+    'users',
+    'roles',
+    'groups',
+    'volume-pools',
+    'certificates',
+    'credentials',
+    'backups',
+    'audit-log',
+];
+
+/**
+ * Whether the caller administers anything on this server: a server
+ * administrator reads the topology, a tenant administrator its tenant list,
+ * and a delegated role (one allowed the user list or the audit log, say)
+ * one of the {@link DELEGATED_ADMIN_VIEWS}. Only a caller refused the
+ * topology, the tenant list and every delegated view is a plain user, who is
+ * offered no admin view even where a read route (its own databases, the seal
+ * status) is open to it. Each view the section shows is still filtered by
+ * {@link adminViewAllowed}.
+ */
+export function hasAdminViews(profileId: string): boolean {
+    const refused = connManagerStore.refusedAdminViews[profileId] ?? [];
+    return !(
+        refused.includes('topology') &&
+        refused.includes('tenants') &&
+        DELEGATED_ADMIN_VIEWS.every((view) => refused.includes(view))
+    );
+}
+
+/**
+ * A refusal (403), from a TransportError or from an SDK module that
+ * reports the status in its error message ("... failed: 403 ...").
+ */
+function isRefused(err: unknown): boolean {
+    if (isForbidden(err)) return true;
+    return err instanceof Error && /failed: 403\b/.test(err.message);
+}
+
+/** True when err is the server's refusal of the caller (HTTP 403). */
+export function isForbidden(err: unknown): boolean {
+    return err instanceof TransportError && err.statusCode === 403;
+}
+
+/**
+ * Reports whether the active server is a multi-node Raft cluster, which is what
+ * the database wizard's Raft steps (replica count, etcd) need. A single-node
+ * Raft server is "raft" for the admin nav but gets the wizard's single-node
+ * steps. A desktop profile recorded as clustered carries no node count (0) and
+ * stays multi-node.
+ */
+export function isMultiNodeServer(): boolean {
+    if (connManagerStore.activeServerMode !== 'raft') return false;
+    const n = connManagerStore.activeClusterNodeCount;
+    return n === 0 || n > 1;
 }
 
 /**
@@ -431,18 +558,38 @@ async function detectWebServerMode(
  * reloads without re-probing being strictly required.
  */
 async function applyWebServerMode(client: Client, profileId: string): Promise<void> {
-    const { serverMode, nodeCount } = await detectWebServerMode(client);
+    const { serverMode, nodeCount, topologyRefused, refusedViews } = await detectWebServerMode(client);
+    const generation = (viewProbeGeneration.get(profileId) ?? 0) + 1;
+    viewProbeGeneration.set(profileId, generation);
+    const topologyViews = topologyRefused ? ['topology'] : [];
     connManagerStore.profiles = connManagerStore.profiles.map((p) =>
         p.id === profileId ? { ...p, serverMode, clusterNodeCount: nodeCount } : p,
     );
+    // Views refused by an earlier probe stay hidden until this probe settles.
+    const earlierViews = (connManagerStore.refusedAdminViews[profileId] ?? []).filter((v) => v !== 'topology');
+    connManagerStore.refusedAdminViews = {
+        ...connManagerStore.refusedAdminViews,
+        [profileId]: [...topologyViews, ...earlierViews],
+    };
     if (connManagerStore.activeProfileId === profileId) {
         connManagerStore.activeServerMode = serverMode;
         connManagerStore.activeClusterNodeCount = nodeCount;
     }
+    // The view probes settle later; only the newest probe of a profile applies.
+    void refusedViews.then((views) => {
+        if (viewProbeGeneration.get(profileId) !== generation) return;
+        connManagerStore.refusedAdminViews = {
+            ...connManagerStore.refusedAdminViews,
+            [profileId]: [...topologyViews, ...views],
+        };
+    });
     await persistence.save(client, connManagerStore.profiles).catch(() => {
         // Persistence is best-effort; the in-memory mode is what the UI reads.
     });
 }
+
+/** The newest admin-view probe started per profile. */
+const viewProbeGeneration = new Map<string, number>();
 
 /**
  * Resolves the connection state for a web-mode profile by querying the REST
@@ -486,6 +633,103 @@ async function resolveWebConnectionState(
  * @param profileId - ID of the profile to connect.
  * @returns The resulting connection state.
  */
+/**
+ * Base address the web-mode REST client was last connected to by
+ * connectProfile. null means App.svelte's initial connect to the page
+ * origin.
+ */
+let webConnectedBase: string | null = null;
+
+/**
+ * The REST base URL a web profile targets: its saved server address, or the
+ * page origin for the built-in profile (and when no profile is known). This
+ * is the single place the web UI picks its REST target; connectProfile,
+ * setActiveProfile and startup (webStartupTarget, loadWebProfiles) all use it.
+ */
+export function webProfileTarget(profile: ConnectionProfile | undefined): string {
+    return profile?.external?.address || window.location.origin;
+}
+
+/**
+ * The REST target App.initialize connects to before loading profiles: the
+ * persisted active profile's address, so a reload with an external profile
+ * saved as active talks to that server rather than the page origin.
+ */
+export function webStartupTarget(): string {
+    const activeId = webGetActiveProfileId();
+    const raw = localStorage.getItem(WEB_PROFILES_KEY);
+    if (activeId === '' || raw === null) return window.location.origin;
+    try {
+        const profiles = JSON.parse(raw) as ConnectionProfile[];
+        return webProfileTarget(profiles.find((p) => p.id === activeId));
+    } catch {
+        return window.location.origin;
+    }
+}
+
+/**
+ * Points the shared REST client at the profile's target. A client connected
+ * to another server is disconnected first, and a transport closed by
+ * connection.disconnect() is reopened. Only one server is reachable at a
+ * time, so every other profile still marked live is marked disconnected:
+ * the UI never labels one server while requests reach another.
+ */
+async function retargetWebClient(
+    client: Client,
+    profile: ConnectionProfile,
+): Promise<void> {
+    // Disable and invalidate every other profile's view BEFORE the client
+    // leaves its server. RestClient.connection.connect marks the client
+    // connected after the new server's /health and then awaits its /status;
+    // if the old profile still read "connected" during that window, its
+    // admin view and destructive actions would send requests to the new
+    // server (deleting A's displayed credential could delete B's).
+    let changed = false;
+    const states = new Map(connManagerStore.states);
+    for (const [id, state] of states) {
+        if (id !== profile.id && state.status !== 'disconnected' && state.status !== 'error') {
+            states.set(id, { profileId: id, status: 'disconnected', isEmbedded: false });
+            changed = true;
+        }
+    }
+    if (changed) connManagerStore.states = states;
+
+    const target = webProfileTarget(profile);
+    const current = webConnectedBase ?? window.location.origin;
+    if (!client.connection.isConnected() || current !== target) {
+        // The client no longer names a recorded server until connect succeeds.
+        webConnectedBase = null;
+        try {
+            if (client.connection.isConnected()) {
+                await client.connection.disconnect();
+            }
+            await client.connection.connect(target);
+            webConnectedBase = target;
+        } catch {
+            // Unreachable: resolveWebConnectionState reports the error state.
+        }
+    }
+}
+
+/**
+ * Tail of the web-mode profile switch queue. Every operation that retargets
+ * the shared REST client and then probes or activates a profile runs on this
+ * chain, one at a time: RestClient.connection.connect changes baseUrl before
+ * it awaits /health, so two overlapping switches could otherwise record one
+ * profile as connected while the client points at the other.
+ */
+let webSwitchChain: Promise<unknown> = Promise.resolve();
+
+/**
+ * serializeWebSwitch runs op after every previously queued web profile
+ * switch has settled, whether it succeeded or failed.
+ */
+function serializeWebSwitch<T>(op: () => Promise<T>): Promise<T> {
+    const run = webSwitchChain.then(op, op);
+    webSwitchChain = run.catch(() => undefined);
+    return run;
+}
+
 export async function connectProfile(
     client: Client,
     profileId: string,
@@ -534,15 +778,23 @@ export async function connectProfile(
         connManagerStore.states = new Map(connManagerStore.states).set(profileId, errState);
         return errState;
     }
-    const state = await resolveWebConnectionState(client, profile);
-    connManagerStore.states = new Map(connManagerStore.states).set(profileId, state);
+    // Point the REST client at the profile's saved server address; without
+    // this the probe below and every later read would go to whichever
+    // server was connected before. The connect, probe and topology read run
+    // as one serialized switch so an overlapping connect cannot retarget the
+    // client between them.
+    return serializeWebSwitch(async () => {
+        await retargetWebClient(client, profile);
+        const state = await resolveWebConnectionState(client, profile);
+        connManagerStore.states = new Map(connManagerStore.states).set(profileId, state);
 
-    // Probe live topology on a successful connect so cluster surfaces appear
-    // immediately for multi-node servers (mirrors loadWebProfiles).
-    if (state.status === 'connected') {
-        await applyWebServerMode(client, profileId);
-    }
-    return state;
+        // Probe live topology on a successful connect so cluster surfaces appear
+        // immediately for multi-node servers (mirrors loadWebProfiles).
+        if (state.status === 'connected') {
+            await applyWebServerMode(client, profileId);
+        }
+        return state;
+    });
 }
 
 /**
@@ -569,6 +821,32 @@ export async function disconnectProfile(
         profileId,
         disconnected,
     );
+}
+
+/**
+ * Saves a profile (insert or replace by id) and adds it to the store.
+ *
+ * Desktop mode delegates to the Wails ConnectionManagerBinding; web mode
+ * persists the updated list to localStorage, since the REST client has no
+ * connection-manager backend.
+ *
+ * @param client  - The SDK client singleton.
+ * @param profile - The profile to save.
+ */
+export async function saveProfile(
+    client: Client,
+    profile: ConnectionProfile,
+): Promise<void> {
+    const updated = [
+        ...connManagerStore.profiles.filter((p) => p.id !== profile.id),
+        profile,
+    ];
+    if (isDesktop()) {
+        await client.connectionManager.saveProfile(profile as never);
+    } else {
+        await persistence.save(client, updated);
+    }
+    connManagerStore.profiles = updated;
 }
 
 /**
@@ -626,9 +904,30 @@ export async function setActiveProfile(
 ): Promise<void> {
     if (isDesktop()) {
         await client.connectionManager.setActive(profileId);
-    } else {
-        webSetActiveProfileId(profileId);
+        markProfileActive(profileId);
+        return;
     }
+    // Activation retargets the REST client: reads and destructive operations
+    // must reach the server the UI now labels as active. It runs on the same
+    // serialized switch queue as connectProfile, so the client target, the
+    // probed state and the active label always name one profile.
+    await serializeWebSwitch(async () => {
+        webSetActiveProfileId(profileId);
+        const target = connManagerStore.profiles.find((p) => p.id === profileId);
+        if (target !== undefined) {
+            await retargetWebClient(client, target);
+            const state = await resolveWebConnectionState(client, target);
+            connManagerStore.states = new Map(connManagerStore.states).set(profileId, state);
+        }
+        markProfileActive(profileId);
+    });
+}
+
+/**
+ * markProfileActive records profileId as the active profile in local state:
+ * the active id, its lastUsed timestamp and its server topology metadata.
+ */
+function markProfileActive(profileId: string): void {
     connManagerStore.activeProfileId = profileId;
 
     // Refresh the lastUsed timestamp on the profile in local state.

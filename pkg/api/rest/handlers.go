@@ -56,6 +56,9 @@ const apiRequestTimeout = 5 * time.Second
 // the service layer provides quicraft.ShardInfo values that serialize
 // correctly via their JSON struct tags.
 type statusResponse struct {
+	// Version is the server binary's build version (the value its
+	// --version flag prints).
+	Version     string `json:"version"`
 	NodeID      string `json:"node_id"`
 	RaftAddress string `json:"raft_address"`
 	IsLeader    bool   `json:"is_leader"`
@@ -215,6 +218,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := statusResponse{
+		Version:     s.version,
 		NodeID:      info.NodeID,
 		RaftAddress: info.RaftAddress,
 		IsLeader:    info.IsLeader,

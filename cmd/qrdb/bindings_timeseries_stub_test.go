@@ -52,56 +52,56 @@ func TestTSStub_NewTimeSeriesBinding(t *testing.T) {
 
 func TestTSStub_Write(t *testing.T) {
 	b := newTSStubBinding(t)
-	assertTSFeatureDisabled(t, b.Write(&transport.TSDataPoint{}))
+	assertTSFeatureDisabled(t, b.Write("", &transport.TSDataPoint{}))
 }
 
 func TestTSStub_WriteBatch(t *testing.T) {
 	b := newTSStubBinding(t)
-	assertTSFeatureDisabled(t, b.WriteBatch(nil))
+	assertTSFeatureDisabled(t, b.WriteBatch("", nil))
 }
 
 func TestTSStub_Query(t *testing.T) {
 	b := newTSStubBinding(t)
-	_, err := b.Query(&transport.TSQueryRequest{})
+	_, err := b.Query("", &transport.TSQueryRequest{})
 	assertTSFeatureDisabled(t, err)
 }
 
 func TestTSStub_Aggregate(t *testing.T) {
 	b := newTSStubBinding(t)
-	_, err := b.Aggregate(&transport.TSAggregateRequest{})
+	_, err := b.Aggregate("", &transport.TSAggregateRequest{})
 	assertTSFeatureDisabled(t, err)
 }
 
 func TestTSStub_WritePoint(t *testing.T) {
 	b := newTSStubBinding(t)
-	assertTSFeatureDisabled(t, b.WritePoint(&transport.TSDataPoint{}))
+	assertTSFeatureDisabled(t, b.WritePoint("", &transport.TSDataPoint{}))
 }
 
 func TestTSStub_RichQuery(t *testing.T) {
 	b := newTSStubBinding(t)
-	_, err := b.RichQuery(&transport.TSRichQueryRequest{})
+	_, err := b.RichQuery("", &transport.TSRichQueryRequest{})
 	assertTSFeatureDisabled(t, err)
 }
 
 func TestTSStub_DeleteSeries(t *testing.T) {
 	b := newTSStubBinding(t)
-	_, err := b.DeleteSeries(&transport.TSDeleteRequest{})
+	_, err := b.DeleteSeries("", &transport.TSDeleteRequest{})
 	assertTSFeatureDisabled(t, err)
 }
 
 func TestTSStub_GetRetention(t *testing.T) {
 	b := newTSStubBinding(t)
-	_, err := b.GetRetention(&transport.TSGetRetentionRequest{})
+	_, err := b.GetRetention("", &transport.TSGetRetentionRequest{})
 	assertTSFeatureDisabled(t, err)
 }
 
 func TestTSStub_SetRetention(t *testing.T) {
 	b := newTSStubBinding(t)
-	assertTSFeatureDisabled(t, b.SetRetention(&transport.TSSetRetentionRequest{}))
+	assertTSFeatureDisabled(t, b.SetRetention("", &transport.TSSetRetentionRequest{}))
 }
 
 func TestTSStub_ListMetrics(t *testing.T) {
 	b := newTSStubBinding(t)
-	_, err := b.ListMetrics(&transport.TSListMetricsRequest{})
+	_, err := b.ListMetrics("", &transport.TSListMetricsRequest{})
 	assertTSFeatureDisabled(t, err)
 }

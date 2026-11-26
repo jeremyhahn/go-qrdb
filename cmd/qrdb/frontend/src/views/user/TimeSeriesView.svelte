@@ -18,6 +18,7 @@
   import { onMount } from "svelte";
   import type { Component } from "svelte";
   import type {
+    AggFunc,
     Client,
     TSDataPoint,
     TSTag,
@@ -84,12 +85,90 @@
   let writeTimestamp: string = $state("");
   let writeTags: string = $state("");
   let writeLoading: boolean = $state(false);
+  let writeMode: "single" | "batch" = $state("single");
+  let writeBatchText: string = $state("");
 
   // Delete confirmation
   let deleteTarget: string | null = $state(null);
 
   // Detail panel for a single data point
   let selectedPoint: TimeSeriesRow | null = $state(null);
+
+  // AggFunc names, indexed by their numeric value (SDK AggFunc 0..8).
+  const AGG_FUNC_NAMES = [
+    "None",
+    "Avg",
+    "Sum",
+    "Min",
+    "Max",
+    "Count",
+    "Percentile",
+    "First",
+    "Last",
+  ] as const;
+
+  // The AggFunc values every transport accepts: the REST handler's aggFuncMap
+  // (pkg/api/rest/handlers_timeseries.go) knows avg, sum, min, max, count and
+  // percentile only, so the menus offer those (First and Last would be a 400).
+  const SUPPORTED_AGG_FUNCS: readonly number[] = [1, 2, 3, 4, 5, 6];
+  // Rich query and retention may also run without an aggregation (0, "None",
+  // which the request omits); the aggregate card always needs one.
+  const OPTIONAL_AGG_FUNCS: readonly number[] = [0, ...SUPPORTED_AGG_FUNCS];
+
+  // Aggregate card
+  let aggFunction: number = $state(1);
+  let aggInterval: string = $state("1m");
+  let aggResults: { timestampNs: number; value: number; count: number }[] = $state([]);
+  let aggLoading: boolean = $state(false);
+  let aggRan: boolean = $state(false);
+
+  // Rich query card
+  interface RichGroup {
+    tags: readonly TSTag[];
+    points: readonly TSDataPoint[];
+    aggregatedValue?: number;
+  }
+  interface RichResult {
+    points: readonly TSDataPoint[];
+    aggregatedValue?: number;
+    groupedResults: RichGroup[];
+  }
+  let rqTags: string = $state("");
+  let rqAggregation: number = $state(0);
+  let rqInterval: string = $state("");
+  let rqGroupBy: string = $state("");
+  let rqLimit: string = $state("");
+  let rqPercentile: string = $state("95");
+  let rqResult: RichResult | null = $state(null);
+  let rqLoading: boolean = $state(false);
+
+  // Retention card
+  interface RetentionView {
+    durationNs: number;
+    resolutionNs?: number;
+    aggregation?: number;
+  }
+  let retention: RetentionView | null = $state(null);
+  let retentionLoaded: boolean = $state(false);
+  let retentionLoading: boolean = $state(false);
+  // The last retention lookup's failure; "" once one succeeds. Distinct from
+  // retention === null, which means the server has no policy.
+  let retentionError: string = $state("");
+  // Bumped whenever the detail view changes metric (open or back): a
+  // response, error or loading update from a request started under an older
+  // generation belongs to a metric no longer shown and is dropped.
+  let metricGen = 0;
+  let retDuration: string = $state("7d");
+  let retResolution: string = $state("");
+  let retAggregation: number = $state(0);
+
+  const aggChartData = $derived(
+    aggResults.map((b) => ({
+      timestamp: Math.round(b.timestampNs / 1_000_000),
+      value: b.value,
+      metric: `${selectedMetric ?? ""} ${AGG_FUNC_NAMES[aggFunction] ?? ""}`,
+    }))
+  );
 
   // ---------------------------------------------------------------------------
   // Column Definitions
@@ -200,9 +279,216 @@
     return tags;
   }
 
+  const DURATION_UNITS: { suffix: string; label: string; ns: number }[] = [
+    { suffix: "d", label: "days", ns: 86_400_000_000_000 },
+    { suffix: "h", label: "hours", ns: 3_600_000_000_000 },
+    { suffix: "m", label: "minutes", ns: 60_000_000_000 },
+    { suffix: "s", label: "seconds", ns: 1_000_000_000 },
+    { suffix: "ms", label: "milliseconds", ns: 1_000_000 },
+  ];
+
+  /**
+   * Parses a duration such as "90s", "5m", "2h", "7d", "250ms" or a bare
+   * number of nanoseconds. Returns null when empty or invalid.
+   */
+  function parseDurationNs(raw: string): number | null {
+    const s = raw.trim();
+    if (s === "") return null;
+    const m = /^(\d+(?:\.\d+)?)\s*(ns|ms|s|m|h|d)?$/.exec(s);
+    if (m === null) return null;
+    const n = parseFloat(m[1] ?? "");
+    const unit = m[2] ?? "ns";
+    if (unit === "ns") return Math.round(n);
+    const u = DURATION_UNITS.find((d) => d.suffix === unit);
+    return u ? Math.round(n * u.ns) : null;
+  }
+
+  /** Renders nanoseconds in the largest whole human unit ("2 hours"). */
+  function formatDurationNs(ns: number): string {
+    if (ns <= 0) return "0";
+    for (const u of DURATION_UNITS) {
+      if (ns >= u.ns) {
+        const v = ns / u.ns;
+        const shown = Number.isInteger(v) ? String(v) : v.toFixed(2);
+        return `${shown} ${v === 1 ? u.label.slice(0, -1) : u.label}`;
+      }
+    }
+    return `${ns} ns`;
+  }
+
+  function errMessage(err: unknown): string {
+    return err instanceof Error ? err.message : String(err);
+  }
+
   // ---------------------------------------------------------------------------
   // Actions
   // ---------------------------------------------------------------------------
+
+  async function loadRetention(metric: string): Promise<void> {
+    const gen = metricGen;
+    retentionLoading = true;
+    retentionLoaded = false;
+    retentionError = "";
+    try {
+      const resp = await client.timeSeries!.getRetention({ metric });
+      if (gen !== metricGen) return;
+      // The engine answers an unset policy with an empty one (duration 0),
+      // which the embedded transport and the Wails binding pass through; REST
+      // already reports none. A zero or absent duration is no policy.
+      const raw = resp?.policy ?? null;
+      const p = raw !== null && (raw.durationNs ?? 0) > 0 ? raw : null;
+      retention = p === null
+        ? null
+        : {
+            durationNs: p.durationNs,
+            ...(p.resolutionNs !== undefined ? { resolutionNs: p.resolutionNs } : {}),
+            ...(p.aggregation !== undefined ? { aggregation: p.aggregation as number } : {}),
+          };
+      retentionLoaded = true;
+    } catch (err: unknown) {
+      if (gen !== metricGen) return;
+      // Not "no policy": the server may well have one the client could not
+      // read. The card shows the failure with a retry until a lookup succeeds.
+      showToast("error", errMessage(err));
+      retention = null;
+      retentionError = errMessage(err);
+    } finally {
+      if (gen === metricGen) retentionLoading = false;
+    }
+  }
+
+  async function saveRetention(): Promise<void> {
+    if (selectedMetric === null) return;
+    const durationNs = parseDurationNs(retDuration);
+    if (durationNs === null || durationNs <= 0) {
+      showToast("warning", "Duration must be a positive duration like 12h or 30d.");
+      return;
+    }
+    const resolutionNs = parseDurationNs(retResolution);
+    if (retResolution.trim() !== "" && resolutionNs === null) {
+      showToast("warning", "Resolution must be a duration like 1m or 1h.");
+      return;
+    }
+    const metric = selectedMetric;
+    const gen = metricGen;
+    retentionLoading = true;
+    try {
+      await client.timeSeries!.setRetention({
+        metric,
+        policy: {
+          durationNs,
+          ...(resolutionNs !== null ? { resolutionNs } : {}),
+          ...(retAggregation !== 0 ? { aggregation: retAggregation as AggFunc } : {}),
+        },
+      });
+      showToast("success", `Retention set for "${metric}".`);
+    } catch (err: unknown) {
+      showToast("error", errMessage(err));
+      if (gen === metricGen) retentionLoading = false;
+      return;
+    }
+    if (gen !== metricGen) return;
+    await loadRetention(metric);
+  }
+
+  /** Clears the per-metric cards and invalidates every pending request. */
+  function resetMetricCards(): void {
+    metricGen++;
+    aggResults = [];
+    aggRan = false;
+    aggLoading = false;
+    rqResult = null;
+    rqLoading = false;
+    retention = null;
+    retentionLoaded = false;
+    retentionLoading = false;
+    retentionError = "";
+  }
+
+  async function runRichQuery(): Promise<void> {
+    if (selectedMetric === null) return;
+    const intervalNs = parseDurationNs(rqInterval);
+    if (rqInterval.trim() !== "" && intervalNs === null) {
+      showToast("warning", "Interval must be a duration like 30s, 5m, 1h or 1d.");
+      return;
+    }
+    const limit = rqLimit.trim() === "" ? null : parseInt(rqLimit, 10);
+    if (limit !== null && (Number.isNaN(limit) || limit < 0)) {
+      showToast("warning", "Limit must be a non-negative integer.");
+      return;
+    }
+    const percentile = rqAggregation === 6 ? parseFloat(rqPercentile) : null;
+    if (percentile !== null && (Number.isNaN(percentile) || percentile < 0 || percentile > 100)) {
+      showToast("warning", "Percentile must be between 0 and 100.");
+      return;
+    }
+    const tags = parseTags(rqTags);
+    const groupBy = rqGroupBy.split(",").map((s) => s.trim()).filter((s) => s !== "");
+    const gen = metricGen;
+    rqLoading = true;
+    try {
+      const resp = await client.timeSeries!.richQuery({
+        metric: selectedMetric,
+        startNs: rangeStartMs * 1_000_000,
+        endNs: rangeEndMs * 1_000_000,
+        ...(tags.length > 0 ? { tags } : {}),
+        ...(rqAggregation !== 0 ? { aggregation: rqAggregation as AggFunc } : {}),
+        ...(intervalNs !== null ? { intervalNs } : {}),
+        ...(groupBy.length > 0 ? { groupBy } : {}),
+        ...(limit !== null ? { limit } : {}),
+        ...(percentile !== null ? { percentile } : {}),
+      });
+      if (gen !== metricGen) return;
+      rqResult = {
+        points: resp?.points ?? [],
+        ...(resp?.aggregatedValue !== undefined ? { aggregatedValue: resp.aggregatedValue } : {}),
+        groupedResults: (resp?.groupedResults ?? []).map((g) => ({
+          tags: g.tags ?? [],
+          points: g.points ?? [],
+          ...(g.aggregatedValue !== undefined ? { aggregatedValue: g.aggregatedValue } : {}),
+        })),
+      };
+    } catch (err: unknown) {
+      if (gen !== metricGen) return;
+      showToast("error", errMessage(err));
+      rqResult = null;
+    } finally {
+      if (gen === metricGen) rqLoading = false;
+    }
+  }
+
+  async function runAggregate(): Promise<void> {
+    if (selectedMetric === null) return;
+    const intervalNs = parseDurationNs(aggInterval);
+    if (aggInterval.trim() !== "" && intervalNs === null) {
+      showToast("warning", "Interval must be a duration like 30s, 5m, 1h or 1d.");
+      return;
+    }
+    const gen = metricGen;
+    aggLoading = true;
+    try {
+      const resp = await client.timeSeries!.aggregate({
+        metric: selectedMetric,
+        startNs: rangeStartMs * 1_000_000,
+        endNs: rangeEndMs * 1_000_000,
+        function: aggFunction as AggFunc,
+        ...(intervalNs !== null ? { intervalNs } : {}),
+      });
+      if (gen !== metricGen) return;
+      aggResults = (resp?.results ?? []).map((r) => ({
+        timestampNs: r.timestampNs,
+        value: r.value,
+        count: r.count,
+      }));
+      aggRan = true;
+    } catch (err: unknown) {
+      if (gen !== metricGen) return;
+      showToast("error", errMessage(err));
+      aggResults = [];
+    } finally {
+      if (gen === metricGen) aggLoading = false;
+    }
+  }
 
   async function loadMetrics(): Promise<void> {
 
@@ -228,11 +514,12 @@
     // view transitions immediately on click rather than waiting for the
     // async query to complete.
     selectedMetric = metric;
-    await loadDataPoints(metric);
+    resetMetricCards();
+    await Promise.all([loadDataPoints(metric), loadRetention(metric)]);
   }
 
   async function loadDataPoints(metric: string): Promise<void> {
-
+    const gen = metricGen;
     pointsLoading = true;
     try {
       const resp = await client.timeSeries!.query({
@@ -240,6 +527,7 @@
         startNs: rangeStartMs * 1_000_000,
         endNs: rangeEndMs * 1_000_000,
       });
+      if (gen !== metricGen) return;
       const points = resp?.points ?? [];
       dataPoints = points.map((dp) => ({
         metric: dp.metric,
@@ -248,10 +536,11 @@
         tags: dp.tags ?? [],
       }));
     } catch (err: unknown) {
+      if (gen !== metricGen) return;
       showToast("error", err instanceof Error ? err.message : String(err));
       dataPoints = [];
     } finally {
-      pointsLoading = false;
+      if (gen === metricGen) pointsLoading = false;
     }
   }
 
@@ -259,6 +548,8 @@
     selectedMetric = null;
     dataPoints = [];
     selectedPoint = null;
+    pointsLoading = false;
+    resetMetricCards();
   }
 
   function openWritePanel(): void {
@@ -266,7 +557,83 @@
     writeValue = "";
     writeTimestamp = "";
     writeTags = "";
+    writeMode = "single";
+    writeBatchText = "";
     showWritePanel = true;
+  }
+
+  const INT64_MAX = BigInt("9223372036854775807");
+
+  /**
+   * Parses batch lines of the form `timestamp,value[,k=v;k=v]`. Returns the
+   * points or an error message naming the first bad line.
+   */
+  function parseBatch(metric: string, raw: string): TSDataPoint[] | string {
+    const points: TSDataPoint[] = [];
+    const lines = raw.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const line = (lines[i] ?? "").trim();
+      if (line === "") continue;
+      const parts = line.split(",");
+      if (parts.length < 2 || parts.length > 3) {
+        return `Line ${i + 1}: expected timestamp,value[,k=v;k=v].`;
+      }
+      const tsRaw = (parts[0] ?? "").trim();
+      if (!/^\d+$/.test(tsRaw)) return `Line ${i + 1}: timestamp must be Unix nanoseconds.`;
+      // The binding sends a JavaScript number as JSON, exact only to 2^53:
+      // adjacent nanoseconds can round to one value and overwrite each other
+      // in storage, and a value exact in binary (1700000000000000256) can
+      // still serialize to another decimal (1700000000000000300). Compare
+      // the decimal the wire carries with the input and reject any change.
+      const exactNs = BigInt(tsRaw);
+      if (exactNs > INT64_MAX) return `Line ${i + 1}: timestamp is out of range.`;
+      const timestampNs = Number(tsRaw);
+      const wireNs = JSON.stringify(timestampNs);
+      if (wireNs !== exactNs.toString()) {
+        return `Line ${i + 1}: timestamp ${exactNs} cannot be represented exactly (nearest is ${wireNs}).`;
+      }
+      // The whole field must be a finite number: parseFloat would take the
+      // prefix of "12oops", and "1e309" overflows to Infinity, which JSON
+      // sends as null (stored as 0).
+      const valueRaw = (parts[1] ?? "").trim();
+      const value = valueRaw === "" ? NaN : Number(valueRaw);
+      if (!Number.isFinite(value)) return `Line ${i + 1}: value must be a valid number.`;
+      const tags = parts.length === 3 ? parseTags((parts[2] ?? "").replaceAll(";", ",")) : [];
+      points.push({
+        metric,
+        value,
+        timestampNs,
+        ...(tags.length > 0 ? { tags } : {}),
+      });
+    }
+    if (points.length === 0) return "Enter at least one line.";
+    return points;
+  }
+
+  async function handleWriteBatch(): Promise<void> {
+    if (writeMetric.trim() === "") {
+      showToast("warning", "Metric is required.");
+      return;
+    }
+    const parsed = parseBatch(writeMetric.trim(), writeBatchText);
+    if (typeof parsed === "string") {
+      showToast("warning", parsed);
+      return;
+    }
+    writeLoading = true;
+    try {
+      await client.timeSeries!.writeBatch(parsed);
+      showToast("success", `${parsed.length} data points written for "${writeMetric}".`);
+      showWritePanel = false;
+      await loadMetrics();
+      if (selectedMetric !== null) {
+        await loadDataPoints(selectedMetric);
+      }
+    } catch (err: unknown) {
+      showToast("error", errMessage(err));
+    } finally {
+      writeLoading = false;
+    }
   }
 
   async function handleWrite(): Promise<void> {
@@ -568,6 +935,293 @@
       pageSize={10}
       emptyMessage="No data points found"
     />
+
+    <!-- Aggregate -->
+    <div class="surface-panel mt-4 rounded-xl p-5" data-testid="ts-aggregate-card">
+      <h3 class="mb-3 text-sm font-semibold">Aggregate</h3>
+      <div class="flex flex-wrap items-end gap-3">
+        <label class="form-control">
+          <div class="label"><span class="label-text">Function</span></div>
+          <select
+            class="select select-bordered select-sm"
+            bind:value={aggFunction}
+            data-testid="ts-agg-function"
+          >
+            {#each SUPPORTED_AGG_FUNCS as fn (fn)}
+              <option value={fn}>{AGG_FUNC_NAMES[fn]}</option>
+            {/each}
+          </select>
+        </label>
+        <label class="form-control">
+          <div class="label"><span class="label-text">Interval</span></div>
+          <input
+            type="text"
+            class="input input-bordered input-sm w-28 font-mono"
+            placeholder="1m"
+            bind:value={aggInterval}
+            data-testid="ts-agg-interval"
+          />
+        </label>
+        <button
+          class="btn btn-sm btn-primary"
+          onclick={runAggregate}
+          disabled={aggLoading}
+          data-testid="ts-agg-run"
+        >
+          {#if aggLoading}<span class="loading loading-spinner loading-xs"></span>{/if}
+          Aggregate
+        </button>
+        {#if parseDurationNs(aggInterval) !== null}
+          <div class="text-xs text-base-content/50">
+            <span>{formatDurationNs(parseDurationNs(aggInterval) ?? 0)}</span>
+            <div class="font-mono">{parseDurationNs(aggInterval)} ns</div>
+          </div>
+        {/if}
+      </div>
+      <p class="mt-2 text-xs text-base-content/50">Uses the selected time range.</p>
+
+      {#if aggRan}
+        {#if aggResults.length === 0}
+          <p class="mt-3 text-sm text-base-content/60" data-testid="ts-agg-empty">No buckets.</p>
+        {:else}
+          <div class="mt-4">
+            <TimeSeriesChart data={aggChartData} chartType="line" height={200} accentColor="#a78bfa" />
+          </div>
+          <table class="table table-sm mt-3" data-testid="ts-agg-results">
+            <thead>
+              <tr><th>Bucket</th><th class="text-right">Value</th><th class="text-right">Count</th></tr>
+            </thead>
+            <tbody>
+              {#each aggResults as b (b.timestampNs)}
+                <tr>
+                  <td class="font-mono text-xs">
+                    {formatTimestamp(b.timestampNs / 1_000_000)}
+                    <div class="text-base-content/40">{b.timestampNs} ns</div>
+                  </td>
+                  <td class="text-right font-mono" data-testid="ts-agg-value">{b.value}</td>
+                  <td class="text-right font-mono">{b.count}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {/if}
+      {/if}
+    </div>
+
+    <!-- Rich query -->
+    <div class="surface-panel mt-4 rounded-xl p-5" data-testid="ts-rich-card">
+      <h3 class="mb-3 text-sm font-semibold">Rich query</h3>
+      <div class="grid grid-cols-1 gap-3 md:grid-cols-3">
+        <label class="form-control">
+          <div class="label"><span class="label-text">Tag filters</span></div>
+          <input
+            type="text"
+            class="input input-bordered input-sm font-mono"
+            placeholder="host=node1,region=us-east"
+            bind:value={rqTags}
+            data-testid="ts-rich-tags"
+          />
+        </label>
+        <label class="form-control">
+          <div class="label"><span class="label-text">Aggregation</span></div>
+          <select
+            class="select select-bordered select-sm"
+            bind:value={rqAggregation}
+            data-testid="ts-rich-aggregation"
+          >
+            {#each OPTIONAL_AGG_FUNCS as fn (fn)}
+              <option value={fn}>{AGG_FUNC_NAMES[fn]}</option>
+            {/each}
+          </select>
+        </label>
+        <label class="form-control">
+          <div class="label"><span class="label-text">Interval</span></div>
+          <input
+            type="text"
+            class="input input-bordered input-sm font-mono"
+            placeholder="e.g. 5m"
+            bind:value={rqInterval}
+            data-testid="ts-rich-interval"
+          />
+        </label>
+        <label class="form-control">
+          <div class="label"><span class="label-text">Group by tags</span></div>
+          <input
+            type="text"
+            class="input input-bordered input-sm font-mono"
+            placeholder="host,region"
+            bind:value={rqGroupBy}
+            data-testid="ts-rich-groupby"
+          />
+        </label>
+        <label class="form-control">
+          <div class="label"><span class="label-text">Limit</span></div>
+          <input
+            type="text"
+            class="input input-bordered input-sm font-mono"
+            placeholder="no limit"
+            bind:value={rqLimit}
+            data-testid="ts-rich-limit"
+          />
+        </label>
+        {#if rqAggregation === 6}
+          <label class="form-control">
+            <div class="label"><span class="label-text">Percentile</span></div>
+            <input
+              type="text"
+              class="input input-bordered input-sm font-mono"
+              placeholder="95"
+              bind:value={rqPercentile}
+              data-testid="ts-rich-percentile"
+            />
+          </label>
+        {/if}
+      </div>
+      <div class="mt-3 flex items-center gap-3">
+        <button
+          class="btn btn-sm btn-primary"
+          onclick={runRichQuery}
+          disabled={rqLoading}
+          data-testid="ts-rich-run"
+        >
+          {#if rqLoading}<span class="loading loading-spinner loading-xs"></span>{/if}
+          Run rich query
+        </button>
+        <span class="text-xs text-base-content/50">Uses the selected time range.</span>
+      </div>
+
+      {#if rqResult}
+        <div class="mt-4 space-y-3" data-testid="ts-rich-result">
+          {#if rqResult.aggregatedValue !== undefined}
+            <div class="text-sm">
+              Aggregated value:
+              <span class="font-mono" data-testid="ts-rich-aggregated">{rqResult.aggregatedValue}</span>
+            </div>
+          {/if}
+          <div class="text-sm" data-testid="ts-rich-point-count">{rqResult.points.length} points</div>
+          {#if rqResult.points.length > 0}
+            <table class="table table-sm" data-testid="ts-rich-points">
+              <thead><tr><th>Timestamp</th><th class="text-right">Value</th><th>Tags</th></tr></thead>
+              <tbody>
+                {#each rqResult.points as p, i (`${p.timestampNs}-${i}`)}
+                  <tr>
+                    <td class="font-mono text-xs">{p.timestampNs}</td>
+                    <td class="text-right font-mono">{p.value}</td>
+                    <td class="font-mono text-xs">{formatTags(p.tags ?? [])}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          {/if}
+          {#if rqResult.groupedResults.length > 0}
+            <table class="table table-sm" data-testid="ts-rich-groups">
+              <thead>
+                <tr><th>Group</th><th class="text-right">Points</th><th class="text-right">Aggregated</th></tr>
+              </thead>
+              <tbody>
+                {#each rqResult.groupedResults as g, i (i)}
+                  <tr data-testid="ts-rich-group-row">
+                    <td class="font-mono text-xs">{formatTags(g.tags)}</td>
+                    <td class="text-right font-mono">{g.points.length}</td>
+                    <td class="text-right font-mono">{g.aggregatedValue ?? ""}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          {/if}
+        </div>
+      {/if}
+    </div>
+
+    <!-- Retention -->
+    <div class="surface-panel mt-4 rounded-xl p-5" data-testid="ts-retention-card">
+      <h3 class="mb-3 text-sm font-semibold">Retention</h3>
+      <div class="mb-3 text-sm" data-testid="ts-retention-current">
+        {#if retentionLoading && !retentionLoaded}
+          <span class="loading loading-spinner loading-xs"></span>
+        {:else if retentionError !== ""}
+          <div class="flex items-center gap-2 text-error" data-testid="ts-retention-error">
+            <span>Current policy unavailable: {retentionError}</span>
+            <button
+              class="btn btn-ghost btn-xs"
+              data-testid="ts-retention-retry"
+              onclick={() => { if (selectedMetric !== null) void loadRetention(selectedMetric); }}
+            >
+              Retry
+            </button>
+          </div>
+        {:else if retention === null}
+          <span data-testid="ts-retention-none">Current policy: none</span>
+        {:else}
+          <div>
+            Duration:
+            <span data-testid="ts-retention-duration">{formatDurationNs(retention.durationNs)}</span>
+            <span class="font-mono text-xs text-base-content/40">{retention.durationNs} ns</span>
+          </div>
+          {#if retention.resolutionNs !== undefined && retention.resolutionNs > 0}
+            <div>
+              Resolution:
+              <span data-testid="ts-retention-resolution">{formatDurationNs(retention.resolutionNs)}</span>
+              <span class="font-mono text-xs text-base-content/40">{retention.resolutionNs} ns</span>
+            </div>
+          {/if}
+          {#if retention.aggregation !== undefined && retention.aggregation !== 0}
+            <div>
+              Downsample aggregation:
+              <span data-testid="ts-retention-aggregation">{AGG_FUNC_NAMES[retention.aggregation] ?? retention.aggregation}</span>
+            </div>
+          {/if}
+        {/if}
+      </div>
+      <div class="flex flex-wrap items-end gap-3">
+        <label class="form-control">
+          <div class="label"><span class="label-text">Duration</span></div>
+          <input
+            type="text"
+            class="input input-bordered input-sm w-28 font-mono"
+            placeholder="7d"
+            bind:value={retDuration}
+            data-testid="ts-retention-duration-input"
+          />
+        </label>
+        <label class="form-control">
+          <div class="label"><span class="label-text">Resolution</span></div>
+          <input
+            type="text"
+            class="input input-bordered input-sm w-28 font-mono"
+            placeholder="optional, e.g. 1h"
+            bind:value={retResolution}
+            data-testid="ts-retention-resolution-input"
+          />
+        </label>
+        <label class="form-control">
+          <div class="label"><span class="label-text">Aggregation</span></div>
+          <select
+            class="select select-bordered select-sm"
+            bind:value={retAggregation}
+            data-testid="ts-retention-aggregation-input"
+          >
+            {#each OPTIONAL_AGG_FUNCS as fn (fn)}
+              <option value={fn}>{AGG_FUNC_NAMES[fn]}</option>
+            {/each}
+          </select>
+        </label>
+        <button
+          class="btn btn-sm btn-primary"
+          onclick={saveRetention}
+          disabled={retentionLoading}
+          data-testid="ts-retention-save"
+        >
+          Set retention
+        </button>
+      </div>
+      {#if parseDurationNs(retDuration) !== null}
+        <p class="mt-2 text-xs text-base-content/50">
+          {formatDurationNs(parseDurationNs(retDuration) ?? 0)}
+          <span class="font-mono">({parseDurationNs(retDuration)} ns)</span>
+        </p>
+      {/if}
+    </div>
   {/if}
 
 <!-- Data Point Detail SlidePanel -->
@@ -576,7 +1230,6 @@
   title="Data Point"
   onclose={() => (selectedPoint = null)}
 >
-  {#snippet children()}
     {#if selectedPoint}
       <div class="space-y-5">
         <div>
@@ -598,7 +1251,7 @@
           <div>
             <span class="text-sm font-medium text-base-content/70 block mb-1">Tags</span>
             <div class="flex flex-wrap gap-1">
-              {#each selectedPoint.tags as tag}
+              {#each selectedPoint.tags as tag, ti (ti)}
                 <span class="badge badge-sm badge-outline font-mono">
                   {tag.key}={tag.value}
                 </span>
@@ -608,7 +1261,6 @@
         {/if}
       </div>
     {/if}
-  {/snippet}
 </SlidePanel>
 
 <!-- Write Data Point SlidePanel -->
@@ -617,8 +1269,23 @@
   title="Write Data Point"
   onclose={() => (showWritePanel = false)}
 >
-  {#snippet children()}
     <div class="space-y-5">
+      <div class="join" role="tablist">
+        <button
+          class="join-item btn btn-sm {writeMode === 'single' ? 'btn-active' : ''}"
+          onclick={() => (writeMode = "single")}
+          data-testid="ts-write-mode-single"
+        >
+          Single
+        </button>
+        <button
+          class="join-item btn btn-sm {writeMode === 'batch' ? 'btn-active' : ''}"
+          onclick={() => (writeMode = "batch")}
+          data-testid="ts-write-mode-batch"
+        >
+          Batch
+        </button>
+      </div>
       <label class="form-control w-full">
         <div class="label"><span class="label-text">Metric</span></div>
         <input
@@ -628,6 +1295,7 @@
           bind:value={writeMetric}
         />
       </label>
+      {#if writeMode === "single"}
       <label class="form-control w-full">
         <div class="label"><span class="label-text">Value</span></div>
         <input
@@ -661,14 +1329,34 @@
           <span class="label-text-alt text-base-content/50">Comma-separated key=value pairs.</span>
         </div>
       </label>
+      {:else}
+        <label class="form-control w-full">
+          <div class="label"><span class="label-text">Points</span></div>
+          <textarea
+            class="textarea textarea-bordered w-full font-mono text-xs"
+            rows="8"
+            placeholder={"1700000000000000000,42.5,host=node1;region=us\n1700000060000000000,43"}
+            bind:value={writeBatchText}
+            data-testid="ts-write-batch"
+          ></textarea>
+          <div class="label">
+            <span class="label-text-alt text-base-content/50">
+              One point per line: timestamp_ns,value[,k=v;k=v].
+            </span>
+          </div>
+        </label>
+      {/if}
     </div>
-  {/snippet}
   {#snippet footer()}
     <div class="flex justify-end gap-2">
       <button class="btn btn-ghost" onclick={() => (showWritePanel = false)} disabled={writeLoading}>
         Cancel
       </button>
-      <button class="btn btn-primary" onclick={handleWrite} disabled={writeLoading}>
+      <button
+        class="btn btn-primary"
+        onclick={writeMode === "batch" ? handleWriteBatch : handleWrite}
+        disabled={writeLoading}
+      >
         {#if writeLoading}
           <span class="loading loading-spinner loading-sm"></span>
         {/if}

@@ -21,7 +21,7 @@
  *     passphrase-mode "Unseal" button, not the Shamir "Submit Share" label.
  */
 
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import {
   startDaemon,
   stopDaemon,
@@ -31,6 +31,22 @@ import {
 } from "./fixtures/dom-daemon.ts";
 
 const PASSPHRASE = "dom-passphrase-secret-1";
+const SO_PIN = "dom-so-pin-1";
+const USER_PIN = "dom-user-pin-1";
+
+/**
+ * Completes the wizard's admin step: the dev-only generated admin
+ * credential plus the SO PIN and user PIN ceremony.initialize requires.
+ */
+async function completeAdminStep(page: Page): Promise<void> {
+  await expect(page.getByRole("heading", { name: "Bootstrap Admin Credential" })).toBeVisible({ timeout: 10_000 });
+  await page.getByTestId("admin-mode-generate").check();
+  await page.getByTestId("so-pin-input").fill(SO_PIN);
+  await page.getByTestId("so-pin-confirm-input").fill(SO_PIN);
+  await page.getByTestId("user-pin-input").fill(USER_PIN);
+  await page.getByTestId("user-pin-confirm-input").fill(USER_PIN);
+  await page.getByTestId("admin-next-btn").click();
+}
 
 let daemon: DomDaemon | null = null;
 
@@ -72,6 +88,7 @@ test("passphrase: init via wizard, then seal and unseal through Seal Manager", a
   await expect(page.locator(".alert.alert-error")).toHaveCount(0);
 
   await page.getByRole("button", { name: "Next" }).click();
+  await completeAdminStep(page);
 
   // Wizard reaches completion (REST initialize() succeeded).
   await expect(page.getByRole("heading", { name: "Server Initialized" })).toBeVisible({ timeout: 20_000 });
@@ -88,6 +105,7 @@ test("passphrase: init via wizard, then seal and unseal through Seal Manager", a
 
   // Seal the barrier.
   await page.getByRole("button", { name: "Seal", exact: true }).click();
+  await page.getByRole("textbox", { name: "SO PIN", exact: true }).fill(SO_PIN);
   await page.getByRole("button", { name: "Confirm Seal" }).click();
 
   // The unseal panel must use PASSPHRASE copy — not Shamir shares.
@@ -114,6 +132,7 @@ test("passphrase: a wrong passphrase shows a friendly error and stays sealed, th
   await page.getByPlaceholder("Enter a strong passphrase").fill(PASSPHRASE);
   await page.getByPlaceholder("Confirm passphrase").fill(PASSPHRASE);
   await page.getByRole("button", { name: "Next" }).click();
+  await completeAdminStep(page);
   await expect(page.getByRole("heading", { name: "Server Initialized" })).toBeVisible({ timeout: 20_000 });
 
   await waitForHealthy(daemon!);
@@ -126,6 +145,7 @@ test("passphrase: a wrong passphrase shows a friendly error and stays sealed, th
   await page.getByText("Seal Manager").first().click();
   await expect(page.getByRole("heading", { name: "Seal Manager" })).toBeVisible();
   await page.getByRole("button", { name: "Seal", exact: true }).click();
+  await page.getByRole("textbox", { name: "SO PIN", exact: true }).fill(SO_PIN);
   await page.getByRole("button", { name: "Confirm Seal" }).click();
   await expect(page.getByText("Sealed").first()).toBeVisible({ timeout: 10_000 });
 
@@ -154,7 +174,7 @@ test("passphrase: a wrong passphrase shows a friendly error and stays sealed, th
   await expect(page.getByText("Unsealed").first()).toBeVisible();
 });
 
-test("passphrase: full-screen sealed gate shows mode-aware Unseal button (Bug 3)", async ({ page }) => {
+test("passphrase: full-screen sealed gate shows mode-aware Unseal button (Bug 3)", async ({ page, request }) => {
   // -------------------------------------------------------------------------
   // Step 1: Initialize via wizard.
   // -------------------------------------------------------------------------
@@ -164,6 +184,7 @@ test("passphrase: full-screen sealed gate shows mode-aware Unseal button (Bug 3)
   await page.getByPlaceholder("Enter a strong passphrase").fill(PASSPHRASE);
   await page.getByPlaceholder("Confirm passphrase").fill(PASSPHRASE);
   await page.getByRole("button", { name: "Next" }).click();
+  await completeAdminStep(page);
   await expect(page.getByRole("heading", { name: "Server Initialized" })).toBeVisible({ timeout: 20_000 });
 
   await waitForHealthy(daemon!);
@@ -176,12 +197,27 @@ test("passphrase: full-screen sealed gate shows mode-aware Unseal button (Bug 3)
   await page.getByText("Seal Manager").first().click();
   await expect(page.getByRole("heading", { name: "Seal Manager" })).toBeVisible();
   await page.getByRole("button", { name: "Seal", exact: true }).click();
+  await page.getByRole("textbox", { name: "SO PIN", exact: true }).fill(SO_PIN);
   await page.getByRole("button", { name: "Confirm Seal" }).click();
   await expect(page.getByText("Sealed").first()).toBeVisible({ timeout: 10_000 });
 
   // -------------------------------------------------------------------------
   // Step 3: Reload the page — the full-screen sealed gate must appear.
   // -------------------------------------------------------------------------
+  // The app reads the seal state once on load: reload only after the server
+  // itself reports sealed, or the reload races the seal and opens the shell.
+  await expect
+    .poll(
+      async () => {
+        const res = await request.get(`${daemon!.adminUrl}/v1/barrier/status`, {
+          ignoreHTTPSErrors: true,
+        });
+        if (res.status() !== 200) return false;
+        return ((await res.json()) as { sealed?: boolean }).sealed === true;
+      },
+      { timeout: 10_000 },
+    )
+    .toBe(true);
   await page.reload();
   await expect(page.getByRole("heading", { name: "QRDB is Sealed" })).toBeVisible({ timeout: 20_000 });
 

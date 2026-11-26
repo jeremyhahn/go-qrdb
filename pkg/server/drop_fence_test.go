@@ -173,8 +173,7 @@ func newSharedStoreFixture(t *testing.T) *sharedStoreFixture {
 	dbReg := NewDatabaseServiceRegistry(tenant.DefaultDatabase)
 	dbReg.Register(tenant.DefaultDatabase, raw)
 	reg := NewRESTServiceRegistry(dbReg, nil, tenantid.System,
-		WithDatabaseCatalog(newManagerCatalog(mgr)),
-		withDatabaseManager(mgr)).(*restServiceRegistry)
+		WithRegistryDatabaseManager(mgr)).(*restServiceRegistry)
 	return &sharedStoreFixture{host: host, raw: raw, mgr: mgr, reg: reg}
 }
 

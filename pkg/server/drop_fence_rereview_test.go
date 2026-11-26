@@ -65,7 +65,7 @@ func TestDropFence_DropDuringResolutionNeverYieldsAnUnguardedHandle(t *testing.T
 		}
 	}
 	reg := NewRESTServiceRegistry(dbReg, nil, tenantid.System,
-		WithDatabaseCatalog(catalog), withDatabaseManager(f.mgr))
+		WithRegistryDatabaseManager(f.mgr), WithDatabaseCatalog(catalog))
 
 	kv, err := reg.KVService(tenantid.System, "orders")
 	if err != nil {

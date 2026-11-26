@@ -435,13 +435,41 @@
     }
   }
 
-  function handleDocumentRowClick(event: RowClickEvent<Record<string, unknown>>): void {
-    const row = event.row;
-    selectedDocument = {
-      id: row.id as string,
-      document: row.document as Record<string, unknown>,
-    };
+  // handleDocumentRowClick fetches the document through
+  // collection.getDocument so the detail panel shows the stored document,
+  // not the possibly stale list row; a failed fetch is an error toast and
+  // the panel stays closed. documentFetchToken drops a superseded response.
+  // The token and the captured database/collection also drop a response
+  // that arrives after the selection changed, so a detail panel labelled
+  // with collection B never shows a document fetched from collection A.
+  let documentFetchToken = 0;
+  async function handleDocumentRowClick(event: RowClickEvent<Record<string, unknown>>): Promise<void> {
+    if (collectionClient === undefined || selectedCollection === null) return;
+    const id = event.row.id as string;
+    const token = ++documentFetchToken;
+    const ctx = { db: database.name, coll: selectedCollection.name };
+    const current = (): boolean =>
+      token === documentFetchToken &&
+      database.name === ctx.db &&
+      selectedCollection?.name === ctx.coll;
+    try {
+      const doc = await collectionClient.getDocument(ctx.db, ctx.coll, id);
+      if (!current()) return;
+      selectedDocument = doc;
+    } catch (err: unknown) {
+      if (!current()) return;
+      showToast("error", err instanceof Error ? err.message : String(err));
+    }
   }
+
+  // A database or collection change invalidates any pending document read
+  // and closes the detail panel of the previous selection.
+  $effect(() => {
+    void database.name;
+    void selectedCollection?.name;
+    documentFetchToken++;
+    selectedDocument = null;
+  });
 
   function requestDeleteDocument(doc: DocumentResponse): void {
     deleteDocumentTarget = doc;
@@ -1151,7 +1179,6 @@
   title="Document Detail"
   onclose={() => (selectedDocument = null)}
 >
-  {#snippet children()}
     {#if selectedDocument}
       <div class="space-y-5">
         <div>
@@ -1160,7 +1187,7 @@
         </div>
         <div>
           <span class="text-sm font-medium text-base-content/70 block mb-1">Document Body</span>
-          <pre class="font-mono text-sm bg-base-200 rounded px-3 py-2 max-h-96 overflow-auto whitespace-pre-wrap">{JSON.stringify(selectedDocument.document, null, 2)}</pre>
+          <pre class="font-mono text-sm bg-base-200 rounded px-3 py-2 max-h-96 overflow-auto whitespace-pre-wrap" data-testid="document-detail-body">{JSON.stringify(selectedDocument.document, null, 2)}</pre>
         </div>
         {#if selectedCollection}
           <div>
@@ -1170,7 +1197,6 @@
         {/if}
       </div>
     {/if}
-  {/snippet}
   {#snippet footer()}
     {#if selectedDocument}
       <div class="flex gap-2">

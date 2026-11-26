@@ -78,11 +78,14 @@ async function fillNameAndAdvance(
 async function selectStorageAndAdvance(
   page: import("@playwright/test").Page,
   backend: "Memory" | "File" | "Pebble",
+  dataDir = "",
 ): Promise<void> {
   await expect(page.getByRole("heading", { name: "Storage Backend" })).toBeVisible();
   if (backend !== "Pebble") {
     await page.locator("label").filter({ hasText: backend }).click();
   }
+  // A per-database barrier needs the database's own data directory.
+  if (dataDir !== "") await page.locator("#data-dir-input").fill(dataDir);
   await page.getByRole("button", { name: "Next" }).click();
 }
 
@@ -147,7 +150,11 @@ async function navigateToSummaryEmbedded(
 ): Promise<void> {
   await openCreateWizard(page);
   await fillNameAndAdvance(page, name, engine);
-  await selectStorageAndAdvance(page, backend);
+  await selectStorageAndAdvance(
+    page,
+    backend,
+    barrierMode === "Passphrase" ? `/tmp/qrdb-e2e-${name}` : "",
+  );
   await advanceThroughSQL(page);
   await selectBarrierAndAdvance(page, barrierMode);
   await expect(
@@ -175,16 +182,18 @@ test.describe("Engine Type Combinations", () => {
     await createAndVerifyComplete(page, "ts-pebble-none");
   });
 
-  test("TimeSeries engine + Memory + passphrase shows in summary and completes", async ({ page }) => {
+  // A per-database barrier needs a data directory, so a memory backend cannot
+  // carry one (wizard-encryption.spec.ts drives that block).
+  test("TimeSeries engine + Pebble + passphrase shows in summary and completes", async ({ page }) => {
     await navigateToSummaryEmbedded(
-      page, "ts-mem-pass", "TimeSeries", "Memory", "Passphrase",
+      page, "ts-pebble-pass", "TimeSeries", "Pebble", "Passphrase",
     );
 
     await expect(page.getByText("TimeSeries", { exact: true })).toBeVisible();
-    await expect(page.getByText("Memory", { exact: true })).toBeVisible();
+    await expect(page.getByText("Pebble", { exact: true })).toBeVisible();
     await expect(page.getByText("Passphrase", { exact: true })).toBeVisible();
 
-    await createAndVerifyComplete(page, "ts-mem-pass");
+    await createAndVerifyComplete(page, "ts-pebble-pass");
   });
 
   test("Vector engine + Pebble + no encryption shows in summary and completes", async ({ page }) => {

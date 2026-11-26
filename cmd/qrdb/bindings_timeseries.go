@@ -36,9 +36,9 @@ func NewTimeSeriesBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *Tim
 }
 
 // Write stores a single time-series data point.
-func (b *TimeSeriesBinding) Write(point *transport.TSDataPoint) error {
+func (b *TimeSeriesBinding) Write(database string, point *transport.TSDataPoint) error {
 	b.logger.Debug("Write called")
-	cl, err := b.conn.loadClient()
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("Write failed", "error", err)
 		return err
@@ -52,9 +52,9 @@ func (b *TimeSeriesBinding) Write(point *transport.TSDataPoint) error {
 }
 
 // WriteBatch stores multiple time-series data points atomically.
-func (b *TimeSeriesBinding) WriteBatch(points []transport.TSDataPoint) error {
+func (b *TimeSeriesBinding) WriteBatch(database string, points []transport.TSDataPoint) error {
 	b.logger.Debug("WriteBatch called", "count", len(points))
-	cl, err := b.conn.loadClient()
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("WriteBatch failed", "error", err)
 		return err
@@ -68,9 +68,9 @@ func (b *TimeSeriesBinding) WriteBatch(points []transport.TSDataPoint) error {
 }
 
 // Query retrieves data points for a metric within a time range.
-func (b *TimeSeriesBinding) Query(req *transport.TSQueryRequest) (*transport.TSQueryResponse, error) {
+func (b *TimeSeriesBinding) Query(database string, req *transport.TSQueryRequest) (*transport.TSQueryResponse, error) {
 	b.logger.Debug("Query called")
-	cl, err := b.conn.loadClient()
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("Query failed", "error", err)
 		return nil, err
@@ -85,9 +85,9 @@ func (b *TimeSeriesBinding) Query(req *transport.TSQueryRequest) (*transport.TSQ
 }
 
 // Aggregate computes an aggregation over data points in a time range.
-func (b *TimeSeriesBinding) Aggregate(req *transport.TSAggregateRequest) (*transport.TSAggregateResponse, error) {
+func (b *TimeSeriesBinding) Aggregate(database string, req *transport.TSAggregateRequest) (*transport.TSAggregateResponse, error) {
 	b.logger.Debug("Aggregate called")
-	cl, err := b.conn.loadClient()
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("Aggregate failed", "error", err)
 		return nil, err
@@ -102,9 +102,9 @@ func (b *TimeSeriesBinding) Aggregate(req *transport.TSAggregateRequest) (*trans
 }
 
 // WritePoint stores a single validated data point.
-func (b *TimeSeriesBinding) WritePoint(point *transport.TSDataPoint) error {
+func (b *TimeSeriesBinding) WritePoint(database string, point *transport.TSDataPoint) error {
 	b.logger.Debug("WritePoint called")
-	cl, err := b.conn.loadClient()
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("WritePoint failed", "error", err)
 		return err
@@ -118,9 +118,9 @@ func (b *TimeSeriesBinding) WritePoint(point *transport.TSDataPoint) error {
 }
 
 // RichQuery performs a rich query with aggregation, downsampling, and grouping.
-func (b *TimeSeriesBinding) RichQuery(req *transport.TSRichQueryRequest) (*transport.TSRichQueryResponse, error) {
+func (b *TimeSeriesBinding) RichQuery(database string, req *transport.TSRichQueryRequest) (*transport.TSRichQueryResponse, error) {
 	b.logger.Debug("RichQuery called")
-	cl, err := b.conn.loadClient()
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("RichQuery failed", "error", err)
 		return nil, err
@@ -135,9 +135,9 @@ func (b *TimeSeriesBinding) RichQuery(req *transport.TSRichQueryRequest) (*trans
 }
 
 // DeleteSeries deletes time-series data matching the criteria.
-func (b *TimeSeriesBinding) DeleteSeries(req *transport.TSDeleteRequest) (*transport.TSDeleteResponse, error) {
+func (b *TimeSeriesBinding) DeleteSeries(database string, req *transport.TSDeleteRequest) (*transport.TSDeleteResponse, error) {
 	b.logger.Debug("DeleteSeries called")
-	cl, err := b.conn.loadClient()
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("DeleteSeries failed", "error", err)
 		return nil, err
@@ -152,9 +152,9 @@ func (b *TimeSeriesBinding) DeleteSeries(req *transport.TSDeleteRequest) (*trans
 }
 
 // GetRetention retrieves the retention policy for a metric.
-func (b *TimeSeriesBinding) GetRetention(req *transport.TSGetRetentionRequest) (*transport.TSGetRetentionResponse, error) {
+func (b *TimeSeriesBinding) GetRetention(database string, req *transport.TSGetRetentionRequest) (*transport.TSGetRetentionResponse, error) {
 	b.logger.Debug("GetRetention called")
-	cl, err := b.conn.loadClient()
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("GetRetention failed", "error", err)
 		return nil, err
@@ -169,9 +169,9 @@ func (b *TimeSeriesBinding) GetRetention(req *transport.TSGetRetentionRequest) (
 }
 
 // SetRetention sets the retention policy for a metric.
-func (b *TimeSeriesBinding) SetRetention(req *transport.TSSetRetentionRequest) error {
+func (b *TimeSeriesBinding) SetRetention(database string, req *transport.TSSetRetentionRequest) error {
 	b.logger.Debug("SetRetention called")
-	cl, err := b.conn.loadClient()
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("SetRetention failed", "error", err)
 		return err
@@ -185,9 +185,9 @@ func (b *TimeSeriesBinding) SetRetention(req *transport.TSSetRetentionRequest) e
 }
 
 // ListMetrics lists metric names matching an optional prefix.
-func (b *TimeSeriesBinding) ListMetrics(req *transport.TSListMetricsRequest) (*transport.TSListMetricsResponse, error) {
+func (b *TimeSeriesBinding) ListMetrics(database string, req *transport.TSListMetricsRequest) (*transport.TSListMetricsResponse, error) {
 	b.logger.Debug("ListMetrics called")
-	cl, err := b.conn.loadClient()
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("ListMetrics failed", "error", err)
 		return nil, err
