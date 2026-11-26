@@ -49,7 +49,7 @@ func newMetricLimitServices(t *testing.T, tsCfg qrdbconfig.TimeSeriesConfig) *Da
 	t.Cleanup(func() { _ = host.Close() })
 	hub := watch.NewHub()
 	t.Cleanup(hub.Close)
-	return buildDataPlaneServices(host, 1, hub, qrdbconfig.ImportSessionConfig{}, qrdbconfig.IndexConfig{}, tsCfg)
+	return buildDataPlaneServices(host, 1, "tenant-a", hub, qrdbconfig.ImportSessionConfig{}, qrdbconfig.IndexConfig{}, tsCfg)
 }
 
 var metricLimitNow = time.Unix(1_700_000_000, 0)

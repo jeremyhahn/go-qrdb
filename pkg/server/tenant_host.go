@@ -165,7 +165,7 @@ func newTenantHost(ctx context.Context, tenantID, dataRoot string, tb *seal.Tena
 		lessor:   lessor,
 		cancel:   cancel,
 		logger:   logger,
-		services: buildDataPlaneServices(adapter, tenantHostShardID, hub, importSessionCfg, indexCfg, tsCfg),
+		services: buildDataPlaneServices(adapter, tenantHostShardID, tenantID, hub, importSessionCfg, indexCfg, tsCfg),
 	}
 
 	// Leader-side lease-expiry sweeper. The tenant host is a single-node
@@ -585,12 +585,12 @@ func newDataPlaneCreateFunc(tb *seal.TenantBarrier, lessor *lease.Lessor, hub *w
 // passes service.WithDedicatedKeyspace, because the shard is that one
 // database's whole keyspace; the volume Host, which every database of the
 // tenant shares, passes nothing, so it refuses the empty compaction prefix.
-func buildDataPlaneServices(host service.Host, shardID uint64, hub *watch.Hub, importSessionCfg qrdbconfig.ImportSessionConfig, indexCfg qrdbconfig.IndexConfig, tsCfg qrdbconfig.TimeSeriesConfig, mvccOpts ...service.MVCCKVServiceOption) *DatabaseServices {
+func buildDataPlaneServices(host service.Host, shardID uint64, tenantID string, hub *watch.Hub, importSessionCfg qrdbconfig.ImportSessionConfig, indexCfg qrdbconfig.IndexConfig, tsCfg qrdbconfig.TimeSeriesConfig, mvccOpts ...service.MVCCKVServiceOption) *DatabaseServices {
 	kv := service.NewKVService(host, shardID)
 	mvcc := service.NewMVCCKVService(host, shardID, mvccOpts...)
 	idx := service.NewIndexService(host, shardID, service.WithMaxIndexes(indexCfg.MaxIndexes))
 	txn := service.NewTransactionService(host, shardID)
-	return &DatabaseServices{
+	svcs := &DatabaseServices{
 		Name:    "",
 		ShardID: shardID,
 		KV:      kv,
@@ -620,6 +620,12 @@ func buildDataPlaneServices(host service.Host, shardID uint64, hub *watch.Hub, i
 		Collection: service.NewCollectionServiceWithIndex(kv, idx).
 			WithSequenceService(service.NewSequenceService(mvcc, txn)),
 	}
+	// Collection creates and drops journal their work in this store, owned
+	// by tenantID, so the collection sweeper finishes one a crash
+	// interrupted on every database raft group, materialized binding and
+	// tenant host alike.
+	svcs.Collection = svcs.Collection.(*service.CollectionService).WithWorkJournal(collectionJournalFor(svcs, tenantID))
+	return svcs
 }
 
 // Close stops the tenant Host's lease sweeper, stops its shard, and closes the

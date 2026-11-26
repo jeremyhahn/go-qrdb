@@ -267,7 +267,6 @@ func (s *collectionSweeper) settleWork(ctx context.Context, t collectionSweepTar
 // A journal entry whose tenant no longer exists, and that is older than the
 // staleness threshold, is removed: the tenant's data went with it.
 func (s *Server) collectionSweepTargets(ctx context.Context) ([]collectionSweepTarget, error) {
-	isolation := map[string]tenant.IsolationType{tenantid.System: tenant.IsolationPrefix}
 	var known map[string]bool
 	if s.opts.tenantSvc != nil {
 		infos, err := s.opts.tenantSvc.ListTenants(ctx)
@@ -276,7 +275,6 @@ func (s *Server) collectionSweepTargets(ctx context.Context) ([]collectionSweepT
 		}
 		known = map[string]bool{tenantid.System: true}
 		for i := range infos {
-			isolation[infos[i].ID] = infos[i].EffectiveIsolationType()
 			known[infos[i].ID] = true
 		}
 	}
@@ -304,10 +302,23 @@ func (s *Server) collectionSweepTargets(ctx context.Context) ([]collectionSweepT
 		}
 	}
 	if s.opts.raftBackend != nil {
+		// Every database raft group this node leads, whatever its tenant's
+		// isolation: a prefix tenant's dedicated-raft database is its own
+		// group as much as a raft-isolated tenant's. Its own store holds
+		// the work journal its collection creates and drops record
+		// (buildDataPlaneServices), so that journal is scanned too.
 		for _, shard := range s.opts.raftBackend.ListStarted() {
-			if isolation[shard.TenantID] == tenant.IsolationRaft && s.opts.raftBackend.LeadsShard(shard.TenantID, shard.Database) {
-				out = append(out, collectionSweepTarget{Tenant: shard.TenantID, Database: shard.Database})
+			if shard.shard == nil || !s.opts.raftBackend.LeadsShard(shard.TenantID, shard.Database) {
+				continue
 			}
+			if svcs := shard.shard.services; svcs != nil && svcs.KV != nil {
+				targets, err := s.journaledTargets(ctx, svcs.KV, known)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, targets...)
+			}
+			out = append(out, collectionSweepTarget{Tenant: shard.TenantID, Database: shard.Database})
 		}
 	}
 	if s.opts.dbManager != nil {

@@ -289,18 +289,12 @@ func (r *restServiceRegistry) resolveMaterialized(tenantID, db string, info *ten
 		}
 	}
 	base := r.materialized.getOrBuild(dbase, func() *DatabaseServices {
-		svcs := buildDataPlaneServices(ms.Host(), ms.ShardID(), ms.WatchHub(),
+		svcs := buildDataPlaneServices(ms.Host(), ms.ShardID(), tenantID, ms.WatchHub(),
 			r.bindingImportSession, r.bindingIndex, r.bindingTimeSeries, service.WithDedicatedKeyspace())
 		// The vector service is the binding's own, over its own storage;
 		// the shared node's vector store never holds this database's data.
 		if v := ms.Vector(); v != nil {
 			svcs.Vector = v
-		}
-		// Collection creates and drops journal their work in this
-		// database's own store, as the composite does in the shared one,
-		// so the collection sweeper finishes one a crash interrupted.
-		if cs, ok := svcs.Collection.(*service.CollectionService); ok {
-			svcs.Collection = cs.WithWorkJournal(collectionJournalFor(svcs, tenantID))
 		}
 		return svcs
 	})

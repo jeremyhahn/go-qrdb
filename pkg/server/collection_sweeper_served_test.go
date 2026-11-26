@@ -111,6 +111,56 @@ func TestServer_CollectionSweepTargets_OnlyWhatIsServedHere(t *testing.T) {
 	}
 }
 
+// Every database raft group the node leads is swept, whatever the owning
+// tenant's isolation, and the journal in the group's own store is scanned so
+// an interrupted create or drop recorded there is finished.
+func TestServer_CollectionSweepTargets_EveryLedDatabaseGroupAndItsJournal(t *testing.T) {
+	tenants := &listFnServicer{fn: func(context.Context) ([]tenant.TenantInfo, error) {
+		return []tenant.TenantInfo{
+			{ID: tenantid.System},
+			{ID: "prefix-t"},
+		}, nil
+	}}
+	dedicated := journalStore(t, time.Now(), [2]string{"prefix-t", "dedicated"})
+	raft := &RaftBackendFactory{
+		shards: map[raftShardKey]*raftShard{
+			{tenantID: "prefix-t", database: "dedicated"}: {shardID: 9, replicaID: 1, services: dedicated},
+			{tenantID: "prefix-t", database: "follower"}:  {shardID: 10, replicaID: 1},
+		},
+		leaderOf: func(shardID uint64) (uint64, bool, error) {
+			if shardID == 9 {
+				return 1, true, nil
+			}
+			return 2, true, nil
+		},
+	}
+	srv := New(testConfig(t, false, false), newMockKVService(), &mockAdminService{},
+		WithTenantService(tenants), WithRaftBackendFactory(raft),
+		WithCollectionSweepLeader(func() bool { return false }))
+
+	targets, err := srv.collectionSweepTargets(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plain, journaled int
+	for _, tgt := range targets {
+		if tgt.Tenant+"/"+tgt.Database != "prefix-t/dedicated" {
+			t.Fatalf("unexpected target %s/%s (only the led group is swept)", tgt.Tenant, tgt.Database)
+		}
+		if len(tgt.work) > 0 {
+			journaled++
+			if tgt.workKV != dedicated.KV {
+				t.Fatal("the journaled work must settle in the group's own store")
+			}
+		} else {
+			plain++
+		}
+	}
+	if plain != 1 || journaled != 1 {
+		t.Fatalf("targets = %d plain + %d journaled, want 1 + 1", plain, journaled)
+	}
+}
+
 // slowSweeper stands in for a database whose teardown runs until its context
 // is cancelled.
 type slowSweeper struct {
