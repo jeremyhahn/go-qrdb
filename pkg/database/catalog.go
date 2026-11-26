@@ -560,9 +560,36 @@ func (c *KVCatalog) Create(ctx context.Context, meta DatabaseMeta) error {
 		return &AlreadyExistsError{Name: meta.Name}
 	}
 	if claimKey != "" {
-		return c.commitClaim(ctx, meta, claimKey, claimValue)
+		if err := c.commitClaim(ctx, meta, claimKey, claimValue); err != nil {
+			return c.rollbackCreate(ctx, store, key, data, claimKey, err)
+		}
 	}
 	return nil
+}
+
+// rollbackCreate undoes a Create whose record write committed but whose
+// claim commit failed: the record is deleted only if it is still the one
+// this create wrote (its incarnation and generation), so a failed create
+// leaves no live catalog record and a retry of the name is not refused as
+// AlreadyExists. With the record gone the claim is released. A record the
+// delete cannot remove keeps its claim, so a sealed-tenant root listing
+// still sees it.
+func (c *KVCatalog) rollbackCreate(ctx context.Context, store kvstore.AtomicKVStore, key string, data []byte, claimKey string, cause error) error {
+	// The claim commit may have failed because ctx ended; the rollback
+	// gets its own bound regardless.
+	rbCtx, cancel := DropRollbackContext(ctx)
+	defer cancel()
+	deleted, err := store.CompareAndDelete(rbCtx, key, data)
+	if err != nil {
+		return errors.Join(cause, &CatalogWriteError{Key: key, Err: err})
+	}
+	if !deleted {
+		return cause
+	}
+	if err := c.releaseClaim(rbCtx, claimKey); err != nil {
+		return errors.Join(cause, err)
+	}
+	return cause
 }
 
 // commitClaim marks the pending claim of a written record committed. A
