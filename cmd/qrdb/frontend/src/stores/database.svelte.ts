@@ -31,6 +31,12 @@ import type { DatabaseInfo } from "@qrdb/sdk";
 export interface DatabaseState {
     /** Available databases fetched from the server. */
     databases: DatabaseInfo[];
+    /**
+     * The connection profile whose server the list came from, or '' when no
+     * list is loaded. In web mode one client serves every profile, so the
+     * workspace mounts only once the list belongs to the active profile.
+     */
+    profileId: string;
     /** Currently selected database, or null if none. */
     selectedDatabase: DatabaseInfo | null;
     /** Whether the database list is being loaded. */
@@ -44,6 +50,7 @@ export interface DatabaseState {
 /** Reactive database state. */
 export const databaseStore: DatabaseState = $state({
     databases: [] as DatabaseInfo[],
+    profileId: '',
     selectedDatabase: null,
     loading: false,
 });
@@ -57,8 +64,19 @@ export const databaseStore: DatabaseState = $state({
  *
  * @param databases - The full list of databases from the server.
  */
-export function setDatabases(databases: DatabaseInfo[]): void {
+export function setDatabases(databases: DatabaseInfo[], profileId: string): void {
     databaseStore.databases = databases;
+    databaseStore.profileId = profileId;
+}
+
+/**
+ * Drops the loaded list and the selection: the list belonged to a profile
+ * that is no longer active.
+ */
+export function clearDatabases(): void {
+    databaseStore.databases = [];
+    databaseStore.profileId = '';
+    databaseStore.selectedDatabase = null;
 }
 
 /**

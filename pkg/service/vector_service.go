@@ -485,6 +485,10 @@ type UpsertVectorResponse struct {
 
 	// Success indicates if upsert succeeded
 	Success bool
+
+	// Created is true when no vector with this ID existed in the namespace
+	// before the upsert, false when the upsert replaced one
+	Created bool
 }
 
 // GetVectorRequest contains parameters for vector retrieval.

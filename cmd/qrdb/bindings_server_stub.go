@@ -61,6 +61,11 @@ func (b *EmbeddedServerBinding) RestoreEmbedded() error {
 	return &FeatureDisabledError{Feature: "embedded"}
 }
 
+// SavedConfig returns a FeatureDisabledError.
+func (b *EmbeddedServerBinding) SavedConfig() (*EmbeddedConfig, error) {
+	return nil, &FeatureDisabledError{Feature: "embedded"}
+}
+
 // ClearSavedConfig returns a FeatureDisabledError.
 func (b *EmbeddedServerBinding) ClearSavedConfig() error {
 	return &FeatureDisabledError{Feature: "embedded"}

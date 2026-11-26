@@ -16,15 +16,18 @@
 -->
 <script lang="ts">
   import { onMount } from "svelte";
-  import { getClient, isDesktop } from "@qrdb/sdk";
+  import { getClient, isDesktop, TransportError } from "@qrdb/sdk";
   import type { Client, SealStatus } from "@qrdb/sdk";
-  import { Lock, XCircle } from "lucide-svelte";
+  import { Lock, Ticket, XCircle } from "lucide-svelte";
+  import RedeemInvitationModal from "./components/RedeemInvitationModal.svelte";
   import MainApp from "./views/MainApp.svelte";
+  import SealManager from "./views/admin/SealManager.svelte";
+  import { isClusterHeldError } from "./lib/clusterHeld.ts";
   import ServerInitWizard from "./components/ServerInitWizard.svelte";
   import ToastContainer from "./components/ToastContainer.svelte";
   import { showToast } from "./stores/toast.svelte.ts";
   import { initTheme } from "./stores/theme.svelte.ts";
-  import { loadProfiles } from "./stores/connection-manager.svelte.ts";
+  import { loadProfiles, webStartupTarget } from "./stores/connection-manager.svelte.ts";
 
   // ---------------------------------------------------------------------------
   // App state machine
@@ -38,14 +41,24 @@
    *                   unsealed here; a Shamir barrier opens through a quorum
    *                   of its share holders, who submit from the CLI or the
    *                   desktop app, and this screen waits for them.
+   *   held          - Node barrier unsealed, but a cluster seal holds the node
+   *                   (status refused with 503 SEALED). The Seal Manager is
+   *                   shown alone and offers the cluster unseal.
+   *   unauthenticated - Web mode: the page's own server refused the status
+   *                   read with 401/403, as an initialized auth-enabled server
+   *                   does for a visitor with no client certificate. An
+   *                   invitee redeems an invitation here (the redeem route is
+   *                   public), or retries once a credential is in place.
    *   app           - Fully ready; MainApp handles empty state and connections.
    *   error         - Unrecoverable startup failure.
    */
-  type AppState = "loading" | "init" | "unseal" | "app" | "error";
+  type AppState = "loading" | "init" | "unseal" | "held" | "unauthenticated" | "app" | "error";
 
   let appState: AppState = $state("loading");
   let client: Client | null = $state(null);
   let errorMessage: string = $state("");
+  /** Whether the redeem-an-invitation modal is open (unauthenticated state). */
+  let showRedeem: boolean = $state(false);
 
   // Unseal state
   let sealStatus = $state<SealStatus | null>(null);
@@ -83,21 +96,56 @@
       // loading profiles so that the connection state probe in loadProfiles
       // can reach the server.
       if (!isDesktop()) {
-        const origin = window.location.origin;
-        console.debug("[App] initialize: connecting REST client to", origin);
-        await sdk.connection.connect(origin);
-        console.debug("[App] initialize: REST client connected");
+        // The saved active profile's server (page origin for the built-in
+        // profile): the label and the REST target never disagree on reload.
+        const origin = webStartupTarget();
+        try {
+          console.debug("[App] initialize: connecting REST client to", origin);
+          await sdk.connection.connect(origin);
+          console.debug("[App] initialize: REST client connected");
 
-        // A sealed server only serves the barrier endpoints. Inspect the seal
-        // state and route to the bootstrap (uninitialized) or unseal
-        // (initialized) flow before attempting to load the full app shell,
-        // which would otherwise fail against a sealed backend.
-        const status = await sdk.seal.status();
-        sealStatus = status;
-        if (status.sealed) {
-          appState = status.initialized ? "unseal" : "init";
-          console.debug("[App] initialize: server sealed, state =", appState);
-          return;
+          // A sealed server only serves the barrier endpoints. Inspect the seal
+          // state and route to the bootstrap (uninitialized) or unseal
+          // (initialized) flow before attempting to load the full app shell,
+          // which would otherwise fail against a sealed backend.
+          let status: SealStatus;
+          try {
+            status = await sdk.seal.status();
+          } catch (err: unknown) {
+            // An unsealed node held by a cluster seal refuses status with 503
+            // SEALED. That is a recoverable state, not a startup failure:
+            // route to the Seal Manager, which offers the cluster unseal.
+            if (isClusterHeldError(err)) {
+              enterClusterHeld();
+              return;
+            }
+            // The page's own server refusing an unauthenticated status read
+            // is not a startup failure either: an invitee has no credential
+            // yet, and invitation redemption is public. Offer it.
+            if (origin === window.location.origin && isAuthRefusal(err)) {
+              console.debug("[App] initialize: status refused unauthenticated");
+              appState = "unauthenticated";
+              return;
+            }
+            throw err;
+          }
+          sealStatus = status;
+          if (status.clusterHeld === true) {
+            enterClusterHeld();
+            return;
+          }
+          if (status.sealed) {
+            appState = status.initialized ? "unseal" : "init";
+            console.debug("[App] initialize: server sealed, state =", appState);
+            return;
+          }
+        } catch (err: unknown) {
+          // The hosting server failing is unrecoverable. A saved external
+          // profile's server being down is not: load the profile picker so
+          // the user can pick This Server, another server, or remove the
+          // failed profile. loadProfiles marks the active profile's error.
+          if (origin === window.location.origin) throw err;
+          console.warn("[App] initialize: saved server unavailable", origin, err);
         }
       }
 
@@ -115,6 +163,26 @@
       showToast("error", msg);
       appState = "error";
     }
+  }
+
+  /**
+   * Whether a request was refused for want of authentication or permission:
+   * the SDK's TransportError carrying HTTP 401 or 403.
+   */
+  function isAuthRefusal(err: unknown): boolean {
+    return err instanceof TransportError && (err.statusCode === 401 || err.statusCode === 403);
+  }
+
+  /**
+   * The node barrier is unsealed but a cluster seal holds the node: it
+   * answers no status question, so the app shell cannot load. Mount the
+   * Seal Manager alone; it detects the hold itself and offers the cluster
+   * unseal, then re-runs initialize once the node serves again.
+   */
+  function enterClusterHeld(): void {
+    sealStatus = null;
+    appState = "held";
+    console.debug("[App] initialize: node held by a cluster seal");
   }
 
   // ---------------------------------------------------------------------------
@@ -279,6 +347,38 @@
       </div>
     </div>
   </div>
+
+{:else if appState === "held" && client !== null}
+  <main class="mx-auto min-h-screen max-w-4xl p-6" data-testid="app-cluster-held">
+    <SealManager {client} onClusterReleased={initialize} />
+  </main>
+
+{:else if appState === "unauthenticated" && client !== null}
+  <div class="flex min-h-screen items-center justify-center">
+    <div class="card bg-base-200 w-96 shadow-xl" data-testid="app-unauthenticated">
+      <div class="card-body items-center text-center">
+        <h2 class="card-title">Sign-in Required</h2>
+        <p class="text-base-content/70 text-sm">
+          This server requires a client certificate. If you were sent an invitation, redeem it
+          to receive your credentials.
+        </p>
+        <div class="card-actions mt-4">
+          <button
+            class="btn btn-primary"
+            data-testid="app-redeem-invitation"
+            onclick={() => (showRedeem = true)}
+          >
+            <Ticket class="h-4 w-4" />
+            Redeem Invitation
+          </button>
+          <button class="btn btn-ghost" data-testid="app-unauthenticated-retry" onclick={initialize}>
+            Retry
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <RedeemInvitationModal {client} open={showRedeem} onClose={() => (showRedeem = false)} />
 
 {:else if appState === "error"}
   <div class="flex min-h-screen items-center justify-center">

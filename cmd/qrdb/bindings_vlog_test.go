@@ -31,25 +31,25 @@ func TestVlogBinding_NotConnected(t *testing.T) {
 	b := NewVlogBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
 	calls := map[string]func() error{
 		"Create": func() error {
-			_, err := b.Create(&vlogwire.CreateRequest{Log: "l", Origin: "example.com/l"})
+			_, err := b.Create("", &vlogwire.CreateRequest{Log: "l", Origin: "example.com/l"})
 			return err
 		},
-		"List":   func() error { _, err := b.List(); return err },
-		"Append": func() error { _, err := b.Append(&vlogwire.AppendRequest{Log: "l"}); return err },
-		"Get":    func() error { _, err := b.Get(&vlogwire.GetRequest{Log: "l"}); return err },
+		"List":   func() error { _, err := b.List(""); return err },
+		"Append": func() error { _, err := b.Append("", &vlogwire.AppendRequest{Log: "l"}); return err },
+		"Get":    func() error { _, err := b.Get("", &vlogwire.GetRequest{Log: "l"}); return err },
 		"ProveInclusion": func() error {
-			_, err := b.ProveInclusion(&vlogwire.InclusionRequest{Log: "l"})
+			_, err := b.ProveInclusion("", &vlogwire.InclusionRequest{Log: "l"})
 			return err
 		},
 		"ProveConsistency": func() error {
-			_, err := b.ProveConsistency(&vlogwire.ConsistencyRequest{Log: "l"})
+			_, err := b.ProveConsistency("", &vlogwire.ConsistencyRequest{Log: "l"})
 			return err
 		},
-		"Head":      func() error { _, err := b.Head(&vlogwire.LogRequest{Log: "l"}); return err },
-		"SignHead":  func() error { _, err := b.SignHead(&vlogwire.LogRequest{Log: "l"}); return err },
-		"RotateKey": func() error { _, err := b.RotateKey(&vlogwire.RotateKeyRequest{Log: "l"}); return err },
+		"Head":      func() error { _, err := b.Head("", &vlogwire.LogRequest{Log: "l"}); return err },
+		"SignHead":  func() error { _, err := b.SignHead("", &vlogwire.LogRequest{Log: "l"}); return err },
+		"RotateKey": func() error { _, err := b.RotateKey("", &vlogwire.RotateKeyRequest{Log: "l"}); return err },
 		"ExpireBodies": func() error {
-			_, err := b.ExpireBodies(&vlogwire.ExpireRequest{Log: "l"})
+			_, err := b.ExpireBodies("", &vlogwire.ExpireRequest{Log: "l"})
 			return err
 		},
 	}
@@ -68,7 +68,7 @@ func TestVlogBinding_CreateRequiresOrigin(t *testing.T) {
 		"nil request":  nil,
 		"empty origin": {Log: "events"},
 	} {
-		_, err := b.Create(req)
+		_, err := b.Create("", req)
 		var ide *sdk.VlogInvalidDescriptorError
 		if !errors.As(err, &ide) {
 			t.Fatalf("%s: err = %v, want *sdk.VlogInvalidDescriptorError", name, err)

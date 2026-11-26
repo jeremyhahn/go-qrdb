@@ -22,7 +22,8 @@ import (
 )
 
 // LeaseBinding exposes distributed lease management to the Wails
-// frontend.
+// frontend. Every method takes the database it is scoped to first, as
+// MVCCBinding does; "" and "system" name the connection's default database.
 type LeaseBinding struct {
 	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
@@ -35,9 +36,9 @@ func NewLeaseBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *LeaseBin
 }
 
 // Grant creates a new lease with the specified TTL in seconds.
-func (b *LeaseBinding) Grant(ttl int64) (*transport.LeaseInfo, error) {
+func (b *LeaseBinding) Grant(database string, ttl int64) (*transport.LeaseInfo, error) {
 	b.logger.Debug("Grant called", "ttl", ttl)
-	cl, err := b.conn.loadClient()
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("Grant failed", "error", err)
 		return nil, err
@@ -52,9 +53,9 @@ func (b *LeaseBinding) Grant(ttl int64) (*transport.LeaseInfo, error) {
 }
 
 // Revoke immediately expires a lease and deletes all attached keys.
-func (b *LeaseBinding) Revoke(leaseID int64) error {
+func (b *LeaseBinding) Revoke(database string, leaseID int64) error {
 	b.logger.Debug("Revoke called", "leaseID", leaseID)
-	cl, err := b.conn.loadClient()
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("Revoke failed", "error", err)
 		return err
@@ -68,9 +69,9 @@ func (b *LeaseBinding) Revoke(leaseID int64) error {
 }
 
 // KeepAlive resets the TTL on an existing lease.
-func (b *LeaseBinding) KeepAlive(leaseID int64) (*transport.LeaseInfo, error) {
+func (b *LeaseBinding) KeepAlive(database string, leaseID int64) (*transport.LeaseInfo, error) {
 	b.logger.Debug("KeepAlive called", "leaseID", leaseID)
-	cl, err := b.conn.loadClient()
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("KeepAlive failed", "error", err)
 		return nil, err
@@ -86,9 +87,9 @@ func (b *LeaseBinding) KeepAlive(leaseID int64) (*transport.LeaseInfo, error) {
 
 // TimeToLive returns the current state of a lease including its
 // remaining TTL and attached keys.
-func (b *LeaseBinding) TimeToLive(leaseID int64) (*transport.LeaseInfo, error) {
+func (b *LeaseBinding) TimeToLive(database string, leaseID int64) (*transport.LeaseInfo, error) {
 	b.logger.Debug("TimeToLive called", "leaseID", leaseID)
-	cl, err := b.conn.loadClient()
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("TimeToLive failed", "error", err)
 		return nil, err
@@ -103,9 +104,9 @@ func (b *LeaseBinding) TimeToLive(leaseID int64) (*transport.LeaseInfo, error) {
 }
 
 // List returns all active leases.
-func (b *LeaseBinding) List() ([]*transport.LeaseInfo, error) {
+func (b *LeaseBinding) List(database string) ([]*transport.LeaseInfo, error) {
 	b.logger.Debug("List called")
-	cl, err := b.conn.loadClient()
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("List failed", "error", err)
 		return nil, err

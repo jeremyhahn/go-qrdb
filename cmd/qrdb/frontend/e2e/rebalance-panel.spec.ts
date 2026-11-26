@@ -7,6 +7,8 @@ import {
   secondLaunchEmbeddedState,
   injectError,
   clearError,
+  holdCall,
+  releaseCall,
 } from "./fixtures/wails-mock.ts";
 
 const LOAD_TIMEOUT = 10_000;
@@ -101,5 +103,69 @@ test.describe("Rebalance Panel", () => {
     await page.locator(".modal").getByRole("button", { name: "Cancel" }).click();
 
     await expect(page.getByText("Last Execution Result")).not.toBeVisible();
+  });
+
+  test("clicking a move row shows every shard stats field", async ({ page }) => {
+    await navigateToRebalance(page);
+
+    await page.getByRole("button", { name: "Generate Plan" }).click();
+    await expect(page.getByText(/Plan generated/)).toBeVisible({ timeout: 5_000 });
+
+    await page.getByRole("row", { name: /node-2\s+node-1/ }).click();
+
+    const panel = page.getByTestId("shard-stats-panel");
+    await expect(panel).toBeVisible({ timeout: 5_000 });
+    await expect(panel.getByText("Shard 1 Statistics")).toBeVisible();
+    await expect(panel.getByRole("row", { name: /Shard ID/ })).toContainText("1");
+    await expect(panel.getByRole("row", { name: /Keys/ })).toContainText("1000");
+    await expect(panel.getByRole("row", { name: /Bytes/ })).toContainText("1.0 MB (1048576)");
+    await expect(panel.getByRole("row", { name: /Leader Replica/ })).toContainText("1");
+    await expect(panel.getByRole("row", { name: /Replicas/ })).toContainText("3");
+
+    await panel.getByRole("button", { name: "Close" }).click();
+    await expect(panel).toHaveCount(0);
+  });
+
+  test("shard stats error shows the error state", async ({ page }) => {
+    await navigateToRebalance(page);
+
+    await page.getByRole("button", { name: "Generate Plan" }).click();
+    await expect(page.getByText(/Plan generated/)).toBeVisible({ timeout: 5_000 });
+
+    await injectError(page, "RebalanceBinding.GetShardStats", "shard 1 not found");
+    await page.getByRole("row", { name: /node-2\s+node-1/ }).click();
+
+    const errorBox = page.getByTestId("shard-stats-error");
+    await expect(errorBox).toBeVisible({ timeout: 5_000 });
+    await expect(errorBox).toContainText("shard 1 not found");
+
+    await clearError(page, "RebalanceBinding.GetShardStats");
+  });
+
+  test("closing pending shard stats leaves Load Stats usable", async ({ page }) => {
+    await navigateToRebalance(page);
+
+    await page.getByRole("button", { name: "Generate Plan" }).click();
+    await expect(page.getByText(/Plan generated/)).toBeVisible({ timeout: 5_000 });
+
+    // A slow response: Close the panel before it settles.
+    await holdCall(page, "RebalanceBinding.GetShardStats");
+    await page.getByRole("row", { name: /node-2\s+node-1/ }).click();
+    const panel = page.getByTestId("shard-stats-panel");
+    await expect(panel.getByTestId("shard-stats-loading")).toBeVisible({ timeout: 5_000 });
+    const loadStats = page.getByRole("button", { name: "Load Stats" });
+    await expect(loadStats).toBeDisabled();
+    await panel.getByRole("button", { name: "Close" }).click();
+    await expect(panel).toHaveCount(0);
+    await expect(loadStats).toBeEnabled();
+
+    // The stale response settles with the panel closed and must not reopen it.
+    expect(await releaseCall(page, "RebalanceBinding.GetShardStats")).toBe(1);
+    await expect(loadStats).toBeEnabled();
+    await expect(panel).toHaveCount(0);
+
+    // A fresh lookup still works.
+    await loadStats.click();
+    await expect(panel.getByRole("row", { name: /Keys/ })).toContainText("1000", { timeout: 5_000 });
   });
 });

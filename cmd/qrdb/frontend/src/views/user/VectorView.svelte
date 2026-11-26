@@ -23,6 +23,10 @@
     ListVectorsResponse,
     SearchSimilarResponse,
     SearchByMetadataResponse,
+    VectorData,
+    BatchUpsertResponse,
+    BatchDeleteVectorsResponse,
+    HybridSearchResponse,
   } from "@qrdb/sdk";
   import type { Column, RowClickEvent } from "../../components/core/DataTable/types.ts";
   import type { VectorSearchEvent } from "../../components/core/SearchBar/types.ts";
@@ -106,12 +110,23 @@
   let showUpsertPanel: boolean = $state(false);
   let showVectorDetailPanel: boolean = $state(false);
   let selectedVector: unknown = $state(null);
+  /** Authoritative copy of the selected vector, fetched with getVector. */
+  let detailVector: VectorData | null = $state(null);
+  let detailMetadata: string = $state("{}");
+  let detailLoading: boolean = $state(false);
+  let detailError: string = $state("");
+  let showBatchUpsertPanel: boolean = $state(false);
+  let batchUpsertInput: string = $state('[\n  {"id": "v1", "vector": [0.1, 0.2, 0.3], "metadata": {}}\n]');
+  let batchUpsertResult: BatchUpsertResponse | null = $state(null);
 
   // ---------------------------------------------------------------------------
   // Search state
   // ---------------------------------------------------------------------------
 
   let searchResults: unknown[] = $state([]);
+  let hybridVector: string = $state("");
+  let hybridFilters: string = $state("{}");
+  let hybridK: string = $state("10");
 
   // ---------------------------------------------------------------------------
   // Maintenance state
@@ -122,6 +137,32 @@
   let statsResult: unknown = $state(null);
   let compactJobId: string = $state("");
   let compactProgress: unknown = $state(null);
+
+  // ---------------------------------------------------------------------------
+  // Namespace selection generation
+  // ---------------------------------------------------------------------------
+
+  // nsGeneration counts namespace selections. A per-namespace read applies
+  // its response (results, error toast, loading flag) only while its
+  // namespace selection is current: same generation and selectedNamespace
+  // still the namespace the request was sent for.
+  let nsGeneration = 0;
+
+  function nsSelectionCurrent(gen: number, namespace: string): boolean {
+    return gen === nsGeneration && selectedNamespace === namespace;
+  }
+
+  /** A namespace change drops every result shown for the previous one. */
+  function resetNamespaceResults(): void {
+    nsGeneration++;
+    nsInfoResult = null;
+    vecListResults = [];
+    vectorsLoading = false;
+    statsResult = null;
+    rebuildProgress = null;
+    compactProgress = null;
+    searchResults = [];
+  }
 
   // ---------------------------------------------------------------------------
   // Delete confirmation state
@@ -252,14 +293,25 @@
     }))
   );
 
+  /** The SDK maps the wire's metric and index names to enum numbers. */
+  const METRIC_LABELS: Record<number, string> = { 0: "Cosine", 1: "Euclidean", 2: "Dot product" };
+  const INDEX_LABELS: Record<number, string> = { 0: "HNSW", 1: "Flat", 2: "IVF" };
+
+  function enumLabel(value: unknown, labels: Record<number, string>): string {
+    if (typeof value === "number") return labels[value] ?? String(value);
+    if (typeof value === "string" && value !== "") return value;
+    return "unknown";
+  }
+
   const vectorTableData = $derived(
     vecListResults.map((vec, index) => {
       const v = vec as Record<string, unknown>;
-      const vector = v.vector as number[] | undefined;
+      const vector = v.vector as number[] | null | undefined;
       return {
         index: index + 1,
         id: (v.id as string) ?? "",
-        dimensions: vector?.length ?? 0,
+        // The list route omits the vector values; the namespace fixes the width.
+        dimensions: vector?.length || parsedNsInfo?.dimension || 0,
         metadata: JSON.stringify(v.metadata ?? {}),
         raw: vec,
       };
@@ -289,8 +341,8 @@
     return {
       totalVectors: (s.totalVectors as number) ?? (s.total_vectors as number) ?? 0,
       dimensions: (s.dimensions as number) ?? (s.dimension as number) ?? 0,
-      indexType: (s.indexType as string) ?? (s.index_type as string) ?? "unknown",
-      distanceMetric: (s.distanceMetric as string) ?? (s.distance_metric as string) ?? "unknown",
+      indexType: enumLabel(s.indexType ?? s.index_type, INDEX_LABELS),
+      distanceMetric: enumLabel(s.distanceMetric ?? s.distance_metric, METRIC_LABELS),
       lastRebuilt: (s.lastRebuilt as string) ?? (s.last_rebuilt as string) ?? "N/A",
     };
   });
@@ -300,8 +352,8 @@
     const n = nsInfoResult as Record<string, unknown>;
     return {
       dimension: (n.dimension as number) ?? (n.dimensions as number) ?? 0,
-      distanceMetric: (n.distanceMetric as string) ?? (n.distance_metric as string) ?? "unknown",
-      indexType: (n.indexType as string) ?? (n.index_type as string) ?? "unknown",
+      distanceMetric: enumLabel(n.distanceMetric ?? n.distance_metric, METRIC_LABELS),
+      indexType: enumLabel(n.indexType ?? n.index_type, INDEX_LABELS),
       vectorCount: (n.vectorCount as number) ?? (n.vector_count as number) ?? 0,
     };
   });
@@ -394,14 +446,19 @@
       showToast("error", "Vector operations are not available on this connection.");
       return;
     }
-    if (selectedNamespace.trim() === "") return;
+    const namespace = selectedNamespace;
+    if (namespace.trim() === "") return;
+    const gen = nsGeneration;
     loading = true;
     try {
-      nsInfoResult = await client.vector.getNamespaceInfo({ namespace: selectedNamespace });
+      const info = await client.vector.getNamespaceInfo({ namespace });
+      if (!nsSelectionCurrent(gen, namespace)) return;
+      nsInfoResult = info;
     } catch (err: unknown) {
+      if (!nsSelectionCurrent(gen, namespace)) return;
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
-      loading = false;
+      if (nsSelectionCurrent(gen, namespace)) loading = false;
     }
   }
 
@@ -413,7 +470,7 @@
     return raw
       .split(",")
       .map((v) => parseFloat(v.trim()))
-      .filter((v) => !Number.isNaN(v));
+      .filter((v) => Number.isFinite(v));
   }
 
   function parseJson(raw: string): Record<string, unknown> {
@@ -494,16 +551,25 @@
       showToast("error", "Vector operations are not available on this connection.");
       return;
     }
-    if (selectedNamespace.trim() === "") return;
+    const namespace = selectedNamespace;
+    if (namespace.trim() === "") return;
+    const gen = nsGeneration;
     vectorsLoading = true;
     try {
-      const resp: ListVectorsResponse = await client.vector.listVectors({ namespace: selectedNamespace });
+      const resp: ListVectorsResponse = await client.vector.listVectors({ namespace });
+      if (!nsSelectionCurrent(gen, namespace)) return;
       vecListResults = [...resp.vectors];
     } catch (err: unknown) {
+      if (!nsSelectionCurrent(gen, namespace)) return;
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
-      vectorsLoading = false;
+      if (nsSelectionCurrent(gen, namespace)) vectorsLoading = false;
     }
+    // Every write relists; the namespace cards follow the same refresh. A
+    // failed info read reports once, through handleNsInfo. A list for a
+    // superseded selection stops here: the new selection reads its own.
+    if (!nsSelectionCurrent(gen, namespace)) return;
+    await handleNsInfo();
   }
 
   // ---------------------------------------------------------------------------
@@ -516,20 +582,120 @@
       return;
     }
     if (selectedNamespace === "") return;
-    vectorsLoading = true;
+    const ids: string[] = [];
     for (const idx of indices) {
       const row = vectorTableData[idx];
-      if (row) {
-        try {
-          await client.vector.deleteVector({ namespace: selectedNamespace, id: row.id });
-        } catch (err: unknown) {
-          showToast("error", err instanceof Error ? err.message : String(err));
-        }
-      }
+      if (row) ids.push(row.id);
     }
-    showToast("success", `Deleted ${indices.size} vector${indices.size !== 1 ? "s" : ""}`);
-    await handleVecList();
-    vectorsLoading = false;
+    if (ids.length === 0) return;
+    vectorsLoading = true;
+    try {
+      const resp: BatchDeleteVectorsResponse = await client.vector.batchDeleteVectors({
+        namespace: selectedNamespace,
+        ids,
+      });
+      if (resp.failed > 0) {
+        const detail = (resp.errors ?? []).map((e) => `${e.id}: ${e.error}`).join("; ");
+        showToast("warning", `Deleted ${resp.deleted}, failed ${resp.failed}${detail ? ` (${detail})` : ""}`);
+      } else {
+        showToast("success", `Deleted ${resp.deleted} vector${resp.deleted !== 1 ? "s" : ""}`);
+      }
+      await handleVecList();
+    } catch (err: unknown) {
+      showToast("error", err instanceof Error ? err.message : String(err));
+    } finally {
+      vectorsLoading = false;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Batch upsert
+  // ---------------------------------------------------------------------------
+
+  function parseBatchVectors(raw: string): VectorData[] | null {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      showToast("warning", "Batch must be a JSON array of {id, vector, metadata?} objects.");
+      return null;
+    }
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      showToast("warning", "Batch must be a non-empty JSON array of {id, vector, metadata?} objects.");
+      return null;
+    }
+    const out: VectorData[] = [];
+    for (const [i, item] of parsed.entries()) {
+      const o = item as Record<string, unknown> | null;
+      const vec = o?.vector;
+      if (
+        o === null || typeof o !== "object" || typeof o.id !== "string" || o.id === "" ||
+        !Array.isArray(vec) || vec.length === 0 || !vec.every((n) => typeof n === "number" && Number.isFinite(n))
+      ) {
+        showToast("warning", `Batch item ${i + 1} needs a string id and a vector of finite numbers.`);
+        return null;
+      }
+      // The transports send all-digit ids as JSON numbers; past 2^53 - 1
+      // Number() rounds them onto a different id, so refuse those here.
+      if (/^\d+$/.test(o.id) && BigInt(o.id) > BigInt(Number.MAX_SAFE_INTEGER)) {
+        showToast(
+          "warning",
+          `Batch item ${i + 1} id ${o.id} exceeds the largest exact numeric id (${Number.MAX_SAFE_INTEGER}).`,
+        );
+        return null;
+      }
+      const md = o.metadata;
+      if (md !== undefined && (typeof md !== "object" || md === null || Array.isArray(md))) {
+        showToast("warning", `Batch item ${i + 1} metadata must be a JSON object.`);
+        return null;
+      }
+      out.push({
+        id: o.id,
+        vector: vec as number[],
+        ...(md !== undefined ? { metadata: md as Record<string, unknown> } : {}),
+        version: 0,
+        createdAt: 0,
+        updatedAt: 0,
+      });
+    }
+    return out;
+  }
+
+  async function handleBatchUpsert(): Promise<void> {
+    if (client.vector === null) {
+      showToast("error", "Vector operations are not available on this connection.");
+      return;
+    }
+    if (selectedNamespace.trim() === "") {
+      showToast("warning", "Select a namespace first.");
+      return;
+    }
+    const vectors = parseBatchVectors(batchUpsertInput);
+    if (vectors === null) return;
+    loading = true;
+    batchUpsertResult = null;
+    try {
+      const resp: BatchUpsertResponse = await client.vector.batchUpsert({
+        namespace: selectedNamespace,
+        vectors,
+      });
+      batchUpsertResult = resp;
+      if (resp.failed > 0) {
+        showToast("warning", `Batch upsert: ${resp.succeeded} succeeded, ${resp.failed} failed.`);
+      } else {
+        showToast("success", `Batch upsert: ${resp.succeeded} succeeded.`);
+      }
+      await handleVecList();
+    } catch (err: unknown) {
+      showToast("error", err instanceof Error ? err.message : String(err));
+    } finally {
+      loading = false;
+    }
+  }
+
+  function openBatchUpsertPanel(): void {
+    batchUpsertResult = null;
+    showBatchUpsertPanel = true;
   }
 
   // ---------------------------------------------------------------------------
@@ -542,6 +708,11 @@
       return;
     }
     const { method, options } = event;
+    // The request carries options.namespace; its results apply only while
+    // the selection current at call time still is.
+    const namespace = selectedNamespace;
+    const gen = nsGeneration;
+    let results: unknown[] = [];
 
     loading = true;
     try {
@@ -556,7 +727,7 @@
             vector: options.vector,
             k: options.topK ?? 10,
           });
-          searchResults = [...resp.results];
+          results = [...resp.results];
           break;
         }
         case "id": {
@@ -569,7 +740,7 @@
             id: options.vectorId,
             k: options.topK ?? 10,
           });
-          searchResults = [...resp.results];
+          results = [...resp.results];
           break;
         }
         case "metadata": {
@@ -582,23 +753,70 @@
             filters: options.metadataFilter,
             limit: options.topK ?? 10,
           });
-          searchResults = [...resp.results];
+          results = [...resp.results];
           break;
         }
       }
 
+      if (!nsSelectionCurrent(gen, namespace)) return;
+      searchResults = results;
       if (searchResults.length === 0) {
         showToast("info", "No matching vectors found.");
       }
     } catch (err: unknown) {
+      if (!nsSelectionCurrent(gen, namespace)) return;
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
-      loading = false;
+      if (nsSelectionCurrent(gen, namespace)) loading = false;
     }
   }
 
   function clearSearchResults(): void {
     searchResults = [];
+  }
+
+  async function handleHybridSearch(): Promise<void> {
+    if (client.vector === null) {
+      showToast("error", "Vector operations are not available on this connection.");
+      return;
+    }
+    if (selectedNamespace.trim() === "") {
+      showToast("warning", "Select a namespace first.");
+      return;
+    }
+    const vector = parseVectorValues(hybridVector);
+    if (vector.length === 0) {
+      showToast("warning", "Vector values are required for hybrid search.");
+      return;
+    }
+    const metadataFilters = parseJsonObjectStrict(hybridFilters, "Metadata filter");
+    if (metadataFilters === null) return;
+    const k = Number(hybridK);
+    if (!Number.isInteger(k) || k <= 0) {
+      showToast("warning", "K must be a positive integer.");
+      return;
+    }
+    const namespace = selectedNamespace;
+    const gen = nsGeneration;
+    loading = true;
+    try {
+      const resp: HybridSearchResponse = await client.vector.hybridSearch({
+        namespace,
+        vector,
+        metadataFilters,
+        k,
+      });
+      if (!nsSelectionCurrent(gen, namespace)) return;
+      searchResults = [...resp.results];
+      if (searchResults.length === 0) {
+        showToast("info", "No matching vectors found.");
+      }
+    } catch (err: unknown) {
+      if (!nsSelectionCurrent(gen, namespace)) return;
+      showToast("error", err instanceof Error ? err.message : String(err));
+    } finally {
+      if (nsSelectionCurrent(gen, namespace)) loading = false;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -635,16 +853,21 @@
       showToast("warning", "Select a namespace first.");
       return;
     }
+    const namespace = selectedNamespace;
+    const gen = nsGeneration;
     loading = true;
     try {
-      rebuildProgress = await client.vector.getRebuildProgress({
-        namespace: selectedNamespace,
+      const progress = await client.vector.getRebuildProgress({
+        namespace,
         jobId: rebuildJobId,
       });
+      if (!nsSelectionCurrent(gen, namespace)) return;
+      rebuildProgress = progress;
     } catch (err: unknown) {
+      if (!nsSelectionCurrent(gen, namespace)) return;
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
-      loading = false;
+      if (nsSelectionCurrent(gen, namespace)) loading = false;
     }
   }
 
@@ -657,13 +880,18 @@
       showToast("warning", "Select a namespace first.");
       return;
     }
+    const namespace = selectedNamespace;
+    const gen = nsGeneration;
     loading = true;
     try {
-      statsResult = await client.vector.getIndexStats({ namespace: selectedNamespace });
+      const stats = await client.vector.getIndexStats({ namespace });
+      if (!nsSelectionCurrent(gen, namespace)) return;
+      statsResult = stats;
     } catch (err: unknown) {
+      if (!nsSelectionCurrent(gen, namespace)) return;
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
-      loading = false;
+      if (nsSelectionCurrent(gen, namespace)) loading = false;
     }
   }
 
@@ -697,16 +925,21 @@
       showToast("warning", "Select a namespace first.");
       return;
     }
+    const namespace = selectedNamespace;
+    const gen = nsGeneration;
     loading = true;
     try {
-      compactProgress = await client.vector.getCompactionProgress({
-        namespace: selectedNamespace,
+      const progress = await client.vector.getCompactionProgress({
+        namespace,
         jobId: compactJobId,
       });
+      if (!nsSelectionCurrent(gen, namespace)) return;
+      compactProgress = progress;
     } catch (err: unknown) {
+      if (!nsSelectionCurrent(gen, namespace)) return;
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
-      loading = false;
+      if (nsSelectionCurrent(gen, namespace)) loading = false;
     }
   }
 
@@ -718,9 +951,137 @@
     selectedNamespace = event.row.namespace;
   }
 
+  /**
+   * The list route sends uint64 ids as JSON numbers, which JavaScript has
+   * already rounded past 2^53 (9007199254740993 arrives as
+   * 9007199254740992). Such an id may name a different vector, so it never
+   * reaches getVector or updateMetadata.
+   */
+  function unsafeNumericId(id: unknown): string | null {
+    if (typeof id === "number") {
+      return Number.isSafeInteger(id) || !Number.isInteger(id) ? null : String(id);
+    }
+    if (typeof id === "string" && /^\d+$/.test(id) && BigInt(id) > BigInt(Number.MAX_SAFE_INTEGER)) {
+      return id;
+    }
+    return null;
+  }
+
   function handleVectorRowClick(event: RowClickEvent<VectorRow>): void {
+    const unsafe = unsafeNumericId((event.row.raw as Record<string, unknown>).id);
+    if (unsafe !== null) {
+      showToast(
+        "error",
+        `Vector id ${unsafe} exceeds the largest exact numeric id (${Number.MAX_SAFE_INTEGER}); the list cannot identify it exactly, so it cannot be opened for editing.`,
+      );
+      return;
+    }
     selectedVector = event.row.raw;
+    detailVector = null;
+    detailError = "";
+    detailMetadata = JSON.stringify(
+      ((event.row.raw as Record<string, unknown>).metadata as Record<string, unknown> | undefined) ?? {},
+      null,
+      2,
+    );
     showVectorDetailPanel = true;
+    // A new selection invalidates every response still in flight for the
+    // previous one: the editor only ever shows and saves this target.
+    detailGeneration++;
+    const target = { namespace: selectedNamespace, id: event.row.id };
+    detailTarget = target;
+    void loadVectorDetail(detailGeneration, target);
+  }
+
+  function closeVectorDetail(): void {
+    detailGeneration++;
+    detailTarget = null;
+    showVectorDetailPanel = false;
+    selectedVector = null;
+    detailVector = null;
+    detailError = "";
+    detailLoading = false;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Vector detail: getVector + updateMetadata
+  // ---------------------------------------------------------------------------
+
+  // detailGeneration counts detail-panel selections; a getVector or
+  // updateMetadata response applies only while its generation is current.
+  let detailGeneration = 0;
+  let detailTarget: { namespace: string; id: string } | null = null;
+
+  async function loadVectorDetail(gen: number, target: { namespace: string; id: string }): Promise<void> {
+    if (client.vector === null || target.namespace.trim() === "" || target.id === "") return;
+    if (gen !== detailGeneration) return;
+    detailLoading = true;
+    detailError = "";
+    try {
+      const v: VectorData = await client.vector.getVector({ namespace: target.namespace, id: target.id });
+      if (gen !== detailGeneration) return;
+      detailVector = v;
+      detailMetadata = JSON.stringify(v.metadata ?? {}, null, 2);
+    } catch (err: unknown) {
+      if (gen !== detailGeneration) return;
+      detailVector = null;
+      detailError = err instanceof Error ? err.message : String(err);
+    } finally {
+      if (gen === detailGeneration) detailLoading = false;
+    }
+  }
+
+  function parseJsonObjectStrict(raw: string, what: string): Record<string, unknown> | null {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // fall through
+    }
+    showToast("warning", `${what} must be a JSON object.`);
+    return null;
+  }
+
+  async function handleSaveMetadata(): Promise<void> {
+    if (client.vector === null) {
+      showToast("error", "Vector operations are not available on this connection.");
+      return;
+    }
+    // The target is the selection the editor was opened for, never a
+    // response that arrived for an earlier one.
+    const gen = detailGeneration;
+    const target = detailTarget;
+    const id = target?.id ?? "";
+    if (target === null || target.namespace.trim() === "" || id === "") {
+      showToast("warning", "Namespace and vector ID are required.");
+      return;
+    }
+    // updateMetadata replaces the stored metadata: only an editor seeded by
+    // a successful getVector of this target may write it. The list row's
+    // metadata is not authoritative (the list omits it by default).
+    if (detailLoading || detailVector === null) {
+      showToast("error", "The vector could not be read; reopen it before saving metadata.");
+      return;
+    }
+    const metadata = parseJsonObjectStrict(detailMetadata, "Metadata");
+    if (metadata === null) return;
+    detailLoading = true;
+    try {
+      await client.vector.updateMetadata({
+        namespace: target.namespace,
+        id,
+        metadata,
+      });
+      showToast("success", `Metadata of vector "${id}" updated.`);
+      if (gen === detailGeneration) await loadVectorDetail(gen, target);
+      await handleVecList();
+    } catch (err: unknown) {
+      showToast("error", err instanceof Error ? err.message : String(err));
+    } finally {
+      if (gen === detailGeneration) detailLoading = false;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -742,12 +1103,13 @@
   });
 
   $effect(() => {
-    if (selectedNamespace.trim() !== "") {
-      handleNsInfo();
+    const namespace = selectedNamespace;
+    // Every selection change, to a namespace or to none, invalidates the
+    // reads still in flight for the previous one.
+    resetNamespaceResults();
+    if (namespace.trim() !== "") {
+      // handleVecList reads the namespace info after the list.
       handleVecList();
-    } else {
-      nsInfoResult = null;
-      vecListResults = [];
     }
   });
 </script>
@@ -872,6 +1234,13 @@
         </div>
       {/if}
 
+      <div class="mb-2 flex justify-end">
+        <button class="btn btn-outline btn-sm gap-1" onclick={openBatchUpsertPanel} disabled={loading}>
+          <Plus class="h-3.5 w-3.5" />
+          Batch upsert
+        </button>
+      </div>
+
       <CrudTable
         title="Vectors"
         data={vectorTableData}
@@ -902,6 +1271,50 @@
           onSearch={handleSearch}
           onClear={clearSearchResults}
         />
+      </div>
+
+      <div class="card bg-base-200 engine-vectors shadow-sm" data-testid="hybrid-search-card">
+        <div class="card-body p-5">
+          <h3 class="card-title text-base font-semibold gap-2">
+            <Search class="h-4 w-4" />
+            Hybrid
+          </h3>
+          <p class="text-base-content/50 text-xs">
+            Combine vector similarity with a metadata match in namespace
+            <span class="font-semibold">{selectedNamespace || "(none selected)"}</span>.
+          </p>
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <label class="form-control w-full">
+              <div class="label"><span class="label-text">Vector (comma-separated floats)</span></div>
+              <input
+                type="text"
+                class="input input-bordered input-sm w-full font-mono"
+                aria-label="Hybrid vector"
+                placeholder="0.1, 0.5, -0.3"
+                bind:value={hybridVector}
+              />
+            </label>
+            <label class="form-control w-full">
+              <div class="label"><span class="label-text">Metadata filter (JSON)</span></div>
+              <input
+                type="text"
+                class="input input-bordered input-sm w-full font-mono"
+                aria-label="Hybrid metadata filter"
+                placeholder={'{"label": "example"}'}
+                bind:value={hybridFilters}
+              />
+            </label>
+            <label class="form-control w-full">
+              <div class="label"><span class="label-text">K</span></div>
+              <input type="number" min="1" class="input input-bordered input-sm w-full" aria-label="Hybrid k" bind:value={hybridK} />
+            </label>
+          </div>
+          <div class="mt-2 flex justify-end">
+            <button class="btn btn-primary btn-sm" onclick={handleHybridSearch} disabled={loading}>
+              Hybrid search
+            </button>
+          </div>
+        </div>
       </div>
 
       <CrudTable
@@ -1100,22 +1513,104 @@
   </SlidePanel>
 
   <!-- =================================================================== -->
+  <!-- Batch Upsert SlidePanel                                              -->
+  <!-- =================================================================== -->
+  <SlidePanel
+    open={showBatchUpsertPanel}
+    title="Batch Upsert"
+    onclose={() => (showBatchUpsertPanel = false)}
+  >
+    {#snippet children()}
+      {#if showBatchUpsertPanel}
+      <div class="flex flex-col gap-5">
+        <div class="surface-panel rounded-lg p-4">
+          <div class="text-base-content/50 flex items-center gap-2 text-xs font-medium">
+            <Layers class="h-4 w-4" />
+            Namespace: <span class="text-base-content font-semibold">{selectedNamespace}</span>
+          </div>
+        </div>
+
+        <label class="form-control w-full">
+          <div class="label"><span class="label-text">Vectors (JSON array of {"{id, vector, metadata?}"})</span></div>
+          <textarea
+            class="textarea textarea-bordered h-48 w-full font-mono text-sm"
+            aria-label="Batch vectors JSON"
+            data-testid="batch-upsert-input"
+            bind:value={batchUpsertInput}
+          ></textarea>
+        </label>
+
+        {#if batchUpsertResult}
+          <div class="surface-panel rounded-lg p-4 text-sm" data-testid="batch-upsert-result">
+            <div>Succeeded: <span class="font-semibold" data-testid="batch-upsert-succeeded">{batchUpsertResult.succeeded}</span></div>
+            <div>Failed: <span class="font-semibold" data-testid="batch-upsert-failed">{batchUpsertResult.failed}</span></div>
+            {#if batchUpsertResult.errors && batchUpsertResult.errors.length > 0}
+              <ul class="text-error mt-2 list-disc pl-5" data-testid="batch-upsert-errors">
+                {#each batchUpsertResult.errors as e}
+                  <li>{e.id}: {e.error}</li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
+        {/if}
+      </div>
+      {/if}
+    {/snippet}
+    {#snippet footer()}
+      <div class="flex gap-2 justify-end">
+        <button class="btn btn-ghost btn-sm" onclick={() => (showBatchUpsertPanel = false)}>Close</button>
+        <button class="btn btn-primary btn-sm" onclick={handleBatchUpsert} disabled={loading}>
+          {#if loading}
+            <span class="loading loading-spinner loading-xs"></span>
+          {/if}
+          Upsert batch
+        </button>
+      </div>
+    {/snippet}
+  </SlidePanel>
+
+  <!-- =================================================================== -->
   <!-- Vector Detail SlidePanel                                             -->
   <!-- =================================================================== -->
   <SlidePanel
     open={showVectorDetailPanel}
     title="Vector Details"
-    onclose={() => { showVectorDetailPanel = false; selectedVector = null; }}
+    onclose={closeVectorDetail}
   >
     {#snippet children()}
       {#if selectedVector !== null}
-        {@const v = selectedVector as Record<string, unknown>}
+        {@const v = (detailVector ?? selectedVector) as Record<string, unknown>}
         {@const vec = v.vector as number[] | undefined}
-        <div class="flex flex-col gap-5">
+        <div class="flex flex-col gap-5" data-testid="vector-detail">
+          {#if detailLoading}
+            <span class="loading loading-spinner loading-sm" data-testid="vector-detail-loading"></span>
+          {/if}
+          {#if detailError}
+            <div class="alert alert-error text-sm" role="alert" data-testid="vector-detail-error">
+              Could not load vector: {detailError}
+            </div>
+          {/if}
           <div class="grid grid-cols-2 gap-6">
             <StatCard label="ID" value={(v.id as string) ?? "N/A"} icon={Hash} accentColor={accent} />
             <StatCard label="Dimensions" value={vec?.length ?? 0} icon={Ruler} accentColor={accent} />
           </div>
+
+          {#if detailVector}
+            <dl class="grid grid-cols-3 gap-2 text-sm" data-testid="vector-detail-meta">
+              <div>
+                <dt class="text-base-content/50 text-xs">Version</dt>
+                <dd class="font-mono" data-testid="vector-detail-version">{detailVector.version}</dd>
+              </div>
+              <div>
+                <dt class="text-base-content/50 text-xs">Created</dt>
+                <dd class="font-mono" data-testid="vector-detail-created">{detailVector.createdAt}</dd>
+              </div>
+              <div>
+                <dt class="text-base-content/50 text-xs">Updated</dt>
+                <dd class="font-mono" data-testid="vector-detail-updated">{detailVector.updatedAt}</dd>
+              </div>
+            </dl>
+          {/if}
 
           <div class="surface-panel rounded-lg p-4">
             <h4 class="text-base-content/50 mb-2 text-sm font-medium uppercase tracking-wider">Vector Values</h4>
@@ -1126,9 +1621,24 @@
 
           <div class="surface-panel rounded-lg p-4">
             <h4 class="text-base-content/50 mb-2 text-sm font-medium uppercase tracking-wider">Metadata</h4>
-            <div class="bg-base-300 rounded p-2">
-              <pre class="font-mono text-xs whitespace-pre-wrap">{JSON.stringify(v.metadata ?? {}, null, 2)}</pre>
-            </div>
+            <pre class="bg-base-300 rounded p-2 font-mono text-xs whitespace-pre-wrap" data-testid="vector-detail-metadata-json">{JSON.stringify(v.metadata ?? {}, null, 2)}</pre>
+            <label class="form-control mt-3 w-full">
+              <div class="label"><span class="label-text">Edit metadata (JSON)</span></div>
+              <textarea
+                class="textarea textarea-bordered h-24 w-full font-mono text-sm"
+                aria-label="Edit metadata"
+                data-testid="vector-detail-metadata-input"
+                bind:value={detailMetadata}
+              ></textarea>
+            </label>
+            <button
+              class="btn btn-primary btn-sm mt-2"
+              onclick={handleSaveMetadata}
+              disabled={detailLoading || detailVector === null}
+              data-testid="vector-detail-save-metadata"
+            >
+              Save metadata
+            </button>
           </div>
         </div>
       {/if}
@@ -1146,7 +1656,7 @@
           <Trash2 class="h-3.5 w-3.5" />
           Delete
         </button>
-        <button class="btn btn-ghost btn-sm" onclick={() => { showVectorDetailPanel = false; selectedVector = null; }}>
+        <button class="btn btn-ghost btn-sm" onclick={closeVectorDetail}>
           Close
         </button>
       </div>

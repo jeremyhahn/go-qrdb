@@ -19,6 +19,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -449,6 +450,33 @@ func (b *ConnectionManagerBinding) ActiveClient() (*sdk.Client, error) {
 	return conn.client, nil
 }
 
+// ActiveRemoteClient returns the active connection's client only when that
+// connection is an authenticated external (remote) one. The embedded
+// server's transport carries no authorization of its own, so platform-only
+// verbs such as minting a cluster join token are refused there with
+// ErrRemoteConnectionRequired.
+func (b *ConnectionManagerBinding) ActiveRemoteClient() (*sdk.Client, error) {
+	// Load the active ID and its connection once, then validate and return
+	// that same object: a concurrent SetActive between two reads must not pair
+	// one profile's validation with another profile's client.
+	id := b.GetActiveProfileID()
+	if id == "" {
+		return nil, &NotConnectedError{}
+	}
+	v, ok := b.connections.Load(id)
+	if !ok {
+		return nil, &NotConnectedError{}
+	}
+	conn, _ := v.(*managedConnection)
+	if conn == nil || conn.client == nil {
+		return nil, &NotConnectedError{}
+	}
+	if conn.server != nil || conn.profile.External == nil {
+		return nil, ErrRemoteConnectionRequired
+	}
+	return conn.client, nil
+}
+
 // activeKeyFile returns the client key file the active external connection
 // was dialed with, or "" when the active connection is embedded or none is.
 func (b *ConnectionManagerBinding) activeKeyFile() string {
@@ -687,6 +715,58 @@ func (b *ConnectionManagerBinding) migrate(_ context.Context) error {
 
 // validateProfile returns a ProfileValidationError if p is missing required
 // fields or has an unsupported type.
+// restoreEmbedded connects the saved embedded configuration through the
+// connection manager, so every binding that resolves its client from the
+// active profile reaches the restored server. It reuses the embedded profile
+// whose data directory matches cfg, or saves a new one, then connects it and
+// makes it the active profile.
+func (b *ConnectionManagerBinding) restoreEmbedded(cfg *EmbeddedConfig) error {
+	if cfg == nil {
+		return &ProfileValidationError{Field: "embedded", Reason: "required for type \"embedded\""}
+	}
+	wantDir := resolveDataDir(cfg.DataDir)
+
+	profileID := ""
+	b.mu.Lock()
+	for _, p := range b.profiles {
+		if p.Type == connectionTypeEmbedded && p.Embedded != nil && resolveDataDir(p.Embedded.DataDir) == wantDir {
+			profileID = p.ID
+			break
+		}
+	}
+	b.mu.Unlock()
+
+	if profileID == "" {
+		id, err := newUUID()
+		if err != nil {
+			return err
+		}
+		saved := *cfg
+		if err := b.SaveProfile(ConnectionProfile{
+			ID:        id,
+			Name:      "Local Server",
+			Type:      connectionTypeEmbedded,
+			Embedded:  &saved,
+			CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		}); err != nil {
+			return err
+		}
+		profileID = id
+	}
+
+	state, err := b.Connect(profileID)
+	if err != nil {
+		return err
+	}
+	// Connect reports a failed server start (a locked or unusable data
+	// directory) as an error state, not an error: the restore has failed
+	// then, and the failed profile must not become the active one.
+	if state != nil && state.Status == connectionStatusError {
+		return &EmbeddedServerError{Op: "restore", Err: errors.New(state.Error)}
+	}
+	return b.SetActive(profileID)
+}
+
 func validateProfile(p ConnectionProfile) error {
 	if p.ID == "" {
 		return &ProfileValidationError{Field: "id", Reason: "must not be empty"}

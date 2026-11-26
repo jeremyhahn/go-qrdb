@@ -522,7 +522,10 @@ func (v *VectorConsensusFSM) applyUpsertVector(ctx context.Context, cmd *VectorC
 		"namespace": cmd.Namespace,
 		"id":        cmd.ID,
 	}).Debug("Vector upserted via Raft consensus")
-	return sm.Result{Value: applied}, nil
+	// Raft applies commands one at a time, so the existence read above and
+	// the write are one atomic step: of two upserts of a missing ID exactly
+	// one reports created.
+	return sm.Result{Value: applied, Data: upsertResultData(applied == 1)}, nil
 }
 
 // applyDeleteVector removes a vector from storage and HNSW index.
@@ -555,9 +558,12 @@ func (v *VectorConsensusFSM) applyDeleteVector(ctx context.Context, cmd *VectorC
 					"ids":       len(cmd.IDs),
 					"error":     err,
 				}).Error("Failed to batch delete vectors from storage")
-			} else {
-				removed = stored
+				// The durable records survive, so the index keeps them
+				// too and the caller learns of the failure, as a failed
+				// batch upsert reports its storage error.
+				return sm.Result{}, err
 			}
+			removed = stored
 		}
 
 		// Update HNSW index

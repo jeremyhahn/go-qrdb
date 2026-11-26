@@ -57,3 +57,39 @@ func setupStorage(t *testing.T) (*PebbleVectorStorage, func()) {
 	}
 	return storage, cleanup
 }
+
+// TestPebbleUpsertReplacesMetadataIndex verifies that re-writing a vector at
+// the same version (as UpdateMetadata does) drops the index entry of a
+// changed metadata value, through UpsertVector and BatchUpsertVectors alike
+// (Codex round 1 P1 on #1606).
+func TestPebbleUpsertReplacesMetadataIndex(t *testing.T) {
+	storage, cleanup := setupStorage(t)
+	defer cleanup()
+	ctx := t.Context()
+	const ns = "meta-replace"
+	require.NoError(t, storage.CreateNamespace(ctx, &NamespaceInfo{Name: ns, Dimension: 3}))
+
+	record := func(id uint64, tag string) *VectorValue {
+		return &VectorValue{ID: id, Version: 1, Embedding: []float32{1, 0, 0}, Metadata: map[string]string{"tag": tag}}
+	}
+	scanIDs := func(tag string) []uint64 {
+		t.Helper()
+		got, err := storage.ScanByMetadata(ctx, ns, "tag", tag, nil)
+		require.NoError(t, err)
+		ids := make([]uint64, 0, len(got))
+		for _, v := range got {
+			ids = append(ids, v.ID)
+		}
+		return ids
+	}
+
+	require.NoError(t, storage.UpsertVector(ctx, ns, record(1, "red")))
+	require.NoError(t, storage.UpsertVector(ctx, ns, record(1, "blue")))
+	require.Empty(t, scanIDs("red"), "UpsertVector left the replaced tag=red entry indexed")
+	require.Equal(t, []uint64{1}, scanIDs("blue"))
+
+	require.NoError(t, storage.BatchUpsertVectors(ctx, ns, []*VectorValue{record(2, "green")}))
+	require.NoError(t, storage.BatchUpsertVectors(ctx, ns, []*VectorValue{record(2, "yellow")}))
+	require.Empty(t, scanIDs("green"), "BatchUpsertVectors left the replaced tag=green entry indexed")
+	require.Equal(t, []uint64{2}, scanIDs("yellow"))
+}

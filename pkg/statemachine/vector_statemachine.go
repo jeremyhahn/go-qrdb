@@ -908,6 +908,12 @@ func (vsm *VectorStateMachine) handleUpsert(ctx context.Context, cmd *VectorComm
 		Version:   cmd.Version,
 	}
 
+	// Commands apply one at a time, so this existence read and the write
+	// below are one atomic step: of two upserts of a missing ID exactly one
+	// reports created.
+	_, getErr := vectorStorage.VectorStorage().GetVector(ctx, cmd.Namespace, cmd.ID)
+	created := vectorNotFound(getErr)
+
 	if err := vectorStorage.VectorStorage().UpsertVector(ctx, cmd.Namespace, vecValue); err != nil {
 		return sm.Result{}, api.NewOperationFailedError("upsert vector", err)
 	}
@@ -952,7 +958,7 @@ func (vsm *VectorStateMachine) handleUpsert(ctx context.Context, cmd *VectorComm
 		"dimension": len(cmd.Vector),
 	}).Debug("upserted vector")
 
-	return sm.Result{Value: applied}, nil
+	return sm.Result{Value: applied, Data: upsertResultData(created)}, nil
 }
 
 // handleDelete handles vector deletion operations. Result.Value is the change

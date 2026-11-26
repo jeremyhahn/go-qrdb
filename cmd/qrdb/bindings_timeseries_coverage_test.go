@@ -62,13 +62,63 @@ func newTSBindingNoConn(t *testing.T) *TimeSeriesBinding {
 	return NewTimeSeriesBinding(log, conn)
 }
 
+// TestTSBinding_ScopesToTheSelectedDatabase checks that every time-series
+// binding resolves its client from the database argument, as the KV bindings
+// do: the default database is served by the connection's own client, and a
+// named database goes through DatabaseScoped (which this test transport
+// refuses), never silently to the default database.
+func TestTSBinding_ScopesToTheSelectedDatabase(t *testing.T) {
+	b := newTestTSBinding(t)
+
+	if err := b.Write("", &transport.TSDataPoint{Metric: "cpu", Value: 1}); err != nil {
+		t.Fatalf("Write(default): %v", err)
+	}
+
+	calls := map[string]func() error{
+		"Write":      func() error { return b.Write("metrics", &transport.TSDataPoint{Metric: "cpu", Value: 1}) },
+		"WriteBatch": func() error { return b.WriteBatch("metrics", []transport.TSDataPoint{{Metric: "cpu", Value: 1}}) },
+		"WritePoint": func() error { return b.WritePoint("metrics", &transport.TSDataPoint{Metric: "cpu", Value: 1}) },
+		"Query": func() error {
+			_, err := b.Query("metrics", &transport.TSQueryRequest{Metric: "cpu"})
+			return err
+		},
+		"Aggregate": func() error {
+			_, err := b.Aggregate("metrics", &transport.TSAggregateRequest{Metric: "cpu"})
+			return err
+		},
+		"RichQuery": func() error {
+			_, err := b.RichQuery("metrics", &transport.TSRichQueryRequest{})
+			return err
+		},
+		"DeleteSeries": func() error {
+			_, err := b.DeleteSeries("metrics", &transport.TSDeleteRequest{Metric: "cpu"})
+			return err
+		},
+		"GetRetention": func() error {
+			_, err := b.GetRetention("metrics", &transport.TSGetRetentionRequest{Metric: "cpu"})
+			return err
+		},
+		"SetRetention": func() error { return b.SetRetention("metrics", &transport.TSSetRetentionRequest{Metric: "cpu"}) },
+		"ListMetrics": func() error {
+			_, err := b.ListMetrics("metrics", &transport.TSListMetricsRequest{})
+			return err
+		},
+	}
+	var unsupported *transport.DatabaseScopeUnsupportedError
+	for name, call := range calls {
+		if err := call(); !errors.As(err, &unsupported) {
+			t.Errorf("%s(metrics): want *transport.DatabaseScopeUnsupportedError, got %T: %v", name, err, err)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Write
 // ---------------------------------------------------------------------------
 
 func TestTSBinding_Write_NoClient(t *testing.T) {
 	b := newTSBindingNoConn(t)
-	err := b.Write(&transport.TSDataPoint{})
+	err := b.Write("", &transport.TSDataPoint{})
 	if err == nil {
 		t.Fatal("expected error when not connected")
 	}
@@ -80,7 +130,7 @@ func TestTSBinding_Write_NoClient(t *testing.T) {
 
 func TestTSBinding_Write_Connected(t *testing.T) {
 	b := newTestTSBinding(t)
-	err := b.Write(&transport.TSDataPoint{
+	err := b.Write("", &transport.TSDataPoint{
 		Metric: "cpu.usage",
 		Value:  75.5,
 	})
@@ -95,7 +145,7 @@ func TestTSBinding_Write_Connected(t *testing.T) {
 
 func TestTSBinding_WriteBatch_NoClient(t *testing.T) {
 	b := newTSBindingNoConn(t)
-	err := b.WriteBatch(nil)
+	err := b.WriteBatch("", nil)
 	if err == nil {
 		t.Fatal("expected error when not connected")
 	}
@@ -111,7 +161,7 @@ func TestTSBinding_WriteBatch_Connected(t *testing.T) {
 		{Metric: "cpu.usage", Value: 42.0},
 		{Metric: "mem.used", Value: 1024.0},
 	}
-	err := b.WriteBatch(points)
+	err := b.WriteBatch("", points)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -123,7 +173,7 @@ func TestTSBinding_WriteBatch_Connected(t *testing.T) {
 
 func TestTSBinding_Query_NoClient(t *testing.T) {
 	b := newTSBindingNoConn(t)
-	resp, err := b.Query(&transport.TSQueryRequest{})
+	resp, err := b.Query("", &transport.TSQueryRequest{})
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -138,7 +188,7 @@ func TestTSBinding_Query_NoClient(t *testing.T) {
 
 func TestTSBinding_Query_Connected(t *testing.T) {
 	b := newTestTSBinding(t)
-	resp, err := b.Query(&transport.TSQueryRequest{
+	resp, err := b.Query("", &transport.TSQueryRequest{
 		Metric: "cpu.usage",
 	})
 	if err != nil {
@@ -155,7 +205,7 @@ func TestTSBinding_Query_Connected(t *testing.T) {
 
 func TestTSBinding_Aggregate_NoClient(t *testing.T) {
 	b := newTSBindingNoConn(t)
-	resp, err := b.Aggregate(&transport.TSAggregateRequest{})
+	resp, err := b.Aggregate("", &transport.TSAggregateRequest{})
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -170,7 +220,7 @@ func TestTSBinding_Aggregate_NoClient(t *testing.T) {
 
 func TestTSBinding_Aggregate_Connected(t *testing.T) {
 	b := newTestTSBinding(t)
-	resp, err := b.Aggregate(&transport.TSAggregateRequest{
+	resp, err := b.Aggregate("", &transport.TSAggregateRequest{
 		Metric: "cpu.usage",
 	})
 	if err != nil {
@@ -187,7 +237,7 @@ func TestTSBinding_Aggregate_Connected(t *testing.T) {
 
 func TestTSBinding_WritePoint_NoClient(t *testing.T) {
 	b := newTSBindingNoConn(t)
-	err := b.WritePoint(&transport.TSDataPoint{})
+	err := b.WritePoint("", &transport.TSDataPoint{})
 	if err == nil {
 		t.Fatal("expected error when not connected")
 	}
@@ -199,7 +249,7 @@ func TestTSBinding_WritePoint_NoClient(t *testing.T) {
 
 func TestTSBinding_WritePoint_Connected(t *testing.T) {
 	b := newTestTSBinding(t)
-	err := b.WritePoint(&transport.TSDataPoint{
+	err := b.WritePoint("", &transport.TSDataPoint{
 		Metric: "cpu.usage",
 		Value:  99.0,
 	})
@@ -214,7 +264,7 @@ func TestTSBinding_WritePoint_Connected(t *testing.T) {
 
 func TestTSBinding_RichQuery_NoClient(t *testing.T) {
 	b := newTSBindingNoConn(t)
-	resp, err := b.RichQuery(&transport.TSRichQueryRequest{})
+	resp, err := b.RichQuery("", &transport.TSRichQueryRequest{})
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -229,7 +279,7 @@ func TestTSBinding_RichQuery_NoClient(t *testing.T) {
 
 func TestTSBinding_RichQuery_Connected(t *testing.T) {
 	b := newTestTSBinding(t)
-	resp, err := b.RichQuery(&transport.TSRichQueryRequest{
+	resp, err := b.RichQuery("", &transport.TSRichQueryRequest{
 		Metric: "cpu.usage",
 	})
 	if err != nil {
@@ -246,7 +296,7 @@ func TestTSBinding_RichQuery_Connected(t *testing.T) {
 
 func TestTSBinding_DeleteSeries_NoClient(t *testing.T) {
 	b := newTSBindingNoConn(t)
-	resp, err := b.DeleteSeries(&transport.TSDeleteRequest{})
+	resp, err := b.DeleteSeries("", &transport.TSDeleteRequest{})
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -261,7 +311,7 @@ func TestTSBinding_DeleteSeries_NoClient(t *testing.T) {
 
 func TestTSBinding_DeleteSeries_Connected(t *testing.T) {
 	b := newTestTSBinding(t)
-	resp, err := b.DeleteSeries(&transport.TSDeleteRequest{
+	resp, err := b.DeleteSeries("", &transport.TSDeleteRequest{
 		Metric: "cpu.usage",
 	})
 	if err != nil {
@@ -278,7 +328,7 @@ func TestTSBinding_DeleteSeries_Connected(t *testing.T) {
 
 func TestTSBinding_GetRetention_NoClient(t *testing.T) {
 	b := newTSBindingNoConn(t)
-	resp, err := b.GetRetention(&transport.TSGetRetentionRequest{})
+	resp, err := b.GetRetention("", &transport.TSGetRetentionRequest{})
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -293,7 +343,7 @@ func TestTSBinding_GetRetention_NoClient(t *testing.T) {
 
 func TestTSBinding_GetRetention_Connected(t *testing.T) {
 	b := newTestTSBinding(t)
-	resp, err := b.GetRetention(&transport.TSGetRetentionRequest{
+	resp, err := b.GetRetention("", &transport.TSGetRetentionRequest{
 		Metric: "cpu.usage",
 	})
 	if err != nil {
@@ -310,7 +360,7 @@ func TestTSBinding_GetRetention_Connected(t *testing.T) {
 
 func TestTSBinding_SetRetention_NoClient(t *testing.T) {
 	b := newTSBindingNoConn(t)
-	err := b.SetRetention(&transport.TSSetRetentionRequest{})
+	err := b.SetRetention("", &transport.TSSetRetentionRequest{})
 	if err == nil {
 		t.Fatal("expected error when not connected")
 	}
@@ -322,7 +372,7 @@ func TestTSBinding_SetRetention_NoClient(t *testing.T) {
 
 func TestTSBinding_SetRetention_Connected(t *testing.T) {
 	b := newTestTSBinding(t)
-	err := b.SetRetention(&transport.TSSetRetentionRequest{
+	err := b.SetRetention("", &transport.TSSetRetentionRequest{
 		Metric: "cpu.usage",
 	})
 	if err != nil {
@@ -336,7 +386,7 @@ func TestTSBinding_SetRetention_Connected(t *testing.T) {
 
 func TestTSBinding_ListMetrics_NoClient(t *testing.T) {
 	b := newTSBindingNoConn(t)
-	resp, err := b.ListMetrics(&transport.TSListMetricsRequest{})
+	resp, err := b.ListMetrics("", &transport.TSListMetricsRequest{})
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -351,7 +401,7 @@ func TestTSBinding_ListMetrics_NoClient(t *testing.T) {
 
 func TestTSBinding_ListMetrics_Connected(t *testing.T) {
 	b := newTestTSBinding(t)
-	resp, err := b.ListMetrics(&transport.TSListMetricsRequest{})
+	resp, err := b.ListMetrics("", &transport.TSListMetricsRequest{})
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}

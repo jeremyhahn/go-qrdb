@@ -81,17 +81,32 @@ async function injectStatefulTimeSeriesBinding(
       clearInterval(waitForGo);
 
       go.main.TimeSeriesBinding = {
-        Write: async (metric: string, value: number, timestampNs: number) => {
+        Write: async (_database: string, point: Record<string, unknown>) => {
+          // TimeSeriesBinding.Write(point *TSDataPoint): one snake_case object.
           maybeReject("TimeSeriesBinding.Write");
-          tsPoints.push({ metric, value, timestampNs: timestampNs ?? Date.now() * 1_000_000 });
+          tsPoints.push({
+            metric: point["metric"] as string,
+            value: point["value"] as number,
+            timestampNs: (point["timestamp_ns"] ?? point["timestampNs"] ?? Date.now() * 1_000_000) as number,
+            tags: point["tags"] as { key: string; value: string }[] | undefined,
+          });
+        },
+        WritePoint: async (_database: string, point: Record<string, unknown>) => {
+          maybeReject("TimeSeriesBinding.WritePoint");
+          tsPoints.push({
+            metric: point["metric"] as string,
+            value: point["value"] as number,
+            timestampNs: (point["timestamp_ns"] ?? point["timestampNs"] ?? Date.now() * 1_000_000) as number,
+            tags: point["tags"] as { key: string; value: string }[] | undefined,
+          });
         },
 
-        WriteBatch: async (points: TSDataPoint[]) => {
+        WriteBatch: async (_database: string, points: TSDataPoint[]) => {
           maybeReject("TimeSeriesBinding.WriteBatch");
           for (const p of points) tsPoints.push({ ...p });
         },
 
-        WritePoint: async (point: Record<string, unknown>) => {
+        WritePoint: async (_database: string, point: Record<string, unknown>) => {
           maybeReject("TimeSeriesBinding.WritePoint");
           // SDK converts timestampNs → timestamp_ns via toSnake().
           const tsNs = (point["timestamp_ns"] ?? point["timestampNs"] ?? Date.now() * 1_000_000) as number;
@@ -103,7 +118,7 @@ async function injectStatefulTimeSeriesBinding(
           });
         },
 
-        Query: async (req: Record<string, unknown>) => {
+        Query: async (_database: string, req: Record<string, unknown>) => {
           maybeReject("TimeSeriesBinding.Query");
           // SDK converts startNs → start_ns, endNs → end_ns via toSnake().
           const startNs = (req["start_ns"] ?? req["startNs"] ?? 0) as number;
@@ -125,7 +140,7 @@ async function injectStatefulTimeSeriesBinding(
           };
         },
 
-        Aggregate: async (req: Record<string, unknown>) => {
+        Aggregate: async (_database: string, req: Record<string, unknown>) => {
           maybeReject("TimeSeriesBinding.Aggregate");
           const startNs = (req["start_ns"] ?? req["startNs"] ?? 0) as number;
           const endNs = (req["end_ns"] ?? req["endNs"] ?? Number.MAX_SAFE_INTEGER) as number;
@@ -147,12 +162,12 @@ async function injectStatefulTimeSeriesBinding(
           }
         },
 
-        RichQuery: async () => {
+        RichQuery: async (_database: string) => {
           maybeReject("TimeSeriesBinding.RichQuery");
           return { series: [] };
         },
 
-        DeleteSeries: async (req: Record<string, unknown>) => {
+        DeleteSeries: async (_database: string, req: Record<string, unknown>) => {
           maybeReject("TimeSeriesBinding.DeleteSeries");
           let deleted = 0;
           for (let i = tsPoints.length - 1; i >= 0; i--) {
@@ -165,17 +180,17 @@ async function injectStatefulTimeSeriesBinding(
           return { deleted };
         },
 
-        GetRetention: async (req: Record<string, unknown>) => {
+        GetRetention: async (_database: string, req: Record<string, unknown>) => {
           maybeReject("TimeSeriesBinding.GetRetention");
           return { days: retentionStore.get(req["metric"] as string) ?? 0 };
         },
 
-        SetRetention: async (req: Record<string, unknown>) => {
+        SetRetention: async (_database: string, req: Record<string, unknown>) => {
           maybeReject("TimeSeriesBinding.SetRetention");
           retentionStore.set(req["metric"] as string, req["days"] as number);
         },
 
-        ListMetrics: async (req: Record<string, unknown>) => {
+        ListMetrics: async (_database: string, req: Record<string, unknown>) => {
           maybeReject("TimeSeriesBinding.ListMetrics");
           const metricSet = new Set<string>();
           for (const p of tsPoints) metricSet.add(p.metric);

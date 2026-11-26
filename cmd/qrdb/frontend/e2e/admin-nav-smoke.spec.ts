@@ -343,7 +343,7 @@ test.describe("Admin Nav Smoke — binding regression guards", () => {
    */
   for (const spec of [
     { binding: "RebalanceBinding", method: "GetImbalanceReport", args: [] as unknown[] },
-    { binding: "LockBinding", method: "List", args: [""] },
+    { binding: "LockBinding", method: "List", args: ["", ""] },
     { binding: "CredentialBinding", method: "List", args: [] },
     { binding: "AuditBinding", method: "Query", args: [{}] },
   ] as const) {

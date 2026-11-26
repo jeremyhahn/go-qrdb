@@ -62,7 +62,7 @@ func TestIndexBinding_Create_NotConnected(t *testing.T) {
 	conn := NewConnectionBinding(log)
 	b := NewIndexBinding(log, conn)
 
-	err := b.Create(IndexCreateParams{Name: "idx", FieldName: "field"})
+	err := b.Create("", IndexCreateParams{Name: "idx", FieldName: "field"})
 	if err == nil {
 		t.Fatal("expected error from Create when not connected")
 	}
@@ -76,7 +76,7 @@ func TestIndexBinding_Create_Success(t *testing.T) {
 	b, esb := newTestIndexBinding(t)
 	defer func() { _ = esb.StopEmbedded() }()
 
-	err := b.Create(IndexCreateParams{
+	err := b.Create("", IndexCreateParams{
 		Name:      "name-idx",
 		FieldName: "name",
 		Unique:    false,
@@ -91,7 +91,7 @@ func TestIndexBinding_Create_UniqueIndex(t *testing.T) {
 	b, esb := newTestIndexBinding(t)
 	defer func() { _ = esb.StopEmbedded() }()
 
-	err := b.Create(IndexCreateParams{
+	err := b.Create("", IndexCreateParams{
 		Name:      "email-idx",
 		FieldName: "email",
 		Unique:    true,
@@ -99,6 +99,39 @@ func TestIndexBinding_Create_UniqueIndex(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Create unique index: %v", err)
+	}
+}
+
+// TestIndexBinding_Create_CaseInsensitive proves IndexBinding.Create forwards
+// case_insensitive: a case-variant lookup finds the stored document and a
+// case-variant duplicate is refused by the unique index.
+func TestIndexBinding_Create_CaseInsensitive(t *testing.T) {
+	b, esb := newTestIndexBinding(t)
+	defer func() { _ = esb.StopEmbedded() }()
+	kv := NewKVBinding(testLogger(t), b.conn)
+
+	if err := b.Create("", IndexCreateParams{
+		Name:            "email-ci",
+		FieldName:       "email",
+		Unique:          true,
+		CaseInsensitive: true,
+	}); err != nil {
+		t.Fatalf("Create case-insensitive index: %v", err)
+	}
+	if err := kv.Put("", "user:1", `{"email":"Alice@Example.com"}`); err != nil {
+		t.Fatalf("Put user:1: %v", err)
+	}
+
+	resp, err := b.Query("", "email-ci", "ALICE@example.COM")
+	if err != nil {
+		t.Fatalf("Query case variant: %v", err)
+	}
+	if len(resp.Keys) != 1 || resp.Keys[0] != "user:1" {
+		t.Fatalf("case-variant lookup keys = %v; want [user:1]", resp.Keys)
+	}
+
+	if err := kv.Put("", "user:2", `{"email":"alice@example.com"}`); err == nil {
+		t.Fatal("Put of a case-variant duplicate succeeded; want a unique-index refusal")
 	}
 }
 
@@ -111,7 +144,7 @@ func TestIndexBinding_Drop_NotConnected(t *testing.T) {
 	conn := NewConnectionBinding(log)
 	b := NewIndexBinding(log, conn)
 
-	err := b.Drop("any-index")
+	err := b.Drop("", "any-index")
 	if err == nil {
 		t.Fatal("expected error from Drop when not connected")
 	}
@@ -125,14 +158,14 @@ func TestIndexBinding_Drop_Success(t *testing.T) {
 	b, esb := newTestIndexBinding(t)
 	defer func() { _ = esb.StopEmbedded() }()
 
-	if err := b.Create(IndexCreateParams{
+	if err := b.Create("", IndexCreateParams{
 		Name:      "drop-idx",
 		FieldName: "field",
 	}); err != nil {
 		t.Fatalf("Create before Drop: %v", err)
 	}
 
-	if err := b.Drop("drop-idx"); err != nil {
+	if err := b.Drop("", "drop-idx"); err != nil {
 		t.Fatalf("Drop: %v", err)
 	}
 }
@@ -146,7 +179,7 @@ func TestIndexBinding_Query_NotConnected(t *testing.T) {
 	conn := NewConnectionBinding(log)
 	b := NewIndexBinding(log, conn)
 
-	_, err := b.Query("name-idx", "alice")
+	_, err := b.Query("", "name-idx", "alice")
 	if err == nil {
 		t.Fatal("expected error from Query when not connected")
 	}
@@ -160,14 +193,14 @@ func TestIndexBinding_Query_Success(t *testing.T) {
 	b, esb := newTestIndexBinding(t)
 	defer func() { _ = esb.StopEmbedded() }()
 
-	if err := b.Create(IndexCreateParams{
+	if err := b.Create("", IndexCreateParams{
 		Name:      "query-idx",
 		FieldName: "status",
 	}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
-	resp, err := b.Query("query-idx", "active")
+	resp, err := b.Query("", "query-idx", "active")
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
@@ -185,7 +218,7 @@ func TestIndexBinding_Scan_NotConnected(t *testing.T) {
 	conn := NewConnectionBinding(log)
 	b := NewIndexBinding(log, conn)
 
-	_, err := b.Scan("name-idx", "a", "z")
+	_, err := b.Scan("", "name-idx", "a", "z")
 	if err == nil {
 		t.Fatal("expected error from Scan when not connected")
 	}
@@ -199,14 +232,14 @@ func TestIndexBinding_Scan_Success(t *testing.T) {
 	b, esb := newTestIndexBinding(t)
 	defer func() { _ = esb.StopEmbedded() }()
 
-	if err := b.Create(IndexCreateParams{
+	if err := b.Create("", IndexCreateParams{
 		Name:      "scan-idx",
 		FieldName: "score",
 	}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
-	resp, err := b.Scan("scan-idx", "0", "100")
+	resp, err := b.Scan("", "scan-idx", "0", "100")
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
@@ -255,7 +288,7 @@ func TestIndexBinding_List_Success(t *testing.T) {
 	defer func() { _ = esb.StopEmbedded() }()
 
 	for _, name := range []string{"idx-a", "idx-b"} {
-		if err := b.Create(IndexCreateParams{
+		if err := b.Create("", IndexCreateParams{
 			Name:      name,
 			FieldName: "field",
 		}); err != nil {
