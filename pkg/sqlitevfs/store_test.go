@@ -1145,6 +1145,71 @@ func TestBumpGenerationEmptyWritesNothing(t *testing.T) {
 	}
 }
 
+// metaRaceBackend runs race once after each meta read while armed: a commit
+// that lands between a reader's read and its write.
+type metaRaceBackend struct {
+	*MVCCBackend
+	metaKey []byte
+	armed   int
+	race    func()
+}
+
+func (b *metaRaceBackend) GetAt(ctx context.Context, key []byte, rev int64) ([]byte, bool, error) {
+	value, found, err := b.MVCCBackend.GetAt(ctx, key, rev)
+	if b.armed > 0 && bytes.Equal(key, b.metaKey) {
+		b.armed--
+		b.race()
+	}
+	return value, found, err
+}
+
+// A commit between the bump's meta read and its write survives: the bump's
+// read check refuses the stale write, and the retry bumps the new record.
+func TestBumpGenerationKeepsAConcurrentCommit(t *testing.T) {
+	b := newTestBackend(t)
+	writer := newTestStore(t, b, "app.db")
+	seed(t, writer, 0x11)
+	before := begin(t, newTestStore(t, b, "app.db")).base
+
+	var raced Meta
+	rb := &metaRaceBackend{MVCCBackend: b, metaKey: writer.metaKey, armed: 1}
+	rb.race = func() {
+		seed(t, writer, 0x21, 0x22, 0x23)
+		raced = begin(t, newTestStore(t, b, "app.db")).base
+	}
+	bumper := newTestStore(t, rb, "app.db")
+	if _, err := bumper.BumpGeneration(t.Context()); err != nil {
+		t.Fatalf("BumpGeneration: %v", err)
+	}
+	after := begin(t, newTestStore(t, b, "app.db")).base
+	if after.PageCount != raced.PageCount || after.ChangeCounter != raced.ChangeCounter {
+		t.Fatalf("after the bump meta = %+v, want the concurrent commit's %d pages, change counter %d", after, raced.PageCount, raced.ChangeCounter)
+	}
+	if after.Generation <= before.Generation {
+		t.Fatalf("generation %d after the bump, want past %d", after.Generation, before.Generation)
+	}
+}
+
+// A database that moves on every attempt is ErrSnapshotChanged, and the
+// last concurrent commit stands.
+func TestBumpGenerationGivesUpOnAMovingDatabase(t *testing.T) {
+	b := newTestBackend(t)
+	writer := newTestStore(t, b, "app.db")
+	seed(t, writer, 0x11)
+	fill := byte(0x30)
+	rb := &metaRaceBackend{MVCCBackend: b, metaKey: writer.metaKey, armed: restoreBumpAttempts}
+	rb.race = func() {
+		fill++
+		seed(t, writer, fill)
+	}
+	if _, err := newTestStore(t, rb, "app.db").BumpGeneration(t.Context()); !errors.Is(err, ErrSnapshotChanged) {
+		t.Fatalf("BumpGeneration on a database moving every attempt = %v, want ErrSnapshotChanged", err)
+	}
+	if got := begin(t, newTestStore(t, b, "app.db")).base.ChangeCounter; got != uint64(restoreBumpAttempts)+1 {
+		t.Fatalf("change counter %d, want %d: a concurrent commit was overwritten", got, restoreBumpAttempts+1)
+	}
+}
+
 // metaRecordAt returns the raw meta record of db at revision rev.
 func metaRecordAt(t *testing.T, b Backend, db string, rev int64) ([]byte, Meta) {
 	t.Helper()

@@ -331,31 +331,41 @@ func (s *Store) BeginAt(ctx context.Context, rev int64) (*Txn, error) {
 
 // BumpGeneration is the restore hook of Q4 A: it reads the meta record at
 // the current revision and commits it with Generation+1 in one
-// Backend.Commit, returning that revision. A database with no meta record
-// writes nothing and returns the current revision. ctx bounds the read and
-// the commit.
+// Backend.Commit, returning that revision. The commit carries the meta
+// record it read as a read check, so a commit that lands between the read
+// and the write (ErrSnapshotChanged) is never overwritten: the bump reads
+// again, at most restoreBumpAttempts times. A database with no meta record
+// writes nothing and returns the current revision. ctx bounds the reads and
+// the commits.
 func (s *Store) BumpGeneration(ctx context.Context) (int64, error) {
-	rev, err := s.backend.Revision(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("sqlitevfs: bump generation of %q: %w", s.db, err)
+	for range restoreBumpAttempts {
+		rev, err := s.backend.Revision(ctx)
+		if err != nil {
+			return 0, fmt.Errorf("sqlitevfs: bump generation of %q: %w", s.db, err)
+		}
+		meta, found, err := s.readMeta(ctx, rev)
+		if err != nil {
+			return 0, err
+		}
+		if !found {
+			return rev, nil
+		}
+		meta.Generation++
+		value, err := meta.MarshalBinary()
+		if err != nil {
+			return 0, err
+		}
+		reads := []ReadCheck{{Key: s.metaKey, Rev: rev, Found: true}}
+		newRev, err := s.backend.Commit(ctx, reads, map[string][]byte{string(s.metaKey): value}, nil)
+		if errors.Is(err, ErrSnapshotChanged) {
+			continue
+		}
+		if err != nil {
+			return 0, fmt.Errorf("sqlitevfs: bump generation of %q: %w", s.db, err)
+		}
+		return newRev, nil
 	}
-	meta, found, err := s.readMeta(ctx, rev)
-	if err != nil {
-		return 0, err
-	}
-	if !found {
-		return rev, nil
-	}
-	meta.Generation++
-	value, err := meta.MarshalBinary()
-	if err != nil {
-		return 0, err
-	}
-	newRev, err := s.backend.Commit(ctx, nil, map[string][]byte{string(s.metaKey): value}, nil)
-	if err != nil {
-		return 0, fmt.Errorf("sqlitevfs: bump generation of %q: %w", s.db, err)
-	}
-	return newRev, nil
+	return 0, fmt.Errorf("%w: %q moved on each of %d generation bump attempts", ErrSnapshotChanged, s.db, restoreBumpAttempts)
 }
 
 // restoreBumpAttempts bounds how often RestoreToRevision begins its
