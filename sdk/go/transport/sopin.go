@@ -27,6 +27,7 @@ import (
 	"google.golang.org/grpc/metadata"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/pinhook"
 )
 
 // SOPINHeader is the HTTP header the REST and MCP transports send the SO PIN
@@ -184,7 +185,9 @@ func ResolveSOPIN(ctx context.Context, method string, requestPIN Secret) (Secret
 	if len(requestPIN) != 0 && !bytes.Equal(requestPIN, bound) {
 		return nil, &SOPINConflictError{Method: method}
 	}
-	return append(Secret(nil), bound...), nil
+	resolved := append(Secret(nil), bound...)
+	pinhook.Record(ctx, resolved)
+	return resolved, nil
 }
 
 // SOPINUnaryClientInterceptor sends the PIN bound by WithSOPIN in the
