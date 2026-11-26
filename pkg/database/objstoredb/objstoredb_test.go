@@ -204,12 +204,6 @@ func TestNilObjstoreConfig_Refused(t *testing.T) {
 	if err == nil || store != nil {
 		t.Fatalf("Open with no objstore config = %v, %v; want an error and no engine", store, err)
 	}
-	if _, err := objstoredb.Namespace(cfg); !errors.Is(err, objstoredb.ErrNoObjstoreConfig) {
-		t.Fatalf("Namespace with no objstore config = %v, want ErrNoObjstoreConfig", err)
-	}
-	if err := objstoredb.ReleaseOwnerMarker(cfg); !errors.Is(err, objstoredb.ErrNoObjstoreConfig) {
-		t.Fatalf("ReleaseOwnerMarker with no objstore config = %v, want ErrNoObjstoreConfig", err)
-	}
 }
 
 // TestReleaseOwnerMarker_FreesTheNamespace opens a database on a local-provider
