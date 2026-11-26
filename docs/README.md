@@ -150,6 +150,8 @@ They are listed below and are linked from the feature folder that owns them.
 | [credentials/secret-resolution.md](credentials/secret-resolution.md) | [credentials](credentials/) |
 | [gui/README.md](gui/README.md) | [desktop-gui](desktop-gui/) |
 | [release/extension-seams.md](release/extension-seams.md) | [release](release/), [key-wrapping](key-wrapping/), [tenant-dek](tenant-dek/) — every composition seam an upstream composer can fill, its option, and the open gaps |
+| [decisions/](decisions/) — design decision records | [storage-engines](storage-engines/), [sqlite-vfs](sqlite-vfs/), [clustering](clustering/), [volume-pools](volume-pools/) |
+| [reference/](reference/) — unmodified copies of the standards the code implements | every feature that cites one |
 
 ## Testing
 

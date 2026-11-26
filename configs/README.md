@@ -15,9 +15,10 @@ different knobs.
 
 ## The matrix: implemented vs. planned
 
-Run modes follow the ratified split (see the glossary): **standalone = no
-Raft**, standard database operations + the security core; **raft** (single
-or clustered) adds MVCC/watch/lease/lock/transactions/etcd/cluster ops.
+Run modes (see the glossary): **standalone = no Raft**, the whole data plane
+(KV, batch, transactions, MVCC, watch, lease, lock) plus the security core;
+**raft** (single or clustered) adds etcd, cluster membership, rebalance and
+shard backup/restore. An absent `mode` means raft.
 
 | Run mode | Replication | Status | Exemplar |
 |---|---|---|---|
@@ -25,7 +26,7 @@ or clustered) adds MVCC/watch/lease/lock/transactions/etcd/cluster ops.
 | Embedded, `node://` / `sdk/go/node.NewStandaloneNode` | none — raft-free (`backend.LocalBackend`) | ✅ implemented (full in-process service stack) | programmatic (`qrdbconfig.Config`) |
 | Embedded, `sdk/go/node.NewClusteredNode` | multi-replica Raft, in-process | ✅ implemented | programmatic |
 | **Standalone daemon** (`mode: standalone`) | **none — raft-free** | ✅ implemented: `qrdbd` composes the same LocalBackend stack the SDK uses; raft-only features refused with "requires mode: raft" | [`qrdb-standalone-pebble.yaml`](qrdb-standalone-pebble.yaml) / [`memory`](qrdb-standalone-memory.yaml) / [`file`](qrdb-standalone-file.yaml) |
-| Raft single-node daemon | single-replica Raft (quorum of 1) | ✅ implemented (today's default; full feature set incl. MVCC) | [`qrdb.yaml`](qrdb.yaml) (pebble SM), [`qrdb-raft-single-mvcc.yaml`](qrdb-raft-single-mvcc.yaml) (mvcc SM), [`qrdb-dev.yaml`](qrdb-dev.yaml) (memory SM, dev) |
+| Raft single-node daemon | single-replica Raft (quorum of 1) | ✅ implemented (the default when `mode` is absent) | [`qrdb.yaml`](qrdb.yaml) (pebble SM), [`qrdb-raft-single-mvcc.yaml`](qrdb-raft-single-mvcc.yaml) (mvcc SM), [`qrdb-dev.yaml`](qrdb-dev.yaml) (memory SM, dev) |
 | Raft clustered daemon (3 nodes) | multi-replica Raft | ✅ implemented | [`qrdb-cluster-node1.yaml`](qrdb-cluster-node1.yaml) / [`node2`](qrdb-cluster-node2.yaml) / [`node3`](qrdb-cluster-node3.yaml) |
 | Raft SM over file/memory storage (`raft.sm_storage`, with `sm_type: disk`/`fast`) | Raft | ✅ implemented: file backend with durable atomic writes + all-or-nothing commit journal; objstore remains a snapshot/backup tier and is refused as the hot apply path | flags: `--sm disk --sm-storage file` |
 
@@ -35,10 +36,9 @@ Each serves KV, batches, the guarded verbs and transactions; only `mvcc`
 keeps revisions. See
 [../docs/run-modes/architecture.md](../docs/run-modes/architecture.md#raft--single--or-multi-node).
 
-Per-backend nuances for standalone: pebble/memory serve the full standard
-set; file/objstore compose the plain KV engine, so timeseries is
-additionally unavailable there (documented engine boundary,
-`pkg/engine/kv_engine.go`).
+Standalone composes the MVCC engine over every backend (memory, file, pebble,
+objstore; `pkg/server/lifecycle/local.go:177`), so each serves the same data
+plane.
 
 ## Embedded DSN examples (`database/sql` driver)
 
@@ -49,7 +49,8 @@ db, _ := sql.Open("qrdb", "embedded://memory?database=mydb")
 // Raft-free, in-process, durable pebble:
 db, _ := sql.Open("qrdb", "embedded:///var/lib/myapp/qrdb?backend=pebble&database=mydb&engine=kv")
 
-// Full in-process node (single-replica Raft, full stack incl. SQL catalog):
+// Full in-process standalone node (needs a blank import of sdk/go/driver/node;
+// full service stack incl. SQL catalog, no protocol server binds a port):
 db, _ := sql.Open("qrdb", "node:///var/lib/myapp/qrdb?database=mydb")
 ```
 

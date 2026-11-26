@@ -34,14 +34,14 @@ review.
 | Replica forwarding over QUIC | ALPN `qrdb-quic/3` (`wire.ProtocolV3`), the only protocol offered | `pkg/api/quic/wire/wire.go` |
 | REST, gRPC and MCP forwarding | no version (MCP carries its own protocol version only) | `pkg/api/*` |
 | Forward assertion | JSON with no version field | `pkg/auth/forward/assertion.go` |
-| Cluster enrolment | first frame is version ‖ suite, version `0x01`, checked on receipt; `JoinRequest.Features` | `pkg/cluster/clusterenroll` |
-| Key delivery | no version in the envelope; `qrdb/keydelivery/v1` appears only in the HPKE info string and the URL | `pkg/cluster/keydelivery` |
+| Cluster enrolment | first frame is version ‖ suite, version `0x01`, checked on receipt; `JoinRequest.Features` | `pkg/clusterenroll` |
+| Key delivery | no version in the envelope; `qrdb/keydelivery/v1` appears only in the HPKE info string and the URL | `pkg/keydelivery` |
 | Raft command encoding | `[op:1][payload]`, no version; an unknown opcode is `InvalidOpcodeError`, and a mixed group diverges | `pkg/protocol` |
-| Cluster feature gate | 22 features, each advertised per node; `Gate.Enabled` is true only once a feature is activated cluster-wide (every node advertises it), and activation is permanent. Per-group early enablement was removed because log replay to a rolled-back replica diverges. `CheckActivated` (`UnsupportedFeatureError`) refuses to start a binary that lacks an activated feature; before activation a write keeps the documented fallback | `pkg/cluster/featuregate` |
+| Cluster feature gate | 24 features, each advertised per node; `Gate.Enabled` is true only once a feature is activated cluster-wide (every node advertises it), and activation is permanent. Per-group early enablement was removed because log replay to a rolled-back replica diverges. `CheckActivated` (`UnsupportedFeatureError`) refuses to start a binary that lacks an activated feature; before activation a write keeps the documented fallback | `pkg/cluster/featuregate` |
 | Node release version | `VERSION` passed as `-X main.version` (default `dev`), shown only by `qrdbd version`; peers do not exchange it | `cmd/qrdbd` |
-| Capabilities RPC | 19 booleans, no server version | `CapabilitiesResponse` |
+| Capabilities RPC | 18 booleans, the run mode and the unencrypted-at-rest list; no server version | `CapabilitiesResponse` |
 | SDK user create | sends `pending_ttl_seconds` (#1587, on main after v0.58.5-alpha, in no release yet). An older server drops it; the SDK then sees an account with no expiry and deletes it (`transport.EnforcePendingTTL`). This is an undo after the fact, not a refusal (#1601) | `sdk/go/transport` |
-| SDK tenant list | sends the `status` filter (#1651, on the row branch, in no release yet). An older server drops it and answers every tenant; the SDK's network transports and the CLI refuse the answer with `*transport.CapabilityUnsupportedError` and no tenants (`transport.EnforceStatusFilter`). A typed refusal after the fact: the server did the unfiltered read | `sdk/go/transport` |
+| SDK tenant list | sends the `status` filter (#1651, on main, in no release yet). An older server drops it and answers every tenant; the SDK's network transports and the CLI refuse the answer with `*transport.CapabilityUnsupportedError` and no tenants (`transport.EnforceStatusFilter`). A typed refusal after the fact: the server did the unfiltered read | `sdk/go/transport` |
 | Test infrastructure | the clusterproof inventory has one image for the whole cluster; nothing builds an older release | `test/clusterproof` |
 
 Documents that say version equality is required today and change with this row:

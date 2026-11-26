@@ -35,8 +35,8 @@
 // AUTO_INCREMENT, interactive transactions). It stays the fast, minimal path
 // for callers who only want the KV surface.
 //
-// node:// stands up a standalone qrdb node through sdk/go/node -- Raft state
-// machine, the full service graph, and the transport-neutral per-(tenant,
+// node:// stands up a standalone qrdb node through sdk/go/node -- the MVCC
+// engine with no Raft state machine, the full service graph, and the transport-neutral per-(tenant,
 // database) service.Registry every wire protocol resolves through -- with
 // every protocol server disabled, so nothing binds a port. That registry is
 // what makes CREATE TABLE and interactive transactions work. It costs a node

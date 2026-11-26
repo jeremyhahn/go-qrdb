@@ -1400,6 +1400,11 @@ func runStart(f *startFlags) (err error) {
 	)
 	defer recordSecureMemoryWipe(&err)
 
+	// The data directory must belong to this run mode before anything opens or writes into it.
+	if err := lifecycle.ClaimRunMode(f.dataDir, f.mode); err != nil {
+		return err
+	}
+
 	// Resolve TLS: explicit files -> cached certs -> generate/bootstrap.
 	bundle, bootServers, err := resolveTLS(f, slog.Default())
 	if err != nil {

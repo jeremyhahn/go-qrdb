@@ -29,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -95,9 +96,12 @@ func TestNewClusteredNode_ResolvedIdentityNamesTheDefaultRaftAddress(t *testing.
 // with a typed error, rather than booting a node with no identity.
 func TestNewClusteredNode_UnresolvableIdentityIsTyped(t *testing.T) {
 	cfg := newRaftIsolationConfig(t)
-	notADir := filepath.Join(t.TempDir(), "data")
-	require.NoError(t, os.WriteFile(notADir, []byte("a file"), 0o600))
-	cfg.Raft.DataDir = notADir
+	// DataDir stays a real directory so the run-mode claim succeeds; only the
+	// identity is made unresolvable: clusterenroll keeps its material flat in
+	// DataDir, and a directory where ca.pem belongs cannot be read as material.
+	dataDir := filepath.Join(t.TempDir(), "data")
+	require.NoError(t, os.MkdirAll(filepath.Join(dataDir, "ca.pem"), 0o700))
+	cfg.Raft.DataDir = dataDir
 
 	n, err := NewClusteredNode(context.Background(), cfg, raftMembers(), nil, WithNoSyncWrites())
 	var idErr *ClusterIdentityError
@@ -105,6 +109,23 @@ func TestNewClusteredNode_UnresolvableIdentityIsTyped(t *testing.T) {
 	require.Nil(t, n)
 	require.NotNil(t, errors.Unwrap(idErr), "the error must carry its cause")
 	require.Contains(t, idErr.Error(), "node: failed to resolve the cluster identity: ")
+}
+
+// TestNewClusteredNode_RunModeGuardRunsBeforeIdentity pins the order: the
+// run-mode claim refuses an unusable data dir before identity resolution
+// writes anything into it.
+func TestNewClusteredNode_RunModeGuardRunsBeforeIdentity(t *testing.T) {
+	cfg := newRaftIsolationConfig(t)
+	notADir := filepath.Join(t.TempDir(), "data")
+	require.NoError(t, os.WriteFile(notADir, []byte("a file"), 0o600))
+	cfg.Raft.DataDir = notADir
+
+	n, err := NewClusteredNode(context.Background(), cfg, raftMembers(), nil, WithNoSyncWrites())
+	require.Nil(t, n)
+	var markerErr *lifecycle.RunModeMarkerError
+	require.ErrorAs(t, err, &markerErr)
+	var idErr *ClusterIdentityError
+	require.False(t, errors.As(err, &idErr), "the run-mode guard must fail before identity resolution")
 }
 
 // An identity the embedder chose is never replaced, and a multi-member node,

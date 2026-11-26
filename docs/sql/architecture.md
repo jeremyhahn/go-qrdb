@@ -66,7 +66,7 @@ a retry of the same SQL re-parses and succeeds.
 
 QRDB serves the subset of PostgreSQL's system catalogue that schema
 introspection reads — `pg_type`, `pg_class`, `pg_namespace`, `pg_description`,
-`pg_indexes` — from `pkg/sql/pgcatalog`, reachable both qualified
+`pg_indexes`, `pg_attribute` — from `pkg/sql/pgcatalog`, reachable both qualified
 (`pg_catalog.pg_class`) and bare (`pg_type`), as PostgreSQL's implicit search
 path allows. The relations are computed per query, read-only (they implement no
 write-capability interface, so DDL against them fails during analysis), and
