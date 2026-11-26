@@ -395,12 +395,17 @@ func TestVFS_SynchronousOffRefused(t *testing.T) {
 	setup(t, "syncoff.db", plainOpener(b, "syncoff.db"))
 	db := openDB(t, "syncoff.db", "")
 	mustExec(t, db, "create table t(a)")
-	for _, v := range []string{"OFF", "off", "0", "false"} {
+	// OFF by every spelling SQLite reads as OFF: names, and numbers as
+	// sqlite3Atoi parses them (leading zeros, trailing junk, 8 wrapping
+	// to OFF), plus values SQLite accepts that the file does not vet.
+	for _, v := range []string{"OFF", "off", "0", "00", "'0x'", "8", "false", "no", "4", "'bogus'"} {
 		if _, err := db.Exec("pragma synchronous=" + v); err == nil {
 			t.Fatalf("pragma synchronous=%s succeeded, want it refused", v)
 		}
 	}
-	mustExec(t, db, "pragma synchronous=FULL")
+	for _, v := range []string{"NORMAL", "extra", "on", "1", "02", "FULL"} {
+		mustExec(t, db, "pragma synchronous="+v)
+	}
 	var level int
 	if err := db.QueryRow("pragma synchronous").Scan(&level); err != nil {
 		t.Fatalf("pragma synchronous: %v", err)
@@ -417,20 +422,55 @@ func TestVFS_SynchronousOffRefused(t *testing.T) {
 	}
 }
 
-func TestVFS_ExclusiveLockingDurableAfterReopen(t *testing.T) {
-	b := newBackend(t)
-	setup(t, "exclusive.db", plainOpener(b, "exclusive.db"))
-	db := openDB(t, "exclusive.db", "")
-	mustExec(t, db, "pragma locking_mode=EXCLUSIVE")
-	mustExec(t, db, "create table t(a integer primary key, b text)")
-	mustExec(t, db, "insert into t(b) values('one'), ('two')")
-	mustExec(t, db, "insert into t(b) values('three')")
-	if err := db.Close(); err != nil {
-		t.Fatalf("close: %v", err)
+func TestVFS_ExclusiveLockingRefusedInEveryMode(t *testing.T) {
+	modes := []struct {
+		name  string
+		open  func(t *testing.T, name string) string
+		label string
+	}{
+		{"local", func(t *testing.T, name string) string {
+			setup(t, name, plainOpener(newBackend(t), name))
+			return ""
+		}, "exclusive-local.db"},
+		{"writer-lock", func(t *testing.T, name string) string {
+			setup(t, name, lockedOpener(newBackend(t), name, newMemLocker()))
+			return ""
+		}, "exclusive-locked.db"},
+		{"optimistic", openOptimistic, "exclusive-optimistic.db"},
 	}
-	again := openDB(t, "exclusive.db", "")
-	if n := count(t, again, "t"); n != 3 {
-		t.Fatalf("rows after reopen = %d, want 3", n)
+	for _, m := range modes {
+		t.Run(m.name, func(t *testing.T) {
+			extra := m.open(t, m.label)
+			db := openDB(t, m.label, extra)
+			for _, v := range []string{"EXCLUSIVE", "exclusive"} {
+				_, err := db.Exec("pragma locking_mode=" + v)
+				if err == nil {
+					t.Fatalf("pragma locking_mode=%s succeeded, want it refused", v)
+				}
+				if c := code(err); c != sqlite3.SQLITE_ERROR {
+					t.Fatalf("pragma locking_mode=%s: code %d, want SQLITE_ERROR", v, c)
+				}
+			}
+			var mode string
+			if err := db.QueryRow("pragma locking_mode").Scan(&mode); err != nil {
+				t.Fatalf("pragma locking_mode: %v", err)
+			}
+			if !strings.EqualFold(mode, "normal") {
+				t.Fatalf("locking_mode = %q after the refusal, want normal", mode)
+			}
+			mustExec(t, db, "pragma locking_mode=NORMAL")
+
+			// Committed writes survive a close and reopen.
+			mustExec(t, db, "create table t(a integer primary key, b text)")
+			mustExec(t, db, "insert into t(b) values('one'), ('two')")
+			mustExec(t, db, "insert into t(b) values('three')")
+			if err := db.Close(); err != nil {
+				t.Fatalf("close: %v", err)
+			}
+			if n := count(t, openDB(t, m.label, extra), "t"); n != 3 {
+				t.Fatalf("rows after reopen = %d, want 3", n)
+			}
+		})
 	}
 }
 
@@ -755,29 +795,6 @@ func TestVFS_OptimisticCounterDiffersPerTransaction(t *testing.T) {
 	if bytes.Equal(first[24:28], second[24:28]) {
 		t.Fatalf("change counter %x served to two transactions, want a new one each", first[24:28])
 	}
-}
-
-func TestVFS_OptimisticExclusiveLockingRefused(t *testing.T) {
-	const name = "optimistic-exclusive.db"
-	db := openDB(t, name, openOptimistic(t, name))
-	mustExec(t, db, "create table t(a)")
-	for _, v := range []string{"EXCLUSIVE", "exclusive"} {
-		_, err := db.Exec("pragma locking_mode=" + v)
-		if err == nil {
-			t.Fatalf("pragma locking_mode=%s succeeded in optimistic mode, want it refused", v)
-		}
-		if c := code(err); c != sqlite3.SQLITE_ERROR {
-			t.Fatalf("pragma locking_mode=%s: code %d, want SQLITE_ERROR", v, c)
-		}
-	}
-	var mode string
-	if err := db.QueryRow("pragma locking_mode").Scan(&mode); err != nil {
-		t.Fatalf("pragma locking_mode: %v", err)
-	}
-	if !strings.EqualFold(mode, "normal") {
-		t.Fatalf("locking_mode = %q after the refusal, want normal", mode)
-	}
-	mustExec(t, db, "pragma locking_mode=NORMAL")
 }
 
 func TestVFS_RegisterTwiceRefused(t *testing.T) {

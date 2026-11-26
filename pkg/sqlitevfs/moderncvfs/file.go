@@ -60,7 +60,8 @@ const headerEnd = 100
 // (and anything above it) reserves it. The Txn commits when SQLite
 // syncs the file holding RESERVED or above, or, when a dirty Txn is
 // left unsynced, when it drops back to SHARED; dropping to NONE rolls
-// back. The file refuses PRAGMA synchronous=OFF, so every write
+// back. The file refuses PRAGMA synchronous=OFF (any spelling) and
+// locking_mode=EXCLUSIVE, so every write
 // transaction reaches a sync before it reports success. After a
 // failed commit the file ignores writes until the unlock, so SQLite's
 // journal playback is a no-op, and every later sync returns the failure
@@ -292,17 +293,19 @@ func (f *dbFile) unlock(level int32) int32 {
 // for every other op. This modernc.org/sqlite build is compiled without
 // SQLITE_ENABLE_BATCH_ATOMIC_WRITE, so SQLite never sends them; they
 // are answered as the design states. SQLITE_FCNTL_PRAGMA refuses
-// synchronous=OFF, and in optimistic mode locking_mode=EXCLUSIVE (SQLite
-// would keep its page cache across transactions), and leaves every
-// other pragma to SQLite.
+// every synchronous setting but NORMAL, FULL and EXTRA (synchronousSupported),
+// and locking_mode=EXCLUSIVE in every concurrency mode (SQLite would keep
+// its locks and page cache across transactions and never drop back to the
+// lock levels this file commits and pins snapshots at), and
+// leaves every other pragma to SQLite.
 func (f *dbFile) control(op int32, arg uintptr) int32 {
 	switch op {
 	case sqlite3.SQLITE_FCNTL_PRAGMA:
 		name, value, ok := pragmaArg(arg)
-		if ok && strings.EqualFold(name, "synchronous") && synchronousOff(value) {
+		if ok && strings.EqualFold(name, "synchronous") && !synchronousSupported(value) {
 			return sqlite3.SQLITE_ERROR
 		}
-		if ok && f.store.Optimistic() && strings.EqualFold(name, "locking_mode") &&
+		if ok && strings.EqualFold(name, "locking_mode") &&
 			strings.EqualFold(strings.TrimSpace(value), "exclusive") {
 			return sqlite3.SQLITE_ERROR
 		}
@@ -322,10 +325,26 @@ func (f *dbFile) control(op int32, arg uintptr) int32 {
 	}
 }
 
-// synchronousOff reports whether a PRAGMA synchronous value selects OFF.
-func synchronousOff(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "off", "0", "false", "no":
+// synchronousSupported reports whether a PRAGMA synchronous value is one
+// the file allows: NORMAL, FULL or EXTRA by name, by SQLite's boolean
+// alias for NORMAL (on, yes, true), or by number 1, 2 or 3 as SQLite parses
+// it. Everything else is refused, OFF and its aliases above all: an
+// unknown name SQLite would read as NORMAL is refused too, so no spelling
+// the file did not vet reaches SQLite.
+func synchronousSupported(value string) bool {
+	if value != "" && value[0] >= '0' && value[0] <= '9' {
+		// SQLite reads a value starting with a digit as a number
+		// (sqlite3Atoi: the leading digits, the rest ignored), so
+		// "00", "0x" and "8" (which wraps to OFF) are numbers too.
+		digits := strings.TrimLeft(value, "0")
+		end := strings.IndexFunc(digits, func(r rune) bool { return r < '0' || r > '9' })
+		if end >= 0 {
+			digits = digits[:end]
+		}
+		return digits == "1" || digits == "2" || digits == "3"
+	}
+	switch strings.ToLower(value) {
+	case "normal", "full", "extra", "on", "yes", "true":
 		return true
 	}
 	return false
