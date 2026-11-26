@@ -284,13 +284,13 @@ func runObjstoreLSMCrashChild() {
 			if err := pdb.Flush(); err != nil {
 				fail("Flush: %v", err)
 			}
-			fmt.Printf("ack %d %d\n", round, batch)
+			_, _ = fmt.Fprintf(os.Stdout, "ack %d %d\n", round, batch)
 		}
 		done := make(chan error, 1)
 		go func() { done <- pdb.Compact(context.Background(), []byte{0x00}, []byte{0xff}, false) }()
 		for {
 			if pdb.Metrics().Compact.NumInProgress > 0 {
-				fmt.Println("compacting")
+				_, _ = fmt.Fprintln(os.Stdout, "compacting")
 				_ = syscall.Kill(os.Getpid(), syscall.SIGKILL)
 				select {} // the signal ends the process
 			}
