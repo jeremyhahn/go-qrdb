@@ -44,6 +44,7 @@ var _ transport.BarrierClient = (*Transport)(nil)
 // via WithPINBackend, the PINs are persisted on the backend before the
 // barrier is initialized.
 func (t *Transport) BarrierInitialize(ctx context.Context, req *transport.BarrierInitializeRequest) error {
+	defer req.WipePINs()
 	ctx, err := t.admit(ctx, "BarrierInitialize")
 	if err != nil {
 		return err
@@ -98,6 +99,7 @@ func (t *Transport) BarrierChangePassphrase(ctx context.Context, req *transport.
 	if err != nil {
 		return err
 	}
+	defer soPIN.Wipe()
 	if err := pin.RequireSOPIN(ctx, t.pinBackend, string(soPIN)); err != nil {
 		return delayed("BarrierChangePassphrase", err)
 	}
@@ -179,6 +181,7 @@ func (t *Transport) BarrierStatus(ctx context.Context) (*transport.BarrierStatus
 // and a pin.PINBackend has been injected via WithPINBackend, the PINs
 // are persisted on the backend before initialization.
 func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.BarrierInitializeShamirRequest) (*transport.BarrierInitializeShamirResponse, error) {
+	defer req.WipePINs()
 	ctx, err := t.admit(ctx, "BarrierInitializeShamir")
 	if err != nil {
 		return nil, err
@@ -347,6 +350,7 @@ func (t *Transport) BarrierEnableEncryption(ctx context.Context, req *transport.
 }
 
 func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transport.BarrierGenerateRecoveryKeysRequest) (*transport.BarrierRecoveryKeysResponse, error) {
+	defer req.WipePINs()
 	ctx, err := t.admit(ctx, "BarrierGenerateRecoveryKeys")
 	if err != nil {
 		return nil, err
@@ -728,6 +732,7 @@ func (t *Transport) BarrierQuorumSubmit(ctx context.Context, req *transport.Quor
 
 // BarrierRekeyStart opens a rekey round under SO PIN authorization.
 func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyStartRequest) (*transport.QuorumRound, error) {
+	defer req.WipePINs()
 	ctx, err := t.admit(ctx, "BarrierRekeyStart")
 	if err != nil {
 		return nil, err
@@ -749,6 +754,7 @@ func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyS
 // BarrierOfficerRevoke revokes a holder through a quorum-gated rekey, under
 // SO PIN authorization.
 func (t *Transport) BarrierOfficerRevoke(ctx context.Context, req *transport.OfficerRevokeRequest) (*transport.QuorumRound, error) {
+	defer req.WipePINs()
 	ctx, err := t.admit(ctx, "BarrierOfficerRevoke")
 	if err != nil {
 		return nil, err

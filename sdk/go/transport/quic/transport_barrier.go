@@ -35,6 +35,7 @@ var _ transport.BarrierClient = (*Transport)(nil)
 
 // BarrierInitialize initializes the barrier with a single master key.
 func (t *Transport) BarrierInitialize(ctx context.Context, req *transport.BarrierInitializeRequest) error {
+	defer req.WipePINs()
 	if err := t.requireTLS(req); err != nil {
 		return err
 	}
@@ -85,6 +86,7 @@ func (t *Transport) BarrierChangePassphrase(ctx context.Context, req *transport.
 	if err != nil {
 		return err
 	}
+	defer soPIN.Wipe()
 	payload, err := proto.Marshal(&pb.BarrierChangePassphraseRequest{
 		Current: req.Current,
 		Next:    req.Next,
@@ -109,6 +111,7 @@ func (t *Transport) BarrierSeal(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	defer soPIN.Wipe()
 	payload, err := proto.Marshal(&pb.BarrierSealRequest{SoPin: string(soPIN)})
 	if err != nil {
 		return &marshalError{Err: err}
@@ -163,6 +166,7 @@ func (t *Transport) BarrierClusterUnseal(ctx context.Context) (*transport.Cluste
 // BarrierInitializeShamir initializes the barrier under Shamir custody and
 // distributes one sealed envelope to each enrolled unseal-key holder.
 func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.BarrierInitializeShamirRequest) (*transport.BarrierInitializeShamirResponse, error) {
+	defer req.WipePINs()
 	if err := t.requireTLS(req); err != nil {
 		return nil, err
 	}
@@ -174,6 +178,7 @@ func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.
 	if err != nil {
 		return nil, err
 	}
+	defer soPIN.Wipe()
 	payload, err := proto.Marshal(&pb.BarrierShamirInitializeRequest{
 		Threshold:   int32(req.Threshold),   //nolint:gosec
 		TotalShares: int32(req.TotalShares), //nolint:gosec
@@ -241,6 +246,7 @@ func (t *Transport) BarrierEnableEncryption(ctx context.Context, req *transport.
 // scenarios.
 
 func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transport.BarrierGenerateRecoveryKeysRequest) (*transport.BarrierRecoveryKeysResponse, error) {
+	defer req.WipePINs()
 	if err := t.requireTLS(req); err != nil {
 		return nil, err
 	}
@@ -252,6 +258,7 @@ func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transp
 	if err != nil {
 		return nil, err
 	}
+	defer soPIN.Wipe()
 	payload, err := proto.Marshal(&pb.BarrierRecoveryGenerateRequest{
 		Threshold: int32(req.Threshold), //nolint:gosec
 		Policy:    req.Policy,
@@ -285,6 +292,7 @@ func (t *Transport) BarrierDeleteRecoveryKeys(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	defer soPIN.Wipe()
 	payload, err := proto.Marshal(&pb.BarrierRecoveryDeleteRequest{SoPin: string(soPIN)})
 	if err != nil {
 		return &marshalError{Err: err}
@@ -459,6 +467,7 @@ func (t *Transport) BarrierQuorumSubmit(ctx context.Context, req *transport.Quor
 
 // BarrierRekeyStart opens a rekey round.
 func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyStartRequest) (*transport.QuorumRound, error) {
+	defer req.WipePINs()
 	if err := t.requireTLS(req); err != nil {
 		return nil, err
 	}
@@ -471,6 +480,7 @@ func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyS
 	if err != nil {
 		return nil, err
 	}
+	defer soPIN.Wipe()
 	resolved := *req
 	resolved.SOPin = soPIN
 	var resp pb.BarrierQuorumRound
@@ -482,6 +492,7 @@ func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyS
 
 // BarrierOfficerRevoke revokes a holder through a quorum-gated rekey.
 func (t *Transport) BarrierOfficerRevoke(ctx context.Context, req *transport.OfficerRevokeRequest) (*transport.QuorumRound, error) {
+	defer req.WipePINs()
 	if err := t.requireTLS(req); err != nil {
 		return nil, err
 	}
@@ -494,6 +505,7 @@ func (t *Transport) BarrierOfficerRevoke(ctx context.Context, req *transport.Off
 	if err != nil {
 		return nil, err
 	}
+	defer soPIN.Wipe()
 	resolved := *req
 	resolved.SOPin = soPIN
 	var resp pb.BarrierQuorumRound

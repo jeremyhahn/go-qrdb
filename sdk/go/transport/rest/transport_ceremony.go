@@ -32,6 +32,7 @@ var _ transport.CeremonyClient = (*Transport)(nil)
 // CeremonyInitialize starts the initialization ceremony with the provided
 // configuration. Maps to POST /v1/ceremony/initialize.
 func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.CeremonyInitializeRequest) (*transport.CeremonyInitializeResponse, error) {
+	defer req.WipePINs()
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -46,6 +47,7 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 	if err != nil {
 		return nil, err
 	}
+	defer soPIN.Wipe()
 	body := *req
 	body.SOPin = soPIN
 
@@ -90,6 +92,7 @@ func (t *Transport) CeremonyStatus(ctx context.Context) (*transport.CeremonyStat
 // CeremonySignCSR submits a CSR for signing during or after the ceremony.
 // Maps to POST /v1/ceremony/sign-csr.
 func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRInitRequest) (*transport.SignCSRInitResponse, error) {
+	defer req.WipePINs()
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -104,6 +107,7 @@ func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRI
 	if err != nil {
 		return nil, err
 	}
+	defer soPIN.Wipe()
 	body := *req
 	body.SOPin = soPIN
 

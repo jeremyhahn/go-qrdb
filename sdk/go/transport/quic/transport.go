@@ -1414,6 +1414,7 @@ func (t *Transport) resolveSOPIN(ctx context.Context, method string, explicit tr
 		return nil, err
 	}
 	if len(pin) != 0 && transport.IsHTTP(t.config.Address) {
+		pin.Wipe()
 		return nil, &transport.SOPINRequiresTLSError{Transport: "quic"}
 	}
 	return pin, nil

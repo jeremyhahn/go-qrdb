@@ -176,7 +176,10 @@ type CreateTenantRequest struct {
 	// SOChainPEM holds intermediates for SOCertPEM.
 	SOChainPEM string `json:"so_chain_pem,omitempty"`
 	// SOPin is the SO's second factor, the PIN the SO gate
-	// (auth.so_dual_factor) asks the SO for.
+	// (auth.so_dual_factor) asks the SO for. Unlike the barrier and
+	// ceremony request PINs, which the transport zeroes when the call
+	// returns, CreateTenant leaves it as is: the caller owns it and wipes it
+	// once the call returns.
 	SOPin Secret `json:"so_pin,omitempty"`
 }
 

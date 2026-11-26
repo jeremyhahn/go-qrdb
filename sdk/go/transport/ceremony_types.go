@@ -96,6 +96,17 @@ type CeremonyInitializeRequest struct {
 	Secret []byte `json:"secret,omitempty"`
 }
 
+// WipePINs zeroes SOPin and UserPin: the transport consumes them and every
+// transport defers WipePINs at the top of CeremonyInitialize, so success,
+// error and early-refusal returns all zero them (see
+// BarrierInitializeRequest). It is a no-op on a nil request.
+func (r *CeremonyInitializeRequest) WipePINs() {
+	if r != nil {
+		r.SOPin.Wipe()
+		r.UserPin.Wipe()
+	}
+}
+
 // CeremonyHolderCert is the CA-issued certificate of one initial holder.
 type CeremonyHolderCert struct {
 	Username string `json:"username"`
@@ -144,6 +155,14 @@ type SignCSRInitRequest struct {
 	SOPin    Secret `json:"so_pin"`
 	CSRPEM   string `json:"csr_pem"`
 	Role     string `json:"role"`
+}
+
+// WipePINs zeroes SOPin; every transport defers it at the top of
+// CeremonySignCSR. It is a no-op on a nil request.
+func (r *SignCSRInitRequest) WipePINs() {
+	if r != nil {
+		r.SOPin.Wipe()
+	}
 }
 
 // SignCSRInitResponse returns the signed certificate.

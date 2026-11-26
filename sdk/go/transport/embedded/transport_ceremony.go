@@ -47,6 +47,7 @@ import (
 // *ceremony.AdminCredentialRequiresCAError the service layer already
 // returns (go-qrdb#560 review item 5).
 func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.CeremonyInitializeRequest) (*transport.CeremonyInitializeResponse, error) {
+	defer req.WipePINs()
 	ctx, err := t.admit(ctx, "CeremonyInitialize")
 	if err != nil {
 		return nil, err
@@ -178,6 +179,7 @@ func quorumThumbprint(ctx context.Context) string {
 // CeremonySignCSR submits a CSR for signing during or after the ceremony
 // by delegating to the injected CeremonyServicer.
 func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRInitRequest) (*transport.SignCSRInitResponse, error) {
+	defer req.WipePINs()
 	ctx, err := t.admit(ctx, "CeremonySignCSR")
 	if err != nil {
 		return nil, err

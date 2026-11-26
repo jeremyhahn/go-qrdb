@@ -33,6 +33,7 @@ var _ transport.CeremonyClient = (*Transport)(nil)
 // qrdb_ceremony_initialize MCP tool. Request parameters are passed as tool
 // arguments for forward compatibility.
 func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.CeremonyInitializeRequest) (*transport.CeremonyInitializeResponse, error) {
+	defer req.WipePINs()
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -47,6 +48,7 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 	if err != nil {
 		return nil, err
 	}
+	defer soPIN.Wipe()
 
 	args, err := wire.EncodeArgs(req, wire.CeremonyJSONFields...)
 	if err != nil {
@@ -103,6 +105,7 @@ func (t *Transport) CeremonyStatus(ctx context.Context) (*transport.CeremonyStat
 // CeremonySignCSR submits a CSR for signing during or after the ceremony by
 // calling the qrdb_ceremony_sign_csr MCP tool.
 func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRInitRequest) (*transport.SignCSRInitResponse, error) {
+	defer req.WipePINs()
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -117,6 +120,7 @@ func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRI
 	if err != nil {
 		return nil, err
 	}
+	defer soPIN.Wipe()
 
 	args := map[string]any{
 		"username": req.Username,

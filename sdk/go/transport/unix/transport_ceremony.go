@@ -33,6 +33,7 @@ var _ transport.CeremonyClient = (*Transport)(nil)
 
 // CeremonyInitialize starts the initialization ceremony.
 func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.CeremonyInitializeRequest) (*transport.CeremonyInitializeResponse, error) {
+	defer req.WipePINs()
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -45,6 +46,7 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 	if err != nil {
 		return nil, err
 	}
+	defer soPIN.Wipe()
 	resolved := *req
 	resolved.SOPin = soPIN
 	in, err := holderconv.CeremonyInitToPB(&resolved)
@@ -75,6 +77,7 @@ func (t *Transport) CeremonyStatus(ctx context.Context) (*transport.CeremonyStat
 
 // CeremonySignCSR submits a CSR for signing during or after the ceremony.
 func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRInitRequest) (*transport.SignCSRInitResponse, error) {
+	defer req.WipePINs()
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -88,6 +91,7 @@ func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRI
 	if err != nil {
 		return nil, err
 	}
+	defer soPIN.Wipe()
 	resp, err := t.client.CeremonySignCSR(ctx, &pb.CeremonySignCSRRequest{
 		Username: req.Username,
 		SoPin:    string(soPIN),

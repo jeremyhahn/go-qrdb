@@ -38,10 +38,11 @@ const SOPINHeader = "X-QRDB-SO-PIN"
 // middleware.SOPINMetadataKey.
 const SOPINMetadataKey = "x-qrdb-so-pin"
 
-// soPINKey is the context key WithSOPIN binds under.
-// Secret is a PIN or unseal secret a request carries as bytes the caller
-// can wipe. Its JSON form is a plain JSON string, byte-identical to the
-// string field it replaces, so the wire format does not change.
+// Secret is a PIN a request carries as bytes that can be wiped. Its JSON
+// form is a plain JSON string, byte-identical to the string field it
+// replaces, so the wire format does not change. A barrier or ceremony
+// request's SOPin/UserPin is consumed: every transport zeroes it when the
+// call returns, whatever the outcome (see BarrierInitializeRequest).
 type Secret []byte
 
 // MarshalJSON encodes the secret as a JSON string.
@@ -65,6 +66,7 @@ func (s *Secret) UnmarshalJSON(data []byte) error {
 // Wipe zeroes the secret's bytes in place.
 func (s Secret) Wipe() { clear(s) }
 
+// soPINKey is the context key WithSOPIN binds under.
 type soPINKey struct{}
 
 // soPIN holds the SDK's own copy of an SO PIN for the calls made with one
@@ -167,8 +169,9 @@ func (e *SOPINConflictError) Error() string {
 // ResolveSOPIN returns the SO PIN a request carries in its so_pin field, on
 // every network transport: the request's own SOPin, or the PIN bound by
 // WithSOPIN when the request has none. Both set and different is a
-// *SOPINConflictError. The bound PIN is returned as a fresh copy the caller
-// wipes; a request PIN is returned as is.
+// *SOPINConflictError. The bound PIN is returned as a fresh copy; a request
+// PIN is returned as is. Every call site defers Wipe on the result once the
+// error is checked (wiping an aliased request PIN twice is harmless).
 func ResolveSOPIN(ctx context.Context, method string, requestPIN Secret) (Secret, error) {
 	bound, ok, err := SOPINFromContext(ctx)
 	if err != nil {
