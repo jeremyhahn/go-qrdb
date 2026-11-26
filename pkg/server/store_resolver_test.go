@@ -325,8 +325,8 @@ type stubRaftGroupFence struct {
 	groups map[string]bool
 }
 
-func (s *stubRaftGroupFence) HostsDatabase(tenantID, db string) bool {
-	return s.groups[tenantID+"/"+db]
+func (s *stubRaftGroupFence) HostsDatabase(tenantID, db string) (bool, error) {
+	return s.groups[tenantID+"/"+db], nil
 }
 
 func TestStoreResolver_SystemTenantRaftDatabaseFencesOwnGroup(t *testing.T) {

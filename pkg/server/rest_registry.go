@@ -607,7 +607,10 @@ func (r *restServiceRegistry) isRaftGroupDatabase(tenantID, db string, isolation
 			return false, nil
 		}
 	}
-	return r.raftBackend.HostsDatabase(tenantID, db), nil
+	// A placement naming only other nodes is returned as
+	// *placement.NotAReplicaError, which forwards the request to a replica;
+	// it never falls back to the shared store.
+	return r.raftBackend.HostsDatabase(tenantID, db)
 }
 
 func (r *restServiceRegistry) resolveDedicatedDatabaseBarrier(tenantID, db string, info *tenant.TenantInfo) (*DatabaseServices, error) {

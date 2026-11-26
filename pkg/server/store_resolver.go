@@ -126,7 +126,9 @@ type homeFenceSource interface {
 // tenants' raft databases from their own groups (*RaftBackendFactory).
 type raftGroupSource interface {
 	// HostsDatabase reports whether a non-raft tenant's database runs its own Raft group.
-	HostsDatabase(tenantID, db string) bool
+	// A placement that names only other nodes, or cannot be read, is an
+	// error (*placement.NotAReplicaError), never "not a group".
+	HostsDatabase(tenantID, db string) (bool, error)
 }
 
 // Compile-time check: the production source is the factory.
@@ -234,8 +236,14 @@ func (r *storeResolver) fenceTarget(ctx context.Context, tenantID, db, incarnati
 	}
 	if tenantID != "" && tenantID == r.systemTenant {
 		// A system database with its own Raft group is fenced in that group.
-		if groups, ok := r.raft.(raftGroupSource); ok && groups != nil && groups.HostsDatabase(tenantID, db) {
-			return r.raftFenceTarget(ctx, tenantID, db, incarnation, tenant.IsolationPrefix)
+		if groups, ok := r.raft.(raftGroupSource); ok && groups != nil {
+			hosted, err := groups.HostsDatabase(tenantID, db)
+			if err != nil {
+				return service.FenceStore{}, true, err
+			}
+			if hosted {
+				return r.raftFenceTarget(ctx, tenantID, db, incarnation, tenant.IsolationPrefix)
+			}
 		}
 		return service.FenceStore{}, false, nil
 	}
@@ -258,7 +266,10 @@ func (r *storeResolver) fenceTarget(ctx context.Context, tenantID, db, incarnati
 		// OD-1 A: a prefix, barrier or volume tenant's backend: raft database
 		// runs its own group, so its fence goes there -- the same rule the
 		// request path applies (restServiceRegistry.isRaftGroupDatabase).
-		group = groups.HostsDatabase(tenantID, db)
+		group, err = groups.HostsDatabase(tenantID, db)
+		if err != nil {
+			return service.FenceStore{}, true, err
+		}
 	}
 	if group {
 		return r.raftFenceTarget(ctx, tenantID, db, incarnation, isolation)

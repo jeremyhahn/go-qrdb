@@ -464,16 +464,34 @@ func (f *RaftBackendFactory) HostsShard(tenantID, db string) bool {
 // HostsDatabase reports whether (tenant, db) is a backend: raft database
 // this factory serves: its group is started here, or its info source knows
 // its shard.
-func (f *RaftBackendFactory) HostsDatabase(tenantID, db string) bool {
+func (f *RaftBackendFactory) HostsDatabase(tenantID, db string) (bool, error) {
 	if f == nil {
-		return false
+		return false, nil
 	}
 	if f.HostsShard(tenantID, db) {
-		return true
+		return true, nil
+	}
+	if src, ok := f.dbInfo.(*placementRaftInfoSource); ok && src != nil {
+		// A placement that names only other nodes (*placement.NotAReplicaError)
+		// or cannot be read is returned, never answered "not a group": the
+		// caller would then serve the database from the shared store, which
+		// the real replicas never see. The refusal is what forwards the
+		// request to a replica.
+		_, _, _, found, err := src.databaseAndPlacementInfo(tenantID, db)
+		if err != nil {
+			return false, err
+		}
+		if found {
+			return true, nil
+		}
+		// No placement: a dropping database still routes here, so its fence
+		// refuses requests.
+		_, _, ok := src.fallback.databaseInfo(tenantID, db, true)
+		return ok, nil
 	}
 	// A dropping database still routes here, so its fence refuses requests.
 	_, _, ok := f.dbInfo.databaseInfo(tenantID, db, true)
-	return ok
+	return ok, nil
 }
 
 func WithFeatureGate(gate *featuregate.Gate) RaftBackendOption {
