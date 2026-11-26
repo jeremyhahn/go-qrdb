@@ -172,31 +172,36 @@ func TestCLIStorageMatrixUpdateOperations(t *testing.T) {
 				assertNotEmpty(t, stdout+stderr,
 					fmt.Sprintf("[%s] database info after update-protocol produced no output", proto))
 
-				// Update 2: update-etcd --enabled --listen-addr, on this
-				// combination's own port (see listenAddr's doc comment above).
+				// Update 2: update-etcd --enabled --listen-addr is refused on
+				// every backend of this matrix: memory, file and pebble are
+				// local bindings, and the etcd revision counter needs a
+				// replicated log (EtcdRequiresRaftBackendError). Each
+				// combination still gets its own port (see listenAddr's doc
+				// comment above) so a regression that accepts the update
+				// cannot race another subtest's listener.
 				stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
 					"database", "update-etcd", dbName,
 					"--enabled",
 					"--listen-addr", listenAddr)
-				if err != nil {
-					t.Logf("stdout: %s", stdout)
-					t.Logf("stderr: %s", stderr)
-					t.Fatalf("[%s] database update-etcd failed: %v", proto, err)
+				if err == nil {
+					t.Fatalf("[%s] update-etcd --enabled on a %s database must be refused, got success (stdout: %s)",
+						proto, backend, stdout)
 				}
-				output = stdout + stderr
-				assertNotEmpty(t, output,
-					fmt.Sprintf("[%s] database update-etcd produced no output", proto))
-				t.Logf("[%s] update-etcd --enabled passed", proto)
+				assertContains(t, stdout+stderr+err.Error(), `requires backend "raft"`,
+					fmt.Sprintf("[%s] update-etcd refusal should name the raft-backend requirement", proto))
+				assertContains(t, stdout+stderr+err.Error(), fmt.Sprintf("not %q", backend),
+					fmt.Sprintf("[%s] update-etcd refusal should name the database's backend", proto))
+				t.Logf("[%s] update-etcd --enabled correctly refused on backend=%s", proto, backend)
 
-				// Verify update-etcd via info.
+				// The refused update left the database's etcd protocol off.
 				stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "database", "info", dbName)
 				if err != nil {
 					t.Logf("stdout: %s", stdout)
 					t.Logf("stderr: %s", stderr)
-					t.Fatalf("[%s] database info after update-etcd failed: %v", proto, err)
+					t.Fatalf("[%s] database info after refused update-etcd failed: %v", proto, err)
 				}
-				assertContains(t, stdout, "Etcd:",
-					fmt.Sprintf("[%s] database info should contain 'Etcd:' after update-etcd", proto))
+				assertNotEmpty(t, stdout+stderr,
+					fmt.Sprintf("[%s] database info after refused update-etcd produced no output", proto))
 
 				// Update 3: update-raft --cluster-mode local --replica-id 1.
 				// No --shard-id: the cluster issues a database's shard ID
