@@ -910,22 +910,36 @@ func (e *Engine) ReleaseOwnerMarker() error {
 	if e.namespace != "" {
 		defer lockNamespace(e.namespace)()
 	}
-	rc, err := e.store.Get(ownerMarkerName)
+	return releaseOwnerMarker(e.store, e.owner)
+}
+
+// ownerMarkerNames reports whether the namespace's owner marker names owner.
+// An absent marker names no one. The caller holds the namespace lock.
+func ownerMarkerNames(store objcommon.Storage, owner string) (bool, error) {
+	rc, err := store.Get(ownerMarkerName)
 	if err != nil {
 		if notFound(err) {
-			return nil
+			return false, nil
 		}
-		return err
+		return false, err
 	}
 	found, readErr := io.ReadAll(rc)
 	_ = rc.Close()
 	if readErr != nil {
-		return readErr
+		return false, readErr
 	}
-	if string(found) != e.owner {
-		return nil
+	return string(found) == owner, nil
+}
+
+// releaseOwnerMarker deletes the namespace's owner marker while it names
+// owner; a marker naming another owner, or none, stays as it is. The caller
+// holds the namespace lock.
+func releaseOwnerMarker(store objcommon.Storage, owner string) error {
+	owned, err := ownerMarkerNames(store, owner)
+	if err != nil || !owned {
+		return err
 	}
-	if err := e.store.Delete(ownerMarkerName); err != nil && !notFound(err) {
+	if err := store.Delete(ownerMarkerName); err != nil && !notFound(err) {
 		return err
 	}
 	return nil
@@ -1355,7 +1369,9 @@ func (e *Engine) reclaimLocked() error {
 // ReleaseOwner gives the namespace up: it reclaims what this engine wrote
 // (as Reclaim), then deletes the owner marker when it names this engine's
 // owner and nothing else remains. A namespace still holding foreign objects
-// keeps the marker, so its owner can reopen it; a marker naming another
+// keeps them and the marker, so its owner can reopen it, and the release
+// reports *NamespaceRetainedError: it is not done until a later call, once
+// those objects are gone, deletes the marker. A marker naming another
 // owner, or an unowned engine, deletes no marker. A drop calls it once the
 // database's catalog record is gone; a failed create gives its claim back
 // with ReleaseClaim instead. No write follows it.
@@ -1382,26 +1398,18 @@ func (e *Engine) ReleaseOwner() error {
 	if err != nil {
 		return err
 	}
-	if len(remaining) != 1 || remaining[0] != ownerMarkerName {
-		return nil
-	}
-	rc, err := e.store.Get(ownerMarkerName)
-	if err != nil {
-		if notFound(err) {
-			return nil
+	others := 0
+	for _, name := range remaining {
+		if name != ownerMarkerName {
+			others++
 		}
+	}
+	if others == 0 {
+		return releaseOwnerMarker(e.store, e.owner)
+	}
+	owned, err := ownerMarkerNames(e.store, e.owner)
+	if err != nil || !owned {
 		return err
 	}
-	found, readErr := io.ReadAll(rc)
-	_ = rc.Close()
-	if readErr != nil {
-		return readErr
-	}
-	if string(found) != e.owner {
-		return nil
-	}
-	if err := e.store.Delete(ownerMarkerName); err != nil && !notFound(err) {
-		return err
-	}
-	return nil
+	return &NamespaceRetainedError{Provider: e.provider, Remaining: others}
 }

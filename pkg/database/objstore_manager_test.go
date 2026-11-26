@@ -279,6 +279,33 @@ func TestManager_DropResumesAfterReclaimWithForeignObject(t *testing.T) {
 			if !foundForeign {
 				t.Fatal("the drop deleted the foreign object")
 			}
+			// The marker the foreign object keeps is a release not done:
+			// its ledger entry stays for the retry.
+			if len(releaseLedgerFiles(t, dataDir)) == 0 {
+				t.Fatal("a release that kept the owner marker forgot its ledger entry")
+			}
+
+			// Once the foreign object is gone, the boot's retry finishes the
+			// release and a new database can claim the namespace.
+			if err := os.RemoveAll(filepath.Join(root, "child")); err != nil {
+				t.Fatalf("RemoveAll: %v", err)
+			}
+			if err := resumed.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			next := newManager(t, dataDir)
+			if err := next.OpenAll(ctx); err != nil {
+				t.Fatalf("OpenAll: %v", err)
+			}
+			if hasOwnerMarker(t, root) {
+				t.Fatal("the retried release kept the owner marker")
+			}
+			if left := releaseLedgerFiles(t, dataDir); len(left) != 0 {
+				t.Fatalf("the completed release was not forgotten: %v", left)
+			}
+			if _, err := next.Create(localObjstore("other", root)); err != nil {
+				t.Fatalf("Create onto the released namespace: %v", err)
+			}
 		})
 	}
 }

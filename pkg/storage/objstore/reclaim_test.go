@@ -269,6 +269,22 @@ func TestReleaseOwner_Rules(t *testing.T) {
 		e.owner = "db-a"
 		require.NoError(t, e.claimOwner("db-a"))
 		require.NoError(t, store.Storage.Put("foreign/x", strings.NewReader("x")))
+		var retained *NamespaceRetainedError
+		require.ErrorAs(t, e.ReleaseOwner(), &retained)
+		assert.Equal(t, 1, retained.Remaining)
+		assert.NotContains(t, retained.Error(), "foreign/x")
+		assert.ElementsMatch(t, []string{"foreign/x", ownerMarkerName}, names(t, store))
+
+		// Once the foreign object is gone, the release completes.
+		require.NoError(t, store.Storage.Delete("foreign/x"))
+		require.NoError(t, e.ReleaseOwner())
+		require.Empty(t, names(t, store))
+	})
+	t.Run("foreign object under another owner's marker is no retention", func(t *testing.T) {
+		e, store, _ := newReclaimEngine(t)
+		e.owner = "db-a"
+		require.NoError(t, store.Storage.Put(ownerMarkerName, strings.NewReader("db-b")))
+		require.NoError(t, store.Storage.Put("foreign/x", strings.NewReader("x")))
 		require.NoError(t, e.ReleaseOwner())
 		assert.ElementsMatch(t, []string{"foreign/x", ownerMarkerName}, names(t, store))
 	})

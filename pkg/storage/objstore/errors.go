@@ -98,6 +98,24 @@ func (e *NamespaceOwnedError) Error() string {
 // wanted owner reaches none of its objects.
 func (e *NamespaceOwnedError) NamespaceOwnedByAnother() bool { return true }
 
+// NamespaceRetainedError is returned by Engine.ReleaseOwner when the
+// namespace still holds objects this engine did not write: they stay, and
+// so does the owner marker that reserves the namespace for them. The
+// release is not done; a later ReleaseOwner, once those objects are gone,
+// deletes the marker. It names no object.
+type NamespaceRetainedError struct {
+	// Provider is the namespace's provider.
+	Provider string
+	// Remaining is the number of objects, other than the owner marker,
+	// left in the namespace.
+	Remaining int
+}
+
+func (e *NamespaceRetainedError) Error() string {
+	return "objstore: " + e.Provider + " namespace keeps its owner marker: " +
+		strconv.Itoa(e.Remaining) + " object(s) not written by this owner remain"
+}
+
 // ClaimUndoError is returned by New when an open that wrote its owner marker
 // failed afterwards (Err) and giving that claim back failed too (Undo): the
 // namespace may stay reserved for an owner whose open never completed, so
