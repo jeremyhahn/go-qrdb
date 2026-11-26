@@ -16,8 +16,10 @@ package service
 
 import (
 	"context"
+	"errors"
 	"time"
 
+	api "github.com/jeremyhahn/go-qrdb/pkg/api"
 	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
@@ -138,7 +140,7 @@ type homeIndexGeneration struct {
 func (v *vectorService) homeIndex(ctx context.Context, home generationStorage, scoped string) (interfaces.HNSWIndex, error) {
 	ver, err := home.Version(ctx, scoped)
 	if err != nil {
-		return nil, err
+		return nil, homeReadError(scoped, err)
 	}
 	v.indexMu.RLock()
 	index, cached := v.hnswIndexes[scoped]
@@ -152,7 +154,7 @@ func (v *vectorService) homeIndex(ctx context.Context, home generationStorage, s
 	}
 	built, _, err := v.buildHNSWIndex(ctx, home, scoped, true)
 	if err != nil {
-		return nil, err
+		return nil, homeReadError(scoped, err)
 	}
 	v.indexMu.Lock()
 	defer v.indexMu.Unlock()
@@ -168,6 +170,25 @@ func (v *vectorService) homeIndex(ctx context.Context, home generationStorage, s
 	v.hnswIndexes[scoped] = built
 	v.homeGens[scoped] = homeIndexGeneration{index: built, ver: ver}
 	return built, nil
+}
+
+// homeReadError turns a failure to read scoped's version or vectors from its
+// tenant's home store into a TenantVectorHomeError, so a search reports it
+// instead of answering with no results. A namespace the home does not hold,
+// a stored geometry the service refuses and an index it cannot construct
+// are not read failures and keep their own errors.
+func homeReadError(scoped string, err error) error {
+	if errors.Is(err, vector.ErrNamespaceNotFound) {
+		return err
+	}
+	if _, ok := errors.AsType[*UnsupportedNamespaceGeometryError](err); ok {
+		return err
+	}
+	if _, ok := errors.AsType[*api.OperationFailedError](err); ok {
+		return err
+	}
+	tenantID, _ := unscopedNamespace(scoped)
+	return &TenantVectorHomeError{TenantID: tenantID, Err: err}
 }
 
 // noteHomeWrite moves the cached index's generation past this node's own
