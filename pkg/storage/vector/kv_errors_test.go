@@ -137,7 +137,7 @@ func TestKVVectorStorage_KVFaultsPropagate(t *testing.T) {
 			return err
 		},
 		"generation": func(s *KVVectorStorage) error {
-			_, err := s.Generation(ctx, "ns")
+			_, err := genOf(ctx, s, "ns")
 			return err
 		},
 	}
@@ -162,7 +162,6 @@ func TestKVVectorStorage_KVFaultsPropagate(t *testing.T) {
 		{"scan-filters", "Scan", "v/"},
 		{"stats", "Scan", "v/"},
 		{"create", "Exists", "ns/"},
-		{"create", "Get", "gen/"},
 		{"create", "Batch", "ns/"},
 		{"update", "Get", "inc/"},
 		{"update", "Get", "ns/"},
@@ -209,7 +208,7 @@ func TestKVVectorStorage_FailedBatchLeavesDataAndGeneration(t *testing.T) {
 	for name, write := range writes {
 		t.Run(name, func(t *testing.T) {
 			s, f := seededFaultStorage(t)
-			before, err := s.Generation(ctx, "ns")
+			before, err := genOf(ctx, s, "ns")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -218,7 +217,7 @@ func TestKVVectorStorage_FailedBatchLeavesDataAndGeneration(t *testing.T) {
 				t.Fatalf("%s with the batch failing = %v, want the injected fault", name, err)
 			}
 			f.op = ""
-			after, err := s.Generation(ctx, "ns")
+			after, err := genOf(ctx, s, "ns")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -282,7 +281,7 @@ func TestKVVectorStorage_CorruptRecordsRefused(t *testing.T) {
 	if err := mem.Put(ctx, kvGenKey("ns"), []byte{1, 2, 3}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Generation(ctx, "ns"); err == nil {
+	if _, err := genOf(ctx, s, "ns"); err == nil {
 		t.Fatal("Generation over a short counter succeeded")
 	}
 	if err := s.UpsertVector(ctx, "ns", kvVec(4, nil)); err == nil {
@@ -336,7 +335,7 @@ func TestKVVectorStorage_RefusesInvalidArguments(t *testing.T) {
 	if _, err := s.BatchAllocateIDs("ns", 0); !errors.Is(err, ErrInvalidID) {
 		t.Errorf("batch ids 0 = %v", err)
 	}
-	if _, err := s.Generation(ctx, "ns"); !errors.Is(err, ErrNamespaceNotFound) {
+	if _, err := genOf(ctx, s, "ns"); !errors.Is(err, ErrNamespaceNotFound) {
 		t.Errorf("generation missing = %v", err)
 	}
 	if _, err := s.GetNamespaceInfo(ctx, "ns"); !errors.Is(err, ErrNamespaceNotFound) {
@@ -357,7 +356,7 @@ func TestKVVectorStorage_ClosedAndCanceledEverywhere(t *testing.T) {
 		_, scanErr := s.ScanNamespace(ctx, "ns", nil)
 		_, metaErr := s.ScanByMetadata(ctx, "ns", "k", "v", nil)
 		_, filtErr := s.ScanByMultipleFilters(ctx, "ns", filters, nil)
-		_, genErr := s.Generation(ctx, "ns")
+		_, genErr := genOf(ctx, s, "ns")
 		return map[string]error{
 			"get":          getErr,
 			"delete":       s.DeleteVector(ctx, "ns", 1),

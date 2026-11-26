@@ -122,21 +122,21 @@ func (v *vectorService) storageForNamespace(ctx context.Context, scoped string) 
 // so a node can tell its cached index from one a write elsewhere outdated.
 type generationStorage interface {
 	vector.Storage
-	Generation(ctx context.Context, namespace string) (uint64, error)
+	Version(ctx context.Context, namespace string) (vector.NamespaceVersion, error)
 }
 
 // homeIndexGeneration is the home-store write generation a cached index
 // reflects.
 type homeIndexGeneration struct {
 	index interfaces.HNSWIndex
-	gen   uint64
+	ver   vector.NamespaceVersion
 }
 
 // homeIndex returns scoped's index for a tenant whose vectors live in home,
 // rebuilt from home when a write has advanced the namespace's generation past
 // the cached one, on this node or another replica of the home.
 func (v *vectorService) homeIndex(ctx context.Context, home generationStorage, scoped string) (interfaces.HNSWIndex, error) {
-	gen, err := home.Generation(ctx, scoped)
+	ver, err := home.Version(ctx, scoped)
 	if err != nil {
 		return nil, err
 	}
@@ -144,7 +144,10 @@ func (v *vectorService) homeIndex(ctx context.Context, home generationStorage, s
 	index, cached := v.hnswIndexes[scoped]
 	seen, known := v.homeGens[scoped]
 	v.indexMu.RUnlock()
-	if cached && known && seen.index == index && seen.gen == gen {
+	// Reuse only an index built from exactly this incarnation and generation:
+	// a delete+recreate changes the incarnation even when the generation
+	// count happens to line up.
+	if cached && known && seen.index == index && seen.ver == ver {
 		return index, nil
 	}
 	built, _, err := v.buildHNSWIndex(ctx, home, scoped, true)
@@ -154,7 +157,8 @@ func (v *vectorService) homeIndex(ctx context.Context, home generationStorage, s
 	v.indexMu.Lock()
 	defer v.indexMu.Unlock()
 	if cur, ok := v.hnswIndexes[scoped]; ok {
-		if seen, known := v.homeGens[scoped]; known && seen.index == cur && seen.gen >= gen {
+		if seen, known := v.homeGens[scoped]; known && seen.index == cur &&
+			seen.ver.Incarnation == ver.Incarnation && seen.ver.Generation >= ver.Generation {
 			return cur, nil
 		}
 	}
@@ -162,7 +166,7 @@ func (v *vectorService) homeIndex(ctx context.Context, home generationStorage, s
 		v.homeGens = make(map[string]homeIndexGeneration)
 	}
 	v.hnswIndexes[scoped] = built
-	v.homeGens[scoped] = homeIndexGeneration{index: built, gen: gen}
+	v.homeGens[scoped] = homeIndexGeneration{index: built, ver: ver}
 	return built, nil
 }
 
@@ -174,15 +178,18 @@ func (v *vectorService) noteHomeWrite(ctx context.Context, st vector.Storage, sc
 	if !ok || st == v.storage {
 		return
 	}
-	gen, err := home.Generation(ctx, scoped)
+	ver, err := home.Version(ctx, scoped)
 	if err != nil {
 		return
 	}
 	v.indexMu.Lock()
 	defer v.indexMu.Unlock()
 	seen, known := v.homeGens[scoped]
-	if known && seen.index == v.hnswIndexes[scoped] && seen.gen+1 == gen {
-		seen.gen = gen
+	// Only this node's own write, one step past the cached version within the
+	// same incarnation, moves the cached version forward.
+	if known && seen.index == v.hnswIndexes[scoped] &&
+		seen.ver.Incarnation == ver.Incarnation && seen.ver.Generation+1 == ver.Generation {
+		seen.ver = ver
 		v.homeGens[scoped] = seen
 	}
 }

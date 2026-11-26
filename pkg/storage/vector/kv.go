@@ -498,25 +498,19 @@ func (s *KVVectorStorage) CreateNamespace(ctx context.Context, info *NamespaceIn
 		if exists {
 			return ErrNamespaceExists
 		}
-		genRaw, err := s.kv.Get(ctx, kvGenKey(info.Name))
-		if err != nil {
-			return err
-		}
-		guards := []kvstore.Guard{{Key: kvNamespaceKey(info.Name)}}
-		writes := []kvstore.KV{
-			{Key: kvIDKey(info.Name), Value: encodeID(0)},
-			{Key: kvIncKey(info.Name), Value: inc},
-		}
-		if genRaw == nil {
-			// The generation is created once and never reset: a recreate
-			// continues from the deleted incarnation's generation.
-			guards = append(guards, kvstore.Guard{Key: kvGenKey(info.Name)})
-			writes = append(writes, kvstore.KV{Key: kvGenKey(info.Name), Value: encodeID(0)})
-		}
+		// A fresh incarnation starts its generation at 0; the incarnation, not
+		// the generation, tells a recreated namespace from the deleted one.
 		// The record goes last, so a store that exposes a batch's writes in
 		// order never shows the namespace before its counter and incarnation.
-		writes = append(writes, kvstore.KV{Key: kvNamespaceKey(info.Name), Value: value})
-		applied, err := s.kv.PutAllIfAllUnchanged(ctx, guards, writes)
+		applied, err := s.kv.PutAllIfAllUnchanged(ctx, []kvstore.Guard{
+			{Key: kvNamespaceKey(info.Name)},
+			{Key: kvIncKey(info.Name)},
+		}, []kvstore.KV{
+			{Key: kvIDKey(info.Name), Value: encodeID(0)},
+			{Key: kvIncKey(info.Name), Value: inc},
+			{Key: kvGenKey(info.Name), Value: encodeID(0)},
+			{Key: kvNamespaceKey(info.Name), Value: value},
+		})
 		if err != nil {
 			return err
 		}
@@ -590,16 +584,17 @@ func (s *KVVectorStorage) DeleteNamespace(ctx context.Context, namespace string)
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		cur, genRaw, gen, err := s.readVersion(ctx, namespace)
+		cur, genRaw, _, err := s.readVersion(ctx, namespace)
 		if err != nil {
 			return err
 		}
 		if cur == nil {
 			return ErrNamespaceNotFound
 		}
-		// One batch retires the incarnation and steps the generation (kept,
-		// never reset): a replica write racing this delete is refused by its
-		// incarnation guard, and a recreate starts above every cached gen.
+		// One batch retires the incarnation with its record, counter and
+		// generation: a replica write racing this delete is refused by its
+		// incarnation guard, and a recreate gets a new incarnation, so no
+		// cached (incarnation, generation) of this one ever matches again.
 		applied, err := s.kv.PutAllIfAllUnchanged(ctx, []kvstore.Guard{
 			{Key: kvIncKey(namespace), Value: cur},
 			{Key: kvGenKey(namespace), Value: genRaw},
@@ -607,7 +602,7 @@ func (s *KVVectorStorage) DeleteNamespace(ctx context.Context, namespace string)
 			{Key: kvNamespaceKey(namespace), Delete: true},
 			{Key: kvIncKey(namespace), Delete: true},
 			{Key: kvIDKey(namespace), Delete: true},
-			{Key: kvGenKey(namespace), Value: encodeID(gen + 1)},
+			{Key: kvGenKey(namespace), Delete: true},
 		})
 		if err != nil {
 			return err
@@ -730,20 +725,31 @@ func (s *KVVectorStorage) increment(ctx context.Context, key string, count uint6
 	}
 }
 
-// Generation returns namespace's write generation, which every vector write
-// and delete advances in the same guarded batch that lands it.
-func (s *KVVectorStorage) Generation(ctx context.Context, namespace string) (uint64, error) {
+// NamespaceVersion identifies the exact contents of a namespace: Incarnation
+// changes on every delete+recreate, and Generation advances in the same
+// guarded batch as every vector write and delete (and on namespace delete; it
+// is never reset). Two reads that return equal versions saw the same vectors.
+type NamespaceVersion struct {
+	Incarnation [kvIncLen]byte
+	Generation  uint64
+}
+
+// Version returns namespace's current incarnation and write generation, or
+// ErrNamespaceNotFound when the namespace does not exist.
+func (s *KVVectorStorage) Version(ctx context.Context, namespace string) (NamespaceVersion, error) {
 	if err := s.checkOpenCtx(ctx); err != nil {
-		return 0, err
+		return NamespaceVersion{}, err
 	}
 	inc, _, gen, err := s.readVersion(ctx, namespace)
 	if err != nil {
-		return 0, err
+		return NamespaceVersion{}, err
 	}
 	if inc == nil {
-		return 0, ErrNamespaceNotFound
+		return NamespaceVersion{}, ErrNamespaceNotFound
 	}
-	return gen, nil
+	ver := NamespaceVersion{Generation: gen}
+	copy(ver.Incarnation[:], inc)
+	return ver, nil
 }
 
 // NextID allocates the next unique ID for a registered namespace.

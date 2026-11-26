@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -46,7 +47,7 @@ func newRoutedStorage(t *testing.T, homes TenantHomeResolver) (*tenantRoutedVect
 // TestTenantRoutedVectorStorage_HomeRoundTrip drives every routed method
 // against a tenant's home store.
 func TestTenantRoutedVectorStorage_HomeRoundTrip(t *testing.T) {
-	homeKV := kvstore.NewMemoryKVStore()
+	homeKV := kvstoretest.NewGuardedMemoryStore()
 	r, vs := newRoutedStorage(t, &routedHomes{inHome: true, store: homeKV})
 	ctx := context.Background()
 	ns := scopedNamespace("acme", "docs")
@@ -191,12 +192,12 @@ func TestVectorService_StorageForRoutesAndCaches(t *testing.T) {
 	require.Same(t, vs.storage, st, "a tenant outside its home uses the node-wide store")
 
 	homes.inHome = true
-	homes.store = kvstore.NewMemoryKVStore()
+	homes.store = kvstoretest.NewGuardedMemoryStore()
 	first := mustStorageFor(t, vs, "acme")
 	require.NotSame(t, vs.storage, first)
 	require.Same(t, first, mustStorageFor(t, vs, "acme"), "the same home store is cached")
 
-	homes.store = kvstore.NewMemoryKVStore()
+	homes.store = kvstoretest.NewGuardedMemoryStore()
 	require.NotSame(t, first, mustStorageFor(t, vs, "acme"), "a replaced home store is rebuilt")
 
 	vs.SetTenantHomeResolver(nil)
@@ -211,7 +212,7 @@ func TestVectorService_StorageForRoutesAndCaches(t *testing.T) {
 // TestVectorService_HomedUpdateAndSearch covers UpdateNamespace and the home
 // index cache for a tenant whose vectors live in its home store.
 func TestVectorService_HomedUpdateAndSearch(t *testing.T) {
-	_, vs := newRoutedStorage(t, &routedHomes{inHome: true, store: kvstore.NewMemoryKVStore()})
+	_, vs := newRoutedStorage(t, &routedHomes{inHome: true, store: kvstoretest.NewGuardedMemoryStore()})
 	ctx := tenant.WithTenantID(context.Background(), "acme")
 
 	_, err := vs.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: "docs", Dimension: 2, DistanceMetric: "cosine"})
