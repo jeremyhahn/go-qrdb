@@ -184,7 +184,7 @@ func parityScenario() []parityStep {
 		// store refuses it and types the refusal ErrConflict: the embedded
 		// store directly, the service store through
 		// service.CommandConflictError, the client store through the
-		// rebuilt transport.CommandConflictError.
+		// transport's rebuilt command-conflict refusal.
 		{name: "guarded batch unique conflict", run: guardedTxBatch("txmember/10", "txmember/10", daoMember{ID: 10, Email: "tx1@example.test"}), want: everyStore("conflict")},
 		{name: "conflict wrote nothing", run: func(ctx context.Context, d parityDAOs) string { return oneMember(d.txMembers.Get(ctx, 10)) }, want: everyStore("not found")},
 		// A unique index is per entity type: member's Email index does not

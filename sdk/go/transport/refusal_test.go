@@ -19,6 +19,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/internal/wireconflict"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	dberrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
@@ -83,16 +84,20 @@ func TestRefusalError_userConcurrentUpdate(t *testing.T) {
 }
 
 func TestRefusalError_commandConflict(t *testing.T) {
-	want := &CommandConflictError{Message: "unique index taken"}
-	err := RefusalError(ReasonCommandConflict, want.Metadata())
-	got, ok := errors.AsType[*CommandConflictError](err)
-	if !ok || *got != *want {
-		t.Fatalf("RefusalError() = %+v, want %+v", got, want)
+	const msg = "unique index taken"
+	err := RefusalError(wireconflict.Reason, wireconflict.Metadata(msg))
+	got, ok := errors.AsType[*commandConflictError](err)
+	if !ok || got.message != msg {
+		t.Fatalf("RefusalError() = %+v, want message %q", got, msg)
+	}
+	var qe *dberrors.QRDBError
+	if !errors.As(err, &qe) || qe.Code != dberrors.ErrConflict {
+		t.Fatalf("RefusalError() = %v, want a *QRDBError with Code ErrConflict", err)
 	}
 	if !dberrors.Is(err, dberrors.ErrConflict) || dberrors.IsRetryable(err) {
 		t.Fatalf("RefusalError() = %v, want a non-retryable ErrConflict", err)
 	}
-	if (&CommandConflictError{}).As(new(*UserNotFoundError)) {
+	if (&commandConflictError{}).As(new(*UserNotFoundError)) {
 		t.Fatal("As matched a target that is not a QRDBError")
 	}
 }

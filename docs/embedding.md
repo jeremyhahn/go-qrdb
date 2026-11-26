@@ -167,7 +167,7 @@ Three constructors give you one:
 |---|---|---|---|
 | `sdk.NewEmbeddedKVStore(storage.Storage)` | you own the storage (for example `sdkstorage.NewPebbleStorage`) and want no node at all | single-field and unique indexes, and compound indexes (`sdk.CompoundIndexDef`), updated on every write; a non-JSON or field-less overwrite removes the record's old entries | yes: `PutAllIfAllUnchanged` applies the batch as one KV-engine transaction, all-or-nothing, with the unique check and index updates of the same step (a unique conflict is `ErrConflict`; two writes of one batch sharing a unique compound tuple are refused too), so `NewDAOTransactional` and `sdk.NewDAOUnitOfWork` work over it |
 | `server.NewServiceKVStore(kv, index, txn)` (package `sdk/go/server`) | you run a node and want the DAO over its services, `n.Services().KV`, `.Index` and `.Transaction` | single-field and unique indexes. Compound definitions are refused with `sdk.ErrKVIndexUnsupported`: the query builder (`Find().Where(...)`) answers compound-field lookups by scanning, and a named compound-index query (`QueryByCompoundIndex`) returns that error | yes: `PutAllIfAllUnchanged` applies a batch all-or-nothing, so `NewDAOTransactional` and `sdk.NewDAOUnitOfWork` work over it |
-| `sdk.NewKVStoreAdapter(client)` | your code talks to a node through a client (`n.Client()` or a remote transport), with authorization on every call | the node's single-field and unique indexes, through the client; a named compound-index query returns `sdk.ErrKVIndexUnsupported`, as on the service store | yes: `PutAllIfAllUnchanged` sends the batch to the node as one guarded transaction, all-or-nothing (`kvstore_adapter_guarded_batch_test.go`), so `NewDAOTransactional` and `sdk.NewDAOUnitOfWork` work over it |
+| `client.KVStore()`, or `sdk.NewKVStoreAdapter(client.KV(), client.Index())` (which returns `(sdk.KVStore, error)`) | your code talks to a node through a client (`n.Client()` or a remote transport), with authorization on every call | the node's single-field and unique indexes, through the client; a named compound-index query returns `sdk.ErrKVIndexUnsupported`, as on the service store | yes: `PutAllIfAllUnchanged` sends the batch to the node as one guarded transaction, all-or-nothing (`kvstore_adapter_guarded_batch_test.go`), so `NewDAOTransactional` and `sdk.NewDAOUnitOfWork` work over it |
 
 On the service and client stores a plain non-JSON overwrite keeps the record's
 old index entries until the owner rules on a versioned plain-put op, so store
@@ -197,6 +197,21 @@ save is read by `qrdb kv get`. A `qrdb kv put` is found through the DAO's
 unique index and holds its unique value. A `qrdb kv del` is seen by the DAO
 and frees the value. A unit of work committed through the client store is
 read back by `qrdb kv get`.
+
+A `NewDAOTransactional` transaction is all-or-nothing. `Commit`, and the
+`dao.BatchSave`, `dao.BatchDelete` and `dao.WithTx` helpers built on it,
+apply every queued save and delete as one `PutAllIfAllUnchanged` batch, the
+path `sdk.NewDAOUnitOfWork` uses. Every `SaveWithCondition` is evaluated
+before anything is written and the batch is guarded on the exact bytes (or
+absence) the condition saw, so a record changed after evaluation refuses the
+whole commit. The refusals are: a failed condition (`sdk.IsDAOConditionFailed`),
+a guard that no longer holds (`sdk.IsDAOTransactionCommitError` wrapping
+`sdk.ErrKVNotApplied`), an ID collision (`*sdk.DAOIDCollisionError`), and a
+store without `sdk.MultiGuardedBatchKVStore`
+(`*sdk.DAOAtomicBatchUnsupportedError`; there is no one-op-at-a-time
+fallback). Each leaves the store unchanged. The `TestTransactional_*` cases in
+`sdk/go/conformance` check this over the embedded store and the service
+store on a standalone node and on a single-node raft group.
 
 A DAO with a unique index over your own Pebble storage
 (`ExampleNewEmbeddedKVStore` in `sdk/go/example_dao_stores_test.go`, compiled
