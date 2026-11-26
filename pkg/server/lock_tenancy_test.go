@@ -205,6 +205,8 @@ type staticDataRoot struct{}
 
 func (staticDataRoot) dataRootOf(context.Context, string) (string, error) { return "", nil }
 
+func (staticDataRoot) isVolumeTenant(context.Context, string) (bool, error) { return false, nil }
+
 // staticRaftInfo satisfies raftDatabaseInfoSource for a factory whose shards
 // are pre-attached, which is the state a running node is in once boot has
 // re-attached them. Every method reports "no such database" because the cache

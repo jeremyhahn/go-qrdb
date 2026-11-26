@@ -186,6 +186,13 @@ type TenantInfraConfig struct {
 	// IsolationRaft database (config.Lease, "lease:" in YAML). The zero value
 	// resolves to the lease package defaults.
 	Lease qrdbconfig.LeaseConfig
+
+	// VolumeNodeID is this node's tenant-move node ID (the NodeReport node
+	// ID its volume reporter writes). BuildTenantInfra sets it on BarrierReg
+	// before the boot restore, so a tenant in the middle of a move opens
+	// from the pool the move journal names for this node. Empty leaves it
+	// unset: every tenant opens from its assignment's pool.
+	VolumeNodeID string
 }
 
 // BuildTenantInfra assembles the per-tenant isolation stack from cfg and
@@ -262,6 +269,9 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 	// tenant claims. Nothing is running yet, so there is no runtime to stop.
 	if cfg.BarrierReg != nil && cfg.TenantSvc != nil {
 		reconcileDeletedTenantsAtBoot(cfg.Ctx, cfg.TenantSvc, logger)
+	}
+	if cfg.BarrierReg != nil && cfg.VolumeNodeID != "" {
+		cfg.BarrierReg.SetVolumeNodeID(cfg.VolumeNodeID)
 	}
 	if cfg.BarrierReg != nil && cfg.VolumePoolConfigured {
 		if err := cfg.BarrierReg.RestoreVolumeTenants(cfg.Ctx); err != nil {

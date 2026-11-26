@@ -2170,6 +2170,84 @@ export interface VolumePoolClient {
      * @returns One page of the pool's assigned tenants.
      */
     listTenants(pool: string, req?: ListVolumePoolTenantsRequest): Promise<ListVolumePoolTenantsResponse>;
+
+    /**
+     * Starts moving a tenant's volume to another pool the tenant is
+     * entitled to. The move runs in the background, one replica at a time;
+     * follow it with getMove. A move from an encrypted pool to an
+     * unencrypted one is refused unless allowUnencryptedDestination is set:
+     * that drops the tenant's at-rest encryption and is audited
+     * (ruling 1234). Requires `volume_pools:move`.
+     *
+     * @param tenant - The tenant ID.
+     * @param toPool - The destination pool.
+     * @param options - allowUnencryptedDestination permits the
+     *   encrypted-to-unencrypted move; it defaults to false.
+     * @returns The admitted move journal.
+     */
+    moveTenant(
+        tenant: string,
+        toPool: string,
+        options?: { allowUnencryptedDestination?: boolean },
+    ): Promise<VolumePoolMove>;
+
+    /**
+     * Returns a tenant's volume move in progress. A tenant with no move
+     * answers not found. Requires `volume_pools:read`.
+     *
+     * @param tenant - The tenant ID.
+     * @returns The move journal.
+     */
+    getMove(tenant: string): Promise<VolumePoolMove>;
+
+    /**
+     * Cancels a tenant's volume move before cut over; the move rolls back
+     * to the source pool. A tenant with no move answers not found.
+     * Requires `volume_pools:move`.
+     *
+     * @param tenant - The tenant ID.
+     * @returns The move journal as cancelled.
+     */
+    cancelMove(tenant: string): Promise<VolumePoolMove>;
+}
+
+/**
+ * A tenant's volume move between pools: the move journal the server keeps
+ * until the move ends (cut over and every source retired, or rolled back).
+ */
+export interface VolumePoolMove {
+    readonly tenantId: string;
+    readonly fromPool: string;
+    readonly toPool: string;
+    /** The move's phase, e.g. copying, cutover, retiring, aborting. */
+    readonly state: string;
+    /** Nodes whose copy into the destination pool is done. */
+    readonly nodesCopied?: string[];
+    /** Nodes still to copy. */
+    readonly nodesPending?: string[];
+    /** Nodes that removed their source copy after cut over. */
+    readonly nodesRetired?: string[];
+    /** The node granted the current step: one replica offline at a time. */
+    readonly stepNode?: string;
+    /** Failed attempts of the current step. */
+    readonly stepAttempts?: number;
+    /** The last step's error, if any. */
+    readonly error?: string;
+    /** The reservation taken on the destination pool, in bytes. */
+    readonly reservedBytes: number;
+    /** The source reservation released once every node retired. */
+    readonly sourceReservedBytes?: number;
+    /** Whether the tenant record already names the destination pool. */
+    readonly tenantRecorded?: boolean;
+    /**
+     * Whether the move drops the tenant's at-rest encryption: an
+     * encrypted-to-unencrypted move started with allowUnencryptedDestination.
+     */
+    readonly encryptionDropped?: boolean;
+    /** RFC 3339 time the move was admitted. */
+    readonly admittedAt: string;
+    /** RFC 3339 time the journal last changed. */
+    readonly updatedAt?: string;
 }
 
 // ---------------------------------------------------------------------------

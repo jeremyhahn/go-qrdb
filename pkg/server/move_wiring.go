@@ -1,0 +1,400 @@
+// Copyright (c) 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+
+package server
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"sort"
+	"strconv"
+	"time"
+
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/placement"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/shard"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
+)
+
+// DefaultTenantMoveInterval is how often a TenantMoveWorker runs this
+// node's move steps and, on the system shard's leader, the leader pass.
+const DefaultTenantMoveInterval = 2 * time.Second
+
+// TenantMoveService is the tenant layer a tenant move is wired to: it
+// admits a move, records its cut over, and takes the replica-node source.
+// *tenant.TenantService satisfies it.
+type TenantMoveService interface {
+	volume.MoveAdmission
+	volume.MoveCutoverRecorder
+	tenant.MoveReplicaNodeWiring
+}
+
+var _ TenantMoveService = (*tenant.TenantService)(nil)
+
+// MoveMembership is the part of the raft host the replica-node source and
+// the leader check read: the system shard's members and its leader.
+type MoveMembership interface {
+	LeaderID(shardID uint64) (uint64, bool, error)
+	SyncGetShardMembership(ctx context.Context, shardID uint64) (*quicraft.Membership, error)
+}
+
+// TenantMoveConfig is what WireTenantMoves wires a node's tenant moves
+// from.
+type TenantMoveConfig struct {
+	// Catalog is the volume-pool catalog the move journal lives in.
+	Catalog *volume.Catalog
+	// BarrierReg is this node's barrier registry; its volume node ID must
+	// already be NodeID (BuildTenantInfra sets it from VolumeNodeID).
+	BarrierReg *seal.BarrierRegistry
+	// Tenants is the tenant service moves admit and cut over through.
+	Tenants TenantMoveService
+	// Infra holds the tenant runtimes a move step closes and reopens.
+	Infra *TenantInfra
+	// NodeID is this node's move node ID: the NodeReport node ID its
+	// volume reporter writes.
+	NodeID string
+	// Membership is the raft host, or nil on a node with no shard group
+	// (the embedded node), which is its own leader and only replica node.
+	Membership MoveMembership
+	// ReplicaID is this node's replica ID in the system shard.
+	ReplicaID uint64
+	// Placements is the replicated placement table, or nil.
+	Placements *placement.Store
+	// StartAudit audits each move's start; nil audits nothing.
+	StartAudit volume.MoveStartAuditor
+	// Transitions records each journal transition; nil records nothing.
+	Transitions volume.MoveTransitionRecorder
+	// Interval is the tick; a non-positive one is DefaultTenantMoveInterval.
+	Interval time.Duration
+	// CatchUpTimeout bounds how long a settle step waits for each reopened
+	// replica to catch up; a non-positive one is DefaultMoveCatchUpTimeout.
+	CatchUpTimeout time.Duration
+	// DataDirs rewrites a moved tenant's database records onto the root it
+	// settles on; nil rewrites none.
+	DataDirs MoveDataDirRelocator
+	Logger   *slog.Logger
+}
+
+// TenantMoveWorker runs a node's share of the tenant moves: every tick it
+// runs this node's own steps (RunLocalSteps) and, while this node leads
+// the system shard, the leader pass (ReconcileOnce).
+type TenantMoveWorker struct {
+	reconciler moveSteps
+	reopens    moveReopener
+	nodeID     string
+	leads      func() bool
+	interval   time.Duration
+	logger     *slog.Logger
+}
+
+// moveSteps is the part of volume.MoveReconciler the worker's tick drives.
+type moveSteps interface {
+	RunLocalSteps(ctx context.Context, nodeID string) error
+	ReconcileOnce(ctx context.Context) error
+}
+
+// moveReopener is the part of MoveStoreCloser the worker's tick drives to
+// finish a reopen a move step left failed.
+type moveReopener interface {
+	PendingReopen() []string
+	RetryReopen(ctx context.Context, tenantID string) error
+}
+
+// WireTenantMoves wires cfg's catalog to its tenant service, audit and
+// replica-node source, and returns the worker that runs the moves. The
+// caller starts it with Run.
+func WireTenantMoves(cfg TenantMoveConfig) (*TenantMoveWorker, error) {
+	if cfg.Catalog == nil || cfg.BarrierReg == nil || cfg.Tenants == nil || cfg.NodeID == "" {
+		return nil, errors.New("server: tenant moves need a catalog, a barrier registry, a tenant service and a node id")
+	}
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	stores, err := newMoveStores(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Infra != nil && cfg.Infra.Reconciler != nil {
+		// The reconciler must not re-attach a shard (or register a barrier
+		// shell) between a move closing the tenant's shards and its barrier.
+		cfg.Infra.Reconciler.SetMoveHold(stores)
+	}
+	if cfg.Infra != nil && cfg.Infra.Hosts != nil {
+		cfg.Infra.Hosts.SetMoveHold(stores)
+	}
+	runner, err := seal.NewMoveStepRunner(cfg.BarrierReg, cfg.NodeID, stores)
+	if err != nil {
+		return nil, err
+	}
+	// One replica-set source: admit lists a tenant's move nodes from it, and
+	// the reconciler resyncs a copying move from it before each grant and
+	// before cut over, so a replica added or removed after admit is copied
+	// or dropped.
+	nodes := &moveReplicaNodeSource{
+		membership: cfg.Membership,
+		placements: cfg.Placements,
+		local:      cfg.NodeID,
+	}
+	opts := []volume.MoveReconcilerOption{volume.WithMoveReconcilerLogger(logger), volume.WithMoveNodeSource(nodes)}
+	if cfg.Transitions != nil {
+		opts = append(opts, volume.WithMoveTransitionRecorder(cfg.Transitions))
+	}
+	reconciler, err := volume.NewMoveReconciler(cfg.Catalog, runner, opts...)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Catalog.SetMoveAdmission(cfg.Tenants)
+	cfg.Catalog.SetMoveCutoverRecorder(cfg.Tenants)
+	cfg.Catalog.SetMoveTransitionRecorder(cfg.Transitions)
+	if cfg.StartAudit != nil {
+		cfg.Catalog.SetMoveStartAuditor(cfg.StartAudit)
+	}
+	cfg.Tenants.SetMoveReplicaNodeSource(nodes)
+	interval := cfg.Interval
+	if interval <= 0 {
+		interval = DefaultTenantMoveInterval
+	}
+	return &TenantMoveWorker{
+		reconciler: reconciler,
+		reopens:    stores,
+		nodeID:     cfg.NodeID,
+		leads:      systemLeaderCheck(cfg.Membership, cfg.ReplicaID),
+		interval:   interval,
+		logger:     logger,
+	}, nil
+}
+
+// newMoveStores is the TenantStoreCloser over cfg's tenant runtimes.
+func newMoveStores(cfg TenantMoveConfig) (*MoveStoreCloser, error) {
+	var shards MoveShardLifecycle
+	opts := []MoveStoreCloserOption{WithMoveCatchUpTimeout(cfg.CatchUpTimeout)}
+	if cfg.Infra != nil && cfg.Infra.Raft != nil {
+		shards = cfg.Infra.Raft
+	}
+	if cfg.Infra != nil && cfg.Infra.Hosts != nil {
+		opts = append(opts, WithMoveTenantHosts(cfg.Infra.Hosts))
+		opts = append(opts, WithMoveSnapshotShards(cfg.Infra.Hosts))
+	}
+	if cfg.DataDirs != nil {
+		opts = append(opts, WithMoveDataDirRelocator(cfg.DataDirs))
+	}
+	if local := localMoveReplicas(cfg.Membership, cfg.Placements, cfg.ReplicaID); local != nil {
+		opts = append(opts, WithMoveLocalReplicas(local))
+	}
+	var caughtUp ReplicaCaughtUp
+	if host, ok := cfg.Membership.(*quicraft.Host); ok && host != nil && cfg.Placements != nil {
+		caughtUp = readIndexCaughtUp(quicraftShardSource{host: host}, cfg.Placements)
+	}
+	return NewMoveStoreCloser(shards, cfg.BarrierReg, caughtUp, 0, opts...)
+}
+
+// readIndexCaughtUp reports a reopened replica caught up once a
+// linearizable read on its shard completes here: the local state machine
+// has then applied up to the group's commit index.
+func readIndexCaughtUp(probe shardLeaderSource, placements *placement.Store) ReplicaCaughtUp {
+	return func(ctx context.Context, tenantID, db string) (bool, error) {
+		p, err := placements.Get(ctx, tenantID, db)
+		if errors.Is(err, placement.ErrPlacementNotFound) {
+			return true, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if p == nil {
+			return true, nil
+		}
+		return readProbeOutcome(ctx, probe.ReadReady(ctx, p.ShardID))
+	}
+}
+
+// readProbeOutcome sorts one ReadReady result: nil is caught up; a leader
+// that has not yet committed in its term, or a probe that ran out its own
+// timeout while the caller still waits, is "not yet"; a shard that is gone
+// or a closed host never catches up, and every other error is returned so
+// the settle fails instead of polling forever.
+func readProbeOutcome(ctx context.Context, err error) (bool, error) {
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, quicraft.ErrReadIndexNotReady):
+		return false, nil
+	case errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil:
+		return false, nil
+	default:
+		return false, err
+	}
+}
+
+// systemLeaderCheck reports whether this node leads the system shard. With
+// no membership the node is its own leader.
+// isNilMoveMembership reports whether m is a nil interface or a nil
+// *quicraft.Host stored in one: either has no membership to read, and
+// calling through the typed nil would panic.
+func isNilMoveMembership(m MoveMembership) bool {
+	if m == nil {
+		return true
+	}
+	h, ok := m.(*quicraft.Host)
+	return ok && h == nil
+}
+
+func systemLeaderCheck(m MoveMembership, replicaID uint64) func() bool {
+	if isNilMoveMembership(m) {
+		return func() bool { return true }
+	}
+	return func() bool {
+		leader, ok, err := m.LeaderID(shard.ShardKV)
+		return err == nil && ok && leader == replicaID
+	}
+}
+
+// Tick runs one round: this node's own steps, then the leader pass when
+// this node leads the system shard. Errors are logged; the next tick
+// retries.
+func (w *TenantMoveWorker) Tick(ctx context.Context) {
+	if err := w.reconciler.RunLocalSteps(ctx, w.nodeID); err != nil {
+		w.logger.Warn("volume: tenant move steps failed on this node", slog.String("error", err.Error()))
+	}
+	if w.leads() {
+		if err := w.reconciler.ReconcileOnce(ctx); err != nil {
+			w.logger.Warn("volume: tenant move leader pass failed", slog.String("error", err.Error()))
+		}
+	}
+	w.retryReopens(ctx)
+}
+
+// retryReopens retries, once each, every tenant whose move step closed its
+// stores and then failed to reopen them, so a transient failure (a
+// catch-up timeout, a cancelled context) does not strand the tenant until
+// the next boot. Every node runs it: the stores are local.
+func (w *TenantMoveWorker) retryReopens(ctx context.Context) {
+	if w.reopens == nil {
+		return
+	}
+	for _, tenantID := range w.reopens.PendingReopen() {
+		if err := w.reopens.RetryReopen(ctx, tenantID); err != nil {
+			// A tenant left sealed awaits its administrator's unseal: one
+			// retry per tick until then is expected, not a fault.
+			var sealed *volume.TenantSealedError
+			if errors.As(err, &sealed) {
+				w.logger.Debug("volume: tenant store reopen waits for the tenant's unseal",
+					slog.String("tenant", tenantID))
+				continue
+			}
+			w.logger.Warn("volume: tenant store reopen retry failed",
+				slog.String("tenant", tenantID), slog.String("error", err.Error()))
+		}
+	}
+}
+
+// Run ticks until ctx ends.
+func (w *TenantMoveWorker) Run(ctx context.Context) {
+	ticker := time.NewTicker(w.interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			w.Tick(ctx)
+		}
+	}
+}
+
+// moveReplicaNodeSource lists the move node IDs of a tenant's replicas:
+// for an IsolationRaft tenant, the system-shard replica ID of each node its
+// placements name (matched by raft address); for a tenant with no
+// placement (an IsolationVolume tenant, or any tenant on a node with no
+// shard group), this node.
+type moveReplicaNodeSource struct {
+	membership MoveMembership
+	placements *placement.Store
+	local      string
+}
+
+// MoveReplicaNodes implements tenant.MoveReplicaNodeSource.
+func (s *moveReplicaNodeSource) MoveReplicaNodes(ctx context.Context, tenantID string) ([]string, error) {
+	if s.placements == nil || isNilMoveMembership(s.membership) {
+		return []string{s.local}, nil
+	}
+	ps, err := s.placements.ListForTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if len(ps) == 0 {
+		return []string{s.local}, nil
+	}
+	m, err := s.membership.SyncGetShardMembership(ctx, shard.ShardKV)
+	if err != nil {
+		return nil, err
+	}
+	byAddr := make(map[string]uint64, len(m.Nodes))
+	for id, addr := range m.Nodes {
+		byAddr[addr] = id
+	}
+	seen := map[string]struct{}{}
+	var nodes []string
+	for _, p := range ps {
+		for _, r := range p.Replicas {
+			id, ok := byAddr[r.RaftAddr]
+			if !ok {
+				return nil, &volume.MoveConflictError{TenantID: tenantID, Reason: "a replica's node is not a member of the cluster"}
+			}
+			n := strconv.FormatUint(id, 10)
+			if _, dup := seen[n]; !dup {
+				seen[n] = struct{}{}
+				nodes = append(nodes, n)
+			}
+		}
+	}
+	sort.Strings(nodes)
+	return nodes, nil
+}
+
+// localMoveReplicas returns the MoveLocalReplicas of the node with system
+// replica replicaID: the databases of a tenant whose durable placement puts a
+// replica at this node's raft address. Nil placements, nil membership or a
+// zero replicaID return nil: the closer then works from the started shards
+// alone. An IsolationVolume tenant has no placement and one replica, so it
+// lists nothing here and keeps its Host path.
+func localMoveReplicas(membership MoveMembership, placements *placement.Store, replicaID uint64) MoveLocalReplicas {
+	if placements == nil || isNilMoveMembership(membership) || replicaID == 0 {
+		return nil
+	}
+	return func(ctx context.Context, tenantID string) ([]string, error) {
+		m, err := membership.SyncGetShardMembership(ctx, shard.ShardKV)
+		if err != nil {
+			return nil, err
+		}
+		addr, ok := m.Nodes[replicaID]
+		if !ok {
+			return nil, fmt.Errorf("move: replica %d is not a member of the system shard", replicaID)
+		}
+		ps, err := placements.ListForTenant(ctx, tenantID)
+		if err != nil {
+			return nil, err
+		}
+		var dbs []string
+		for _, p := range ps {
+			for _, r := range p.Replicas {
+				if r.RaftAddr == addr {
+					dbs = append(dbs, p.Database)
+					break
+				}
+			}
+		}
+		sort.Strings(dbs)
+		return dbs, nil
+	}
+}

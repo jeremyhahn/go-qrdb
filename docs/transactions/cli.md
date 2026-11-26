@@ -17,8 +17,9 @@ Execute a transaction from a JSON file.
 The file is a `TransactionRequest`: `compares`, `success_ops`, `failure_ops`.
 `target` and `result` are integer enums (`target`: 0 version, 1 create
 revision, 2 mod revision, 3 value; `result`: 0 equal, 1 greater, 2 less,
-3 not-equal). `type` on an op is 0 put or 2 delete; 1 get and 3 range are
-refused (400 / `INVALID_ARGUMENT`), because a branch only writes.
+3 not-equal). `type` on an op is 0 put, 1 get, 2 delete or 3 range; a get or range is
+answered inside the transaction and needs the `mvcc` state machine and the
+cluster feature `transaction-reads` ([api.md](api.md#request-schemas)).
 
 ```bash
 cat > txn.json <<'JSON'

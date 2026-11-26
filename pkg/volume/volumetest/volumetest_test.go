@@ -95,13 +95,15 @@ func TestService_ScriptedCallsDelegate(t *testing.T) {
 	}
 }
 
-func TestService_MovesAreNotImplementedLikeTheCatalog(t *testing.T) {
+func TestService_MovesAnswerLikeAnUnwiredCatalog(t *testing.T) {
 	svc := &Service{T: t}
 	var notImpl *volume.MoveNotImplementedError
-	if _, err := svc.MoveTenant(context.Background(), "t1", "p"); !errors.As(err, &notImpl) {
+	req := volume.MoveTenantRequest{TenantID: "t1", ToPool: "p"}
+	if _, err := svc.MoveTenant(context.Background(), req); !errors.As(err, &notImpl) {
 		t.Errorf("MoveTenant err = %v, want *volume.MoveNotImplementedError", err)
 	}
-	if _, err := svc.GetMove(context.Background(), "t1"); !errors.As(err, &notImpl) {
-		t.Errorf("GetMove err = %v, want *volume.MoveNotImplementedError", err)
+	var notFound *volume.MoveNotFoundError
+	if _, err := svc.GetMove(context.Background(), "t1"); !errors.As(err, &notFound) || notFound.TenantID != "t1" {
+		t.Errorf("GetMove err = %v, want *volume.MoveNotFoundError for t1", err)
 	}
 }

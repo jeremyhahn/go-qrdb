@@ -30,9 +30,7 @@ Serves **standard database operations**:
 - Collections and entity CRUD
 - Database management (create/list/delete; engines kv, timeseries, vector)
 - SQL (build-tag gated, `qrdb_sql`)
-- Timeseries and vector (build-tag gated; require the MVCC-capable engine,
-  so unavailable over the file/objstore backends — see the engine boundary
-  in `pkg/engine/kv_engine.go`)
+- Timeseries and vector (build-tag gated)
 
 Plus the **always-on security core** (below). What needs a cluster — etcd
 compatibility, cluster membership, rebalance, shard backup/restore — is
@@ -117,6 +115,12 @@ mode: raft   # "standalone" | "raft"; absent = raft
   both modes. Standalone skips the raft identity requirements (only
   `raft.data_dir` stays mandatory). Etcd is enabled per-database at runtime,
   so its mode gate lives at service composition.
+- A data directory keeps the mode of its first start, recorded in
+  `<data_dir>/.qrdb-run-mode`; a start in the other mode is refused before any
+  store opens, naming both modes, because the modes keep separate stores and
+  no migration exists: start with the recorded mode or use a fresh data
+  directory. A directory without the marker is fresh and records the starting
+  mode ([`run_mode.go`](../pkg/server/lifecycle/run_mode.go)).
 - Enabling a wire protocol whose build tag is absent → boot-time error
   naming the tag (`Config.ValidateCapabilities`, called by composition
   roots — a separate gate so pure-config validation stays
@@ -135,12 +139,10 @@ standalone node is engine-direct and single-process and has none, so it
 offers the guarantee outright. `sdk/go/node.buildEmbeddedOpts` wires
 `embedded.WithTransactionService` unconditionally.
 
-**The engine boundary.** Transactions require the MVCC-capable engine, which
-`NewLocalEngine` composes for the memory and pebble backends. The **file**
-and **objstore** backends compose the plain KV engine, which has no
-transaction opcode, so a transaction there fails with a typed
-`engine.UnsupportedOperationError`. This is an engine boundary, not a mode
-gate.
+**One engine on every backend.** `NewLocalEngine`
+(`pkg/server/lifecycle/local.go:177`) composes the MVCC engine
+(`engine.NewMVCCEngine`) over every local backend: memory, file, pebble and
+objstore. Transactions are served on all four.
 
 **Consumer-side fallbacks are not permitted.** A consumer must not
 substitute a process-local lock or any other consistency mechanism when a
@@ -153,7 +155,48 @@ same API, semantics and errors as raft mode, on every transport: the
 semantics a single process can give are raft mode's with one replica. They
 are composed over the same engine, lessor and watch hub as raft mode's MVCC
 state machine, and the standalone node runs the lease-expiry sweeper itself.
-Leases are durable in both modes, so a lock survives a restart. The same
-engine boundary applies: the file and objstore backends refuse these
-operations per call with a typed error. The normative contract is
+Leases are durable in both modes, so a lock survives a restart. Every local
+backend serves these families. The normative contract is
 [run-modes/](run-modes/).
+
+## Changing the mode of an existing data directory
+
+The mode is read at start; changing it is a restart. The two modes keep their
+data in different subdirectories of the data directory:
+
+- Standalone (`lifecycle.NewLocalStorage`, `pkg/server/lifecycle/local.go:59`)
+  opens `pebble/` (pebble backend), `file/` (file backend) or `objstore/`
+  (objstore backend with the `local` provider and no `path` setting); the
+  memory backend opens nothing.
+- Raft (`buildHostConfig`, `cmd/qrdbd/start.go:4012`) opens `wal/` and
+  `nodehost/`.
+
+No migration exists between the two layouts, so a data directory keeps the
+mode of its first start. The run-mode guard (`lifecycle.ClaimRunMode`,
+`pkg/server/lifecycle/run_mode.go:46`) runs before anything is opened in the
+data directory (`cmd/qrdbd/start.go:1404`; the SDK node constructors and the
+qrdb embedded binding call it the same way in both modes):
+
+- A start in the other mode is refused. The daemon prints a
+  `RunModeMismatchError` naming the data directory, the recorded mode and the
+  configured mode. A marker that cannot be read, or that records neither
+  `standalone` nor `raft`, is refused with a `RunModeMarkerError` naming the
+  marker path.
+- An unknown `mode` (for example `--mode rafft`) is refused with a
+  `RunModeInvalidError` before the data directory is created, read or
+  written, so no marker records it and a corrected start claims the
+  directory as usual.
+- Two first starts on the same fresh directory claim it under an exclusive
+  lock on `<data_dir>/.qrdb-run-mode.lock`: one records its mode, and the
+  other then reads that marker and is refused if its mode differs.
+
+The remedy for a refused start is to start in the recorded mode, or to give
+the node a fresh data directory for the other mode; there is no in-place
+conversion.
+
+A data directory without a marker is treated as fresh, whatever it
+contains: the first start records its mode. This includes a directory holding
+data written by an earlier build that wrote no marker. If such a directory is
+started in the other mode than the one that wrote its data, that start claims
+it and the node starts without the keys written earlier, which remain in the
+other mode's subdirectories.

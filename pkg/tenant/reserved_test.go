@@ -173,6 +173,28 @@ func TestValidateReservedTenantID_RejectsRelativeSegments(t *testing.T) {
 	}
 }
 
+// TestValidateTenantIDShape_RejectsReservedPoolPrefix verifies an id that
+// begins with volume.ReservedPathPrefix is refused for all callers: a raft
+// tenant's pool directory is named by its id, and that prefix names the
+// node's own pool-root directories (copy-back staging). An id that only
+// contains the old staging suffix is still a tenant id.
+func TestValidateTenantIDShape_RejectsReservedPoolPrefix(t *testing.T) {
+	for _, id := range []string{".qrdb-acme", ".qrdb-copyback.acme"} {
+		t.Run(id, func(t *testing.T) {
+			var idErr *InvalidTenantIDError
+			if err := ValidateTenantIDShape(id); !errors.As(err, &idErr) {
+				t.Fatalf("id %q: expected *InvalidTenantIDError, got %T: %v", id, err, err)
+			}
+			if err := validateReservedTenantID(WithInternalCall(context.Background()), id); !errors.As(err, &idErr) {
+				t.Fatalf("id %q (internal): expected *InvalidTenantIDError, got %T: %v", id, err, err)
+			}
+		})
+	}
+	if err := ValidateTenantIDShape("acme.copyback"); err != nil {
+		t.Fatalf("ValidateTenantIDShape(%q) = %v, want nil", "acme.copyback", err)
+	}
+}
+
 // TestReservedTenantIDError_Error verifies the error message format.
 func TestReservedTenantIDError_Error(t *testing.T) {
 	e := &ReservedTenantIDError{TenantID: "system", Reason: "is platform-reserved"}

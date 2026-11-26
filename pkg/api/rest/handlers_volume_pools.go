@@ -17,6 +17,8 @@ package rest
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -78,6 +80,15 @@ type listVolumePoolsResponse struct {
 }
 
 // createVolumePoolRequest is the JSON payload for POST /v1/volume-pools.
+// moveVolumePoolTenantRequest is the optional JSON payload for POST
+// /v1/volume-pools/{pool}/tenants/{tenant}/move. An empty body is the zero
+// value: no flag.
+type moveVolumePoolTenantRequest struct {
+	// AllowUnencryptedDestination is the operator's explicit, audited
+	// allow_unencrypted_destination flag (decision Q9, ruling 1234).
+	AllowUnencryptedDestination bool `json:"allowUnencryptedDestination"`
+}
+
 type createVolumePoolRequest struct {
 	Name          string  `json:"name"`
 	Provider      string  `json:"provider,omitempty"`
@@ -202,6 +213,10 @@ func (s *Server) handleCreateVolumePool(w http.ResponseWriter, r *http.Request) 
 //   - PUT    /v1/volume-pools/{pool}          -> update a pool
 //   - DELETE /v1/volume-pools/{pool}          -> delete a pool
 //   - GET    /v1/volume-pools/{pool}/tenants  -> list a pool's tenants
+//
+// POST /v1/volume-pools/{pool}/tenants/{tenant}/move is served by
+// handleVolumePoolMoveTenant, and GET/DELETE /v1/tenants/{tenant}/volume-move
+// by handleVolumeMove.
 func (s *Server) handleVolumePoolByName(w http.ResponseWriter, r *http.Request) {
 	if s.volumeSvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "volume"})
@@ -315,4 +330,80 @@ func (s *Server) handleListVolumePoolTenants(w http.ResponseWriter, r *http.Requ
 		resp.Tenants[i] = volumePoolTenantResponse{TenantID: a.TenantID, ReservedBytes: a.ReservedBytes}
 	}
 	writeJSON(w, resp)
+}
+
+// handleVolumePoolMoveTenant serves POST
+// /v1/volume-pools/{pool}/tenants/{tenant}/move: it starts moving tenant
+// to the destination pool {pool} and answers the admitted move journal
+// (202 Accepted: the move runs in the background).
+func (s *Server) handleVolumePoolMoveTenant(w http.ResponseWriter, r *http.Request) {
+	if s.volumeSvc == nil {
+		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "volume"})
+		return
+	}
+	pool, tenant := r.PathValue("pool"), r.PathValue("tenant")
+	if pool == "" {
+		writeErrorJSON(w, http.StatusBadRequest, &MissingParameterError{Param: "pool"})
+		return
+	}
+	if tenant == "" {
+		writeErrorJSON(w, http.StatusBadRequest, &MissingParameterError{Param: "tenant"})
+		return
+	}
+	var body moveVolumePoolTenantRequest
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+			return
+		}
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), volumePoolRequestTimeout)
+	defer cancel()
+	m, err := s.volumeSvc.MoveTenant(ctx, volume.MoveTenantRequest{
+		TenantID:                    tenant,
+		ToPool:                      pool,
+		AllowUnencryptedDestination: body.AllowUnencryptedDestination,
+	})
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(m)
+}
+
+// handleVolumeMove serves GET and DELETE /v1/tenants/{tenant}/volume-move:
+// GET answers the tenant's move in progress, DELETE cancels it before cut
+// over. Both answer the move journal; no move answers 404.
+func (s *Server) handleVolumeMove(w http.ResponseWriter, r *http.Request) {
+	if s.volumeSvc == nil {
+		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "volume"})
+		return
+	}
+	tenant := r.PathValue("tenant")
+	if tenant == "" {
+		writeErrorJSON(w, http.StatusBadRequest, &MissingParameterError{Param: "tenant"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), volumePoolRequestTimeout)
+	defer cancel()
+	var (
+		m   *volume.Move
+		err error
+	)
+	switch r.Method {
+	case http.MethodGet:
+		m, err = s.volumeSvc.GetMove(ctx, tenant)
+	case http.MethodDelete:
+		m, err = s.volumeSvc.CancelMove(ctx, tenant)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+	writeJSON(w, m)
 }

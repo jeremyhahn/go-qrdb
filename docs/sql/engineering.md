@@ -125,7 +125,7 @@ upstream data race on vitess `Conn.StatusFlags` between go-mysql-server's
 handler and the connection goroutine. QRDB does not fork either dependency to
 fix it; `sql.wait_timeout` above closes the companion idle-cursor gap but does
 not touch this race. See
-[upstream-gaps.md](upstream-gaps.md#5-server-side-cursors-race-on-connstatusflags-the-idle-bound-half-is-fixed-in-qrdb).
+[upstream-gaps.md](upstream-gaps.md#2-server-side-cursors-race-on-connstatusflags).
 
 `protocols.mysql: true` / `protocols.postgresql: true` are additionally
 refused, with a typed `config.ValidationError`, on a binary built without
@@ -774,7 +774,7 @@ those productions) — but the **PostgreSQL wire serves them anyway**:
 `pkg/sql/pgsql` strips the clause, translates the head normally, and reattaches
 the parsed expression list to the AST's `Returning` field, which the planner and
 executor fully honor. See `pkg/sql/pgsql/returning.go` and
-[upstream-gaps.md](upstream-gaps.md) §3.
+[upstream-gaps.md](upstream-gaps.md) §1.
 
 Rejected with a typed `*engine.UnsupportedSyntaxError` rather than mistranslated:
 

@@ -329,7 +329,8 @@ Typed errors throughout; `fmt.Errorf` is not used.
 |---|---|---|
 | Compare does not hold | `Succeeded: false`, `FailureOps` applied, no error | n/a — this is a result |
 | Unmapped op type on a typed transport (gRPC, Unix, QUIC) | invalid-argument | yes |
-| Unknown op type, compare target or compare result on REST | falls back to put, version and equal; nothing is refused — see [api.md](api.md) | no |
+| Unknown op type on REST or MCP | refused before proposal (`UnknownOpTypeError`; REST 400, MCP tool error), nothing written — see [api.md](api.md) | **yes** |
+| Unknown compare target or compare result on REST | falls back to version and equal — see [api.md](api.md) | no |
 | Empty key in a compare or an op | refused before proposal (`service.InvalidKeyError` inside `EncodeRequestError`, invalid-argument); a state machine that receives one anyway refuses it as an application result and keeps applying | **yes** |
 | Create- or mod-revision compare on any `sm_type` but `mvcc` | refused, nothing evaluated or written | **yes** |
 | Lease-bearing op on a `pkg/statemachine` `sm_type` (`memory`, `standard`, `concurrent`, `fast`, `disk`, `highperf`) | the key is bound to the lease in the same commit; a lease the state machine does not hold refuses the whole transaction or batch with lease-not-found, nothing written | **yes** |

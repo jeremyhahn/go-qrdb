@@ -127,4 +127,9 @@ wait to end. A wait that runs out of its budget stops the start with an error
 naming the step, and the node can simply be started again.
 
 **Switching modes.** The mode is fixed at composition. Changing it is a restart,
-not a runtime operation.
+not a runtime operation, and a data directory keeps the mode it was first
+started in. The first start records the mode in `<data_dir>/.qrdb-run-mode`. A
+later start in the other mode is refused before any store opens, with an error
+naming both modes. The two modes keep separate stores and no migration exists
+between them, so the remedy is to start with the recorded mode or use a fresh
+data directory ([`run_mode.go`](../../pkg/server/lifecycle/run_mode.go)).

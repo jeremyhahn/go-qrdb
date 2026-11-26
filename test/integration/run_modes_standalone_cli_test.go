@@ -134,7 +134,7 @@ func startStandaloneModeNodeSealed(t *testing.T, backend, extraYAML, strategy st
 	}
 	args = append(args, ca.tlsFlags(t)...)
 
-	startNode(t, bin, args, fmt.Sprintf("[standalone backend=%s] ", backend))
+	proc := startNode(t, bin, args, fmt.Sprintf("[standalone backend=%s] ", backend))
 
 	// The pre-host sealed-window listener is mode-independent: the barrier
 	// must be initialized and unsealed before the data plane (LocalBackend
@@ -158,6 +158,9 @@ func startStandaloneModeNodeSealed(t *testing.T, backend, extraYAML, strategy st
 		mcpPort:    mcpPort,
 		quicPort:   quicPort,
 		passphrase: passphrase,
+		bin:        bin,
+		startArgs:  args,
+		proc:       proc,
 	}
 
 	for _, proto := range multiProtocols {

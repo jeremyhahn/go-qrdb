@@ -46,6 +46,10 @@ type Assignment struct {
 	// joined onto the pool's opened Volume.Root() by the resolving layer.
 	Path          string `json:"path"`
 	ReservedBytes int64  `json:"reservedBytes"`
+	// Retiring reports that tenant delete fenced this assignment
+	// (Catalog.FenceForDelete): AdmitMove refuses it, so no move can be
+	// admitted over a tenant being torn down (decision Q10).
+	Retiring bool `json:"retiring,omitempty"`
 }
 
 // NodeReport is one node's health report: persisted at
@@ -168,10 +172,10 @@ type AssignmentPage struct {
 	NextPageToken string       `json:"next_page_token,omitempty"`
 }
 
-// Move is the Phase 2 move-journal record (decision D5). Nothing in this
-// build populates it: MoveTenant and GetMove return
-// *MoveNotImplementedError until the Phase 2 journal lands. The type
-// exists now only so volume.Service's signature compiles against it.
+// Move is the move-journal record persisted at MoveKey(TenantID) (decision
+// Q5, docs/decisions/volume-pool-tenant-moves.md). Catalog.AdmitMove writes
+// it in state MoveStateAdmitted (MoveTenant is its one caller), the move
+// reconciler advances it step by step, and GetMove reads it.
 type Move struct {
 	TenantID     string   `json:"tenantId"`
 	FromPool     string   `json:"fromPool"`
@@ -179,15 +183,201 @@ type Move struct {
 	State        string   `json:"state"`
 	NodesCopied  []string `json:"nodesCopied,omitempty"`
 	NodesPending []string `json:"nodesPending,omitempty"`
-	Error        string   `json:"error,omitempty"`
+	// StepNode is the node granted the current step: at most one replica
+	// is offline for a move at a time (decision Q1 B).
+	StepNode string `json:"stepNode,omitempty"`
+	// StepAttempts counts the failed attempts of StepNode's step. A copy
+	// step that waits on a sealed node or an unavailable destination pool
+	// (Catalog.WaitMoveStep) counts no attempt.
+	StepAttempts int `json:"stepAttempts,omitempty"`
+	// StepSettling reports that StepNode's copy or abort step is recorded
+	// (RecordMoveStep, RecordAbortStep) but the node has not yet settled
+	// it: reopened its stores and caught up (copy), or reopened the source
+	// and removed the destination (abort). The node keeps the step, so no
+	// other node is granted one and the journal survives, until
+	// ReleaseMoveStep records the settle durably.
+	StepSettling bool `json:"stepSettling,omitempty"`
+	// StepCopied is, for a settling abort step, whether StepNode had been
+	// copied: its settle reopens the source and removes the destination.
+	StepCopied bool   `json:"stepCopied,omitempty"`
+	Error      string `json:"error,omitempty"`
+	// CancelRequested reports an operator cancel that arrived while
+	// StepNode held a copy step: the step keeps its holder, which awaits
+	// its copy; CompleteMoveStep or FailMoveStep then turns the move
+	// aborting with the step's real copied state.
+	CancelRequested bool `json:"cancelRequested,omitempty"`
+	// ReservedBytes is the reservation taken on ToPool at admit: the
+	// tenant's Assignment.ReservedBytes at that moment. A later abort
+	// releases it; cut over keeps it as the tenant's reservation.
+	ReservedBytes int64 `json:"reservedBytes"`
+	// NodesRetired is every node of NodesCopied that removed its source
+	// copy after cut over (decision Q7 A). NodesCopied keeps its meaning.
+	NodesRetired []string `json:"nodesRetired,omitempty"`
+	// SourceReservedBytes is the source assignment's ReservedBytes,
+	// recorded at cut over and released from FromPool once every node
+	// retired its source.
+	SourceReservedBytes int64 `json:"sourceReservedBytes,omitempty"`
+	// TenantRecorded reports that the tenant record names ToPool (the
+	// wired MoveCutoverRecorder ran after cut over); retire waits on it.
+	TenantRecorded bool `json:"tenantRecorded,omitempty"`
+	// EncryptionDropped reports a move from a Lockable pool to a
+	// non-Lockable one, admitted only with the operator's audited
+	// allow_unencrypted_destination flag (decision Q9, ruling 1234).
+	EncryptionDropped bool `json:"encryptionDropped,omitempty"`
+	// AdmittedAt is when AdmitMove wrote the journal.
+	AdmittedAt time.Time `json:"admittedAt"`
+	// UpdatedAt is when the journal last changed state or step.
+	UpdatedAt time.Time `json:"updatedAt,omitempty"`
+}
+
+// MoveStateAdmitted is the state AdmitMove writes: the destination is
+// reserved and every replica node is pending; no step is granted yet.
+const MoveStateAdmitted = "admitted"
+
+// MoveStateCopying is a move with a node step granted or between steps.
+const MoveStateCopying = "copying"
+
+// MoveStateCopied is a move with no node pending: ready for cut over.
+const MoveStateCopied = "copied"
+
+// MoveStateCutover is a move past its commit point (Catalog.CutOverMove):
+// the assignment names ToPool and the move only goes forward, retiring
+// each node's source copy (decision Q7 A).
+const MoveStateCutover = "cutover"
+
+// MoveStateAborting is a move rolled back before cut over, because a node
+// step failed its attempts or the operator cancelled it (decision Q8 A):
+// abort steps remove the destination copies one node at a time, then the
+// destination reservation is released and the journal deleted.
+const MoveStateAborting = "aborting"
+
+// The phases of a MoveStep.
+const (
+	// MoveStepPhaseCopy copies the tenant to the destination on one node.
+	MoveStepPhaseCopy = "copy"
+	// MoveStepPhaseAbort removes the destination copy on one node.
+	MoveStepPhaseAbort = "abort"
+	// MoveStepPhaseRetire removes the source copy on one node after cut
+	// over.
+	MoveStepPhaseRetire = "retire"
+)
+
+// DefaultMoveStepAttempts bounds the attempts of one node's step before the
+// move aborts (decision Q6 A's bounded retry).
+const DefaultMoveStepAttempts = 3
+
+// MoveAdmitRequest is the input to Catalog.AdmitMove.
+type MoveAdmitRequest struct {
+	// TenantID is the tenant to move.
+	TenantID string
+	// ToPool is the destination pool.
+	ToPool string
+	// ReplicaNodes is every node holding a replica of the tenant, supplied
+	// by the caller; each must report ToPool ready (decision Q3).
+	ReplicaNodes []string
+	// AllowEncryptionDrop admits a Lockable-to-non-Lockable move (decision
+	// Q9, ruling 1234). Only Catalog.MoveTenant sets it, after the drop was
+	// audited; without it AdmitMove refuses the downgrade with
+	// *MoveToUnencryptedPoolError. It requires AuditedFromPool.
+	AllowEncryptionDrop bool
+	// AuditedFromPool is the source pool the start audit read; required
+	// with AllowEncryptionDrop. AdmitMove refuses with *MoveConflictError
+	// when the tenant's pool is no longer this one.
+	AuditedFromPool string
+}
+
+// MoveTenantRequest is the operator's request to move a tenant between
+// pools ("The move, phase by phase" step 1).
+type MoveTenantRequest struct {
+	// TenantID is the tenant to move.
+	TenantID string
+	// ToPool is the destination pool.
+	ToPool string
+	// AllowUnencryptedDestination is the operator's explicit
+	// allow_unencrypted_destination flag (decision Q9, ruling 1234): it
+	// permits a move from a Lockable pool to a non-Lockable one, which
+	// drops the tenant's at-rest encryption. The drop is audited fail-closed
+	// through the wired MoveStartAuditor; without one it is refused.
+	AllowUnencryptedDestination bool
+}
+
+// MoveStartFacts is what Catalog.MoveTenant read before admitting a move
+// and hands its MoveStartAuditor (decision Q9, ruling 1234).
+type MoveStartFacts struct {
+	// FromPool is the tenant's pool when the start was read; empty when
+	// the request does not carry allow_unencrypted_destination.
+	FromPool string
+	// EncryptionDropped reports that the move goes from a Lockable pool to
+	// a non-Lockable one under the operator's flag: the auditor records the
+	// drop fail-closed before anything is admitted.
+	EncryptionDropped bool
+}
+
+// MoveAdmission is the tenant layer's half of a move's admit step ("The
+// move, phase by phase" step 1): the tenant exists, is a volume or raft
+// tenant, and is entitled to req.ToPool. It returns every node holding a
+// replica of the tenant, as the decimal node IDs node reports are keyed by.
+// pkg/volume cannot import pkg/tenant, so the tenant layer implements it and
+// the composition sets it with Catalog.SetMoveAdmission.
+type MoveAdmission interface {
+	AdmitTenantMove(ctx context.Context, req MoveTenantRequest) (replicaNodes []string, err error)
+}
+
+// MoveStartAuditor audits the start of a tenant move ("The move, phase by
+// phase" step 1). BeginMoveStart is called before anything is admitted: an error
+// refuses the start and nothing is admitted. Otherwise settle is called
+// exactly once with Catalog.AdmitMove's answer. facts tells it whether the
+// move drops the tenant's encryption (decision Q9, ruling 1234): such a
+// start must be recorded fail-closed, whatever the configured audit policy.
+type MoveStartAuditor interface {
+	BeginMoveStart(ctx context.Context, req MoveTenantRequest, facts MoveStartFacts) (settle func(*Move, error), err error)
+}
+
+// MoveCutoverRecorder is the tenant layer's half of a move's cut over: it
+// makes the tenant record name toPool (a record already naming toPool is
+// left as is). pkg/volume cannot import pkg/tenant, so the tenant layer
+// implements it and the composition sets it with
+// Catalog.SetMoveCutoverRecorder. A tenant naming neither pool returns
+// *MoveConflictError.
+type MoveCutoverRecorder interface {
+	RecordTenantPoolMoved(ctx context.Context, tenantID, fromPool, toPool string) error
+}
+
+// MoveStep is one node's step of a tenant move, as the move reconciler hands
+// it to a MoveStepRunner. Attempt is 1-based.
+type MoveStep struct {
+	TenantID string
+	NodeID   string
+	FromPool string
+	ToPool   string
+	Attempt  int
+	// Phase is MoveStepPhaseCopy, MoveStepPhaseAbort or
+	// MoveStepPhaseRetire.
+	Phase string
+	// Copied, on an abort step, reports that the node had finished its
+	// copy step: its source is stale and must be made authoritative again
+	// before the destination copy goes.
+	Copied bool
+}
+
+// MoveStepRunner runs one node's step of a tenant move on that node
+// ("The move, phase by phase" and "Failure and rollback",
+// docs/decisions/volume-pool-tenant-moves.md). A copy step closes the
+// tenant's stores there, copies, verifies, reopens from the destination
+// and catches up; an abort step removes the destination copy (after making
+// the source authoritative again when Copied); a retire step removes the
+// source copy. A nil error completes the step; any error counts as one
+// failed attempt. seal.MoveStepRunner is the node-side implementation.
+type MoveStepRunner interface {
+	RunMoveStep(ctx context.Context, step MoveStep) error
 }
 
 // Service is the management surface every transport delegates to (REST,
 // gRPC, QUIC, Unix, MCP, embedded -- see docs/volume-pools/api.md).
 //
-// MoveTenant and GetMove are Phase 2 (decision D5); their journal and wire
-// surface are not part of this build, and NewCatalog's implementation of
-// them returns *MoveNotImplementedError.
+// MoveTenant admits a tenant move through the wired MoveAdmission and
+// Catalog.AdmitMove (and audits its start through the wired
+// MoveStartAuditor); GetMove reads the move journal.
 type Service interface {
 	ListPools(ctx context.Context) ([]PoolView, error)
 	GetPool(ctx context.Context, name string) (*PoolDetail, error)
@@ -195,8 +385,9 @@ type Service interface {
 	UpdatePool(ctx context.Context, name string, req UpdatePoolRequest) (*Pool, error)
 	DeletePool(ctx context.Context, name string) error
 	ListAssignments(ctx context.Context, pool, pageToken string, pageSize int) (*AssignmentPage, error)
-	MoveTenant(ctx context.Context, tenantID, toPool string) (*Move, error)
+	MoveTenant(ctx context.Context, req MoveTenantRequest) (*Move, error)
 	GetMove(ctx context.Context, tenantID string) (*Move, error)
+	CancelMove(ctx context.Context, tenantID string) (*Move, error)
 }
 
 // Allocator is the narrow seam pkg/tenant (placing a tenant at create time)

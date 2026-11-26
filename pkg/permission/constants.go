@@ -1340,7 +1340,7 @@ var categories = []Category{
 		Group: "Management Services",
 		Permissions: []Permission{
 			VolumePoolCreate, VolumePoolList, VolumePoolRead,
-			VolumePoolUpdate, VolumePoolDelete,
+			VolumePoolUpdate, VolumePoolDelete, VolumePoolMove,
 		},
 	},
 	{

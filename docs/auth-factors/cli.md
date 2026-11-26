@@ -160,11 +160,11 @@ PINs have **no `qrdb` verb group of their own.** They are set during the
 ceremony and the barrier lifecycle:
 
 ```bash
-qrdb init --so-pin SOPIN --user-pin USERPIN
+qrdb init --passphrase '<pp>' --so-pin SOPIN --user-pin USERPIN
 qrdb barrier init --barrier-strategy passphrase --passphrase '<pp>' \
                   --so-pin SO123 --user-pin USR123
 qrdb barrier seal --so-pin SO123 -y
-qrdb barrier rekey --so-pin SO123
+qrdb barrier rekey --threshold 3 --so-pin SO123
 qrdb barrier recovery generate --threshold 3 --so-pin SO123
 ```
 

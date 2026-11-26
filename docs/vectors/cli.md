@@ -45,6 +45,27 @@ qrdb vector namespace create --namespace faces --dimension 512 \
 
 Geometry is fixed at creation. Changing it means a new namespace.
 
+### `qrdb vector namespace update`
+
+Changes a namespace's index parameters and metadata in place, keeping every
+vector. Each key given is merged over the stored value; a key not given keeps
+its value.
+
+| Flag | Type | Meaning |
+|---|---|---|
+| `--namespace` | string | namespace name |
+| `--dimension` | uint32 | expected dimensionality; when given, must equal the namespace's |
+| `--index-param` | key=value | index parameter (repeatable) |
+| `--metadata` | string | JSON metadata object merged over the namespace's metadata |
+
+```bash
+qrdb vector namespace update --namespace docs \
+     --index-param ef_construction=400 --index-param m=32
+```
+
+A change to an index parameter the built index depends on reports that the
+index needs a rebuild.
+
 ### `qrdb vector namespace info` / `list` / `delete`
 
 | Flag | Applies to |

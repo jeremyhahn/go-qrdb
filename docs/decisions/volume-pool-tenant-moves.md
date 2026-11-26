@@ -1,11 +1,13 @@
 # Moving a tenant between volume pools
 
-> **Status: PROPOSED** · Scope: go-qrdb
+> **Status: DECIDED for every question: Q1-Q8 and Q10 by ruling 1115
+> (Tenant Agent, 2026-11-22, adopting the recommendations), Q9 by the owner
+> (ruling 1234, superseding owner queue 287's C): A, only with the explicit,
+> audited `allow_unencrypted_destination` flag; building** · Scope: go-qrdb
 > Last verified: 2026-11-12 at main e8b579229d
-> SPEC row `volume-pool-tenant-moves` (future, phase 2). Nothing here is
-> built. Each open question lists its options, a recommendation and the
-> lower-project dependency each option needs. The owner rules; the Ruling
-> section is empty until then.
+> SPEC row `volume-pool-tenant-moves` (future, phase 2). Each open question
+> lists its options, a recommendation and the lower-project dependency each
+> option needs; the Ruling section records the pick for each.
 
 ## Problem
 
@@ -83,6 +85,15 @@ alternatives at each choice.
 
 A node added to the tenant's replica set while a move runs is placed on a
 node whose health shows **both** pools ready and is added to `NodesPending`.
+As built, a replica the cluster would add while the journal exists is
+refused instead (the placement filter and the rebalancer refuse it early,
+and the placement write itself is fenced: every placement write that adds a
+replica or creates a placement compares the move journal key absent in the
+same guarded transaction, on the system shard that holds both). The resync
+before each copy grant and before cut over adds a replica that joined
+before admission to `NodesPending`, so cut over needs no placement compare:
+no replica can join the set it cuts over while the journal exists (decided
+by convention, ruling 109).
 
 **Key re-derivation for the destination pool.** Nothing new is derived for
 the tenant. A destination pool provided by a `Lockable` volume was unlocked
@@ -326,6 +337,33 @@ costs one verb per transport.
 operator meant to drop the at-rest layer below it; the flag makes the
 downgrade deliberate and visible, without forbidding it.
 
+**Decided by the owner (ruling 1234): A, only with the explicit, audited
+flag.** Ruling 1115 left Q9 to the owner. Owner queue 287 first chose C
+(refuse outright, no flag); ruling 1234 (2026-11-23) supersedes it with A.
+
+- Without the flag, a move from a pool whose provider is `Lockable` to one
+  whose provider is not is refused with `*volume.MoveToUnencryptedPoolError`
+  (`FailedPrecondition`); the message names
+  `qrdb volume-pool move-tenant --allow-unencrypted-destination` as the
+  remedy.
+- With the flag (`MoveTenantRequest.AllowUnencryptedDestination`), `MoveTenant`
+  first reads whether the move drops encryption (`MoveStartFacts`). A drop is
+  recorded fail-closed as `volume_pool.move_encryption_drop` (attributes
+  `from_pool`, `to_pool`, `encryption: dropped`,
+  `allow_unencrypted_destination`) before anything is admitted, whatever the
+  configured audit policy: a failed audit write refuses the start. Every
+  `volume_pool.move_start` record carries `allow_unencrypted_destination` and
+  `encryption_dropped`.
+- With no audit sink wired, a drop is refused with
+  `*volume.MoveEncryptionDropUnauditedError` (`FailedPrecondition`, "dropping
+  encryption needs an audit sink"): an unaudited drop never happens.
+- `AdmitMove` re-applies the rule inside its transaction and admits a drop
+  only with `AllowEncryptionDrop`, which `MoveTenant` sets only after the
+  drop was audited: a pool change after the read refuses rather than drops
+  encryption unaudited.
+- The admitted journal and every answer carry `encryptionDropped`; the CLI
+  prints `Encryption: dropped`.
+
 ### Q10. Which tenant operations are refused while a move runs?
 
 - **A (recommended). Refuse delete, quota change and a second move; serve
@@ -386,12 +424,48 @@ sleeps: every wait is on an observable state):
   replica has resumed on the destination and the test has written through
   the CLI since, for a single-replica tenant and for a three-replica tenant,
   then every write the CLI acknowledged is readable after `cancel-move`
-  returns and the move is gone; with a destination pool that is
+  returns and the move is gone. A single-replica move cuts over in the
+  worker pass that releases its settled step: the window between the
+  destination reopen and that release is inside one worker pass and no CLI
+  ordering reaches it, so the single-replica case writes through the CLI
+  after the copy is recorded, waits for the write to be acknowledged,
+  cancels, and requires every acknowledged write readable after
+  `cancel-move` returns and the move is gone, whichever way the cancel
+  lands (copy-back abort, uncopied abort or after cut over; a cancel
+  answering with a copied node must be the copy-back). The copy-back of a
+  destination-acknowledged write is proven in process by
+  `TestCatalog_SettlingCopyStepCancelAbortsAtRelease`,
+  `TestMoveReconciler_SingleReplicaCancelWhileSettlingCopiesBack` and
+  `TestMoveStepRunner_SingleReplicaAbortKeepsEveryWrite` (decided by
+  convention, ruling 109); with a destination pool that is
   unready on one node (admit refused), and without the permission
   (`PERMISSION_DENIED`).
 
 ## Ruling
 
-None yet. The owner rules on Q1 to Q10; the Status line and this section
-record the ruling, and `docs/volume-pools/` absorbs the ruled design when the
-row is built.
+Ruling 1115 (Tenant Agent, 2026-11-22) adopted the recommendation of every
+question except Q9, which the owner decided (ruling 1234, superseding owner
+queue 287). Slices 1-4
+were built under the earlier by-convention record (ruling 109), which named
+the same picks.
+
+- Q1: B, rolling, one replica at a time.
+- Q2: A, file copy of the closed replica directory, the source kept until
+  retire.
+- Q3: A, the destination pool ready on every replica node at admit, and again
+  at each node's step.
+- Q4: A, a manifest of path, size and SHA-256, plus reopen and catch-up.
+- Q5: A, a move journal `__sys:volumepool/moves/{tenant}` beside the
+  assignment.
+- Q6: A, a move reconciler on the system shard's leader, bounded retry
+  (default 3), then abort.
+- Q7: A, the source removed at retire, right after cut over.
+- Q8: A, `CancelMove` until cut over, `FailedPrecondition` after.
+- Q9: A, decided by the owner (ruling 1234, superseding owner queue 287's
+  C): a move from a Lockable pool to one that is not runs only with the
+  explicit `allow_unencrypted_destination` flag; the drop is audited
+  fail-closed and refused when no audit sink is wired.
+- Q10: A, refuse tenant delete, `UpdateQuotas` and a second move while a move
+  runs; serve reads and writes.
+
+`docs/volume-pools/` absorbs each part of this design as it is built.

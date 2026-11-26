@@ -143,6 +143,7 @@ The cluster engine and database system for every project in the stack: embedded,
 - **object-storage-lsm** — the object-storage LSM segment layout — [docs/storage-engines/](docs/storage-engines/) — blocked: pending decision
 - **volume-pool-tenant-moves** — tenant moves between volume pools, in phase 2 — [docs/volume-pools/](docs/volume-pools/) — open
 - **sqlite-vfs** — go-qrdb as a SQLite backend through a VFS — [docs/sqlite-vfs/](docs/sqlite-vfs/) — open
+- **registration-policy** — account registration mode (invite_only by default, or open) as a node default with a per-tenant override, enforced in RegistrationService — [docs/identity-rbac/registration.md](docs/identity-rbac/registration.md) — open
 
 ## Dependencies
 

@@ -1205,8 +1205,7 @@ active). While the database is sealed every log call is refused with
 group, as for any database. A rekey of the database's barrier re-wraps its
 root key and re-encrypts no stored value, so sealed log records stay readable. A legacy barrier record on a `raft` database, whose data is not
 served from the store the barrier wraps, is refused with
-`database.BarrierOffDataPathError`, classed `Unprocessable`
-([../plans/1613-verifiable-log.md](../plans/1613-verifiable-log.md)).
+`database.BarrierOffDataPathError`, classed `Unprocessable`.
 A database the registry has no record of is served, as a tenant without
 metadata is; a lookup that fails refuses the call. Head signatures are still
 produced outside apply and proposed to the same group. A volume or raft tenant is refused with

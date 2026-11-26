@@ -443,7 +443,7 @@ func TestUnitOfWork_MultipleSavesAndDeletes(t *testing.T) {
 
 func TestGenericDAO_SaveWithCondition(t *testing.T) {
 	t.Run("SaveWithVersionConditionSucceeds", func(t *testing.T) {
-		store := newMemoryKVStore()
+		store := kvstoretest.NewGuardedMemoryStore()
 		ctx := context.Background()
 
 		// VersionedTestEntity, not TestEntity: this subtest is named for a
@@ -477,7 +477,7 @@ func TestGenericDAO_SaveWithCondition(t *testing.T) {
 	})
 
 	t.Run("SaveWithConditionFailsWhenConditionNotMet", func(t *testing.T) {
-		store := newMemoryKVStore()
+		store := kvstoretest.NewGuardedMemoryStore()
 		ctx := context.Background()
 
 		// Also VersionedTestEntity, so the refusal comes from the STORED
@@ -513,7 +513,7 @@ func TestGenericDAO_SaveWithCondition(t *testing.T) {
 	})
 
 	t.Run("SaveWithConditionAutoGeneratesID", func(t *testing.T) {
-		store := newMemoryKVStore()
+		store := kvstoretest.NewGuardedMemoryStore()
 		ctx := context.Background()
 
 		dao, err := New[*TestEntity](store, "users", func() *TestEntity { return &TestEntity{} })
@@ -536,7 +536,7 @@ func TestGenericDAO_SaveWithCondition(t *testing.T) {
 	})
 
 	t.Run("SaveWithInvalidConditionReturnsError", func(t *testing.T) {
-		store := newMemoryKVStore()
+		store := kvstoretest.NewGuardedMemoryStore()
 		ctx := context.Background()
 
 		dao, err := New[*TestEntity](store, "users", func() *TestEntity { return &TestEntity{} })
@@ -554,7 +554,7 @@ func TestGenericDAO_SaveWithCondition(t *testing.T) {
 	})
 
 	t.Run("SaveWithValueConditionSucceeds", func(t *testing.T) {
-		store := newMemoryKVStore()
+		store := kvstoretest.NewGuardedMemoryStore()
 		ctx := context.Background()
 
 		dao, err := New[*TestEntity](store, "users", func() *TestEntity { return &TestEntity{} })

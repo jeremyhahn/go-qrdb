@@ -24,6 +24,7 @@ import (
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -79,6 +80,13 @@ type TenantHostRegistry struct {
 	// returns ErrTenantMigrationInProgress (retryable) instead.
 	migrating sync.Map // tenantID -> struct{}
 
+	// moveHold, when set, is the volume-pool move hold (MoveStoreCloser):
+	// while it holds a tenant, Services neither builds nor caches a Host
+	// for it and returns ErrTenantMoveInProgress (retryable), so a request
+	// cannot re-open the source directory a move step is closing. Attach,
+	// the move's own reopen, is not held back by it.
+	moveHold atomic.Pointer[moveHoldBox]
+
 	// homeOps counts each tenant's in-flight standalone home-store
 	// operations, which AdmitHome admits against migrating; MigrateEncryption
 	// drains them before it touches the barrier. See tenant_home_admission.go.
@@ -107,6 +115,9 @@ type TenantHostRegistry struct {
 // resolve a tenant's DataRoot. It is satisfied by lookupDataRootSource.
 type tenantInfoSource interface {
 	dataRootOf(ctx context.Context, tenantID string) (string, error)
+	// isVolumeTenant reports whether the tenant's metadata names
+	// IsolationVolume.
+	isVolumeTenant(ctx context.Context, tenantID string) (bool, error)
 }
 
 // TenantHostRegistryOption configures optional TenantHostRegistry behavior at
@@ -176,7 +187,7 @@ func NewTenantHostRegistry(barrierReg *seal.BarrierRegistry, tenants tenantInfoS
 func NewTenantHostRegistryFromLookup(barrierReg *seal.BarrierRegistry, lookup TenantLookup, logger *slog.Logger, opts ...TenantHostRegistryOption) *TenantHostRegistry {
 	var source tenantInfoSource
 	if lookup != nil {
-		source = &lookupDataRootSource{registry: barrierReg}
+		source = &lookupDataRootSource{registry: barrierReg, lookup: lookup}
 	}
 	return NewTenantHostRegistry(barrierReg, source, logger, opts...)
 }
@@ -188,6 +199,7 @@ func NewTenantHostRegistryFromLookup(barrierReg *seal.BarrierRegistry, lookup Te
 // resolution goes through the registry rather than the tenant lookup.
 type lookupDataRootSource struct {
 	registry *seal.BarrierRegistry
+	lookup   TenantLookup
 }
 
 // dataRootOf returns the local DataRoot resolved for the tenant, or an error.
@@ -195,17 +207,56 @@ func (s *lookupDataRootSource) dataRootOf(ctx context.Context, tenantID string) 
 	return s.registry.LocalTenantDataRoot(ctx, tenantID)
 }
 
+// isVolumeTenant reads the tenant's isolation from its metadata; with no
+// lookup wired it reports false.
+func (s *lookupDataRootSource) isVolumeTenant(ctx context.Context, tenantID string) (bool, error) {
+	if s.lookup == nil {
+		return false, nil
+	}
+	info, err := s.lookup.GetTenant(ctx, tenantID)
+	if err != nil {
+		return false, err
+	}
+	return info != nil && info.EffectiveIsolationType() == tenant.IsolationVolume, nil
+}
+
 // Services returns the (un-namespaced) data-plane service set backing the named
 // IsolationVolume tenant, building and caching the per-tenant Host on first
 // access. The tenant's barrier must already be registered and unsealed; a
 // sealed or missing barrier returns an error so the request fails closed.
 func (r *TenantHostRegistry) Services(ctx context.Context, tenantID string) (*DatabaseServices, error) {
+	return r.services(ctx, tenantID, true)
+}
+
+// SetMoveHold installs the volume-pool move hold Services honours. Nil
+// clears it.
+func (r *TenantHostRegistry) SetMoveHold(h MoveHold) {
+	if r == nil {
+		return
+	}
+	if h == nil {
+		r.moveHold.Store(nil)
+		return
+	}
+	r.moveHold.Store(&moveHoldBox{hold: h})
+}
+
+// services is Services; honourMoveHold false is Attach, the move's own
+// reopen, which runs while the move still holds the tenant.
+func (r *TenantHostRegistry) services(ctx context.Context, tenantID string, honourMoveHold bool) (*DatabaseServices, error) {
 	if r == nil || r.barrierReg == nil || r.tenants == nil {
 		return nil, &TenantHostError{TenantID: tenantID, Op: "resolve", Err: ErrTenantHostUnavailable}
 	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// A move step holds the tenant from before it closes the Host until the
+	// reopen: refuse even a cached Host, which the close is about to evict.
+	if honourMoveHold {
+		if h := r.moveHold.Load(); h != nil && h.hold.HoldsTenant(tenantID) {
+			return nil, &TenantHostError{TenantID: tenantID, Op: "resolve", Err: ErrTenantMoveInProgress}
+		}
+	}
 	if th, ok := r.hosts[tenantID]; ok {
 		return th.services, nil
 	}
@@ -328,8 +379,17 @@ func (r *TenantHostRegistry) StartedHosts() map[string]service.AdminHost {
 // not pay the Host-construction cost. It is idempotent: an already-attached
 // tenant is a no-op.
 func (r *TenantHostRegistry) Attach(ctx context.Context, tenantID string) error {
-	_, err := r.Services(ctx, tenantID)
+	_, err := r.services(ctx, tenantID, false)
 	return err
+}
+
+// HostsTenant reports whether durable tenant metadata names tenantID an
+// IsolationVolume tenant, whose Host this registry serves.
+func (r *TenantHostRegistry) HostsTenant(ctx context.Context, tenantID string) (bool, error) {
+	if r == nil || r.tenants == nil {
+		return false, nil
+	}
+	return r.tenants.isVolumeTenant(ctx, tenantID)
 }
 
 // Close stops and closes the named tenant's Host, releasing its Pebble lock,

@@ -23,6 +23,8 @@ import (
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
+	"github.com/jeremyhahn/go-quicraft/pkg/logdb"
+	"github.com/jeremyhahn/go-quicraft/pkg/logdb/waldb"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
@@ -56,6 +58,7 @@ type tenantHost struct {
 	tenantID string
 	dataRoot string
 	host     *quicraft.Host
+	logDB    logdb.LogDB // the Host's WAL, closed by host.Close
 	adapter  service.AdminHost
 	hub      *watch.Hub
 	lessor   *lease.Lessor
@@ -116,15 +119,25 @@ func newTenantHost(ctx context.Context, tenantID, dataRoot string, tb *seal.Tena
 	// wrapped by the encfs Encryptor below, and the replication log is wrapped
 	// here. The underlying EpochBarrier satisfies quicraft.Barrier and must be
 	// unsealed (the caller guarantees this).
+	barrier := tb.Barrier().EpochBarrier()
+	walDB, err := waldb.Open(hostCfg.WALDir, waldb.WithBarrier(barrier), waldb.WithMetrics(database.NewRaftMetrics(
+		syncwatch.WithLogger(logger),
+		syncwatch.WithAttrs(slog.String("tenant", tenantID), slog.String("wal_dir", hostCfg.WALDir)),
+	)))
+	if err != nil {
+		return nil, &TenantHostError{TenantID: tenantID, Op: "open-wal", Err: err}
+	}
 	host, err := quicraft.NewHost(hostCfg,
 		quicraft.WithoutTransport(),
-		quicraft.WithBarrier(tb.Barrier().EpochBarrier()),
+		quicraft.WithBarrier(barrier),
+		quicraft.WithLogDB(walDB),
 		quicraft.WithMetrics(database.NewRaftMetrics(
 			syncwatch.WithLogger(logger),
 			syncwatch.WithAttrs(slog.String("tenant", tenantID), slog.String("wal_dir", hostCfg.WALDir)),
 		)),
 	)
 	if err != nil {
+		_ = walDB.Close()
 		return nil, &TenantHostError{TenantID: tenantID, Op: "new-host", Err: err}
 	}
 
@@ -160,6 +173,7 @@ func newTenantHost(ctx context.Context, tenantID, dataRoot string, tb *seal.Tena
 		tenantID: tenantID,
 		dataRoot: dataRoot,
 		host:     host,
+		logDB:    walDB,
 		adapter:  adapter,
 		hub:      hub,
 		lessor:   lessor,
