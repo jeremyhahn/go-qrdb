@@ -113,7 +113,7 @@ func ReencryptPebbleStore(ctx context.Context, srcDir string, srcEnc *atrest.Enc
 	}
 	defer func() { _ = src.Close() }()
 
-	dstOpts := &pebble.Options{}
+	dstOpts := &pebble.Options{FormatMajorVersion: pebblestore.FormatMajorVersion}
 	if dstEnc.Enabled() {
 		dstOpts.FS = pebblestore.WrapVFS(dstOpts.FS, dstEnc.Wrap)
 	}
