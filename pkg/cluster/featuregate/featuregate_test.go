@@ -1109,27 +1109,22 @@ func (s failingRefreshStore) ListMembers(ctx context.Context) ([]cluster.Member,
 	return nil, errors.New("unavailable")
 }
 
-// onceReadableKV serves Start's one linearizable read of each prefix (the
-// activations, and the release intents the restart check lists) and fails
-// every later read.
+// onceReadableKV serves Start's linearizable reads (the activations, and
+// the release intents retireIntents and the restart check list) and fails
+// every read after Start returned.
 type onceReadableKV struct {
 	*memKV
-	readMu sync.Mutex
-	read   map[string]bool
+	// unreadable is set once Start returned: Start's own reads (the
+	// release history and intents, read more than once) succeed, and
+	// every later read fails.
+	unreadable atomic.Bool
 }
 
 func (k *onceReadableKV) ListAll(ctx context.Context, prefix string) ([]string, error) {
-	k.readMu.Lock()
-	first := !k.read[prefix]
-	if k.read == nil {
-		k.read = map[string]bool{}
+	if k.unreadable.Load() {
+		return nil, errors.New("not leader")
 	}
-	k.read[prefix] = true
-	k.readMu.Unlock()
-	if first {
-		return k.memKV.ListAll(ctx, prefix)
-	}
-	return nil, errors.New("not leader")
+	return k.memKV.ListAll(ctx, prefix)
 }
 
 // A refresh whose advertisement list and activation read both fail keeps the
@@ -1145,7 +1140,9 @@ func TestGate_RefreshSurvivesUnreadableStores(t *testing.T) {
 		RefreshInterval: time.Millisecond,
 	})
 	require.NoError(t, err)
-	require.NoError(t, g.Start(context.Background(), &onceReadableKV{memKV: newMemKV()}, store))
+	kv := &onceReadableKV{memKV: newMemKV()}
+	require.NoError(t, g.Start(context.Background(), kv, store))
+	kv.unreadable.Store(true)
 
 	store.lists.await(t, 3)
 	require.NoError(t, g.Close())

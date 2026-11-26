@@ -1448,7 +1448,9 @@ func (g *Gate) recordRelease(ctx context.Context, kv ActivationKV) error {
 
 // retireIntents deletes a release intent by one of two rules. It is best
 // effort; an intent left behind only keeps refusing non-adjacent adds and
-// restarts, and the next record pass retries.
+// restarts, and the next record pass retries. recordRelease runs it after
+// each record pass, and EnforceRelease before its restart check, once this
+// node's release is on record.
 //
 //   - Recorded: its candidate is now a committed member with a release
 //     record of its own (this node's, just written, included). The record
@@ -1788,7 +1790,10 @@ type activationRecord struct {
 // EnforceRelease refuses -- with *release.GapError, kept for Refusal --
 // when this node is a committed member restarting on a release not
 // adjacent to a member's release or the release it last ran
-// (checkRestartRelease), and otherwise records this binary's release. Start
+// (checkRestartRelease), and otherwise records this binary's release. Before
+// the check it retires the release intents retireIntents allows, so an
+// intent this node claimed in an earlier process for a candidate that never
+// joined does not refuse an adjacent restart. Start
 // runs it after seeding the advertisement view; a node whose state machine
 // has no leases, and so cannot advertise or Start, runs it on its own: the
 // release history needs no lease, and every node start enforces it. A failed
@@ -1825,7 +1830,15 @@ func (g *Gate) EnforceRelease(ctx context.Context, kv ActivationKV) error {
 		if created, err = kv.PutIfAbsent(ctx, key, []byte(self.Address)); err != nil {
 			return &StoreError{Op: "record release", Err: err}
 		}
+		keys = append(keys, key)
 	}
+	// Intents this node claimed in an earlier process for candidates that
+	// never joined (a crash between claim and outcome, or a failed
+	// withdraw) would otherwise refuse this restart for good: retire them
+	// before the check lists the intents. In a fresh process nothing is
+	// kept and the proposal lock is free, so the Own and idle rule applies;
+	// another claimant's intents stay.
+	g.retireIntents(ctx, kv, self, parseReleases(keys))
 	if err := g.checkRestartRelease(ctx, kv); err != nil {
 		if created {
 			if derr := kv.Delete(ctx, key); derr != nil {

@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/release"
 )
 
@@ -253,6 +254,65 @@ func TestEnforceRelease_RefusesARestartAcrossAClaimedCandidate(t *testing.T) {
 	require.ErrorAs(t, g.Refusal(), &gap, "the refusal is kept for health reporting")
 	assert.False(t, kv.has(ReleasePrefix+"1/0.58.0-alpha"), "a refused restart left its record")
 	assert.True(t, kv.has(ReleasePrefix+"1/0.59.0-alpha"), "a refused restart removed an earlier record")
+}
+
+// TestStart_RetiresOwnAbandonedIntentBeforeTheRestartCheck: this node
+// (replica 1, on 0.59) claimed a 0.58 candidate that never joined, then
+// crashed. Its adjacent restart on 0.60 retires that intent by the Own and
+// idle rule before the restart check, through Start and StartAdmission
+// alike. Another claimant's intent still refuses the restart, and an own
+// intent whose candidate is a committed member is not retired by that rule.
+func TestStart_RetiresOwnAbandonedIntentBeforeTheRestartCheck(t *testing.T) {
+	starts := map[string]func(*Gate, context.Context, ActivationKV, ...cluster.MembershipStore) error{
+		"Start":          (*Gate).Start,
+		"StartAdmission": (*Gate).StartAdmission,
+	}
+	for name, start := range starts {
+		t.Run(name, func(t *testing.T) {
+			t.Run("own abandoned intent is retired", func(t *testing.T) {
+				t.Cleanup(release.SetForTesting("0.60.0-alpha"))
+				kv := newMemKV()
+				allOnRelease(t, kv, "0.59.0-alpha")
+				own := ReleaseIntentPrefix + "n4:7000/0.58.0-alpha/1/1"
+				_, err := kv.PutIfAbsent(context.Background(), own, []byte("n4:7000"))
+				require.NoError(t, err)
+				g := newGate(t, threeNodes())
+				require.NoError(t, start(g, context.Background(), kv, newLeaseStore()))
+				assert.False(t, kv.has(own), "this node's abandoned intent survived its restart")
+				assert.True(t, kv.has(ReleasePrefix+"1/0.60.0-alpha"), "the adjacent restart did not record its release")
+			})
+			t.Run("another claimant's intent still refuses", func(t *testing.T) {
+				t.Cleanup(release.SetForTesting("0.60.0-alpha"))
+				kv := newMemKV()
+				allOnRelease(t, kv, "0.59.0-alpha")
+				other := ReleaseIntentPrefix + "n4:7000/0.58.0-alpha/3/1"
+				_, err := kv.PutIfAbsent(context.Background(), other, []byte("n4:7000"))
+				require.NoError(t, err)
+				g := newGate(t, threeNodes())
+				var gap *release.GapError
+				require.ErrorAs(t, start(g, context.Background(), kv, newLeaseStore()), &gap)
+				assert.Equal(t, release.GapError{Channel: "raft-membership", Local: "0.60.0-alpha", Peer: "0.58.0-alpha"}, *gap)
+				assert.True(t, kv.has(other), "another claimant's intent was retired")
+				assert.False(t, kv.has(ReleasePrefix+"1/0.60.0-alpha"), "a refused restart left its record")
+			})
+			t.Run("own intent for a committed member is kept", func(t *testing.T) {
+				t.Cleanup(release.SetForTesting("0.60.0-alpha"))
+				kv, store := newMemKV(), newLeaseStore()
+				for id, addr := range map[uint64]string{1: "n1:7000", 3: "n3:7000"} {
+					_, err := kv.PutIfAbsent(context.Background(), ReleasePrefix+strconv.FormatUint(id, 10)+"/0.59.0-alpha", []byte(addr))
+					require.NoError(t, err)
+				}
+				store.advertiseRelease(t, 2, "n2:7000", "0.59.0-alpha")
+				member := ReleaseIntentPrefix + "n2:7000/0.58.0-alpha/1/1"
+				_, err := kv.PutIfAbsent(context.Background(), member, []byte("n2:7000"))
+				require.NoError(t, err)
+				g := newGate(t, threeNodes())
+				var gap *release.GapError
+				require.ErrorAs(t, start(g, context.Background(), kv, store), &gap)
+				assert.True(t, kv.has(member), "the idle rule retired an intent whose candidate is a committed member")
+			})
+		})
+	}
 }
 
 // The reverse order: the 0.58 restart records first, while the leader's
