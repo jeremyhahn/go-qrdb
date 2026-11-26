@@ -205,6 +205,14 @@ type Placement struct {
 	// before this field existed was a dedicated Raft group, so an absent
 	// key must not be read as "unbound".
 	Backend Backend `json:"backend,omitempty"`
+
+	// StateStorage is the store a dedicated Raft group's state machine runs
+	// on (BackendMemory, BackendFile or BackendPebble), resolved from the
+	// database's catalog record at create. It is carried in the replicated
+	// placement table so a replica the reconciler places on a node that has
+	// never opened the database starts on the recorded store, not the
+	// default. Empty means the record named none: the node default applies.
+	StateStorage Backend `json:"state_storage,omitempty"`
 }
 
 // IsLocalBinding reports whether p binds its database to a single owning

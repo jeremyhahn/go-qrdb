@@ -2222,7 +2222,13 @@ func (s *placementRaftInfoSource) dedicatedWAL(tenantID, db string) bool {
 	return s.fallback.dedicatedWAL(tenantID, db)
 }
 
+// stateStorage reads the store the placement recorded for the group, as
+// dedicatedWAL does: a replica placed on a node that never opened the
+// database has no local catalog record to read it from.
 func (s *placementRaftInfoSource) stateStorage(tenantID, db string) database.BackendType {
+	if _, _, p, ok, err := s.databaseAndPlacementInfo(tenantID, db); err == nil && ok && p != nil && p.StateStorage != "" {
+		return database.BackendType(p.StateStorage)
+	}
 	return s.fallback.stateStorage(tenantID, db)
 }
 

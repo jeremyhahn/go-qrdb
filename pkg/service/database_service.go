@@ -2098,6 +2098,11 @@ func (s *DatabaseService) persistPlacement(ctx context.Context, tenantID string,
 	// replicated placement table so followers materialized by the reconciler
 	// route this shard's Raft log to a tenant-barrier-encrypted dedicated WAL.
 	plan.DedicatedWAL = info.DedicatedWAL
+	// Carry the recorded state-machine store the same way, so a replica
+	// placed on a node that never opened the database starts on it.
+	if info.Raft != nil {
+		plan.StateStorage = placement.Backend(info.Raft.StateStorage)
+	}
 	if err := s.placementStore.Put(ctx, plan); err != nil {
 		return nil, err
 	}

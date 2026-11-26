@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 )
 
 // pebbleManifests counts the pebble MANIFEST files under root.
@@ -80,6 +81,45 @@ func TestRaftBackendFactory_GroupStartHonorsRecordedStateStorage(t *testing.T) {
 				if got := pebbleManifests(t, dbDir) > 0; got != tc.onDisk {
 					t.Fatalf("%s: on-disk state machine under %s = %v, want %v", phase, dbDir, got, tc.onDisk)
 				}
+			}
+		})
+	}
+}
+
+// TestRaftBackendFactory_FreshReplicaStartsOnPlacedStateStorage: a replica
+// placed on a node that has never opened the database (its local catalog
+// names no state storage) starts on the store the placement recorded from
+// the catalog record at create, not the node default.
+func TestRaftBackendFactory_FreshReplicaStartsOnPlacedStateStorage(t *testing.T) {
+	for i, tc := range []struct {
+		storage database.BackendType
+		onDisk  bool
+	}{
+		{storage: database.BackendMemory, onDisk: false},
+		{storage: database.BackendPebble, onDisk: true},
+	} {
+		t.Run(string(tc.storage), func(t *testing.T) {
+			store := newPlacementStore(t)
+			reg := newVolumePooledRegistry(t)
+			root, _ := registerVolumeTenant(t, reg, "rf")
+			if err := store.Put(context.Background(), &placement.Placement{
+				TenantID: "rf", Database: "app", ShardID: uint64(5040 + i), RF: 1, LeaderReplicaID: sharedHostReplicaID,
+				Replicas: []placement.Replica{
+					{ReplicaID: sharedHostReplicaID, NodeID: sharedHostRaftAddr, RaftAddr: sharedHostRaftAddr},
+				},
+				StateStorage: placement.Backend(tc.storage),
+			}); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			// The fallback catalog never opened the database: it names no
+			// state storage for it.
+			f := newPlacementRaftFactory(t, store, sharedHostRaftAddr, reg)
+			if _, err := f.Services(context.Background(), "rf", "app"); err != nil {
+				t.Fatalf("Services: %v", err)
+			}
+			dbDir := filepath.Join(root, "databases", "app")
+			if got := pebbleManifests(t, dbDir) > 0; got != tc.onDisk {
+				t.Fatalf("on-disk state machine under %s = %v, want %v", dbDir, got, tc.onDisk)
 			}
 		})
 	}
