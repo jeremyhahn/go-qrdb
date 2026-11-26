@@ -202,7 +202,7 @@ func TestDBFile_ControlOps(t *testing.T) {
 	}
 	name := cstr(t, "synchronous")
 	arg := [3]uintptr{0, name, 0}
-	if rc := f.control(sqlite3.SQLITE_FCNTL_PRAGMA, uintptr(unsafe.Pointer(&arg))); rc != sqlite3.SQLITE_NOTFOUND {
+	if rc := f.control(sqlite3.SQLITE_FCNTL_PRAGMA, uintptr(unsafe.Pointer(&arg))); rc != sqlite3.SQLITE_NOTFOUND { // #nosec G103 -- the VFS ABI takes C pointers as uintptr; the call does not retain this live Go address.
 		t.Fatalf("pragma synchronous with no value rc = %d, want SQLITE_NOTFOUND", rc)
 	}
 	if rc := f.control(sqlite3.SQLITE_FCNTL_BEGIN_ATOMIC_WRITE, 0); rc != sqlite3.SQLITE_OK {
@@ -301,9 +301,9 @@ func TestClassify(t *testing.T) {
 
 func TestABI_UnknownHandleAndRefusedOpen(t *testing.T) {
 	file := [2]uintptr{0, ^uintptr(0)}
-	pFile := uintptr(unsafe.Pointer(&file[0]))
+	pFile := uintptr(unsafe.Pointer(&file[0])) // #nosec G103 -- the VFS ABI takes C pointers as uintptr; the call does not retain this live Go address.
 	buf := make([]byte, 4)
-	pBuf := uintptr(unsafe.Pointer(&buf[0]))
+	pBuf := uintptr(unsafe.Pointer(&buf[0])) // #nosec G103 -- the VFS ABI takes C pointers as uintptr; the call does not retain this live Go address.
 	if rc := xRead(nil, pFile, pBuf, 4, 0); rc != sqlite3.SQLITE_IOERR_READ {
 		t.Errorf("xRead rc = %d", rc)
 	}
@@ -332,7 +332,7 @@ func TestABI_UnknownHandleAndRefusedOpen(t *testing.T) {
 		t.Errorf("xClose rc = %d", rc)
 	}
 	var reserved int32 = 7
-	if rc := xCheckReservedLock(nil, pFile, uintptr(unsafe.Pointer(&reserved))); rc != sqlite3.SQLITE_OK || reserved != 0 {
+	if rc := xCheckReservedLock(nil, pFile, uintptr(unsafe.Pointer(&reserved))); rc != sqlite3.SQLITE_OK || reserved != 0 { // #nosec G103 -- the VFS ABI takes C pointers as uintptr; the call does not retain this live Go address.
 		t.Errorf("xCheckReservedLock rc = %d reserved = %d", rc, reserved)
 	}
 	zName := cstr(t, "long-name.db")
@@ -349,21 +349,21 @@ func TestABI_UnknownHandleAndRefusedOpen(t *testing.T) {
 
 func TestABI_JournalHandleRoundTrip(t *testing.T) {
 	var file [2]uintptr
-	pFile := uintptr(unsafe.Pointer(&file[0]))
+	pFile := uintptr(unsafe.Pointer(&file[0])) // #nosec G103 -- the VFS ABI takes C pointers as uintptr; the call does not retain this live Go address.
 	zName := cstr(t, "j.db-journal")
 	var out int32
-	if rc := xOpen(nil, 0, zName, pFile, sqlite3.SQLITE_OPEN_MAIN_JOURNAL, uintptr(unsafe.Pointer(&out))); rc != sqlite3.SQLITE_OK {
+	if rc := xOpen(nil, 0, zName, pFile, sqlite3.SQLITE_OPEN_MAIN_JOURNAL, uintptr(unsafe.Pointer(&out))); rc != sqlite3.SQLITE_OK { // #nosec G103 -- the VFS ABI takes C pointers as uintptr; the call does not retain this live Go address.
 		t.Fatalf("xOpen journal rc = %d", rc)
 	}
 	if out != sqlite3.SQLITE_OPEN_MAIN_JOURNAL {
 		t.Fatalf("out flags = %#x", out)
 	}
 	data := []byte("journal!")
-	if rc := xWrite(nil, pFile, uintptr(unsafe.Pointer(&data[0])), int32(len(data)), 0); rc != sqlite3.SQLITE_OK {
+	if rc := xWrite(nil, pFile, uintptr(unsafe.Pointer(&data[0])), int32(len(data)), 0); rc != sqlite3.SQLITE_OK { // #nosec G103 -- the VFS ABI takes C pointers as uintptr; the call does not retain this live Go address.
 		t.Fatalf("xWrite rc = %d", rc)
 	}
 	var size int64
-	if rc := xFileSize(nil, pFile, uintptr(unsafe.Pointer(&size))); rc != sqlite3.SQLITE_OK || size != int64(len(data)) {
+	if rc := xFileSize(nil, pFile, uintptr(unsafe.Pointer(&size))); rc != sqlite3.SQLITE_OK || size != int64(len(data)) { // #nosec G103 -- the VFS ABI takes C pointers as uintptr; the call does not retain this live Go address.
 		t.Fatalf("xFileSize rc = %d size = %d", rc, size)
 	}
 	if rc := xFileSize(nil, pFile, 0); rc != sqlite3.SQLITE_OK {
