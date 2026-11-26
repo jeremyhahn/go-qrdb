@@ -3521,44 +3521,56 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
         },
         VlogBinding: (() => {
-          const logs = new Map<string, string[]>();
+          // Every VlogBinding method takes the database first; logs are
+          // kept per database, as the registry scopes them.
+          const dbs = new Map<string, Map<string, string[]>>();
+          const logsOf = (db: string) => {
+            const name = db === "system" ? "" : db;
+            let m = dbs.get(name);
+            if (!m) {
+              m = new Map<string, string[]>();
+              dbs.set(name, m);
+            }
+            return m;
+          };
           const key = { version: 1, public_key: "cGs=" };
           return {
-            Create: async (r: { log: string }) => {
+            Create: async (db: string, r: { log: string }) => {
               maybeReject("VlogBinding.Create");
-              logs.set(r.log, []);
-              return { tenant_id: "acme", database: "default", log: r.log, key };
+              logsOf(db).set(r.log, []);
+              return { tenant_id: "acme", database: db || "default", log: r.log, key };
             },
-            List: async () => ({ logs: [...logs.keys()] }),
-            Append: async (r: { log: string; entries: string[] }) => {
+            List: async (db: string) => ({ logs: [...logsOf(db).keys()] }),
+            Append: async (db: string, r: { log: string; entries: string[] }) => {
+              const logs = logsOf(db);
               const l = logs.get(r.log) ?? [];
               const first_index = l.length;
               l.push(...r.entries);
               logs.set(r.log, l);
               return { first_index, count: r.entries.length };
             },
-            Get: async (r: { log: string; from?: number; limit?: number }) => {
+            Get: async (db: string, r: { log: string; from?: number; limit?: number }) => {
               const from = r.from ?? 0;
-              const l = (logs.get(r.log) ?? []).slice(from, r.limit ? from + r.limit : undefined);
+              const l = (logsOf(db).get(r.log) ?? []).slice(from, r.limit ? from + r.limit : undefined);
               return { entries: l.map((body, i) => ({ index: from + i, body })) };
             },
-            ProveInclusion: async (r: { index: number; size: number }) => {
+            ProveInclusion: async (_db: string, r: { index: number; size: number }) => {
               maybeReject("VlogBinding.ProveInclusion");
               return { index: r.index, size: r.size, hashes: [] };
             },
-            ProveConsistency: async (r: { size1: number; size2: number }) => ({ size1: r.size1, size2: r.size2, hashes: [] }),
-            Head: async (r: { log: string }) => ({
-              size: (logs.get(r.log) ?? []).length,
+            ProveConsistency: async (_db: string, r: { size1: number; size2: number }) => ({ size1: r.size1, size2: r.size2, hashes: [] }),
+            Head: async (db: string, r: { log: string }) => ({
+              size: (logsOf(db).get(r.log) ?? []).length,
               root: "",
               bodies_from: 0,
               checkpoint_size: 0,
             }),
-            SignHead: async (r: { log: string }) => ({
-              head: { size: (logs.get(r.log) ?? []).length, root: "", key_version: 1, signature_type: "ed25519", signature: "" },
+            SignHead: async (db: string, r: { log: string }) => ({
+              head: { size: (logsOf(db).get(r.log) ?? []).length, root: "", key_version: 1, signature_type: "ed25519", signature: "" },
               checkpoint: "",
             }),
             RotateKey: async () => ({ key: { version: 2, public_key: "cGsy" } }),
-            ExpireBodies: async (r: { cutoff: number }) => ({ expired: r.cutoff }),
+            ExpireBodies: async (_db: string, r: { cutoff: number }) => ({ expired: r.cutoff }),
           };
         })(),
       },

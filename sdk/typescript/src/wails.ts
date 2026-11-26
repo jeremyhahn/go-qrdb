@@ -1830,7 +1830,9 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get vlog(): VlogClient {
-        const b = wrapBindings(getBindings().main.VlogBinding);
+        // Every VlogBinding method takes the database first, like the KV,
+        // time-series and vector bindings, so a log is scoped per database.
+        const b = withDatabaseArg(wrapBindings(getBindings().main.VlogBinding), this.activeDatabase);
         return {
             create: async (req: VlogCreateRequest) => b.Create(toSnake(req)) as Promise<VlogCreateResult>,
             list: async () => b.List() as Promise<VlogListResult>,

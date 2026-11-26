@@ -373,6 +373,11 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 	// network transport resolves requests through: without it the embedded
 	// transport cannot scope a connection to a named database.
 	opts = append(opts, embedded.WithServiceRegistry(embeddedServiceRegistry(svcNode, dbManager, embeddedRegistry, cfg.RaftEnabled)))
+	// The default ("system") database is served through that registry as
+	// well, so it sees only its own keyspace: without this its data plane
+	// was the node's raw store, where a Scan, Get or Delete reached every
+	// named database's physical keys.
+	opts = append(opts, embedded.WithRegistryDefaultDatabase())
 
 	// Collection service uses KV + index from the node.
 	opts = append(opts, embedded.WithCollectionService(svcNode.Collection))
