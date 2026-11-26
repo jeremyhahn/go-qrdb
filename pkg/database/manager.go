@@ -1115,6 +1115,19 @@ func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 			}
 		}
 	}
+	//    A store's own files outside its root (an external write-ahead
+	//    log) go after the root: a crash in between leaves a log with no
+	//    store, which the binding discards when it opens again.
+	if owner, ok := db.rawBackend.(ExternalDirOwner); ok {
+		for _, dir := range owner.ExternalDirs() {
+			if strings.TrimSpace(dir) == "" {
+				continue
+			}
+			if err := os.RemoveAll(dir); err != nil {
+				return &DropError{Name: name, Err: err}
+			}
+		}
+	}
 	if err := os.RemoveAll(m.dbDir(key.tenant, name)); err != nil {
 		return &DropError{Name: name, Err: err}
 	}

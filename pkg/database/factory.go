@@ -44,6 +44,15 @@ type DataRootOwner interface {
 	DataRoot() string
 }
 
+// ExternalDirOwner is implemented by a Backend whose store also writes in
+// directories outside its DataRoot (a Pebble binding's write-ahead log under
+// the node's storage.wal_dir). The paths are the backend's own, never shared
+// with another database; Drop removes them once the backend is closed, so a
+// recreate never replays the dropped store's files.
+type ExternalDirOwner interface {
+	ExternalDirs() []string
+}
+
 // EmbeddedBackendFactory creates standalone backends backed by local storage
 // engines (memory, file, pebble).
 type EmbeddedBackendFactory struct{}

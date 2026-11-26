@@ -539,6 +539,9 @@ func (f *LocalBindingFactory) open(b *database.Binding) (*MaterializedBinding, e
 		}}
 	}
 	m := &MaterializedBinding{binding: b, hub: watch.NewHub(f.hubOpts...)}
+	if b.Backend == database.BackendPebble {
+		m.walDir = storageCfg.WALDir
+	}
 	if b.DatabaseBarrier {
 		// The database's barrier is layered on the binding's own store,
 		// under the full bundle; the Manager attaches it (LayerBarrier).
@@ -779,9 +782,9 @@ func BindingWALDir(walDir, dataRoot string) string {
 }
 
 // clearStaleBindingWAL removes a binding's WAL directory when its store has
-// no Pebble data yet: the binding root of a dropped database is removed
-// while its WAL directory, outside that root, is not, so a database created
-// again under the same root must not replay the dropped one's logs.
+// no Pebble data yet. A drop removes the WAL directory (ExternalDirs) after
+// the binding root, so a crash between the two leaves a log with no store;
+// a database opened again under the same root must not replay it.
 func clearStaleBindingWAL(walDir, dataRoot string) error {
 	if walDir == "" {
 		return nil
@@ -806,6 +809,9 @@ type MaterializedBinding struct {
 	stg     storage.Storage
 	hub     *watch.Hub
 	binding *database.Binding
+	// walDir is the Pebble store's write-ahead log directory outside its
+	// root (BindingWALDir), "" when the log lives under the root.
+	walDir string
 	// vector is the database's own vector service; closeVector stops it
 	// and closes its storage.
 	vector      service.VectorServicer
@@ -844,6 +850,17 @@ func (m *MaterializedBinding) Binding() *database.Binding { return m.binding }
 
 // DataRoot returns the binding's store directory; it is empty for memory.
 func (m *MaterializedBinding) DataRoot() string { return m.binding.DataRoot }
+
+// ExternalDirs returns the directories the binding's store writes outside
+// its DataRoot (database.ExternalDirOwner): a Pebble binding's write-ahead
+// log when the node sets storage.wal_dir (BindingWALDir). A drop removes
+// them with the root.
+func (m *MaterializedBinding) ExternalDirs() []string {
+	if m.walDir == "" {
+		return nil
+	}
+	return []string{m.walDir}
+}
 
 // Close stops the lease sweeper, closes the host, then the store. It runs
 // once; later calls return the first result.

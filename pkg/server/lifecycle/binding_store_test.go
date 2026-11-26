@@ -446,6 +446,14 @@ func TestLocalBindingFactory_WALDirPerBinding(t *testing.T) {
 	if err := mgr.DropForTenant(tenant.WithTenantID(ctx, bindingTenant), "alpha"); err != nil {
 		t.Fatalf("DropForTenant: %v", err)
 	}
+	// The drop removes the dropped binding's WAL directory, outside its
+	// root, at once; the other binding's stays.
+	if _, err := os.Stat(alphaWAL); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("dropped binding's WAL dir %s after the drop: stat err = %v, want not exist", alphaWAL, err)
+	}
+	if got := walFiles(t, betaWAL); len(got) == 0 {
+		t.Fatalf("live binding's WAL dir %s lost its files on the other's drop", betaWAL)
+	}
 	db, err := mgr.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "alpha", Backend: database.BackendPebble})
 	if err != nil {
 		t.Fatalf("re-Create: %v", err)
