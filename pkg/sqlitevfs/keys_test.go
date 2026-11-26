@@ -19,6 +19,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDatabaseNameRefusals(t *testing.T) {
@@ -136,12 +137,44 @@ func TestStageKeyRefusals(t *testing.T) {
 	if err := ValidateCommitID(testCommitID); err != nil {
 		t.Fatalf("ValidateCommitID(valid) = %v", err)
 	}
-	id, err := newCommitID()
+	id, err := newCommitID(false, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := ValidateCommitID(id); err != nil {
 		t.Fatalf("newCommitID %q: %v", id, err)
+	}
+}
+
+// TestCommitIDRoundTripsModeAndTime checks that a commit id records the
+// writer mode and the creation time, and that the random half differs.
+func TestCommitIDRoundTripsModeAndTime(t *testing.T) {
+	created := time.Unix(1_790_000_000, 123_456_789)
+	for _, optimistic := range []bool{false, true} {
+		id, err := newCommitID(optimistic, created)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ValidateCommitID(id); err != nil {
+			t.Fatalf("newCommitID %q: %v", id, err)
+		}
+		gotOpt, gotTime, err := parseCommitID(id)
+		if err != nil {
+			t.Fatalf("parseCommitID(%q): %v", id, err)
+		}
+		if gotOpt != optimistic || !gotTime.Equal(created) {
+			t.Fatalf("parseCommitID(%q) = %v, %v, want %v, %v", id, gotOpt, gotTime, optimistic, created)
+		}
+		other, err := newCommitID(optimistic, created)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if other == id || other[:16] != id[:16] {
+			t.Fatalf("ids %q and %q of one mode and time: want the same head and different random halves", id, other)
+		}
+	}
+	if _, _, err := parseCommitID("not-an-id"); !errors.Is(err, ErrInvalidCommitID) {
+		t.Fatalf("parseCommitID(malformed) err = %v, want ErrInvalidCommitID", err)
 	}
 }
 

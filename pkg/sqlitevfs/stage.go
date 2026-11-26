@@ -16,6 +16,7 @@ package sqlitevfs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 )
@@ -34,15 +35,20 @@ import (
 // and publishes nothing. The publish carries the commit's read set (reads,
 // see Txn.readSet), so an optimistic staged commit whose reads moved
 // conflicts at publish with ErrSnapshotChanged, and its stage keys are swept
-// like any other publish failure.
+// like any other publish failure. An optimistic commit's count conflict is
+// ErrSnapshotChanged too (wrapping ErrPublishConflict): its stage was swept
+// as expired by a serialized writer's Reserve, and the commit is retryable.
+// The commit id records the Store's mode and the staging time (newCommitID)
+// so that sweep keeps an optimistic stage still in flight.
 //
 // Staged keys are never read as pages: readers see the old pages until the
 // publish revision and the new ones from it. On a staging or publish
-// failure commitStaged deletes every stage key it wrote in one best-effort
-// Backend.Commit and returns the original error wrapped with the db name.
+// failure commitStaged deletes every stage key it wrote in best-effort
+// delete requests under the transport cap and returns the original error
+// wrapped with the db name.
 func (t *Txn) commitStaged(ctx context.Context, reads []ReadCheck, metaValue []byte, deletes, trim [][]byte) (int64, error) {
 	s := t.store
-	commitID, err := newCommitID()
+	commitID, err := newCommitID(s.optimistic, s.now())
 	if err != nil {
 		return 0, fmt.Errorf("sqlitevfs: commit %q: %w", s.db, err)
 	}
@@ -129,6 +135,11 @@ func (t *Txn) commitStaged(ctx context.Context, reads []ReadCheck, metaValue []b
 	head, rest := s.splitDeletes(publishBytes, trim)
 	rev, err := s.backend.Publish(ctx, stagePrefix, pagePrefix, int64(len(pgnos)), reads, puts, append(deletes, head...))
 	if err != nil {
+		if s.optimistic && errors.Is(err, ErrPublishConflict) {
+			// An optimistic stage whose keys a serialized writer's sweep
+			// took as expired: the commit is retryable, as a lost read.
+			err = fmt.Errorf("%w: %w", ErrSnapshotChanged, err)
+		}
 		return fail(err)
 	}
 	s.trimAfter(ctx, rev, rest)

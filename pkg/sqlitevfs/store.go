@@ -24,6 +24,7 @@ import (
 	"math"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic"
@@ -99,6 +100,11 @@ type Store struct {
 	// ErrSnapshotChanged (the binding's SQLITE_BUSY_SNAPSHOT).
 	optimistic bool
 
+	// optimisticStageAge is how long the stage sweep keeps an optimistic
+	// commit's stage; now is the clock commit ids and the sweep read.
+	optimisticStageAge time.Duration
+	now                func() time.Time
+
 	// mu guards seenGen, seenFound and seen: the meta generation of this
 	// Store's last snapshot pin, whether that pin found a meta record, and
 	// whether it has pinned one.
@@ -121,6 +127,13 @@ const (
 	// base64 encoded by the JSON codec plus their keys and framing fit one
 	// request, and well under go-quicraft's 8 MiB proto.MaxEntrySize.
 	DefaultStageChunkBytes = transportRequestBytes / 2
+
+	// DefaultOptimisticStageAge is how long a serialized writer's stage
+	// sweep (Txn.Reserve) keeps the stage of an optimistic commit: an
+	// optimistic Store takes no writer lock, so its commit may still be
+	// staging; a stage older than this (or dated further ahead than this)
+	// is abandoned and swept.
+	DefaultOptimisticStageAge = 15 * time.Minute
 
 	// requestEntryFraming bounds what one key of a commit request costs
 	// beyond its base64-encoded key and value on any transport: field
@@ -240,6 +253,19 @@ func WithStageChunkBytes(bytes int) Option {
 	}
 }
 
+// WithOptimisticStageAge sets how long the Store's stage sweep keeps the
+// stage of an optimistic commit (DefaultOptimisticStageAge by default).
+// A non-positive age is refused with ErrInvalidOption.
+func WithOptimisticStageAge(age time.Duration) Option {
+	return func(s *Store) error {
+		if age <= 0 {
+			return fmt.Errorf("%w: optimistic stage age %v", ErrInvalidOption, age)
+		}
+		s.optimisticStageAge = age
+		return nil
+	}
+}
+
 // WithWriterLock serializes the Store's writers through w (Q3 A): a
 // transaction writes only after Txn.Reserve took the lock, and holds it until
 // Commit or Rollback. A nil lock is refused with ErrInvalidOption. Without
@@ -291,6 +317,9 @@ func NewStore(b Backend, db string, opts ...Option) (*Store, error) {
 		stageThreshold:  DefaultStageThreshold,
 		stageChunkBytes: DefaultStageChunkBytes,
 		requestBytes:    transportRequestBytes,
+
+		optimisticStageAge: DefaultOptimisticStageAge,
+		now:                time.Now,
 	}
 	for _, opt := range opts {
 		if err := opt(s); err != nil {
@@ -689,7 +718,8 @@ func (t *Txn) commitRemoval(ctx context.Context, now int64, reads []ReadCheck) (
 }
 
 // sweepStages deletes every staged page key of the database live at
-// revision rev, in delete-only Backend.Commits each under the transport
+// revision rev, except those of optimistic commits still in flight
+// (stageInFlight), in delete-only Backend.Commits each under the transport
 // request cap. The caller holds the writer lock with fencing token token;
 // the lease is renewed between chunks, and the first failed chunk or lost
 // lease stops the sweep and is returned.
@@ -698,9 +728,15 @@ func (s *Store) sweepStages(ctx context.Context, rev int64, token int64) error {
 	if err != nil {
 		return err
 	}
-	keys, err := s.backend.Keys(ctx, root, rev)
+	live, err := s.backend.Keys(ctx, root, rev)
 	if err != nil {
 		return err
+	}
+	keys := live[:0:0]
+	for _, key := range live {
+		if !s.stageInFlight(root, key) {
+			keys = append(keys, key)
+		}
 	}
 	spent := encodedRequestBytes(nil, nil, nil)
 	for len(keys) > 0 {
@@ -720,6 +756,24 @@ func (s *Store) sweepStages(ctx context.Context, rev int64, token int64) error {
 		}
 	}
 	return nil
+}
+
+// stageInFlight reports whether key, a key under the stage root root, is a
+// stage key of an optimistic commit that may still be staging: its commit
+// id marks an optimistic Store and was created within optimisticStageAge of
+// now, on either side. A serialized writer's stage key, or one whose id
+// does not parse (a malformed or older id), is not in flight: only the
+// writer lock's holder stages serialized pages.
+func (s *Store) stageInFlight(root, key []byte) bool {
+	if len(key) < len(root)+commitIDLen {
+		return false
+	}
+	optimistic, created, err := parseCommitID(string(key[len(root) : len(root)+commitIDLen]))
+	if err != nil || !optimistic {
+		return false
+	}
+	age := s.now().Sub(created)
+	return age < s.optimisticStageAge && age > -s.optimisticStageAge
 }
 
 // Txn is one transaction on a database file: a snapshot at the revision
@@ -800,8 +854,11 @@ func (t *Txn) Size() int64 {
 // a file whose change counter moved).
 //
 // Holding the lock, Reserve sweeps abandoned stages: only the lock holder
-// stages pages, so every key under StageRoot seen under the lock was left by
-// a writer that crashed or lost its lease, and Reserve deletes them all in
+// stages serialized pages, so every serialized stage key under StageRoot
+// seen under the lock was left by a writer that crashed or lost its lease.
+// An optimistic Store takes no lock, so the stage of an optimistic commit
+// is kept until it is older than the optimistic stage age
+// (DefaultOptimisticStageAge). Reserve deletes the abandoned keys in
 // delete-only Backend.Commits under the transport request cap, renewing
 // the lease between them. A failed sweep releases the lock and is returned.
 // Every lock call, read and sweep Reserve makes uses its own ctx.

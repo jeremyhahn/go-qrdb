@@ -15,9 +15,12 @@
 package sqlitevfs
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
+	"time"
 )
 
 // liveKeys is the live keys of app.db under prefix at the backend's newest
@@ -159,10 +162,16 @@ const sweepStageKeys = 600
 // as a writer that crashed after staging leaves them.
 func abandonStage(t *testing.T, b *MVCCBackend, n int) {
 	t.Helper()
-	commitID, err := newCommitID()
+	commitID, err := newCommitID(false, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
+	stageUnder(t, b, commitID, n)
+}
+
+// stageUnder writes n stage keys of commit commitID of app.db straight to b.
+func stageUnder(t *testing.T, b *MVCCBackend, commitID string, n int) {
+	t.Helper()
 	puts := make(map[string][]byte, n)
 	for pgno := 1; pgno <= n; pgno++ {
 		key, err := StageKey("app.db", commitID, uint32(pgno))
@@ -173,6 +182,145 @@ func abandonStage(t *testing.T, b *MVCCBackend, n int) {
 	}
 	if _, err := b.Commit(t.Context(), nil, puts, nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// hookAfterStage runs hook once, after the first staging Commit (stage-key
+// puts only) it is sent succeeds.
+type hookAfterStage struct {
+	*MVCCBackend
+	hook func()
+	ran  bool
+}
+
+func (b *hookAfterStage) Commit(ctx context.Context, reads []ReadCheck, puts map[string][]byte, deletes [][]byte) (int64, error) {
+	rev, err := b.MVCCBackend.Commit(ctx, reads, puts, deletes)
+	if err != nil || b.ran || len(puts) == 0 {
+		return rev, err
+	}
+	for key := range puts {
+		if !strings.HasPrefix(key, keyRoot+"app.db"+stageSegment) {
+			return rev, err
+		}
+	}
+	b.ran = true
+	b.hook()
+	return rev, err
+}
+
+// TestSerializedSweepKeepsLiveOptimisticStage checks that a serialized
+// writer's Reserve between an optimistic commit's staging chunks leaves that
+// commit's stage keys, so it publishes; and that once the stage is past the
+// optimistic stage age the sweep takes it and the commit is the retryable
+// ErrSnapshotChanged.
+func TestSerializedSweepKeepsLiveOptimisticStage(t *testing.T) {
+	for _, expired := range []bool{false, true} {
+		t.Run(map[bool]string{false: "in flight", true: "expired"}[expired], func(t *testing.T) {
+			b := newTestBackend(t)
+			hb := &hookAfterStage{MVCCBackend: b}
+			opt := newOptimisticStore(t, hb)
+			ser := newLockedStore(t, b, newMemLocker(), "s")
+			if expired {
+				ser.now = func() time.Time { return time.Now().Add(time.Hour) }
+			}
+			seeded := beginReserved(t, ser)
+			writePages(t, seeded, 0x01, 0x02)
+			commit(t, seeded)
+			root, err := StageRoot("app.db")
+			if err != nil {
+				t.Fatal(err)
+			}
+			hb.hook = func() {
+				staged := len(liveKeys(t, b, root))
+				txn := beginReserved(t, ser)
+				left := len(liveKeys(t, b, root))
+				if err := txn.Rollback(t.Context()); err != nil {
+					t.Fatalf("Rollback: %v", err)
+				}
+				if want := map[bool]int{false: staged, true: 0}[expired]; staged == 0 || left != want {
+					t.Fatalf("%d stage keys before the serialized Reserve, %d after, want %d", staged, left, want)
+				}
+			}
+			w := begin(t, opt)
+			writePages(t, w, 0x11, 0x12, 0x13)
+			_, err = w.Commit(t.Context())
+			if !hb.ran {
+				t.Fatal("the optimistic commit did not stage")
+			}
+			if expired {
+				if !errors.Is(err, ErrSnapshotChanged) || !errors.Is(err, ErrPublishConflict) {
+					t.Fatalf("Commit after its stage was swept = %v, want ErrSnapshotChanged wrapping ErrPublishConflict", err)
+				}
+				if got := readAll(t, begin(t, opt)); !bytes.Equal(got, pagesOf(0x01, 0x02)) {
+					t.Fatal("a refused optimistic commit changed the pages")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Commit: %v", err)
+			}
+			if got := readAll(t, begin(t, opt)); !bytes.Equal(got, pagesOf(0x11, 0x12, 0x13)) {
+				t.Fatal("the optimistic commit is not visible")
+			}
+		})
+	}
+}
+
+// TestSweepSelectsStagesByModeAndAge checks which stages a serialized
+// Reserve sweeps: every serialized stage, an optimistic stage past the
+// optimistic stage age or dated past it ahead, and a stage whose id records
+// no mode (an older random id read as far-future); never an optimistic
+// stage within the age.
+func TestSweepSelectsStagesByModeAndAge(t *testing.T) {
+	b := newTestBackend(t)
+	ser := newLockedStore(t, b, newMemLocker(), "s")
+	now := time.Now()
+	ser.now = func() time.Time { return now }
+	id := func(optimistic bool, created time.Time) string {
+		t.Helper()
+		id, err := newCommitID(optimistic, created)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	live := id(true, now.Add(-time.Minute))
+	for _, swept := range []string{
+		id(false, now),
+		id(true, now.Add(-DefaultOptimisticStageAge-time.Second)),
+		id(true, now.Add(DefaultOptimisticStageAge+time.Second)),
+		"ffffffffffffffff0123456789abcdef",
+	} {
+		stageUnder(t, b, swept, 2)
+	}
+	stageUnder(t, b, live, 2)
+	root, err := StageRoot("app.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A key under the stage root too short to carry a commit id.
+	if _, err := b.Commit(t.Context(), nil, map[string][]byte{string(root) + "junk": {1}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	txn := beginReserved(t, ser)
+	if err := txn.Rollback(t.Context()); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	prefix, err := StagePrefix("app.db", live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := liveKeys(t, b, root)
+	if len(keys) != 2 {
+		t.Fatalf("stage keys after the sweep = %q, want the 2 of the live optimistic stage", keys)
+	}
+	for _, key := range keys {
+		if !bytes.HasPrefix(key, prefix) {
+			t.Fatalf("stage key %q left after the sweep is not of the live optimistic stage", key)
+		}
+	}
+	if _, err := NewStore(b, "app.db", WithOptimisticStageAge(0)); !errors.Is(err, ErrInvalidOption) {
+		t.Fatalf("WithOptimisticStageAge(0) err = %v, want ErrInvalidOption", err)
 	}
 }
 

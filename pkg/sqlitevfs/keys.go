@@ -20,6 +20,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"time"
 )
 
 const (
@@ -33,9 +34,13 @@ const (
 	writerSuffix = "/writer"
 	pageNumBytes = 4
 
-	// commitIDLen is the length of a staging commit id: 16 random bytes,
-	// hex-encoded.
+	// commitIDLen is the length of a staging commit id: 16 bytes,
+	// hex-encoded (newCommitID).
 	commitIDLen = 32
+
+	// optimisticCommitBit is the top bit of a commit id's leading uint64:
+	// set for a commit of an optimistic Store.
+	optimisticCommitBit = uint64(1) << 63
 )
 
 // ValidateDatabaseName returns ErrInvalidDatabaseName unless db is a usable
@@ -121,14 +126,37 @@ func ValidateCommitID(id string) error {
 	return nil
 }
 
-// newCommitID returns a fresh staging commit id: 16 bytes from crypto/rand,
-// hex-encoded.
-func newCommitID() (string, error) {
+// newCommitID returns a fresh staging commit id, 16 bytes hex-encoded: a
+// big-endian uint64 whose top bit marks a commit of an optimistic Store and
+// whose low 63 bits are created in unix nanoseconds, then 8 bytes from
+// crypto/rand. The mode and time let a serialized writer's stage sweep keep
+// the stages of optimistic commits still in flight (Store.sweepStages).
+func newCommitID(optimistic bool, created time.Time) (string, error) {
 	var raw [commitIDLen / 2]byte
-	if _, err := rand.Read(raw[:]); err != nil {
+	head := uint64(created.UnixNano()) &^ optimisticCommitBit
+	if optimistic {
+		head |= optimisticCommitBit
+	}
+	binary.BigEndian.PutUint64(raw[:8], head)
+	if _, err := rand.Read(raw[8:]); err != nil {
 		return "", fmt.Errorf("sqlitevfs: new commit id: %w", err)
 	}
 	return hex.EncodeToString(raw[:]), nil
+}
+
+// parseCommitID returns the writer mode and creation time a commit id of
+// newCommitID records. An id that is not a valid commit id is refused with
+// ErrInvalidCommitID.
+func parseCommitID(id string) (optimistic bool, created time.Time, err error) {
+	if err := ValidateCommitID(id); err != nil {
+		return false, time.Time{}, err
+	}
+	raw, err := hex.DecodeString(id[:16])
+	if err != nil {
+		return false, time.Time{}, fmt.Errorf("%w: %q", ErrInvalidCommitID, id)
+	}
+	head := binary.BigEndian.Uint64(raw)
+	return head&optimisticCommitBit != 0, time.Unix(0, int64(head&^optimisticCommitBit)), nil
 }
 
 // StagePrefix returns the prefix of every staged page of commit commitID of
