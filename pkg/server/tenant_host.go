@@ -590,6 +590,8 @@ func buildDataPlaneServices(host service.Host, shardID uint64, tenantID string, 
 	mvcc := service.NewMVCCKVService(host, shardID, mvccOpts...)
 	idx := service.NewIndexService(host, shardID, service.WithMaxIndexes(indexCfg.MaxIndexes))
 	txn := service.NewTransactionService(host, shardID)
+	collection := service.NewCollectionServiceWithIndex(kv, idx).
+		WithSequenceService(service.NewSequenceService(mvcc, txn))
 	svcs := &DatabaseServices{
 		Name:    "",
 		ShardID: shardID,
@@ -617,14 +619,13 @@ func buildDataPlaneServices(host service.Host, shardID uint64, tenantID string, 
 		// keyspace) and is NOT what a prefix/volume tenant is served: there
 		// restServiceRegistry.applyComposite rebuilds it over the namespaced
 		// engines, because a struct copy would carry these raw ones through.
-		Collection: service.NewCollectionServiceWithIndex(kv, idx).
-			WithSequenceService(service.NewSequenceService(mvcc, txn)),
+		Collection: collection,
 	}
 	// Collection creates and drops journal their work in this store, owned
 	// by tenantID, so the collection sweeper finishes one a crash
 	// interrupted on every database raft group, materialized binding and
 	// tenant host alike.
-	svcs.Collection = svcs.Collection.(*service.CollectionService).WithWorkJournal(collectionJournalFor(svcs, tenantID))
+	svcs.Collection = collection.WithWorkJournal(collectionJournalFor(svcs, tenantID))
 	return svcs
 }
 
