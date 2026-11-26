@@ -279,9 +279,13 @@ func TestPlacementStore_ReplicaAddFencedOnMoveJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cur := &placement.Placement{TenantID: "acme", Database: "db", ShardID: 9, RF: 1, LeaderReplicaID: 1,
+	cur := &placement.Placement{TenantID: "acme", DatabaseID: "db", Database: "db", ShardID: 9, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{{ReplicaID: 1, NodeID: "n1", RaftAddr: "n1:1"}}}
-	curBytes, err := json.Marshal(cur)
+	// The Store keys a placement by its database ID and keeps the database
+	// name out of the system KV, so the seeded entry is its stored form.
+	stored := *cur
+	stored.Database = ""
+	curBytes, err := json.Marshal(&stored)
 	if err != nil {
 		t.Fatal(err)
 	}

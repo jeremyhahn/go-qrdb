@@ -1552,7 +1552,7 @@ func TestTenantShardReconciler_WithPurgeOnDemotionFalse(t *testing.T) {
 func TestTenantShardReconciler_DemotionCloseFailureKeepsShard(t *testing.T) {
 	ctx := context.Background()
 	demoted := &placement.Placement{
-		TenantID: "acme", Database: "orders", ShardID: 1001, RF: 1, LeaderReplicaID: 2,
+		TenantID: "acme", DatabaseID: "orders", Database: "orders", ShardID: 1001, RF: 1, LeaderReplicaID: 2,
 		Replicas: []placement.Replica{{ReplicaID: 2, NodeID: "other:1", RaftAddr: "other:1"}},
 	}
 	store, err := placement.NewStore(newMemKV())
@@ -1570,8 +1570,8 @@ func TestTenantShardReconciler_DemotionCloseFailureKeepsShard(t *testing.T) {
 	r := NewTenantShardReconciler(store, factory, "local:1", nil, WithPurgeOnDemotion(false))
 
 	r.ReconcileOnce(ctx)
-	r.handleEvent(ctx, placement.Event{Type: placement.EventPut, TenantID: "acme", Database: "orders", Placement: demoted})
-	r.handleEvent(ctx, placement.Event{Type: placement.EventDelete, TenantID: "acme", Database: "orders"})
+	r.handleEvent(ctx, placement.Event{Type: placement.EventPut, TenantID: "acme", DatabaseID: "orders", Database: "orders", Placement: demoted})
+	r.handleEvent(ctx, placement.Event{Type: placement.EventDelete, TenantID: "acme", DatabaseID: "orders", Database: "orders"})
 	if !factory.isStarted("acme", "orders") || factory.closeCount() != 0 {
 		t.Fatalf("a failed close must keep the shard started (closed %d)", factory.closeCount())
 	}

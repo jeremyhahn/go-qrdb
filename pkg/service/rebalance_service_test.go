@@ -1082,7 +1082,7 @@ func TestScaleForTenant_ScaleUp_MoveFence_RefusesMovingTenant(t *testing.T) {
 	if len(host.observerCalls) != 0 {
 		t.Fatalf("AddObserver called %d times, want 0", len(host.observerCalls))
 	}
-	p, gerr := store.Get(scaleCtx(), scaleTenantID, "db1")
+	p, gerr := store.GetByName(scaleCtx(), scaleTenantID, "db1")
 	if gerr != nil {
 		t.Fatalf("placement Get: %v", gerr)
 	}
