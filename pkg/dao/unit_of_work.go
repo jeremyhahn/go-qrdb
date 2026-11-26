@@ -142,31 +142,7 @@ func RegisterSave[E Entity](uow *UnitOfWork, dao GenericDAO[E], entity E) error 
 		return err
 	}
 
-	var det *deterministicSaveInfo
-	if entity.EntityID() == 0 {
-		if gen, deterministic := gDAO.idGen.(DeterministicIDGenerator); deterministic {
-			entity.SetEntityID(gen.NextID(entity))
-			expectedValue, hasNaturalKey := extractNaturalKeyValue(entity, gen.FieldName())
-			det = &deterministicSaveInfo{
-				entityType: gDAO.entityType,
-				id:         entity.EntityID(),
-				sameNaturalKey: func(existingData []byte) (bool, error) {
-					if !hasNaturalKey {
-						return false, nil
-					}
-					existing := gDAO.newEntity()
-					if unmarshalErr := gDAO.codec.Unmarshal(existingData, &existing); unmarshalErr != nil {
-						return false, DeserializationFailedError{EntityType: gDAO.entityType, Cause: unmarshalErr}
-					}
-					mismatch := VerifyNaturalKey(existing, gDAO.entityType, gen.FieldName(), expectedValue)
-					gDAO.discard(existing)
-					return mismatch == nil, nil
-				},
-			}
-		} else {
-			entity.SetEntityID(gDAO.idGen.NextID(entity))
-		}
-	}
+	det := assignSaveID(gDAO, entity)
 
 	// Serialize the entity
 	data, marshalErr := gDAO.codec.Marshal(entity)
@@ -183,6 +159,40 @@ func RegisterSave[E Entity](uow *UnitOfWork, dao GenericDAO[E], entity E) error 
 	})
 
 	return nil
+}
+
+// assignSaveID gives entity its ID when EntityID() is 0, from gDAO's
+// IDGenerator, exactly as genericDAO.Save does. For a
+// DeterministicIDGenerator it returns the deterministicSaveInfo
+// commitGuardedOps needs to guard the write as a create, an update of the
+// SAME logical entity, or a refused collision; otherwise it returns nil.
+func assignSaveID[E Entity](gDAO *genericDAO[E], entity E) *deterministicSaveInfo {
+	if entity.EntityID() != 0 {
+		return nil
+	}
+	gen, deterministic := gDAO.idGen.(DeterministicIDGenerator)
+	if !deterministic {
+		entity.SetEntityID(gDAO.idGen.NextID(entity))
+		return nil
+	}
+	entity.SetEntityID(gen.NextID(entity))
+	expectedValue, hasNaturalKey := extractNaturalKeyValue(entity, gen.FieldName())
+	return &deterministicSaveInfo{
+		entityType: gDAO.entityType,
+		id:         entity.EntityID(),
+		sameNaturalKey: func(existingData []byte) (bool, error) {
+			if !hasNaturalKey {
+				return false, nil
+			}
+			existing := gDAO.newEntity()
+			if unmarshalErr := gDAO.codec.Unmarshal(existingData, &existing); unmarshalErr != nil {
+				return false, DeserializationFailedError{EntityType: gDAO.entityType, Cause: unmarshalErr}
+			}
+			mismatch := VerifyNaturalKey(existing, gDAO.entityType, gen.FieldName(), expectedValue)
+			gDAO.discard(existing)
+			return mismatch == nil, nil
+		},
+	}
 }
 
 // RegisterDelete queues a typed entity delete operation within the UnitOfWork.
@@ -274,17 +284,30 @@ func (uow *UnitOfWork) Commit(ctx context.Context) error {
 // as a single state-machine transaction regardless of how many guards it
 // carries.
 func (uow *UnitOfWork) commitAtomic(ctx context.Context, store kvstore.MultiGuardedBatchKVStore) error {
-	writes := make([]kvstore.KV, len(uow.ops))
-	var guards []kvstore.Guard
+	return commitGuardedOps(ctx, store, uow.ops, nil)
+}
 
-	for i, op := range uow.ops {
+// commitGuardedOps applies ops as ONE PutAllIfAllUnchanged batch: every
+// write lands, or none does. extraGuards are the caller's own guards (a
+// TransactionalDAO SaveWithCondition guards on the bytes its condition was
+// evaluated against); each deterministic save adds the create/update/
+// collision guard described on deterministicSaveInfo. A refused batch
+// reports *IDCollisionError when a deterministic save met a DIFFERENT
+// entity, and kvstore.ErrNotApplied otherwise; a store that turns the
+// batch away reports *AtomicBatchUnsupportedError. UnitOfWork.Commit and
+// daoTransaction.Commit both commit through here.
+func commitGuardedOps(ctx context.Context, store kvstore.MultiGuardedBatchKVStore, ops []unitOp, extraGuards []kvstore.Guard) error {
+	writes := make([]kvstore.KV, len(ops))
+	guards := append([]kvstore.Guard(nil), extraGuards...)
+
+	for i, op := range ops {
 		writes[i] = kvstore.KV{Key: op.key, Value: op.value, Delete: op.isDelete}
 		if op.deterministic == nil {
 			continue
 		}
 
 		existingData, getErr := store.Get(ctx, op.key)
-		if getErr != nil {
+		if getErr != nil && !isNotFoundError(getErr) {
 			return getErr
 		}
 		if existingData == nil {
@@ -324,7 +347,7 @@ func (uow *UnitOfWork) commitAtomic(ctx context.Context, store kvstore.MultiGuar
 		return err
 	}
 	if !applied {
-		if collisionErr := uow.detectDeterministicCollision(ctx, store); collisionErr != nil {
+		if collisionErr := detectDeterministicCollision(ctx, store, ops); collisionErr != nil {
 			return collisionErr
 		}
 		// Refused by contention alone (a concurrent writer winning the race
@@ -345,8 +368,8 @@ func (uow *UnitOfWork) commitAtomic(ctx context.Context, store kvstore.MultiGuar
 // report for it. Returns the first confirmed collision found, or nil when
 // none of the deterministic saves' keys currently hold a different entity
 // -- in which case the refusal was contention alone, not a collision.
-func (uow *UnitOfWork) detectDeterministicCollision(ctx context.Context, store kvstore.KVStore) error {
-	for _, op := range uow.ops {
+func detectDeterministicCollision(ctx context.Context, store kvstore.KVStore, ops []unitOp) error {
+	for _, op := range ops {
 		if op.deterministic == nil {
 			continue
 		}
