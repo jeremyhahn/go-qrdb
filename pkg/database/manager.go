@@ -2394,15 +2394,25 @@ func (m *Manager) reservedPathConflict(name, dataDir, resolved, root string) err
 		return &DataDirReservedPathError{Name: name, DataDir: dataDir, Reserved: root}
 	}
 
-	// Never the shared catalog directory itself.
-	catalog := filepath.Join(root, databasesDir)
+	// Never the shared catalog directory itself. The catalog and every
+	// built-in reserved subtree are resolved as the requested directory is,
+	// so a symlinked node store (root/pebble -> /mnt/control) is compared
+	// at its target, not at its link.
+	catalog, err := resolveDataDir(filepath.Join(root, databasesDir))
+	if err != nil {
+		return &InvalidDataDirError{Name: name, DataDir: dataDir, Err: err}
+	}
 	if resolved == catalog {
 		return &DataDirReservedPathError{Name: name, DataDir: dataDir, Reserved: catalog}
 	}
 
 	reserved := make([]string, 0, len(reservedDataSubdirs))
 	for _, sub := range reservedDataSubdirs {
-		reserved = append(reserved, filepath.Join(root, sub))
+		rp, err := resolveDataDir(filepath.Join(root, sub))
+		if err != nil {
+			return &InvalidDataDirError{Name: name, DataDir: dataDir, Err: err}
+		}
+		reserved = append(reserved, rp)
 	}
 	if r, ok := m.factory.(ReservedRootsReporter); ok {
 		roots, err := r.ReservedRoots()

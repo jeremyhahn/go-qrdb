@@ -502,6 +502,45 @@ func TestManager_DropNeverRemovesANodeStore(t *testing.T) {
 	}
 }
 
+// TestManager_SymlinkedReservedSubdirIsResolved: a built-in reserved subtree
+// that is a symlink (root/pebble -> /mnt/control) is compared at its target.
+// A data_dir at the target, or inside it, is refused, and a drop of a record
+// whose root is the target never removes it.
+func TestManager_SymlinkedReservedSubdirIsResolved(t *testing.T) {
+	m, f, dir := newRootedManager(t)
+	control := filepath.Join(t.TempDir(), "control")
+	if err := os.MkdirAll(control, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(control, "MANIFEST")
+	if err := os.WriteFile(marker, []byte("control plane"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(control, filepath.Join(dir, "pebble")); err != nil {
+		t.Fatal(err)
+	}
+	for i, dataDir := range []string{control, filepath.Join(control, "inner")} {
+		_, err := m.Create(DatabaseConfig{Name: fmt.Sprintf("db%d", i), Backend: BackendFile, DataDir: dataDir})
+		var reserved *DataDirReservedPathError
+		if !errors.As(err, &reserved) {
+			t.Fatalf("Create with data_dir %s: err = %v, want *DataDirReservedPathError", dataDir, err)
+		}
+	}
+
+	if _, err := m.Create(DatabaseConfig{Name: "b", Backend: BackendMemory}); err != nil {
+		t.Fatalf("Create b: %v", err)
+	}
+	*f.roots["b"] = control
+	err := m.Drop(context.Background(), "b")
+	var reserved *DataDirReservedPathError
+	if !errors.As(err, &reserved) {
+		t.Fatalf("Drop b: err = %v, want *DataDirReservedPathError", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("control-plane store after the refused drop: %v", err)
+	}
+}
+
 // TestManager_DropNeverRemovesTheObjstoreJournal proves a record whose root is
 // the node object store's commit-journal sibling, which the factory reports,
 // is refused at drop and the journal stays.
