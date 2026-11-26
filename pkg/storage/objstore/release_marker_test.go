@@ -17,24 +17,27 @@ import (
 func fileTree(t *testing.T, roots ...string) map[string]string {
 	t.Helper()
 	tree := map[string]string{}
-	for _, root := range roots {
-		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	for _, rootDir := range roots {
+		root, err := os.OpenRoot(rootDir)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		require.NoError(t, err)
+		err = fs.WalkDir(root.FS(), ".", func(rel string, d fs.DirEntry, err error) error {
 			if err != nil {
-				if errors.Is(err, fs.ErrNotExist) {
-					return nil
-				}
 				return err
 			}
 			if d.IsDir() {
 				return nil
 			}
-			body, err := os.ReadFile(path)
+			body, err := root.ReadFile(rel)
 			if err != nil {
 				return err
 			}
-			tree[path] = string(body)
+			tree[filepath.Join(rootDir, rel)] = string(body)
 			return nil
 		})
+		require.NoError(t, root.Close())
 		require.NoError(t, err)
 	}
 	return tree

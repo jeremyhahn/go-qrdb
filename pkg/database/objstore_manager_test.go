@@ -599,20 +599,27 @@ func TestManager_FailedCreateClaimUndoOnExistingDataKeepsData(t *testing.T) {
 func fileContents(t *testing.T, roots ...string) map[string]string {
 	t.Helper()
 	files := map[string]string{}
-	for _, root := range roots {
-		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	for _, rootDir := range roots {
+		root, err := os.OpenRoot(rootDir)
+		if err != nil {
+			t.Fatalf("OpenRoot %s: %v", rootDir, err)
+		}
+		err = fs.WalkDir(root.FS(), ".", func(rel string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() {
 				return err
 			}
-			body, err := os.ReadFile(path)
+			body, err := root.ReadFile(rel)
 			if err != nil {
 				return err
 			}
-			files[path] = string(body)
+			files[filepath.Join(rootDir, rel)] = string(body)
 			return nil
 		})
+		if cerr := root.Close(); cerr != nil {
+			t.Fatalf("Close root %s: %v", rootDir, cerr)
+		}
 		if err != nil {
-			t.Fatalf("WalkDir %s: %v", root, err)
+			t.Fatalf("WalkDir %s: %v", rootDir, err)
 		}
 	}
 	return files
