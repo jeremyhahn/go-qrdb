@@ -114,7 +114,7 @@ func gatedServices(t *testing.T, reg service.Registry, tenantID string, fakes *a
 	if rm, ok := mvccSvc.(*sqliteRestoreMVCC); ok {
 		mvccSvc = rm.MVCCKVServicer
 	}
-	svcs := withSQLiteRestoreHook(&DatabaseServices{MVCC: mvccSvc, Transaction: txnSvc})
+	svcs := withSQLiteRestoreHook(&DatabaseServices{MVCC: mvccSvc, Transaction: txnSvc}, restoreLocks(t, reg, tenantID))
 	gated := withSQLiteAdmission(svcs, tenantID, fakes.admission())
 	if _, ok := gated.Transaction.(*sqliteAdmitTxn); !ok {
 		t.Fatalf("withSQLiteAdmission left transaction servicer %T ungated", gated.Transaction)

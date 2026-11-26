@@ -16,8 +16,11 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -47,6 +50,9 @@ type sqliteRestoreMVCC struct {
 	// gate, when set, admits the database a MovePrefix creates (o1, see
 	// withSQLiteAdmission).
 	gate *sqliteAdmitGate
+	// locks resolves the lock service each rewritten Store takes the
+	// database's writer lock through.
+	locks sqliteLockResolver
 }
 
 var (
@@ -58,8 +64,11 @@ var (
 
 // withSQLiteRestoreHook returns svcs with its MVCC service wrapped in the
 // SQLite restore hook. svcs is returned as it is when it has no MVCC
-// service or its services cannot back a page store.
-func withSQLiteRestoreHook(svcs *DatabaseServices) *DatabaseServices {
+// service or its services cannot back a page store. locks resolves the
+// database's lock service: each Store the restore rewrites takes the
+// database's writer lock, so a database a writer holds is a conflict (or,
+// forced, an ErrBusy error) and is left as it is.
+func withSQLiteRestoreHook(svcs *DatabaseServices, locks sqliteLockResolver) *DatabaseServices {
 	if svcs == nil || svcs.MVCC == nil {
 		return svcs
 	}
@@ -75,8 +84,26 @@ func withSQLiteRestoreHook(svcs *DatabaseServices) *DatabaseServices {
 		return svcs
 	}
 	out := *svcs
-	out.MVCC = &sqliteRestoreMVCC{MVCCKVServicer: svcs.MVCC, kv: kv, txn: txn}
+	out.MVCC = &sqliteRestoreMVCC{MVCCKVServicer: svcs.MVCC, kv: kv, txn: txn, locks: locks}
 	return &out
+}
+
+// sqliteLockResolver returns the lock service of the database whose SQLite
+// stores a restore rewrites: the (tenant, database) scope `qrdb sqlite`
+// takes its writer lock in.
+type sqliteLockResolver func() (sqlitevfs.LockServiceLocker, error)
+
+// sqliteRestoreLockTTL is the lease of the writer lock the restore hook
+// holds on each database it rewrites; the Store renews it as it writes.
+const sqliteRestoreLockTTL = 30 * time.Second
+
+// sqliteRestoreHolder returns a fresh writer-lock holder id for one restore.
+func sqliteRestoreHolder() (string, error) {
+	var raw [8]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("sqlitevfs restore hook: holder id: %w", err)
+	}
+	return "sqlite-restore-" + hex.EncodeToString(raw[:]), nil
 }
 
 // RestoreToRevision runs the restore, then bumps the generation of each
@@ -155,9 +182,24 @@ func (s *sqliteRestoreMVCC) RestoreToRevision(ctx context.Context, req *service.
 	if err != nil {
 		return nil, fmt.Errorf("sqlitevfs restore hook: %w", err)
 	}
+	if s.locks == nil {
+		return nil, errors.New("sqlitevfs restore hook: no lock service for the writer lock")
+	}
+	lockSvc, err := s.locks()
+	if err != nil {
+		return nil, fmt.Errorf("sqlitevfs restore hook: lock service: %w", err)
+	}
+	holder, err := sqliteRestoreHolder()
+	if err != nil {
+		return nil, err
+	}
+	writer, err := sqlitevfs.NewLockServiceWriter(lockSvc, holder, sqliteRestoreLockTTL)
+	if err != nil {
+		return nil, fmt.Errorf("sqlitevfs restore hook: writer lock: %w", err)
+	}
 	conflicted := make(map[string]bool)
 	for _, db := range dbs {
-		store, err := sqlitevfs.NewStore(backend, db)
+		store, err := sqlitevfs.NewStore(backend, db, sqlitevfs.WithWriterLock(writer))
 		switch {
 		case err != nil:
 		case req.Force:

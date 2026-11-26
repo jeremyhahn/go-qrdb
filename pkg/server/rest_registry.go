@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/sqlitevfs"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -567,7 +568,18 @@ func (r *restServiceRegistry) refuseSealedDatabase(tenantID, db string) error {
 // returns svcs unchanged so unlimited and system-tenant workloads keep a plain
 // passthrough on the data-plane hot path.
 func (r *restServiceRegistry) applyQuota(svcs *DatabaseServices, tenantID string, info *tenant.TenantInfo) *DatabaseServices {
-	svcs = withSQLiteAdmission(withSQLiteRestoreHook(svcs), tenantID, r.sqliteAdm)
+	var db string
+	if svcs != nil {
+		db = svcs.Name
+	}
+	locks := func() (sqlitevfs.LockServiceLocker, error) {
+		svc, err := r.LockService(tenantID, db)
+		if err != nil {
+			return nil, err
+		}
+		return svc, nil
+	}
+	svcs = withSQLiteAdmission(withSQLiteRestoreHook(svcs, locks), tenantID, r.sqliteAdm)
 	if r.accountant == nil || info == nil || info.Quotas == nil || tenantID == r.systemTenant {
 		return svcs
 	}

@@ -23,11 +23,13 @@ package server
 // failed restore bump nothing.
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
@@ -126,6 +128,71 @@ func restoreScope(t *testing.T, reg service.Registry, tenantID, prefix string, r
 	return mvccSvc.RestoreToRevision(t.Context(), &service.RestoreRevisionRequest{Revision: rev, Prefix: prefix, DryRun: dryRun})
 }
 
+// restoreLocks returns a restore-hook lock resolver over the lock service of
+// tenantID's test database, the scope the registry's hook resolves.
+func restoreLocks(t *testing.T, reg service.Registry, tenantID string) sqliteLockResolver {
+	t.Helper()
+	return func() (sqlitevfs.LockServiceLocker, error) {
+		return lockSvcFor(t, reg, tenantID), nil
+	}
+}
+
+// TestSQLiteVFSRestore_HeldWriterLockIsConflict checks that the restore
+// hook takes the database's writer lock: while a writer holds it, a restore
+// reports the database as a conflict and leaves its pages, a forced restore
+// fails with ErrBusy, and once it is released the restore applies.
+func TestSQLiteVFSRestore_HeldWriterLockIsConflict(t *testing.T) {
+	for name, build := range lockScenes {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			reg := build(t).registry
+			r := newRestoreStore(t, reg, lockTenantA).restoreCommit(t, 0x11, 0x22)
+			newRestoreStore(t, reg, lockTenantA).restoreCommit(t, 0x33, 0x44)
+			writer, err := sqlitevfs.NewLockServiceWriter(lockSvcFor(t, reg, lockTenantA), "cli-writer", time.Minute)
+			if err != nil {
+				t.Fatalf("NewLockServiceWriter: %v", err)
+			}
+			key, err := sqlitevfs.WriterLockKey(wiringDB)
+			if err != nil {
+				t.Fatalf("WriterLockKey: %v", err)
+			}
+			token, err := writer.Acquire(ctx, key)
+			if err != nil {
+				t.Fatalf("Acquire: %v", err)
+			}
+			mvccSvc, err := reg.MVCCService(lockTenantA, lockTestDB)
+			if err != nil {
+				t.Fatalf("MVCCService: %v", err)
+			}
+
+			res, err := mvccSvc.RestoreToRevision(ctx, &service.RestoreRevisionRequest{Revision: r, Prefix: "sqlite/"})
+			if err != nil {
+				t.Fatalf("RestoreToRevision: %v", err)
+			}
+			if res.Conflicted == 0 || res.Applied != 0 {
+				t.Fatalf("restore under a held writer lock conflicted %d applied %d, want >0 and 0", res.Conflicted, res.Applied)
+			}
+			newRestoreStore(t, reg, lockTenantA).assertPages(t, 0x33, 0x44)
+			if _, err := mvccSvc.RestoreToRevision(ctx, &service.RestoreRevisionRequest{Revision: r, Prefix: "sqlite/", Force: true}); !errors.Is(err, sqlitevfs.ErrBusy) {
+				t.Fatalf("forced restore under a held writer lock err = %v, want ErrBusy", err)
+			}
+			newRestoreStore(t, reg, lockTenantA).assertPages(t, 0x33, 0x44)
+
+			if err := writer.Release(ctx, key, token); err != nil {
+				t.Fatalf("Release: %v", err)
+			}
+			res, err = mvccSvc.RestoreToRevision(ctx, &service.RestoreRevisionRequest{Revision: r, Prefix: "sqlite/"})
+			if err != nil {
+				t.Fatalf("RestoreToRevision after release: %v", err)
+			}
+			if res.Conflicted != 0 || res.Applied == 0 {
+				t.Fatalf("restore after release conflicted %d applied %d, want 0 and >0", res.Conflicted, res.Applied)
+			}
+			newRestoreStore(t, reg, lockTenantA).assertPages(t, 0x11, 0x22)
+		})
+	}
+}
+
 // mustRestore restores the scope's sqlite/ keys to rev and fails on error.
 func mustRestore(t *testing.T, reg service.Registry, rev int64) *service.RestoreRevisionResult {
 	t.Helper()
@@ -208,8 +275,11 @@ func TestSQLiteVFSRestore_StageKeysAfterRestoreGone(t *testing.T) {
 			if live, err := a.backend.Keys(t.Context(), stageRoot, a.revision(t)); err != nil || len(live) != 0 {
 				t.Fatalf("live stage keys after the restore = %q, %v, want none", live, err)
 			}
-			if got := a.generation(t); got <= genBefore {
-				t.Fatalf("generation after a restore that removed a stage key = %d, want past %d", got, genBefore)
+			// The hook's Store holds the writer lock, so its Reserve sweeps
+			// the abandoned stage; the image is unchanged, so the restore
+			// writes no meta and the generation stays.
+			if got := a.generation(t); got != genBefore {
+				t.Fatalf("generation after a restore that only swept a stage key = %d, want %d", got, genBefore)
 			}
 			newRestoreStore(t, reg, lockTenantA).assertPages(t, 0x11)
 		})
@@ -275,10 +345,39 @@ func TestSQLiteVFSRestore_DatabaseRestoredInOneRevision(t *testing.T) {
 			before := a.revision(t)
 			mustRestore(t, reg, r)
 
-			// The pages, the size and the bumped meta are one revision.
+			// The pages, the size and the bumped meta are one revision: the
+			// writer lock's own writes add revisions, but every revision
+			// from before to after reads either the whole old image or the
+			// whole restored one, and the switch happens once.
 			after := a.revision(t)
-			if after != before+1 {
-				t.Fatalf("revision after restoring one database = %d, want %d", after, before+1)
+			switches := 0
+			restored := false
+			for rev := before; rev <= after; rev++ {
+				snap, err := newRestoreStore(t, reg, lockTenantA).store.BeginAt(t.Context(), rev)
+				if err != nil {
+					t.Fatalf("BeginAt(%d): %v", rev, err)
+				}
+				buf := make([]byte, wiringPageSize)
+				if _, err := snap.ReadAt(buf, 0); err != nil {
+					t.Fatalf("ReadAt at %d: %v", rev, err)
+				}
+				size := snap.Size()
+				_ = snap.Rollback(t.Context())
+				var isRestored bool
+				switch {
+				case size == 3*wiringPageSize && bytes.Equal(buf, wiringPage(0x33)):
+				case size == 2*wiringPageSize && bytes.Equal(buf, wiringPage(0x11)):
+					isRestored = true
+				default:
+					t.Fatalf("revision %d reads size %d and a page of neither image", rev, size)
+				}
+				if isRestored != restored {
+					switches++
+					restored = isRestored
+				}
+			}
+			if switches != 1 || !restored {
+				t.Fatalf("the image switched %d times between revisions %d and %d, want once", switches, before, after)
 			}
 			fresh := newRestoreStore(t, reg, lockTenantA)
 			txn, err := fresh.store.BeginAt(t.Context(), after)
@@ -336,6 +435,7 @@ func TestSQLiteVFSRestore_CommitAfterPlanIsConflict(t *testing.T) {
 				MVCCKVServicer: hook,
 				kv:             mvccSvc.(sqlitevfs.ServiceKV),
 				txn:            txnSvc.(sqlitevfs.ServiceTxn),
+				locks:          restoreLocks(t, reg, lockTenantA),
 			}
 
 			res, err := w.RestoreToRevision(ctx, &service.RestoreRevisionRequest{Revision: r, Prefix: "sqlite/"})
