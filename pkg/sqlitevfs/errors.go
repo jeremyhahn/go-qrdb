@@ -97,4 +97,13 @@ var (
 	// or destination prefix, prefixes where one is a prefix of the other,
 	// or an expected key count below one.
 	ErrInvalidPublish = errors.New("sqlitevfs: invalid publish")
+
+	// ErrReadSetTooLarge is returned by Txn.Commit, before anything is
+	// sent, when the part of the commit that must travel in one request
+	// (its read checks with the meta record, the in-range page deletes and
+	// a publish's prefixes) would reach the transport request cap. The read
+	// checks cannot be split without losing the commit's atomicity, and
+	// staging moves only page bytes, so the commit writes nothing; a
+	// transaction that reads fewer pages can commit.
+	ErrReadSetTooLarge = errors.New("sqlitevfs: read set exceeds the transport request cap")
 )

@@ -58,6 +58,53 @@ func TestRemovalChunksDeletesUnderTheCap(t *testing.T) {
 	}
 }
 
+// An optimistic transaction whose read checks alone would reach the
+// transport cap is refused with ErrReadSetTooLarge before anything is sent,
+// since its checks must travel with its write; a smaller read set commits.
+func TestOptimisticReadSetOverTheCapIsRefused(t *testing.T) {
+	b := newTestBackend(t)
+	rec := &requestRecorder{MVCCBackend: b}
+	s := newOptimisticStore(t, rec)
+	fills := make([]byte, truncPages)
+	for i := range fills {
+		fills[i] = byte(i%250 + 1)
+	}
+	seed(t, s, fills...)
+	s.requestBytes = truncCap
+	*rec = requestRecorder{MVCCBackend: b}
+	before := revOf(t, b)
+
+	txn := begin(t, s)
+	for pgno := int64(1); pgno <= truncPages; pgno++ {
+		readPage(t, txn, pgno)
+	}
+	writePage(t, txn, 1, 0x7f)
+	if _, err := txn.Commit(t.Context()); !errors.Is(err, ErrReadSetTooLarge) {
+		t.Fatalf("Commit = %v, want ErrReadSetTooLarge", err)
+	}
+	if rec.commits != 0 || rec.publishes != 0 {
+		t.Fatalf("%d commits, %d publishes sent for a refused read set, want none", rec.commits, rec.publishes)
+	}
+	if rev := revOf(t, b); rev != before {
+		t.Fatalf("backend at revision %d after the refusal, want %d", rev, before)
+	}
+
+	small := begin(t, s)
+	for pgno := int64(1); pgno <= 16; pgno++ {
+		readPage(t, small, pgno)
+	}
+	writePage(t, small, 1, 0x7f)
+	if _, err := small.Commit(t.Context()); err != nil {
+		t.Fatalf("Commit of a read set under the cap = %v", err)
+	}
+	if rec.maxEst >= truncCap || rec.maxJSON >= truncCap {
+		t.Fatalf("a request of %d bytes (JSON %d) reached the cap %d", rec.maxEst, rec.maxJSON, truncCap)
+	}
+	if got := readPage(t, begin(t, s), 1); got[0] != 0x7f {
+		t.Fatalf("page 1 begins %#x after the commit, want 0x7f", got[0])
+	}
+}
+
 // failPublish refuses every publish, so a staged commit fails after its
 // staging commits and cleans its stage keys up.
 type failPublish struct {

@@ -51,6 +51,22 @@ func (t *Txn) commitStaged(ctx context.Context, reads []ReadCheck, metaValue []b
 		pgnos = append(pgnos, pgno)
 	}
 	sort.Slice(pgnos, func(i, j int) bool { return pgnos[i] < pgnos[j] })
+	puts := map[string][]byte{string(s.metaKey): metaValue}
+	stagePrefix, err := StagePrefix(s.db, commitID)
+	if err != nil {
+		return 0, fmt.Errorf("sqlitevfs: staged commit %q: %w", s.db, err)
+	}
+	pagePrefix, err := PagePrefix(s.db)
+	if err != nil {
+		return 0, fmt.Errorf("sqlitevfs: staged commit %q: %w", s.db, err)
+	}
+	// The publish carries the read checks, meta and in-range deletes in
+	// one request; staging moves only page bytes, so a publish that would
+	// reach the cap is refused before anything is staged.
+	publishBytes := encodedRequestBytes(reads, puts, deletes, stagePrefix, pagePrefix)
+	if err := s.boundAtomic(publishBytes, reads); err != nil {
+		return 0, err
+	}
 
 	var staged [][]byte
 	fail := func(err error) (int64, error) {
@@ -110,16 +126,7 @@ func (t *Txn) commitStaged(ctx context.Context, reads []ReadCheck, metaValue []b
 	if err := flush(); err != nil {
 		return fail(err)
 	}
-	puts := map[string][]byte{string(s.metaKey): metaValue}
-	stagePrefix, err := StagePrefix(s.db, commitID)
-	if err != nil {
-		return fail(err)
-	}
-	pagePrefix, err := PagePrefix(s.db)
-	if err != nil {
-		return fail(err)
-	}
-	head, rest := s.splitDeletes(encodedRequestBytes(reads, puts, deletes, stagePrefix, pagePrefix), trim)
+	head, rest := s.splitDeletes(publishBytes, trim)
 	rev, err := s.backend.Publish(ctx, stagePrefix, pagePrefix, int64(len(pgnos)), reads, puts, append(deletes, head...))
 	if err != nil {
 		return fail(err)

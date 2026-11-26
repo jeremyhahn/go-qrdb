@@ -159,6 +159,17 @@ func encodedRequestBytes(reads []ReadCheck, puts map[string][]byte, deletes [][]
 	return n
 }
 
+// boundAtomic refuses with ErrReadSetTooLarge a request of n encoded bytes
+// that must go whole (it carries reads, which cannot be split from the
+// write they check) and would reach the transport cap.
+func (s *Store) boundAtomic(n int, reads []ReadCheck) error {
+	if n < s.requestBytes {
+		return nil
+	}
+	return fmt.Errorf("%w: %q: %d read checks in a request of %d bytes, cap %d",
+		ErrReadSetTooLarge, s.db, len(reads), n, s.requestBytes)
+}
+
 // splitDeletes returns the head of deletes that fits one request in which
 // spent encoded bytes are already taken, and the rest.
 func (s *Store) splitDeletes(spent int, deletes [][]byte) (head, rest [][]byte) {
@@ -664,7 +675,11 @@ func (t *Txn) commitRemoval(ctx context.Context, now int64, reads []ReadCheck) (
 	// database reads as empty, so the rest follow in delete-only commits
 	// that run only while no meta record is live (a recreate stops them,
 	// and its pages past its own count are never read).
-	head, rest := s.splitDeletes(encodedRequestBytes(reads, nil, deletes[:1]), deletes[1:])
+	spent := encodedRequestBytes(reads, nil, deletes[:1])
+	if err := s.boundAtomic(spent, reads); err != nil {
+		return 0, err
+	}
+	head, rest := s.splitDeletes(spent, deletes[1:])
 	rev, err := s.backend.Commit(ctx, reads, nil, append(deletes[:1:1], head...))
 	if err != nil {
 		return 0, fmt.Errorf("sqlitevfs: remove %q: %w", s.db, err)
@@ -1155,6 +1170,9 @@ func (t *Txn) commitWrites(ctx context.Context) (int64, error) {
 		// The pages fit the threshold but the request, encoded with its
 		// keys, read checks and framing, would reach the transport cap.
 		return t.commitStaged(ctx, reads, metaValue, deletes, trim)
+	}
+	if err := t.store.boundAtomic(spent, reads); err != nil {
+		return 0, err
 	}
 	head, rest := t.store.splitDeletes(spent, trim)
 	rev, err := t.store.backend.Commit(ctx, reads, puts, append(deletes, head...))
