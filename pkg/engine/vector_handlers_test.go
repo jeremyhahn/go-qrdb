@@ -18,9 +18,12 @@ import (
 	"context"
 	"errors"
 	"math"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/cockroachdb/pebble/v2/objstorage/remote"
+	objcommon "github.com/jeremyhahn/go-objstore/pkg/common"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
@@ -30,6 +33,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/pebble/remotelsm"
 	"github.com/jeremyhahn/go-qrdb/pkg/vector"
 )
 
@@ -84,7 +88,69 @@ func vectorTestBackends() []namedVectorBackend {
 			}
 			return odb
 		}},
+		{"objstore-lsm", func(t *testing.T) storage.Storage {
+			t.Helper()
+			return newObjstoreLSMTestStorage(t)
+		}},
 	}
+}
+
+// objstoreLSMTestPrefix is the bucket prefix the object-storage-lsm fixture
+// hands Pebble as shared storage, as pkg/server/lifecycle's objstoreLSMPrefix.
+const objstoreLSMTestPrefix = "lsm"
+
+// objstoreLSMTestStorage is the object-storage-lsm composition production
+// opens (pkg/server/lifecycle newObjstoreLSMStorage, without the at-rest
+// barrier): Pebble over a local-provider go-objstore bucket as shared
+// storage, every new SSTable created on the bucket, reads through the local
+// object cache. pkg/engine cannot import lifecycle, so the fixture builds the
+// same layers from pkg/storage/objstore, pebble and remotelsm.
+type objstoreLSMTestStorage struct {
+	*pebble.PebbleStorage
+	cache *objstore.CachedRemote
+	store objcommon.Storage
+}
+
+// newObjstoreLSMTestStorage opens the composition in fresh temp dirs: the
+// bucket, the object cache and Pebble's local dir (WAL, MANIFEST) apart.
+func newObjstoreLSMTestStorage(t *testing.T) *objstoreLSMTestStorage {
+	t.Helper()
+	root := t.TempDir()
+	store, err := objstore.OpenStore("local", map[string]string{"path": filepath.Join(root, "bucket")})
+	if err != nil {
+		t.Fatalf("objstore.OpenStore: %v", err)
+	}
+	if err := objstore.EnsureLSMFormat(context.Background(), store); err != nil {
+		t.Fatalf("objstore.EnsureLSMFormat: %v", err)
+	}
+	rs, err := objstore.NewRemote(store, objstoreLSMTestPrefix)
+	if err != nil {
+		t.Fatalf("objstore.NewRemote: %v", err)
+	}
+	cached, err := objstore.NewCachedRemote(rs, filepath.Join(root, "cache"))
+	if err != nil {
+		t.Fatalf("objstore.NewCachedRemote: %v", err)
+	}
+	stg, err := pebble.New(&pebble.Config{DataDir: filepath.Join(root, "lsm")},
+		remotelsm.WithRemote(cached, "qrdb", remote.CreateOnSharedAll))
+	if err != nil {
+		_ = cached.Close()
+		t.Fatalf("pebble.New over the object store: %v", err)
+	}
+	return &objstoreLSMTestStorage{PebbleStorage: stg, cache: cached, store: store}
+}
+
+// Close closes the Pebble storage, then the object cache under it, as
+// lifecycle's objstoreLSMStorage.Close does: Pebble never closes the
+// remote.Storage it is given.
+func (s *objstoreLSMTestStorage) Close() error {
+	return errors.Join(s.PebbleStorage.Close(), s.cache.Close())
+}
+
+// RemoteObjects lists the bucket's objects under prefix through the
+// go-objstore store's own List, below every qrdb layer.
+func (s *objstoreLSMTestStorage) RemoteObjects(prefix string) ([]string, error) {
+	return s.store.List(prefix)
 }
 
 // namedVectorEngine pairs a label with a factory that builds an Engine of
