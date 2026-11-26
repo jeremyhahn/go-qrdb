@@ -179,7 +179,15 @@ func (s *Store) splitDeletes(spent int, deletes [][]byte) (head, rest [][]byte) 
 // commit that grows over one deletes it, so a chunk that is refused or
 // fails leaves only unreachable keys and is not the commit's error.
 func (s *Store) trimAfter(ctx context.Context, rev int64, rest [][]byte) {
-	guard := []ReadCheck{{Key: s.metaKey, Rev: rev, Found: true}}
+	s.deleteChunked(ctx, []ReadCheck{{Key: s.metaKey, Rev: rev, Found: true}}, rest)
+}
+
+// deleteChunked deletes rest in delete-only commits under the transport
+// cap, each carrying guard. It stops at the first chunk that is refused or
+// fails: the callers delete only keys nothing reads (pages past the page
+// count, the pages of a removed database, stage keys no publish names), so
+// a key left behind is never read and is not the caller's error.
+func (s *Store) deleteChunked(ctx context.Context, guard []ReadCheck, rest [][]byte) {
 	spent := encodedRequestBytes(guard, nil, nil)
 	for len(rest) > 0 {
 		head, tail := s.splitDeletes(spent, rest)
@@ -651,10 +659,17 @@ func (t *Txn) commitRemoval(ctx context.Context, now int64, reads []ReadCheck) (
 			}
 		}
 	}
-	rev, err := s.backend.Commit(ctx, reads, nil, deletes)
+	// The meta delete and the reads go in one commit with as many page and
+	// stage keys as fit under the transport cap; once meta is gone the
+	// database reads as empty, so the rest follow in delete-only commits
+	// that run only while no meta record is live (a recreate stops them,
+	// and its pages past its own count are never read).
+	head, rest := s.splitDeletes(encodedRequestBytes(reads, nil, deletes[:1]), deletes[1:])
+	rev, err := s.backend.Commit(ctx, reads, nil, append(deletes[:1:1], head...))
 	if err != nil {
 		return 0, fmt.Errorf("sqlitevfs: remove %q: %w", s.db, err)
 	}
+	s.deleteChunked(ctx, []ReadCheck{{Key: s.metaKey, Rev: rev, Found: false}}, rest)
 	return rev, nil
 }
 

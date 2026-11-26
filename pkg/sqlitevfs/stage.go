@@ -57,8 +57,9 @@ func (t *Txn) commitStaged(ctx context.Context, reads []ReadCheck, metaValue []b
 		if len(staged) > 0 {
 			// The cleanup ignores the caller's cancellation
 			// (context.WithoutCancel), so a cancelled ctx cannot leave
-			// staged keys behind.
-			_, _ = s.backend.Commit(context.WithoutCancel(ctx), nil, nil, staged)
+			// staged keys behind, and is chunked under the transport cap.
+			// No publish names this commit id, so nothing guards it.
+			s.deleteChunked(context.WithoutCancel(ctx), nil, staged)
 		}
 		return 0, fmt.Errorf("sqlitevfs: staged commit %q: %w", s.db, err)
 	}
