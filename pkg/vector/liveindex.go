@@ -126,6 +126,19 @@ func NewLiveIndex(namespace string, rec NamespaceRecord) (LiveIndex, error) {
 	return build(namespace, rec)
 }
 
+// SameLiveIndexShape reports whether a live index built for record a serves
+// record b unchanged. It compares exactly the fields NewLiveIndex and its
+// builders read: dimension, distance metric, index type and the IVF
+// partition count. A reconfigure that only rewrites namespace metadata
+// (labels, owner, update time) keeps the shape, so its index stays live; any
+// other reconfigure needs a new index rebuilt from the records.
+func SameLiveIndexShape(a, b NamespaceRecord) bool {
+	return a.Dimension == b.Dimension &&
+		a.DistanceMetric == b.DistanceMetric &&
+		a.IndexType == b.IndexType &&
+		a.IndexParams["num_centroids"] == b.IndexParams["num_centroids"]
+}
+
 func newHNSWLiveIndex(namespace string, rec NamespaceRecord) (LiveIndex, error) {
 	cfg := hnsw.DefaultConfig()
 	cfg.DistanceMetric = hnswDistanceMetrics[rec.DistanceMetric]

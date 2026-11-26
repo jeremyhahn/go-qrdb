@@ -167,16 +167,57 @@ func (m *VectorIndexManager) applyOne(e vector.IndexEffect) {
 		ns.mu.Unlock()
 
 	case vector.IndexEffectReconfigure:
-		// A reconfigure changes the index's own geometry (type, parameters),
-		// which no live index can be incrementally migrated to: the old
-		// index is discarded and the namespace is marked for rebuild rather
-		// than left serving stale-geometry results.
+		// A reconfigure that leaves the index's shape alone (a metadata-only
+		// namespace update) keeps the live index and only records the new
+		// namespace record.
+		if ns := m.get(e.Namespace); ns != nil {
+			ns.mu.Lock()
+			if ns.live != nil && vector.SameLiveIndexShape(ns.rec, e.Record) {
+				ns.rec = e.Record
+				ns.mu.Unlock()
+				return
+			}
+			ns.mu.Unlock()
+		}
+		// A reconfigure that changes the index's own geometry (type,
+		// parameters) cannot be migrated incrementally: the old index is
+		// discarded and the namespace is marked warming, so it never serves
+		// stale-geometry results. RebuildReconfigured then rebuilds it from
+		// the committed records.
 		live, err := vector.NewLiveIndex(e.Namespace, e.Record)
 		ns := &vectorNamespaceIndex{rec: e.Record, state: vectorIndexWarming}
 		if err == nil {
 			ns.live = live
 		}
 		m.set(e.Namespace, ns)
+	}
+}
+
+// RebuildReconfigured rebuilds, from stg, every namespace a reconfigure
+// effect in effects left warming. The engines call it after ApplyEffects
+// once the batch that produced the effects has committed, so a reconfigured
+// namespace serves searches again instead of staying warming until the next
+// restart. A namespace whose rebuild fails stays warming, refusing searches
+// rather than answering from an incomplete index. Safe to call with a nil
+// receiver or an empty slice.
+func (m *VectorIndexManager) RebuildReconfigured(stg storage.Storage, effects []vector.IndexEffect) {
+	if m == nil {
+		return
+	}
+	for _, e := range effects {
+		if e.Op != vector.IndexEffectReconfigure {
+			continue
+		}
+		ns := m.get(e.Namespace)
+		if ns == nil {
+			continue
+		}
+		ns.mu.RLock()
+		warming := ns.state == vectorIndexWarming
+		ns.mu.RUnlock()
+		if warming {
+			_ = m.RebuildNamespace(stg, e.Namespace)
+		}
 	}
 }
 

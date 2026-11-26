@@ -601,6 +601,7 @@ func commandRequiresExclusiveApply(op byte, payload []byte) bool {
 // with no index manager configured or an empty slice.
 func (e *MVCCEngine) ApplyVectorIndexEffects(effects []vector.IndexEffect) {
 	e.indexMgr.ApplyEffects(effects)
+	e.indexMgr.RebuildReconfigured(e.stg, effects)
 }
 
 // WarmVectorIndex populates the engine's vector index manager from the
