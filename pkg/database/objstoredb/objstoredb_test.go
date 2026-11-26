@@ -194,3 +194,54 @@ func TestNamespace_KeysTheProviderNamespace(t *testing.T) {
 		t.Fatal("Namespace with no objstore config = nil, want an error")
 	}
 }
+
+// TestNilObjstoreConfig_Refused pins the branches a database record with no
+// object-storage configuration takes: Open builds no engine, and Namespace
+// and ReleaseOwnerMarker refuse with the missing-configuration error.
+func TestNilObjstoreConfig_Refused(t *testing.T) {
+	cfg := database.DatabaseConfig{Name: "blobs", Backend: database.BackendObjstore}
+	store, err := objstoredb.Open(cfg)
+	if err == nil || store != nil {
+		t.Fatalf("Open with no objstore config = %v, %v; want an error and no engine", store, err)
+	}
+	if _, err := objstoredb.Namespace(cfg); !errors.Is(err, objstoredb.ErrNoObjstoreConfig) {
+		t.Fatalf("Namespace with no objstore config = %v, want ErrNoObjstoreConfig", err)
+	}
+	if err := objstoredb.ReleaseOwnerMarker(cfg); !errors.Is(err, objstoredb.ErrNoObjstoreConfig) {
+		t.Fatalf("ReleaseOwnerMarker with no objstore config = %v, want ErrNoObjstoreConfig", err)
+	}
+}
+
+// TestReleaseOwnerMarker_FreesTheNamespace opens a database on a local-provider
+// namespace, closes it, and releases its owner marker: before the release a
+// second incarnation is refused the namespace, after it the second opens.
+func TestReleaseOwnerMarker_FreesTheNamespace(t *testing.T) {
+	settings := map[string]string{"path": filepath.Join(t.TempDir(), "objects")}
+	first := database.DatabaseConfig{Name: "blobs", Incarnation: "one", Backend: database.BackendObjstore,
+		Objstore: &database.DatabaseObjstoreConfig{Provider: "local", Settings: settings}}
+	second := first
+	second.Incarnation = "two"
+
+	store, err := objstoredb.Open(first)
+	if err != nil {
+		t.Fatalf("Open first: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close first: %v", err)
+	}
+	if refused, err := objstoredb.Open(second); err == nil {
+		_ = refused.Close()
+		t.Fatal("Open second before the release = nil, want the namespace refused")
+	}
+
+	if err := objstoredb.ReleaseOwnerMarker(first); err != nil {
+		t.Fatalf("ReleaseOwnerMarker: %v", err)
+	}
+	reopened, err := objstoredb.Open(second)
+	if err != nil {
+		t.Fatalf("Open second after the release: %v", err)
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatalf("Close second: %v", err)
+	}
+}
