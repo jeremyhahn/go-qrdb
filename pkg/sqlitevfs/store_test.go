@@ -17,6 +17,7 @@ package sqlitevfs
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"math"
@@ -1207,6 +1208,125 @@ func TestBumpGenerationGivesUpOnAMovingDatabase(t *testing.T) {
 	}
 	if got := begin(t, newTestStore(t, b, "app.db")).base.ChangeCounter; got != uint64(restoreBumpAttempts)+1 {
 		t.Fatalf("change counter %d, want %d: a concurrent commit was overwritten", got, restoreBumpAttempts+1)
+	}
+}
+
+// requestRecorder records the requests a Store sends: the count of commits
+// and publishes, the largest encoded estimate of a staging commit and of any
+// request, and the largest request as the JSON codec encodes it.
+type requestRecorder struct {
+	*MVCCBackend
+	commits, publishes int
+	maxCommitEst       int
+	maxEst, maxJSON    int
+}
+
+func (b *requestRecorder) record(est int, v any) {
+	b.maxEst = max(b.maxEst, est)
+	if enc, err := json.Marshal(v); err == nil {
+		b.maxJSON = max(b.maxJSON, len(enc))
+	}
+}
+
+func (b *requestRecorder) Commit(ctx context.Context, reads []ReadCheck, puts map[string][]byte, deletes [][]byte) (int64, error) {
+	b.commits++
+	est := encodedRequestBytes(reads, puts, deletes)
+	b.maxCommitEst = max(b.maxCommitEst, est)
+	b.record(est, struct {
+		Reads   []ReadCheck
+		Puts    map[string][]byte
+		Deletes [][]byte
+	}{reads, puts, deletes})
+	return b.MVCCBackend.Commit(ctx, reads, puts, deletes)
+}
+
+func (b *requestRecorder) Publish(ctx context.Context, src, dst []byte, expectedKeys int64, reads []ReadCheck, puts map[string][]byte, deletes [][]byte) (int64, error) {
+	b.publishes++
+	b.record(encodedRequestBytes(reads, puts, deletes, src, dst), struct {
+		Src, Dst []byte
+		Expected int64
+		Reads    []ReadCheck
+		Puts     map[string][]byte
+		Deletes  [][]byte
+	}{src, dst, expectedKeys, reads, puts, deletes})
+	return b.MVCCBackend.Publish(ctx, src, dst, expectedKeys, reads, puts, deletes)
+}
+
+// commitUnderCap commits eight pages on a Store whose page thresholds never
+// stage, with transport request cap limit, and checks the pages read back.
+func commitUnderCap(t *testing.T, limit int) *requestRecorder {
+	t.Helper()
+	b := newTestBackend(t)
+	rec := &requestRecorder{MVCCBackend: b}
+	s, err := NewStore(rec, "app.db", WithStageThreshold(1<<30), WithStageChunkBytes(1<<30))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.requestBytes = limit
+	fills := []byte{0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48}
+	seed(t, s, fills...)
+	if rec.maxEst >= limit || rec.maxJSON >= limit {
+		t.Fatalf("cap %d: a request of %d bytes (JSON %d) reached it", limit, rec.maxEst, rec.maxJSON)
+	}
+	txn := begin(t, newTestStore(t, b, "app.db"))
+	if txn.Size() != int64(len(fills))*testPageSize {
+		t.Fatalf("cap %d: size %d after the commit, want %d", limit, txn.Size(), len(fills)*testPageSize)
+	}
+	page := make([]byte, testPageSize)
+	for i, fill := range fills {
+		if _, err := txn.ReadAt(page, int64(i)*testPageSize); err != nil || page[0] != fill || page[testPageSize-1] != fill {
+			t.Fatalf("cap %d: page %d = %#x..%#x, %v, want %#x", limit, i+1, page[0], page[testPageSize-1], err, fill)
+		}
+	}
+	return rec
+}
+
+// A direct commit whose encoded request (pages, keys, read checks and
+// framing) would reach the transport cap stages instead, even under the
+// page-byte threshold; one just under it stays one commit.
+func TestCommitStagesBeforeTheEncodedRequestReachesTheCap(t *testing.T) {
+	direct := commitUnderCap(t, 1<<30)
+	if direct.commits != 1 || direct.publishes != 0 {
+		t.Fatalf("uncapped: %d commits, %d publishes, want one direct commit", direct.commits, direct.publishes)
+	}
+	request := direct.maxEst
+	if direct.maxJSON >= request {
+		t.Fatalf("JSON request of %d bytes is not under its estimate %d", direct.maxJSON, request)
+	}
+
+	under := commitUnderCap(t, request+1)
+	if under.commits != 1 || under.publishes != 0 {
+		t.Fatalf("cap %d: %d commits, %d publishes, want one direct commit", request+1, under.commits, under.publishes)
+	}
+
+	at := commitUnderCap(t, request)
+	if at.publishes != 1 || at.commits < 1 {
+		t.Fatalf("cap %d (the request): %d commits, %d publishes, want staging and one publish", request, at.commits, at.publishes)
+	}
+	if at.maxEst >= request || at.maxJSON >= request {
+		t.Fatalf("cap %d: a request of %d bytes (JSON %d) reached it", request, at.maxEst, at.maxJSON)
+	}
+}
+
+// A staging commit is flushed before its encoded request would reach the
+// transport cap: a chunk exactly one byte under the cap is sent, and at the
+// cap the same pages go in smaller chunks.
+func TestStageChunkFlushesBeforeTheEncodedRequestReachesTheCap(t *testing.T) {
+	direct := commitUnderCap(t, 1<<30)
+	half := commitUnderCap(t, direct.maxEst/2)
+	if half.publishes != 1 || half.commits < 2 {
+		t.Fatalf("cap %d: %d staging commits, %d publishes, want at least two chunks and one publish", direct.maxEst/2, half.commits, half.publishes)
+	}
+	chunk := half.maxCommitEst
+
+	fits := commitUnderCap(t, chunk+1)
+	if fits.maxCommitEst != chunk {
+		t.Fatalf("cap %d: largest chunk %d, want the %d-byte chunk sent whole", chunk+1, fits.maxCommitEst, chunk)
+	}
+	split := commitUnderCap(t, chunk)
+	if split.maxCommitEst >= chunk || split.commits <= half.commits {
+		t.Fatalf("cap %d: largest chunk %d over %d commits, want smaller chunks than the %d of cap %d",
+			chunk, split.maxCommitEst, split.commits, half.commits, direct.maxEst/2)
 	}
 }
 

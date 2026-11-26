@@ -17,6 +17,7 @@ package sqlitevfs
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -82,6 +83,10 @@ type Store struct {
 	// the page bytes of each staging Backend.Commit.
 	stageThreshold  int
 	stageChunkBytes int
+	// requestBytes is the transport request cap: a commit whose encoded
+	// request (encodedRequestBytes) would reach it goes through staging,
+	// and a staging commit is flushed before its request would reach it.
+	requestBytes int
 
 	// writer, when set, serializes this database's writers (Q3 A) through
 	// the lock named lockKey; nil is the no-lock (optimistic/local) Store.
@@ -116,7 +121,43 @@ const (
 	// base64 encoded by the JSON codec plus their keys and framing fit one
 	// request, and well under go-quicraft's 8 MiB proto.MaxEntrySize.
 	DefaultStageChunkBytes = transportRequestBytes / 2
+
+	// requestEntryFraming bounds what one key of a commit request costs
+	// beyond its base64-encoded key and value on any transport: field
+	// names, quotes, separators, the revision of a read check, and
+	// protobuf tags and lengths. requestEnvelopeFraming bounds the rest of
+	// the request around its entries.
+	requestEntryFraming    = 256
+	requestEnvelopeFraming = 4096
 )
+
+// encodedEntryBytes is the most one entry with a key of keyLen bytes and a
+// value of valueLen bytes adds to a commit request: both base64 encoded (the
+// JSON codec's encoding of bytes, larger than the binary ones) plus
+// requestEntryFraming.
+func encodedEntryBytes(keyLen, valueLen int) int {
+	return base64.StdEncoding.EncodedLen(keyLen) + base64.StdEncoding.EncodedLen(valueLen) + requestEntryFraming
+}
+
+// encodedRequestBytes bounds the encoded size of one Backend.Commit or
+// Backend.Publish request carrying reads, puts and deletes; extraKeys are
+// the bytes of any other keys it names (a publish's prefixes).
+func encodedRequestBytes(reads []ReadCheck, puts map[string][]byte, deletes [][]byte, extraKeys ...[]byte) int {
+	n := requestEnvelopeFraming
+	for _, r := range reads {
+		n += encodedEntryBytes(len(r.Key), 0)
+	}
+	for key, value := range puts {
+		n += encodedEntryBytes(len(key), len(value))
+	}
+	for _, key := range deletes {
+		n += encodedEntryBytes(len(key), 0)
+	}
+	for _, key := range extraKeys {
+		n += encodedEntryBytes(len(key), 0)
+	}
+	return n
+}
 
 // Option configures a Store built by NewStore.
 type Option func(*Store) error
@@ -196,6 +237,7 @@ func NewStore(b Backend, db string, opts ...Option) (*Store, error) {
 		lockKey:         lockKey,
 		stageThreshold:  DefaultStageThreshold,
 		stageChunkBytes: DefaultStageChunkBytes,
+		requestBytes:    transportRequestBytes,
 	}
 	for _, opt := range opts {
 		if err := opt(s); err != nil {
@@ -940,8 +982,10 @@ func (t *Txn) Truncate(size int64) error {
 // ErrSnapshotChanged and nothing is written; a moved page count or page size
 // is too, and otherwise the change counter advances from the newest record.
 //
-// When the dirty pages total more than the Store's stage threshold, the
-// pages go through staging and one publish (Q2 A, commitStaged) instead.
+// When the dirty pages total more than the Store's stage threshold, or the
+// request encoded with its keys, read checks and framing would reach the
+// transport request cap, the pages go through staging and one publish (Q2
+// A, commitStaged) instead.
 // Every read and write Commit makes uses its own ctx, not Begin's.
 func (t *Txn) Commit(ctx context.Context) (int64, error) {
 	if t.done {
@@ -1047,6 +1091,11 @@ func (t *Txn) commitWrites(ctx context.Context) (int64, error) {
 			return 0, err
 		}
 		puts[string(key)] = page
+	}
+	if encodedRequestBytes(reads, puts, deletes) >= t.store.requestBytes {
+		// The pages fit the threshold but the request, encoded with its
+		// keys, read checks and framing, would reach the transport cap.
+		return t.commitStaged(ctx, reads, metaValue, deletes)
 	}
 	rev, err := t.store.backend.Commit(ctx, reads, puts, deletes)
 	if err != nil {

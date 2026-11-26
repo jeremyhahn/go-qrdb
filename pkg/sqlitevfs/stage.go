@@ -64,6 +64,9 @@ func (t *Txn) commitStaged(ctx context.Context, reads []ReadCheck, metaValue []b
 	chunk := make(map[string][]byte)
 	var chunkKeys [][]byte
 	chunkBytes := 0
+	// chunkRequest is the encoded request size of the chunk so far
+	// (encodedRequestBytes, built up entry by entry).
+	chunkRequest := requestEnvelopeFraming
 	flush := func() error {
 		if len(chunk) == 0 {
 			return nil
@@ -75,6 +78,7 @@ func (t *Txn) commitStaged(ctx context.Context, reads []ReadCheck, metaValue []b
 		chunk = make(map[string][]byte)
 		chunkKeys = nil
 		chunkBytes = 0
+		chunkRequest = requestEnvelopeFraming
 		if t.held {
 			// Renews the lease each chunk and refuses the publish once it was lost.
 			return s.writer.Check(ctx, s.lockKey, t.token)
@@ -83,18 +87,22 @@ func (t *Txn) commitStaged(ctx context.Context, reads []ReadCheck, metaValue []b
 	}
 	for _, pgno := range pgnos {
 		page := t.dirty[pgno]
-		if chunkBytes > 0 && chunkBytes+len(page) > s.stageChunkBytes {
-			if err := flush(); err != nil {
-				return fail(err)
-			}
-		}
 		stageKey, err := StageKey(s.db, commitID, pgno)
 		if err != nil {
 			return fail(err)
 		}
+		// Flush before the page bytes pass the chunk size or the encoded
+		// request would reach the transport cap.
+		entry := encodedEntryBytes(len(stageKey), len(page))
+		if chunkBytes > 0 && (chunkBytes+len(page) > s.stageChunkBytes || chunkRequest+entry >= s.requestBytes) {
+			if err := flush(); err != nil {
+				return fail(err)
+			}
+		}
 		chunk[string(stageKey)] = page
 		chunkKeys = append(chunkKeys, stageKey)
 		chunkBytes += len(page)
+		chunkRequest += entry
 	}
 	if err := flush(); err != nil {
 		return fail(err)
