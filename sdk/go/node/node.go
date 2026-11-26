@@ -2703,6 +2703,10 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 			n.bgCancel = nil
 		}
 		n.bgWG.Wait()
+		// wireClientAndServer started the feature gate and member record
+		// before the isolation floor; the cancel above ends their loops.
+		_ = n.stopFeatureGate()
+		_ = n.stopMemberRecord()
 		n.stopVolumeReporter()
 		_ = svcNode.Stop(context.Background())
 		n.svcNode.Store(nil)
@@ -2732,8 +2736,6 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		}
 		return err
 	}
-	n.startFeatureGate(host, svcNode.KV)
-	n.startMemberRecord(host, pending.cfg)
 	return nil
 }
 
@@ -3553,13 +3555,15 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 			n.bgCancel = nil
 		}
 		n.bgWG.Wait()
+		// wireClientAndServer started the feature gate and member record
+		// before the isolation floor; the cancel above ends their loops.
+		_ = n.stopFeatureGate()
+		_ = n.stopMemberRecord()
 		_ = svcNode.Stop(context.Background())
 		_ = host.Close()
 		n.closeDatabaseManager()
 		return nil, err
 	}
-	n.startFeatureGate(host, svcNode.KV)
-	n.startMemberRecord(host, cfg)
 
 	return n, nil
 }
@@ -4052,14 +4056,6 @@ func attemptAutoUnseal(ctx context.Context, barrier *seal.StorageBarrier, sealCf
 // and multi-protocol server. Used by both standalone and clustered builders
 // after the service graph is ready.
 func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node, cfg *qrdbconfig.Config, callerOpts []server.ServerOption, standalone bool) error {
-	// The cluster isolation floor, applied as cmd/qrdbd applies it and
-	// before anything serves: every boot path reaches here after its
-	// tenants' home stores are attached (the tightening's node-key log
-	// probe resolves each isolated tenant's catalog through its home), so
-	// a FIPS-140 node whose floor is not confirmed strict refuses to boot.
-	if err := n.applyIsolationFloor(ctx, svcNode, cfg); err != nil {
-		return err
-	}
 	// Resolve caller-supplied crypto options once so the same instances back
 	// both the multi-protocol server and the in-process transport.
 	crypto := server.ResolveCryptoOptions(callerOpts...)
@@ -4485,6 +4481,27 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		return err
 	}
 	n.featureClient.Store(featureClient)
+
+	// A clustered node starts its feature gate and publishes its member
+	// record (the features it supports) before the isolation floor, as
+	// cmd/qrdbd starts its gate first: the FIPS-140 floor waits for the
+	// strict-isolation and guarded-writes features, which activate only
+	// once every member advertises them, so a floor applied first would
+	// wait on an advertisement that starts only after it returns. A
+	// standalone node has every feature active at once.
+	if host, ok := n.host.(leaderReporter); ok && !standalone {
+		n.startFeatureGate(host, svcNode.KV)
+		n.startMemberRecord(host, cfg)
+	}
+	// The cluster isolation floor, applied as cmd/qrdbd applies it and
+	// before anything serves: every boot path reaches here after its
+	// tenants' home stores are attached (the tightening's node-key log
+	// probe resolves each isolated tenant's catalog through its home), so
+	// a FIPS-140 node whose floor is not confirmed strict refuses to boot.
+	if err := n.applyIsolationFloor(ctx, svcNode, cfg); err != nil {
+		n.closeFeatureClient()
+		return err
+	}
 
 	// The caller's client refuses what the node's network listeners refuse:
 	// every request outside the sealed-window allowlist while the node
