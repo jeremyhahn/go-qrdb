@@ -220,3 +220,140 @@ func TestDatabaseBarrierBinding_WritesHoldTheSealQuiesceLease(t *testing.T) {
 		})
 	}
 }
+
+// sealSurface is the seal surface a barrier database's verifiable logs use
+// (service.databaseSealer): a materialized barrier binding must carry it.
+type sealSurface interface {
+	SealValue(plaintext []byte) ([]byte, error)
+	OpenValue(ciphertext []byte) ([]byte, error)
+	Hold() (func(), error)
+	IsSealed() bool
+}
+
+var _ sealSurface = (*lifecycle.MaterializedBinding)(nil)
+
+// failingDatabaseBarrier is an unsealed barrier whose every encrypt and
+// decrypt fails, as a corrupt or foreign ciphertext does.
+type failingDatabaseBarrier struct{}
+
+func (failingDatabaseBarrier) Encrypt(_, _ []byte) ([]byte, error) { return nil, errors.New("encrypt") }
+func (failingDatabaseBarrier) Decrypt(_, _ []byte) ([]byte, error) { return nil, errors.New("decrypt") }
+func (failingDatabaseBarrier) IsSealed() bool                      { return false }
+
+func newSealSurfaceBinding(t *testing.T, barrier bool) *lifecycle.MaterializedBinding {
+	t.Helper()
+	f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: t.TempDir()}, nil, qrdbconfig.StorageConfig{},
+		func(id string) (database.BindingTenant, error) {
+			return database.BindingTenant{ID: id, Isolation: tenant.IsolationPrefix}, nil
+		})
+	cfg := database.DatabaseConfig{Name: "vault", TenantID: "acme", Backend: database.BackendPebble}
+	if barrier {
+		cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true}
+	}
+	be, err := f.Create(cfg, "")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = be.Close() })
+	return be.(*lifecycle.MaterializedBinding)
+}
+
+func wantSealedRefusals(t *testing.T, when string, mb *lifecycle.MaterializedBinding) {
+	t.Helper()
+	if _, err := mb.SealValue([]byte("p")); !isSealedError(err) {
+		t.Errorf("SealValue %s = %v, want *database.SealedError", when, err)
+	}
+	if _, err := mb.OpenValue([]byte("c")); !isSealedError(err) {
+		t.Errorf("OpenValue %s = %v, want *database.SealedError", when, err)
+	}
+	if release, err := mb.Hold(); !isSealedError(err) {
+		if release != nil {
+			release()
+		}
+		t.Errorf("Hold %s = %v, want *database.SealedError", when, err)
+	}
+}
+
+func isSealedError(err error) bool {
+	_, ok := errors.AsType[*database.SealedError](err)
+	return ok
+}
+
+// TestMaterializedBinding_SealSurface: a barrier binding seals and opens
+// values under its database barrier, refuses every seal verb before the
+// barrier is attached and once it is sealed, and never passes a ciphertext
+// that does not open through; a binding without a barrier refuses them all.
+func TestMaterializedBinding_SealSurface(t *testing.T) {
+	t.Run("no_barrier", func(t *testing.T) {
+		wantSealedRefusals(t, "without a database barrier", newSealSurfaceBinding(t, false))
+	})
+	t.Run("round_trip_and_sealed", func(t *testing.T) {
+		mb := newSealSurfaceBinding(t, true)
+		wantSealedRefusals(t, "before attach", mb)
+
+		barrier := &xorDatabaseBarrier{}
+		mb.LayerBarrier(barrier)
+		ct, err := mb.SealValue([]byte("secret"))
+		if err != nil {
+			t.Fatalf("SealValue: %v", err)
+		}
+		if string(ct) == "secret" {
+			t.Fatal("SealValue returned the plaintext")
+		}
+		pt, err := mb.OpenValue(ct)
+		if err != nil || string(pt) != "secret" {
+			t.Fatalf("OpenValue = %q, %v; want secret", pt, err)
+		}
+		release, err := mb.Hold()
+		if err != nil {
+			t.Fatalf("Hold: %v", err)
+		}
+		release()
+
+		barrier.sealed = true
+		if !mb.IsSealed() {
+			t.Fatal("IsSealed after seal = false")
+		}
+		wantSealedRefusals(t, "after seal", mb)
+	})
+	t.Run("crypto_failures", func(t *testing.T) {
+		mb := newSealSurfaceBinding(t, true)
+		mb.LayerBarrier(failingDatabaseBarrier{})
+		if _, err := mb.SealValue([]byte("p")); err == nil {
+			t.Fatal("SealValue with a failing barrier = nil")
+		} else if _, ok := errors.AsType[*database.BarrierEncryptError](err); !ok {
+			t.Fatalf("SealValue = %v, want *database.BarrierEncryptError", err)
+		}
+		pt, err := mb.OpenValue([]byte("not a ciphertext"))
+		if pt != nil {
+			t.Fatalf("OpenValue passed %q through", pt)
+		}
+		if _, ok := errors.AsType[*database.BarrierDecryptError](err); !ok {
+			t.Fatalf("OpenValue = %v, want *database.BarrierDecryptError", err)
+		}
+	})
+	t.Run("seal_waits_for_hold", func(t *testing.T) {
+		mb := newSealSurfaceBinding(t, true)
+		barrier := &gatedDatabaseBarrier{entered: make(chan struct{}), release: make(chan struct{})}
+		mb.LayerBarrier(barrier)
+		release, err := mb.Hold()
+		if err != nil {
+			t.Fatalf("Hold: %v", err)
+		}
+		barrier.gate.Close()
+		var held *quiesce.DrainTimeoutError
+		if err := barrier.gate.Drain(0); !errors.As(err, &held) {
+			t.Fatalf("Drain with a hold outstanding = %v, want *quiesce.DrainTimeoutError", err)
+		}
+		if r, err := mb.Hold(); !isSealedError(err) {
+			if r != nil {
+				r()
+			}
+			t.Fatalf("Hold after the gate closed = %v, want *database.SealedError", err)
+		}
+		release()
+		if err := barrier.gate.Drain(time.Minute); err != nil {
+			t.Fatalf("Drain after release = %v", err)
+		}
+	})
+}

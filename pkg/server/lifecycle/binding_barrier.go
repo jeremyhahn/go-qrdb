@@ -363,6 +363,59 @@ func (m *MaterializedBinding) IsSealed() bool {
 	return m.barrier != nil && m.barrier.sealed()
 }
 
+// SealValue encrypts plaintext under the binding's database barrier, for a
+// value the caller stores outside the binding's store (a verifiable log's
+// entry body or signing key). It refuses with *database.SealedError when the
+// binding has no database barrier, none is attached yet or it is sealed; an
+// encrypt failure is a *database.BarrierEncryptError.
+func (m *MaterializedBinding) SealValue(plaintext []byte) ([]byte, error) {
+	if m.barrier == nil {
+		return nil, &database.SealedError{}
+	}
+	enc, err := m.barrier.open()
+	if err != nil {
+		return nil, err
+	}
+	ciphertext, err := enc.Encrypt(nil, plaintext)
+	if err != nil {
+		return nil, &database.BarrierEncryptError{Err: err}
+	}
+	return ciphertext, nil
+}
+
+// OpenValue decrypts a SealValue ciphertext. It refuses as SealValue does,
+// and a ciphertext that does not open is a *database.BarrierDecryptError,
+// never passed through.
+func (m *MaterializedBinding) OpenValue(ciphertext []byte) ([]byte, error) {
+	if m.barrier == nil {
+		return nil, &database.SealedError{}
+	}
+	enc, err := m.barrier.open()
+	if err != nil {
+		return nil, err
+	}
+	plaintext, err := enc.Decrypt(nil, ciphertext)
+	if err != nil {
+		return nil, &database.BarrierDecryptError{Err: err}
+	}
+	return plaintext, nil
+}
+
+// Hold enters the binding store's quiesce lease for a write the caller makes
+// outside the store, so a seal's drain waits for it. It refuses with
+// *database.SealedError as SealValue does, or once the seal's gate is
+// closed; release, called once, ends the hold.
+func (m *MaterializedBinding) Hold() (release func(), err error) {
+	if m.barrier == nil {
+		return nil, &database.SealedError{}
+	}
+	_, release, err = m.barrier.hold()
+	if err != nil {
+		return nil, err
+	}
+	return release, nil
+}
+
 // Ready opens the binding's engine, host and vector service if they are not
 // open yet. A barrier binding defers them until its barrier is attached and
 // unsealed, since the engine reads the store at open; Ready refuses with
