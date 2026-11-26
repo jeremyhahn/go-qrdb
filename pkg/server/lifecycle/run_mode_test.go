@@ -178,13 +178,13 @@ func TestClaimRunMode_ConcurrentOppositeModes(t *testing.T) {
 		}
 		close(start)
 		wg.Wait()
-		winner := -1
+		winnerMode := ""
 		for j, err := range errs {
 			if err == nil {
-				if winner >= 0 {
+				if winnerMode != "" {
 					t.Fatalf("round %d: both modes claimed %s", i, dir)
 				}
-				winner = j
+				winnerMode = modes[j]
 				continue
 			}
 			var mm *RunModeMismatchError
@@ -192,11 +192,11 @@ func TestClaimRunMode_ConcurrentOppositeModes(t *testing.T) {
 				t.Fatalf("round %d: %s claim err = %v, want *RunModeMismatchError", i, modes[j], err)
 			}
 		}
-		if winner < 0 {
+		if winnerMode == "" {
 			t.Fatalf("round %d: neither mode claimed %s: %v", i, dir, errs)
 		}
-		if got, _ := readRunModeMarker(t, dir); got != modes[winner]+"\n" {
-			t.Fatalf("round %d: marker = %q, want winner %s", i, got, modes[winner])
+		if got, _ := readRunModeMarker(t, dir); got != winnerMode+"\n" {
+			t.Fatalf("round %d: marker = %q, want winner %s", i, got, winnerMode)
 		}
 	}
 }
