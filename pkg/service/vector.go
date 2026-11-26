@@ -39,6 +39,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/quiesce"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -549,6 +550,11 @@ func translateVectorSealed(err error) error {
 	// A barrier-encrypted binding store reports the barrier's own sealed
 	// error, or the quiesce gate a seal closes, on the read it refuses.
 	if errors.Is(err, seal.ErrSealed) || errors.Is(err, quiesce.ErrSealing) {
+		return &BarrierSealedError{}
+	}
+	// A Pebble binding store under a sealed barrier refuses with its own
+	// sealed error.
+	if _, ok := errors.AsType[*pebble.SealedError](err); ok || errors.Is(err, pebble.ErrBarrierSealed) {
 		return &BarrierSealedError{}
 	}
 	return err
@@ -1911,6 +1917,15 @@ func (v *vectorService) SearchSimilar(ctx context.Context, req *SearchSimilarReq
 				v.metrics.operationErrors.With("search_similar", "barrier_sealed").Inc()
 			}
 			return nil, sealed
+		}
+		// Only a namespace that does not exist answers with no results;
+		// a refused or failed read is the caller's error, never an empty
+		// successful search.
+		if !errors.Is(err, vector.ErrNamespaceNotFound) {
+			if v.metrics != nil {
+				v.metrics.operationErrors.With("search_similar", "read_failed").Inc()
+			}
+			return nil, err
 		}
 		v.logger.WithFields(map[string]interface{}{
 			"namespace": req.Namespace,
