@@ -94,6 +94,7 @@ func newCrashBarrier(backend *seal.MemoryBackend, init bool) (*seal.StorageBarri
 // restoreCrashBarrier rebuilds the barrier's backend from the JSON snapshot
 // at path and unseals a fresh barrier over it with the passphrase.
 func restoreCrashBarrier(path string) (*seal.StorageBarrier, error) {
+	// #nosec G703 -- path names the barrier snapshot this test wrote under t.TempDir(), or the same path the parent passed to its re-exec'd child through crashBarrierEnv. Nothing from outside the test process chooses it.
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -169,6 +170,7 @@ func killObjstoreLSMMidCompaction(t *testing.T, encrypted bool) {
 		enc = atrest.New(barrier)
 	}
 
+	// #nosec G204,G702 -- re-exec of this test binary: argv[0] is os.Args[0], the path `go test` invoked, and every other argument is a compile-time literal. No shell is involved and nothing from outside the process reaches this argv.
 	cmd := exec.Command(os.Args[0], "-test.run=^TestObjstoreLSM_KillMidCompaction$")
 	cmd.Env = env
 	cmd.Stderr = os.Stderr
