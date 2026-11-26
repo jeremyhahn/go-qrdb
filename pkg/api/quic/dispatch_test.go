@@ -302,6 +302,8 @@ func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
 func TestBuildHandlers_MethodCount(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 
+	// 221 = 218 + volumepool.MoveTenant, volumepool.GetMove and
+	// volumepool.CancelMove, the tenant-move verbs (docs/volume-pools/api.md).
 	// 218 = 216 + cluster.IsolationPolicyGet and cluster.IsolationPolicySet, the
 	// cluster isolation floor (tenants:read, tenants:update:cross).
 	// 216 = 207 + the nine group.* IAM group methods (go-qrdb#1651).
@@ -350,7 +352,7 @@ func TestBuildHandlers_MethodCount(t *testing.T) {
 	// part 2)
 	// + the 9 volumepool.* verbs (docs/volume-pools/api.md): List, Get,
 	// Create, Update, Delete, ListTenants, and the tenant-move verbs
-	// MoveTenant, GetMove, CancelMove (219 = 207 + the nine group.* methods + those 3).
+	// MoveTenant, GetMove, CancelMove.
 	// cert.Export is retired entirely: encoding a PKCS#12 archive needs
 	// the private key, and no private key may reach a node (go-qrdb
 	// security review). The archive is now built LOCALLY, in the CLI and the
@@ -389,7 +391,7 @@ func TestBuildHandlers_MethodCount(t *testing.T) {
 	// kv.CompareAndDelete, kv.CompareAndSwap — go-qrdb#124), and the 161 was
 	// 160 plus user.GetByEmail, the canonical login-key lookup (go-qrdb#190).
 	// The 2 watch methods remain on the streaming path, not the unary table.
-	const wantCount = 220
+	const wantCount = 221
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}

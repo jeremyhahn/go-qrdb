@@ -1070,7 +1070,7 @@ func TestScaleForTenant_ScaleUp_MoveFence_RefusesMovingTenant(t *testing.T) {
 	host := &fakeRaftHost{leaderOK: true}
 	svc, store, _ := newScaleDatabaseService(t, healthyNodes("n1", "n2", "n3", "n4", "n5"),
 		&quota.Quotas{MaxReplicasPerGroup: 10, MaxTotalReplicas: 100}, host)
-	createScaleDB(t, svc, "db1", 2)
+	info := createScaleDB(t, svc, "db1", 2)
 	fence := &movingFence{refuseFrom: 1}
 	svc.moveFence = fence.fence
 
@@ -1082,7 +1082,7 @@ func TestScaleForTenant_ScaleUp_MoveFence_RefusesMovingTenant(t *testing.T) {
 	if len(host.observerCalls) != 0 {
 		t.Fatalf("AddObserver called %d times, want 0", len(host.observerCalls))
 	}
-	p, gerr := store.Get(scaleCtx(), scaleTenantID, "db1")
+	p, gerr := store.Get(scaleCtx(), scaleTenantID, info.ID)
 	if gerr != nil {
 		t.Fatalf("placement Get: %v", gerr)
 	}
