@@ -279,3 +279,70 @@ func TestNodeBindingFactory_RaftMode(t *testing.T) {
 		t.Fatal("WithRaftMode: RaftMode = false, want true")
 	}
 }
+
+func TestLocalBindingFactory_StandaloneRaftAndLookupBranches(t *testing.T) {
+	lookupErr := errors.New("tenant lookup down")
+	f := NewLocalBindingFactory(database.BindingNode{DataDir: t.TempDir()}, nil, qrdbconfig.StorageConfig{},
+		func(id string) (database.BindingTenant, error) {
+			if id == "broken" {
+				return database.BindingTenant{}, lookupErr
+			}
+			return database.BindingTenant{Isolation: tenant.IsolationPrefix}, nil
+		})
+
+	raftCfg := database.DatabaseConfig{TenantID: "acme", Name: "orders", Backend: database.BackendRaft}
+	if b, err := f.RecordBinding(raftCfg); b != nil || err != nil {
+		t.Fatalf("standalone RecordBinding(raft) = %v, %v; want nil, nil", b, err)
+	}
+	var unavailable *database.RaftBackendUnavailableError
+	if _, err := f.DescribeBinding(raftCfg); !errors.As(err, &unavailable) {
+		t.Fatalf("standalone DescribeBinding(raft) err = %v, want *RaftBackendUnavailableError", err)
+	}
+
+	var openErr *BindingOpenError
+	broken := database.DatabaseConfig{TenantID: "broken", Name: "orders", Backend: database.BackendMemory}
+	if _, err := f.DescribeBinding(broken); !errors.As(err, &openErr) || !errors.Is(err, lookupErr) {
+		t.Fatalf("DescribeBinding(lookup failure) err = %v, want *BindingOpenError wrapping the lookup error", err)
+	}
+
+	got, err := f.tenant("acme")
+	if err != nil || got.ID != "acme" {
+		t.Fatalf("tenant(acme) = %+v, %v; want the looked-up tenant with ID filled in", got, err)
+	}
+
+	if f.materializes(tenant.IsolationType("bogus")) {
+		t.Fatal("materializes(unknown isolation) = true, want false")
+	}
+	if f.materializes(tenant.IsolationVolume) {
+		t.Fatal("materializes(volume) without tenant encryptors = true, want false")
+	}
+	if dir := BindingWALDir("", "/data/acme"); dir != "" {
+		t.Fatalf("BindingWALDir(no wal dir) = %q, want empty", dir)
+	}
+}
+
+func TestNodeIdentityError_ReasonAndCause(t *testing.T) {
+	bare := &NodeIdentityError{Reason: "no leaf"}
+	if got, want := bare.Error(), "lifecycle: node identity: no leaf"; got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+	if bare.Unwrap() != nil {
+		t.Fatal("Unwrap() without a cause is non-nil")
+	}
+	cause := errors.New("bad pem")
+	wrapped := &NodeIdentityError{Reason: "parse", Err: cause}
+	if !strings.HasSuffix(wrapped.Error(), ": parse: bad pem") || !errors.Is(wrapped, cause) {
+		t.Fatalf("wrapped NodeIdentityError = %q, want the reason and cause", wrapped.Error())
+	}
+}
+
+func TestNode_SOPINsWithoutOnboarding(t *testing.T) {
+	n := &Node{}
+	n.AttachSOPINs(nil)
+	if pins := n.SOPINs(); pins != nil {
+		t.Fatalf("SOPINs() without onboarding = %v, want nil", pins)
+	}
+	if err := (kvSealBackend{}).Close(); err != nil {
+		t.Fatalf("kvSealBackend.Close() = %v, want nil", err)
+	}
+}
