@@ -98,6 +98,7 @@ func (t fakeTransport) CeremonyInitialize(_ context.Context, req *transport.Cere
 	defer t.n.mu.Unlock()
 	c := *req
 	c.Secret = slices.Clone(req.Secret)
+	c.SOPin, c.UserPin = slices.Clone(req.SOPin), slices.Clone(req.UserPin)
 	t.n.ceremonies = append(t.n.ceremonies, c)
 	if t.n.bootErr != nil {
 		t.n.booted = t.n.bootAnyway

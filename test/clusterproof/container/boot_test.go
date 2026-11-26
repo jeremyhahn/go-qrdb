@@ -32,7 +32,7 @@ func TestFirstBootEveryNode(t *testing.T) {
 			t.Fatalf("node %d: booted %v after %d ceremonies", n.replicaID, n.booted, len(n.ceremonies))
 		}
 		req := n.ceremonies[0]
-		if req.SOPin != "so-pin" || req.UserPin != "user-pin" || req.AdminCertPEM != "admin-cert" || string(req.Secret) != "barrier-secret" {
+		if string(req.SOPin) != "so-pin" || string(req.UserPin) != "user-pin" || req.AdminCertPEM != "admin-cert" || string(req.Secret) != "barrier-secret" {
 			t.Errorf("node %d request %+v", n.replicaID, req)
 		}
 		if n.closed == 0 {
