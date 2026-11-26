@@ -137,7 +137,9 @@
             ...(dbWizardStore.dedicatedWal ? { dedicatedWal: true } : {}),
           }
         : {}),
-      ...(dbWizardStore.raftConfig !== null
+      // Raft options belong only to a raft-backed create: the store keeps a
+      // default raftConfig, and a standalone create must not carry it.
+      ...(dbWizardStore.serverMode === "raft" && dbWizardStore.raftConfig !== null
         ? {
             raft: {
               clusterMode: dbWizardStore.raftConfig.clusterMode,

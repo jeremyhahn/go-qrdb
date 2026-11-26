@@ -34,8 +34,11 @@ const STEP_TIMEOUT = 10_000;
  * Overrides the Wails bindings so the active connection is a raft-mode
  * server and DatabaseBinding.Create records the submitted request on window.
  */
-async function installRaftAndCapture(page: Page): Promise<void> {
-  await page.addInitScript(() => {
+async function installRaftAndCapture(
+  page: Page,
+  serverMode: "raft" | "standalone" = "raft",
+): Promise<void> {
+  await page.addInitScript((mode: string) => {
     const w = window as unknown as Record<string, unknown>;
     const origGo = w.go as Record<string, unknown>;
     if (!origGo) return;
@@ -50,9 +53,9 @@ async function installRaftAndCapture(page: Page): Promise<void> {
           id: "raft-profile",
           name: "Raft Server",
           type: "embedded",
-          serverMode: "raft",
+          serverMode: mode,
           embedded: {
-            raftEnabled: true,
+            raftEnabled: mode === "raft",
             dataDir: "/data",
             sealConfig: { mode: "none" },
           },
@@ -77,7 +80,7 @@ async function installRaftAndCapture(page: Page): Promise<void> {
         };
       };
     }
-  });
+  }, serverMode);
 }
 
 /** Advances the wizard from the landing page to the Raft Configuration step. */
@@ -241,5 +244,52 @@ test.describe("Database Wizard - Cluster Mode selector (raft server)", () => {
         { timeout: STEP_TIMEOUT },
       )
       .toBe("distributed");
+  });
+});
+
+test.describe("Database Wizard - raft options (standalone server)", () => {
+  test.use({ mockState: secondLaunchEmbeddedState });
+
+  test("a standalone create carries no raft options", async ({ page }) => {
+    await installRaftAndCapture(page, "standalone");
+    await page.goto("/");
+    await expect(
+      page.locator(".breadcrumbs").getByText("Dashboard"),
+    ).toBeVisible({ timeout: STEP_TIMEOUT });
+    await page.locator("aside").getByText("New Database").click();
+    await expect(
+      page.getByRole("heading", { name: "Database Name & Engine" }),
+    ).toBeVisible({ timeout: STEP_TIMEOUT });
+
+    await page.locator("#db-name").fill("standalone-no-raft");
+    await page.getByRole("button", { name: "Next" }).click();
+    await expect(
+      page.getByRole("heading", { name: "Storage Backend" }),
+    ).toBeVisible({ timeout: STEP_TIMEOUT });
+
+    // No Raft step on a standalone server: Storage goes straight to Protocols.
+    await advanceRaftToSummary(page);
+    await page.getByRole("button", { name: "Create Database" }).click();
+
+    await expect
+      .poll(
+        () =>
+          page.evaluate(
+            () =>
+              (window as unknown as { __dbCreateReq?: { name?: string } })
+                .__dbCreateReq?.name ?? null,
+          ),
+        { timeout: STEP_TIMEOUT },
+      )
+      .toBe("standalone-no-raft");
+
+    const req = await page.evaluate(
+      () =>
+        (window as unknown as { __dbCreateReq?: Record<string, unknown> })
+          .__dbCreateReq,
+    );
+    expect(req).not.toHaveProperty("raft");
+    expect(req).not.toHaveProperty("replicas");
+    expect(req?.backend).toBe("pebble");
   });
 });
