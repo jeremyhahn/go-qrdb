@@ -392,3 +392,44 @@ func TestLiveIndex_ManhattanRanksFlatAndIVF(t *testing.T) {
 		}
 	}
 }
+
+func TestSameLiveIndexShape(t *testing.T) {
+	base := NamespaceRecord{
+		Dimension:      4,
+		DistanceMetric: DistanceCosine,
+		IndexType:      IndexIVFFlat,
+		IndexParams:    map[string]string{"num_centroids": "8", "label.team": "a"},
+	}
+	metadataOnly := base
+	metadataOnly.IndexParams = map[string]string{"num_centroids": "8", "label.team": "b", "updated_at": "7"}
+	metadataOnly.TrainingGeneration = base.TrainingGeneration + 1
+	metadataOnly.Seq = base.Seq + 3
+
+	withDim := base
+	withDim.Dimension = 8
+	withMetric := base
+	withMetric.DistanceMetric = DistanceEuclidean
+	withType := base
+	withType.IndexType = IndexFlat
+	withCentroids := base
+	withCentroids.IndexParams = map[string]string{"num_centroids": "16", "label.team": "a"}
+
+	cases := []struct {
+		name string
+		b    NamespaceRecord
+		want bool
+	}{
+		{"metadata, generation and seq only", metadataOnly, true},
+		{"dimension", withDim, false},
+		{"distance metric", withMetric, false},
+		{"index type", withType, false},
+		{"centroid count", withCentroids, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SameLiveIndexShape(base, tc.b); got != tc.want {
+				t.Fatalf("SameLiveIndexShape = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

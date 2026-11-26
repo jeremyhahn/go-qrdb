@@ -430,6 +430,7 @@ func (e *KVEngine) adaptVectorHandler(op byte, fn func(storage.Batch, []byte) (s
 		}
 
 		e.indexMgr.ApplyEffects(effects)
+		e.indexMgr.RebuildReconfigured(e.stg, effects)
 		return result, nil
 	}
 }
