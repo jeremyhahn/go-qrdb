@@ -43,6 +43,7 @@ type EmbeddedBackendFactory struct {
 	objectStorage          ObjectStorageOpener
 	objectStorageValidate  ObjectStorageSettingsValidator
 	objectStorageNamespace ObjectStorageNamespacer
+	objectStorageRelease   ObjectStorageMarkerReleaser
 }
 
 // ObjectStorageSettingsValidator checks a database's Objstore provider
@@ -159,6 +160,53 @@ func objectStorageNamespace(factory BackendFactory, cfg DatabaseConfig) (string,
 		return "", ErrObjectStorageNamespaceUnknown
 	}
 	return n.ObjectStorageNamespace(cfg)
+}
+
+// ObjectStorageMarkerReleaser deletes the owner marker of an object-storage
+// database's namespace while it names cfg's incarnation, without opening the
+// engine: no claim and no journal recovery, so a namespace whose journal is
+// corrupt is still released (a claim-only release, releaseEntry.ClaimOnly).
+// A marker naming another owner, or none, is a completed release. A seam, as
+// ObjectStorageNamespacer is.
+type ObjectStorageMarkerReleaser func(cfg DatabaseConfig) error
+
+// ErrObjectStorageMarkerReleaseUnknown is returned by ReleaseObjectStorageMarker
+// when no ObjectStorageMarkerReleaser is wired: the claim cannot be given
+// back, so its release entry stays.
+var ErrObjectStorageMarkerReleaseUnknown = errors.New("database: object-storage owner marker release unknown: no releaser is wired")
+
+// WithObjectStorageMarkerRelease wires the releaser the manager uses to give
+// back a failed create's claim on a namespace that held data before it.
+func WithObjectStorageMarkerRelease(r ObjectStorageMarkerReleaser) EmbeddedBackendFactoryOption {
+	return func(f *EmbeddedBackendFactory) {
+		f.objectStorageRelease = r
+	}
+}
+
+// ReleaseObjectStorageMarker releases cfg's owner marker
+// (ObjectStorageMarkerReleaser), or returns
+// ErrObjectStorageMarkerReleaseUnknown when no releaser is wired.
+func (f *EmbeddedBackendFactory) ReleaseObjectStorageMarker(cfg DatabaseConfig) error {
+	if f.objectStorageRelease == nil {
+		return ErrObjectStorageMarkerReleaseUnknown
+	}
+	return f.objectStorageRelease(cfg)
+}
+
+// objectStorageMarkerReleasing is the marker-releaser side of a
+// BackendFactory.
+type objectStorageMarkerReleasing interface {
+	ReleaseObjectStorageMarker(cfg DatabaseConfig) error
+}
+
+// releaseObjectStorageMarker releases cfg's owner marker through factory, or
+// returns ErrObjectStorageMarkerReleaseUnknown when factory has no releaser.
+func releaseObjectStorageMarker(factory BackendFactory, cfg DatabaseConfig) error {
+	r, ok := factory.(objectStorageMarkerReleasing)
+	if !ok {
+		return ErrObjectStorageMarkerReleaseUnknown
+	}
+	return r.ReleaseObjectStorageMarker(cfg)
 }
 
 // NewEmbeddedBackendFactory creates a new EmbeddedBackendFactory.

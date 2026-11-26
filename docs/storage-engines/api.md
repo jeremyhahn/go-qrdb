@@ -22,8 +22,14 @@ handle and never holds a plaintext copy; an open that fails returns
 (`objstore.CredentialFileError`, `objstore.UnsupportedProviderError`).
 `pkg/database` does not link the engine: the opener and the settings
 validator are wired with
-`database.NewEmbeddedBackendFactory(database.WithObjectStorage(objstoredb.Open), database.WithObjectStorageValidator(objstoredb.ValidateSettings), database.WithObjectStorageNamespace(objstoredb.Namespace))`
+`database.NewEmbeddedBackendFactory(database.WithObjectStorage(objstoredb.Open), database.WithObjectStorageValidator(objstoredb.ValidateSettings), database.WithObjectStorageNamespace(objstoredb.Namespace), database.WithObjectStorageMarkerRelease(objstoredb.ReleaseOwnerMarker))`
 (`objstoredb.NewBackendFactory`), which `qrdbd` and the server lifecycle do.
+The marker releaser, `objstoredb.ReleaseOwnerMarker`
+(`objstore.ReleaseOwnerMarkerOf`), deletes a database's owner marker without
+opening the engine, so a failed create's claim on a namespace that held data
+before is given back even when that namespace's journal fails every open; a
+Go SDK node wires it with
+`node.WithObjectStorageMarkerRelease(objstoredb.ReleaseOwnerMarker)`.
 `objstoredb.Open` opens each database as the owner of its provider namespace
 (`objstore.WithOwner`), so a second database on the same bucket or path fails
 with `database.StorageCreateError` wrapping `objstore.NamespaceOwnedError`.

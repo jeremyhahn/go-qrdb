@@ -990,10 +990,16 @@ func (m *Manager) reclaimDatabaseObjects(key dbKey, db *Database) error {
 // same owner, and no other database claims the namespace meanwhile.
 // claimOnly releases the claim of a failed create onto a namespace that held
 // data before it (releaseEntry.ClaimOnly): only the owner marker goes, while
-// it names this incarnation, and every record stays.
+// it names this incarnation, and every record stays. It never opens the engine
+// (ObjectStorageMarkerReleaser): the failed create's open may have failed on
+// a corrupt journal, which every open would fail on again.
 func (m *Manager) releaseDatabaseNamespace(key dbKey, cfg DatabaseConfig, claimOnly bool) error {
 	if cfg.Backend != BackendObjstore {
 		return nil
+	}
+	if claimOnly {
+		// A marker of another owner, or none, is a release that is done.
+		return releaseObjectStorageMarker(m.factory, cfg)
 	}
 	backend, err := m.factory.Create(cfg, m.dbDir(key.tenant, cfg.Name))
 	if err != nil {
@@ -1009,11 +1015,7 @@ func (m *Manager) releaseDatabaseNamespace(key dbKey, cfg DatabaseConfig, claimO
 	}
 	var releaseErr error
 	if r, ok := backend.(backendReleaser); ok {
-		if claimOnly {
-			releaseErr = r.ReleaseOwnerMarker()
-		} else {
-			releaseErr = r.ReleaseOwner()
-		}
+		releaseErr = r.ReleaseOwner()
 	}
 	return errors.Join(releaseErr, backend.Close())
 }

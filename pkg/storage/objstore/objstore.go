@@ -326,6 +326,53 @@ func New(provider string, settings map[string]string, opts ...Option) (*Engine, 
 	return e, nil
 }
 
+// ReleaseOwnerMarkerOf gives back a claim-only reservation without opening
+// an engine: it opens the namespace's data store as New does and deletes the
+// owner marker while it names the WithOwner owner, under the namespace lock.
+// It never claims the namespace or recovers the journal, so a namespace whose
+// journal is corrupt -- the failure that left the claim behind -- is still
+// released; every record, the journal and the format marker stay. A marker
+// naming another owner, or none, is left as it is and reported as released.
+// An unowned call has no marker to release. The stores it opens are closed
+// before it returns.
+func ReleaseOwnerMarkerOf(provider string, settings map[string]string, opts ...Option) error {
+	if provider == "" {
+		return storage.ErrInvalidPath
+	}
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+	if o.owner == "" {
+		return nil
+	}
+	store, creator, creds, release, err := openStore(provider, settings, o)
+	defer release()
+	if err != nil {
+		return err
+	}
+	created := []objcommon.Storage{store}
+	create := func(settings map[string]string, creds objcommon.Credentials) (objcommon.Storage, error) {
+		s, err := creator(settings, creds)
+		if err == nil {
+			created = append(created, s)
+		}
+		return s, err
+	}
+	kept, err := openStores(provider, create, settings, store, creds)
+	if err != nil {
+		return errors.Join(credentialOpenError(o.credentials, err), closeStores(created...))
+	}
+	canonical, err := canonicalNamespace(provider, settings)
+	if err != nil {
+		return errors.Join(err, closeStores(created...))
+	}
+	unlock := lockNamespace(namespaceKey(provider, canonical))
+	releaseErr := releaseOwnerMarker(kept.data, o.owner)
+	unlock()
+	return errors.Join(releaseErr, closeStores(created...))
+}
+
 // undoClaim gives back the namespace claim this open wrote (claimNamespace)
 // when the open fails after it, with ReleaseClaim's rules: a namespace this
 // open claimed fresh is given back whole; on data that was there before only

@@ -691,6 +691,15 @@ Invariants:
     when that undo fails as well (`objstore.ClaimUndoError`) no backend is
     left to release it, so `Manager.create` records a ledger entry for the
     new incarnation and `retryNamespaceReleases` releases the namespace.
+    An entry for a claim-only open (the namespace held data before) is
+    released without opening the engine: the
+    `database.WithObjectStorageMarkerRelease` releaser
+    (`objstoredb.ReleaseOwnerMarker`, `objstore.ReleaseOwnerMarkerOf`)
+    deletes only the owner marker when it names this database, so a
+    namespace whose journal fails every open is still given back with its
+    records untouched. `Engine.ReleaseOwner` returns
+    `objstore.NamespaceRetainedError` when objects outside this database's
+    records keep the marker, and the entry stays until a retry releases it.
     A `ReleaseClaim` that fails in `createUndo` (the open succeeded, a later
     create step failed) records the same entry (`createUndo.recordClaimRelease`;
     a failure to record it is logged).

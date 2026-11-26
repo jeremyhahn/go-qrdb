@@ -595,6 +595,99 @@ func TestManager_FailedCreateClaimUndoOnExistingDataKeepsData(t *testing.T) {
 	}
 }
 
+// fileContents maps every regular file under each of roots to its bytes.
+func fileContents(t *testing.T, roots ...string) map[string]string {
+	t.Helper()
+	files := map[string]string{}
+	for _, root := range roots {
+		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return err
+			}
+			body, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			files[path] = string(body)
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("WalkDir %s: %v", root, err)
+		}
+	}
+	return files
+}
+
+// TestManager_ClaimOnlyReleaseOverCorruptJournal: a create onto existing,
+// unowned data whose journal is corrupt fails on the journal, and the claim
+// undo fails too, so a claim-only release is recorded. Every open of that
+// namespace fails on the journal again, so the retry deletes the owner
+// marker without opening the engine; the records and the journal stay byte
+// for byte.
+func TestManager_ClaimOnlyReleaseOverCorruptJournal(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "objects")
+	otherRoot := filepath.Join(base, "other")
+	unowned, err := objstore.New("local", map[string]string{"path": root})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := unowned.Set([]byte("k"), []byte("v")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := unowned.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// A journal no open can recover, written by the real provider where the
+	// fault provider (not "local", so its journal is in the data tree)
+	// reads it.
+	journal, err := objfactory.NewStorage("local", map[string]string{"path": root}, objcommon.Credentials{})
+	if err != nil {
+		t.Fatalf("journal store: %v", err)
+	}
+	if err := journal.Put("qrdb-objstore-journal", strings.NewReader("not a journal image")); err != nil {
+		t.Fatalf("Put journal: %v", err)
+	}
+	before := fileContents(t, root)
+
+	dataDir := t.TempDir()
+	mgr := newManager(t, dataDir)
+	t.Cleanup(func() { releaseFaultArmed.Store(false) })
+	releaseFaultArmed.Store(true)
+	var corrupt *objstore.JournalCorruptError
+	var undo *objstore.ClaimUndoError
+	_, err = mgr.Create(releaseFaultObjstore(t, "blobs", root))
+	if !errors.As(err, &undo) || !errors.As(err, &corrupt) {
+		t.Fatalf("Create = %v, want *objstore.ClaimUndoError over *objstore.JournalCorruptError", err)
+	}
+	if !hasOwnerMarker(t, root) {
+		t.Fatal("the failed undo left no owner marker; the test fault did not hold")
+	}
+	if len(releaseLedgerFiles(t, dataDir)) == 0 {
+		t.Fatal("the failed create recorded no release entry for its claim")
+	}
+
+	// The next object-storage create retries the recorded release.
+	if _, err := mgr.Create(localObjstore("other", otherRoot)); err != nil {
+		t.Fatalf("Create other: %v", err)
+	}
+	if left := releaseLedgerFiles(t, dataDir); len(left) != 0 {
+		t.Fatalf("the retried claim-only release kept %v", left)
+	}
+	if hasOwnerMarker(t, root) {
+		t.Fatal("the retried claim-only release kept the owner marker")
+	}
+	after := fileContents(t, root)
+	if len(after) != len(before) {
+		t.Fatalf("the retried release left %d files, want the pre-existing %d", len(after), len(before))
+	}
+	for path, body := range before {
+		if after[path] != body {
+			t.Fatalf("the retried release changed %s", path)
+		}
+	}
+}
+
 // TestManager_FailedCreateReleaseClaimFailureIsRetried: an open that
 // succeeded, a later create step that failed, and a claim give-back that
 // failed too leave a release entry; the retry releases a fresh namespace

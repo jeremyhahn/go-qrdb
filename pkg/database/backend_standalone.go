@@ -339,14 +339,12 @@ func (b *StandaloneBackend) Reclaim() error {
 // ReleaseClaim gives back what an open claimed. A drop releases the
 // namespace after the catalog delete (Manager.drop), and a failed create
 // gives back its open's claim (createUndo.run): a namespace claimed new is
-// released, an owner marker written onto existing data is removed.
-// ReleaseOwnerMarker removes only the owner marker, while it names this
-// owner: the retried release of a claim on existing data
-// (releaseEntry.ClaimOnly), which must not reclaim that data.
+// released, an owner marker written onto existing data is removed. The
+// retried release of a claim on existing data (releaseEntry.ClaimOnly)
+// opens no backend: ObjectStorageMarkerReleaser.
 type backendReleaser interface {
 	ReleaseOwner() error
 	ReleaseClaim() error
-	ReleaseOwnerMarker() error
 	// FreshlyClaimed reports that the open claimed a namespace that held no
 	// object: a failed give-back's recorded release may reclaim it whole.
 	FreshlyClaimed() bool
@@ -381,16 +379,4 @@ func (b *StandaloneBackend) ReleaseClaim() error {
 	b.writeMu.Lock()
 	defer b.writeMu.Unlock()
 	return r.ReleaseClaim()
-}
-
-// ReleaseOwnerMarker forwards backendReleaser.ReleaseOwnerMarker; a store
-// with no namespace of its own has no owner marker.
-func (b *StandaloneBackend) ReleaseOwnerMarker() error {
-	r, ok := b.store.(backendReleaser)
-	if !ok {
-		return nil
-	}
-	b.writeMu.Lock()
-	defer b.writeMu.Unlock()
-	return r.ReleaseOwnerMarker()
 }

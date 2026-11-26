@@ -17,8 +17,9 @@
 // engine, so a lean embedder stays free of go-objstore; the node composers
 // (qrdbd, the server lifecycle and the Go SDK node) pass
 // database.WithObjectStorage(objstoredb.Open),
-// database.WithObjectStorageValidator(objstoredb.ValidateSettings) and
-// database.WithObjectStorageNamespace(objstoredb.Namespace), as
+// database.WithObjectStorageValidator(objstoredb.ValidateSettings),
+// database.WithObjectStorageNamespace(objstoredb.Namespace) and
+// database.WithObjectStorageMarkerRelease(objstoredb.ReleaseOwnerMarker), as
 // NewBackendFactory does.
 package objstoredb
 
@@ -66,12 +67,30 @@ func namespaceOwner(cfg database.DatabaseConfig) string {
 	return "database:" + strconv.Quote(cfg.TenantID) + "/" + strconv.Quote(cfg.Name) + "#" + strconv.Quote(cfg.Incarnation)
 }
 
+// ReleaseOwnerMarker gives back cfg's claim on its namespace without opening
+// the engine (objstore.ReleaseOwnerMarkerOf): the owner marker goes while it
+// names cfg's incarnation, and every record and the journal stay. It is the
+// database.ObjectStorageMarkerReleaser NewBackendFactory wires.
+func ReleaseOwnerMarker(cfg database.DatabaseConfig) error {
+	if cfg.Objstore == nil {
+		return errNoObjstoreConfig
+	}
+	oc := *cfg.Objstore
+	return objstore.ReleaseOwnerMarkerOf(oc.Provider, oc.Settings,
+		objstore.WithCredentialFiles(objstore.CredentialFiles{
+			KeyFile:    oc.KeyFile,
+			SecretFile: oc.SecretFile,
+		}),
+		objstore.WithOwner(namespaceOwner(cfg)))
+}
+
 // NewBackendFactory returns the embedded backend factory with object storage
 // wired in.
 func NewBackendFactory() *database.EmbeddedBackendFactory {
 	return database.NewEmbeddedBackendFactory(database.WithObjectStorage(Open),
 		database.WithObjectStorageValidator(ValidateSettings),
-		database.WithObjectStorageNamespace(Namespace))
+		database.WithObjectStorageNamespace(Namespace),
+		database.WithObjectStorageMarkerRelease(ReleaseOwnerMarker))
 }
 
 // errNoObjstoreConfig is Namespace's refusal of a configuration with no
