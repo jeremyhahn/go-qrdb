@@ -474,6 +474,12 @@ func TestTenantShardReconciler_SetMoveHoldNilClears(t *testing.T) {
 	if reg.moveHold.Load() != nil {
 		t.Fatal("TenantHostRegistry.SetMoveHold(nil) must clear the hold")
 	}
+	// A registry with no tenant source hosts no tenant.
+	for _, r := range []*TenantHostRegistry{nil, {}} {
+		if hosted, err := r.HostsTenant(context.Background(), "acme"); hosted || err != nil {
+			t.Fatalf("HostsTenant = %v, %v; want false, nil", hosted, err)
+		}
+	}
 }
 
 // TestTenantShardReconciler_IgnoresUnassigned proves shards not assigned to

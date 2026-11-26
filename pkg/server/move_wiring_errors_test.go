@@ -10,7 +10,9 @@ package server
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"reflect"
 	"testing"
 	"time"
 
@@ -194,5 +196,73 @@ func TestNewMoveStores_QuicraftHostProbesCatchUp(t *testing.T) {
 	}
 	if stores.caughtUp != nil {
 		t.Fatal("a nil quicraft host must not probe catch-up")
+	}
+}
+
+// failingMoveSteps fails both passes and counts them.
+type failingMoveSteps struct{ local, leader int }
+
+func (s *failingMoveSteps) RunLocalSteps(context.Context, string) error {
+	s.local++
+	return errors.New("local steps failed")
+}
+
+func (s *failingMoveSteps) ReconcileOnce(context.Context) error {
+	s.leader++
+	return errors.New("leader pass failed")
+}
+
+// TestTenantMoveWorker_TickLeaderPassesFailSoft: a leading node runs both
+// passes; a failing pass is logged, not fatal, and a worker with no stores
+// retries nothing.
+func TestTenantMoveWorker_TickLeaderPassesFailSoft(t *testing.T) {
+	steps := &failingMoveSteps{}
+	w := &TenantMoveWorker{
+		reconciler: steps,
+		nodeID:     "n1",
+		leads:      func() bool { return true },
+		interval:   DefaultTenantMoveInterval,
+		logger:     slog.Default(),
+	}
+	w.Tick(context.Background())
+	w.Tick(context.Background())
+	if steps.local != 2 || steps.leader != 2 {
+		t.Fatalf("passes local=%d leader=%d, want 2 and 2", steps.local, steps.leader)
+	}
+}
+
+// TestTenantMoveWorker_TickKeepsASealedReopenPending: a tenant whose barrier
+// stays sealed stays pending across ticks until its administrator unseals it.
+func TestTenantMoveWorker_TickKeepsASealedReopenPending(t *testing.T) {
+	shards := &fakeMoveShards{started: map[StartedShard]bool{{TenantID: "acme", Database: "a"}: true}}
+	barriers := &fakeMoveBarriers{}
+	stores, err := NewMoveStoreCloser(shards, barriers, nil, 0)
+	if err != nil {
+		t.Fatalf("NewMoveStoreCloser: %v", err)
+	}
+	ctx := context.Background()
+	if err := stores.CloseTenantStores(ctx, "acme"); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	barriers.sealed = map[string]bool{"acme": true}
+	if err := stores.OpenTenantStores(ctx, "acme"); err == nil {
+		t.Fatal("open of a sealed tenant: want error")
+	}
+	w := &TenantMoveWorker{
+		reconciler: &countingMoveSteps{},
+		reopens:    stores,
+		nodeID:     "n1",
+		leads:      func() bool { return false },
+		interval:   DefaultTenantMoveInterval,
+		logger:     slog.Default(),
+	}
+	w.Tick(ctx)
+	if got := stores.PendingReopen(); !reflect.DeepEqual(got, []string{"acme"}) {
+		t.Fatalf("pending = %v, want [acme]", got)
+	}
+	barriers.sealed = nil
+	w.Tick(ctx)
+	if got := stores.PendingReopen(); len(got) != 0 {
+		t.Fatalf("pending after the unseal = %v", got)
 	}
 }
