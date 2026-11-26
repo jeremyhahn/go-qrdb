@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/quiesce"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -134,5 +137,86 @@ func testDatabaseBarrierBinding(t *testing.T, backend database.BackendType) {
 	barrier.sealed = false
 	if got, err := kv.Get(ctx, "k"); err != nil || !bytes.Equal(got, []byte("secret-value")) {
 		t.Fatalf("KV Get after unseal = %q, %v", got, err)
+	}
+}
+
+// gatedDatabaseBarrier is a barrier exposing its seal's quiesce gate, as
+// GetBarrier's encryptor does. Armed, its next Encrypt -- which a write makes
+// inside the store -- reports it entered and waits for release, so a test
+// holds a write in flight.
+type gatedDatabaseBarrier struct {
+	xorDatabaseBarrier
+	gate    quiesce.Gate
+	armed   atomic.Bool
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (g *gatedDatabaseBarrier) Quiesce() *quiesce.Gate { return &g.gate }
+
+func (g *gatedDatabaseBarrier) Encrypt(dst, p []byte) ([]byte, error) {
+	if g.armed.CompareAndSwap(true, false) {
+		g.entered <- struct{}{}
+		<-g.release
+	}
+	return g.xorDatabaseBarrier.Encrypt(dst, p)
+}
+
+// TestDatabaseBarrierBinding_WritesHoldTheSealQuiesceLease proves a write to
+// a materialized barrier database enters the seal's quiesce lease: a seal
+// that closes the gate while the write is in flight cannot drain until the
+// write returns, and a write after the gate closed is refused as sealed.
+func TestDatabaseBarrierBinding_WritesHoldTheSealQuiesceLease(t *testing.T) {
+	for _, backend := range []database.BackendType{database.BackendFile, database.BackendPebble} {
+		t.Run(string(backend), func(t *testing.T) {
+			ctx := context.Background()
+			f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: t.TempDir()}, nil, qrdbconfig.StorageConfig{},
+				func(id string) (database.BindingTenant, error) {
+					return database.BindingTenant{ID: id, Isolation: tenant.IsolationPrefix}, nil
+				})
+			be, err := f.Create(database.DatabaseConfig{Name: "vault", TenantID: "acme", Backend: backend,
+				Barrier: &database.DatabaseBarrierConfig{Enabled: true}}, "")
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			t.Cleanup(func() { _ = be.Close() })
+			mb := be.(*lifecycle.MaterializedBinding)
+			barrier := &gatedDatabaseBarrier{entered: make(chan struct{}), release: make(chan struct{})}
+			mb.LayerBarrier(barrier)
+			if err := mb.Ready(); err != nil {
+				t.Fatalf("Ready: %v", err)
+			}
+
+			barrier.armed.Store(true)
+			done := make(chan error, 1)
+			go func() { done <- be.Put(ctx, []byte("k"), []byte("v")) }()
+			<-barrier.entered
+
+			// The seal closes the gate; the write in flight holds the lease.
+			barrier.gate.Close()
+			var held *quiesce.DrainTimeoutError
+			if err := barrier.gate.Drain(0); !errors.As(err, &held) {
+				t.Fatalf("Drain with a write in flight = %v, want *quiesce.DrainTimeoutError", err)
+			}
+			close(barrier.release)
+			if err := <-done; err != nil {
+				t.Fatalf("in-flight Put = %v, want nil", err)
+			}
+			if err := barrier.gate.Drain(time.Minute); err != nil {
+				t.Fatalf("Drain after the write returned = %v", err)
+			}
+
+			// The gate is closed: a write is refused before it reaches the store.
+			if err := be.Put(ctx, []byte("k2"), []byte("v")); err == nil {
+				t.Fatal("Put after the gate closed = nil, want *database.SealedError")
+			} else if _, ok := errors.AsType[*database.SealedError](err); !ok {
+				t.Fatalf("Put after the gate closed = %v, want *database.SealedError", err)
+			}
+
+			barrier.gate.Reopen()
+			if err := be.Put(ctx, []byte("k2"), []byte("v")); err != nil {
+				t.Fatalf("Put after reopen = %v", err)
+			}
+		})
 	}
 }

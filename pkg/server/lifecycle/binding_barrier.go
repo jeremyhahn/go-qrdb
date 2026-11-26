@@ -8,6 +8,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/quiesce"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
@@ -26,14 +27,66 @@ type databaseBarrierStorage struct {
 	barrier atomic.Pointer[barrierRef]
 }
 
-// barrierRef holds the attached barrier so it swaps atomically.
-type barrierRef struct{ enc database.BarrierEncryptor }
+// barrierRef holds the attached barrier so it swaps atomically, with the
+// store's lease on the barrier's seal quiesce gate: nil, which admits all,
+// when the barrier exposes no gate.
+type barrierRef struct {
+	enc   database.BarrierEncryptor
+	lease *quiesce.Lease
+}
+
+// quiesceGated is a barrier that exposes its seal's quiesce gate, as
+// database.BarrierBackend's barrier does (GetBarrier's encryptor).
+type quiesceGated interface {
+	Quiesce() *quiesce.Gate
+}
+
+// barrierLeaseName names a materialized barrier database's store in a
+// seal's DrainTimeoutError.
+const barrierLeaseName = "database"
 
 var _ storage.Storage = (*databaseBarrierStorage)(nil)
 
-// attach layers enc on the store, replacing a barrier attached before.
+// attach layers enc on the store, replacing a barrier attached before. When
+// enc exposes its seal's quiesce gate, the store registers its lease there,
+// so a seal drains the store's in-flight writes before it closes the
+// barrier; the lease of a replaced barrier ends.
 func (s *databaseBarrierStorage) attach(enc database.BarrierEncryptor) {
-	s.barrier.Store(&barrierRef{enc: enc})
+	ref := &barrierRef{enc: enc}
+	if g, ok := enc.(quiesceGated); ok {
+		ref.lease = g.Quiesce().Register(barrierLeaseName)
+	}
+	if old := s.barrier.Swap(ref); old != nil {
+		old.lease.Unregister()
+	}
+}
+
+// detach ends the store's lease when its binding closes: the store admits no
+// more writes, and a write already admitted keeps a seal's drain waiting
+// until it returns.
+func (s *databaseBarrierStorage) detach() {
+	if ref := s.barrier.Load(); ref != nil {
+		ref.lease.Unregister()
+	}
+}
+
+// hold admits one write under the attached barrier: it enters the store's
+// quiesce lease, so a seal's drain waits for the write, and refuses with a
+// *database.SealedError when no barrier is attached, the gate is closed or
+// the barrier is sealed. release, called once, ends the hold.
+func (s *databaseBarrierStorage) hold() (enc database.BarrierEncryptor, release func(), err error) {
+	ref := s.barrier.Load()
+	if ref == nil {
+		return nil, nil, &database.SealedError{}
+	}
+	if err := ref.lease.Acquire(); err != nil {
+		return nil, nil, &database.SealedError{}
+	}
+	if ref.enc.IsSealed() {
+		ref.lease.Release()
+		return nil, nil, &database.SealedError{}
+	}
+	return ref.enc, ref.lease.Release, nil
 }
 
 // open returns the attached barrier, or a *database.SealedError when none is
@@ -109,25 +162,32 @@ func (s *databaseBarrierStorage) NewIterator(opts *storage.IteratorOptions) stor
 	return s.reader(s.Storage).NewIterator(opts)
 }
 
+// Set, Delete and DeleteRange hold the store's quiesce lease until the
+// write returns, so a seal never completes beneath one.
 func (s *databaseBarrierStorage) Set(key, value []byte) error {
-	enc, err := s.open()
+	enc, release, err := s.hold()
 	if err != nil {
 		return err
 	}
+	defer release()
 	return barrierSet(s.Storage, enc, key, value)
 }
 
 func (s *databaseBarrierStorage) Delete(key []byte) error {
-	if err := s.check(); err != nil {
+	_, release, err := s.hold()
+	if err != nil {
 		return err
 	}
+	defer release()
 	return s.Storage.Delete(key)
 }
 
 func (s *databaseBarrierStorage) DeleteRange(start, end []byte) error {
-	if err := s.check(); err != nil {
+	_, release, err := s.hold()
+	if err != nil {
 		return err
 	}
+	defer release()
 	return s.Storage.DeleteRange(start, end)
 }
 
@@ -172,11 +232,15 @@ func (b *barrierBatch) NewIterator(opts *storage.IteratorOptions) storage.Iterat
 	return b.s.reader(b.Batch).NewIterator(opts)
 }
 
+// A batch holds the store's quiesce lease while it seals a staged value
+// and while it commits, so a seal drains the commit and never sees a value
+// sealed under a barrier it has closed.
 func (b *barrierBatch) Set(key, value []byte) error {
-	enc, err := b.s.open()
+	enc, release, err := b.s.hold()
 	if err != nil {
 		return err
 	}
+	defer release()
 	return barrierSet(b.Batch, enc, key, value)
 }
 
@@ -195,9 +259,11 @@ func (b *barrierBatch) DeleteRange(start, end []byte) error {
 }
 
 func (b *barrierBatch) Commit() error {
-	if err := b.s.check(); err != nil {
+	_, release, err := b.s.hold()
+	if err != nil {
 		return err
 	}
+	defer release()
 	return b.Batch.Commit()
 }
 

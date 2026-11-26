@@ -852,6 +852,12 @@ func (m *MaterializedBinding) Close() error {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		m.closed = true
+		// The barrier store's lease ends first: a seal no longer waits on
+		// a store that is closing, and a write it admitted keeps the drain
+		// waiting until it returns.
+		if m.barrier != nil {
+			m.barrier.detach()
+		}
 		if m.stop != nil {
 			m.stop()
 		}
