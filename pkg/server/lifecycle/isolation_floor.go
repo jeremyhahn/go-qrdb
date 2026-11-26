@@ -188,13 +188,23 @@ func isolationFloorRefused(err error, current tenant.ClusterIsolationPolicy) boo
 // the start (ErrFIPSFloorNotStrict), naming the cause. With FIPS off it
 // does nothing.
 //
-// Before the write it waits, bounded by ctx, until the strict-isolation and
+// Before the write it waits, bounded by ctx and by the start-up floor wait
+// (30 s), until the strict-isolation and
 // guarded-writes cluster features are active (tenant.RequireStrictIsolation),
 // as the normal floor path does: on a new raft cluster they activate once
 // every member advertises; a standalone node has them active at once. A
-// floor that is already strict needs no wait. A ctx that ends first refuses
+// floor that is already strict needs no wait. A wait that ends first refuses
 // the start (ErrFIPSFloorNotStrict) naming the feature that is not active.
 func ApplyFIPSIsolationFloor(ctx context.Context, fipsOn bool, svc any) error {
+	return applyFIPSIsolationFloor(ctx, fipsOn, svc, defaultFloorRetry)
+}
+
+// applyFIPSIsolationFloor is ApplyFIPSIsolationFloor with the retry policy
+// injected. The wait for the strict-isolation features is bounded by
+// policy.wait, as the configured floor's wait is (applyIsolationFloor), so a
+// start never blocks without limit on a caller ctx that only a signal ends:
+// past it the start is refused, naming the feature that is not active.
+func applyFIPSIsolationFloor(ctx context.Context, fipsOn bool, svc any, policy floorRetryPolicy) error {
 	if !fipsOn {
 		return nil
 	}
@@ -202,7 +212,10 @@ func ApplyFIPSIsolationFloor(ctx context.Context, fipsOn bool, svc any) error {
 	if !ok {
 		return fmt.Errorf("%w: the tenant service (%T) holds no cluster isolation floor", ErrFIPSFloorNotStrict, svc)
 	}
-	if err := awaitStrictIsolationFeatures(ctx, floor); err != nil {
+	waitCtx, cancel := context.WithTimeout(ctx, policy.wait)
+	err := awaitStrictIsolationFeatures(waitCtx, floor, policy.retry)
+	cancel()
+	if err != nil {
 		return err
 	}
 	setErr := floor.SetClusterIsolationPolicy(ctx, tenant.ClusterIsolationPolicyStrict)
@@ -228,8 +241,9 @@ func ApplyFIPSIsolationFloor(ctx context.Context, fipsOn bool, svc any) error {
 // awaitStrictIsolationFeatures returns nil once the strict-isolation and
 // guarded-writes features are active, or at once when the floor is already
 // strict. When ctx ends first it returns ErrFIPSFloorNotStrict wrapping the
-// feature.NotActiveError that names the missing feature.
-func awaitStrictIsolationFeatures(ctx context.Context, floor clusterIsolationFloor) error {
+// feature.NotActiveError that names the missing feature. It polls every
+// retry.
+func awaitStrictIsolationFeatures(ctx context.Context, floor clusterIsolationFloor, retry time.Duration) error {
 	logged := false
 	for {
 		inactive := tenant.RequireStrictIsolation(floor)
@@ -246,7 +260,7 @@ func awaitStrictIsolationFeatures(ctx context.Context, floor clusterIsolationFlo
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("%w: the strict-isolation and guarded-writes features are not active: %w", ErrFIPSFloorNotStrict, inactive)
-		case <-time.After(defaultFloorRetry.retry):
+		case <-time.After(retry):
 		}
 	}
 }

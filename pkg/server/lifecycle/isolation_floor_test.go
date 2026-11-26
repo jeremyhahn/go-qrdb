@@ -467,6 +467,69 @@ func TestApplyFIPSIsolationFloor_CancelBeforeActivationRefuses(t *testing.T) {
 	}
 }
 
+// TestApplyFIPSIsolationFloor_BoundsFeatureWait: the FIPS floor bounds its
+// own wait for the strict-isolation features (policy.wait), so a caller ctx
+// that never ends (a start-up ctx only a signal cancels) cannot hang the
+// start. A standalone node has the features active at once and boots strict;
+// a raft node whose members do not all advertise them is refused within the
+// bound with ErrFIPSFloorNotStrict wrapping the feature.NotActiveError.
+func TestApplyFIPSIsolationFloor_BoundsFeatureWait(t *testing.T) {
+	policy := floorRetryPolicy{wait: 50 * time.Millisecond, retry: 5 * time.Millisecond}
+	// raftCheck stands in for the feature gate: strict-isolation activates
+	// only once every member advertises it.
+	raftCheck := func(advertised, members int) func() error {
+		return func() error {
+			if advertised < members {
+				return &feature.NotActiveError{Feature: featuregate.StrictIsolation}
+			}
+			return nil
+		}
+	}
+	cases := map[string]struct {
+		check     func() error
+		wantErr   bool
+		wantFloor tenant.ClusterIsolationPolicy
+		wantSets  int
+	}{
+		"standalone active at once":        {check: func() error { return nil }, wantFloor: tenant.ClusterIsolationPolicyStrict, wantSets: 1},
+		"raft every member advertises":     {check: raftCheck(3, 3), wantFloor: tenant.ClusterIsolationPolicyStrict, wantSets: 1},
+		"raft a member does not advertise": {check: raftCheck(2, 3), wantErr: true},
+		"no activation check wired":        {check: nil, wantErr: true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			svc := &fakeFloorService{check: tc.check}
+			done := make(chan error, 1)
+			go func() { done <- applyFIPSIsolationFloor(context.Background(), true, svc, policy) }()
+			var err error
+			select {
+			case err = <-done:
+			case <-time.After(10 * time.Second):
+				t.Fatal("applyFIPSIsolationFloor did not return within its bound on a ctx that never ends")
+			}
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("applyFIPSIsolationFloor = %v, want nil", err)
+				}
+				if floor, sets := svc.state(); floor != tc.wantFloor || sets != tc.wantSets {
+					t.Fatalf("floor = %q after %d writes, want %q after %d", floor, sets, tc.wantFloor, tc.wantSets)
+				}
+				return
+			}
+			if !errors.Is(err, ErrFIPSFloorNotStrict) {
+				t.Fatalf("applyFIPSIsolationFloor = %v, want ErrFIPSFloorNotStrict", err)
+			}
+			var inactive *feature.NotActiveError
+			if !errors.As(err, &inactive) {
+				t.Fatalf("applyFIPSIsolationFloor = %v, want it to wrap feature.NotActiveError", err)
+			}
+			if _, sets := svc.state(); sets != 0 {
+				t.Fatalf("floor writes = %d, want 0", sets)
+			}
+		})
+	}
+}
+
 // homeFloorDouble models the tightening's dependence on the tenant home
 // stores: tightening to strict probes each isolated tenant's node-key log
 // through its home store, so the write fails (the floor stays

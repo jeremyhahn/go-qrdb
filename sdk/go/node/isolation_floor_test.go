@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -149,6 +150,13 @@ func (weakFloorTenant) ClusterIsolationPolicy(context.Context) (tenant.ClusterIs
 	return tenant.ClusterIsolationPolicyOperatorAccess, nil
 }
 
+// StrictIsolationCheck reports the strict-isolation and guarded-writes
+// features active, so the FIPS floor passes its feature wait and reaches the
+// refused tightening this double stands for.
+func (weakFloorTenant) StrictIsolationCheck() func() error {
+	return func() error { return nil }
+}
+
 // TestApplyIsolationFloor_FIPSRefusesNonStrictFloor proves a FIPS node whose
 // floor does not read strict back, or whose tenant service holds no floor,
 // refuses to boot with a typed error, and that a non-FIPS node is not
@@ -156,10 +164,12 @@ func (weakFloorTenant) ClusterIsolationPolicy(context.Context) (tenant.ClusterIs
 func TestApplyIsolationFloor_FIPSRefusesNonStrictFloor(t *testing.T) {
 	cfg := qrdbconfig.DefaultConfig()
 	n := &Node{}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	// The process's own mode decides the first expectation: a leg run with
 	// GODEBUG=fips140=on/only is in FIPS mode before withFIPS forces it.
-	err := n.applyIsolationFloor(context.Background(),
+	err := n.applyIsolationFloor(ctx,
 		&lifecycle.Node{Tenant: weakFloorTenant{}}, cfg)
 	if fipsEnabled() {
 		require.ErrorIs(t, err, lifecycle.ErrFIPSFloorNotStrict,
@@ -174,7 +184,7 @@ func TestApplyIsolationFloor_FIPSRefusesNonStrictFloor(t *testing.T) {
 		"no tenant service":           {},
 	} {
 		t.Run(name, func(t *testing.T) {
-			err := n.applyIsolationFloor(context.Background(), svc, cfg)
+			err := n.applyIsolationFloor(ctx, svc, cfg)
 			var floorErr *IsolationFloorError
 			require.ErrorAs(t, err, &floorErr)
 			require.ErrorIs(t, err, lifecycle.ErrFIPSFloorNotStrict)
