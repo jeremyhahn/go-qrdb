@@ -311,6 +311,51 @@ func TestMoveStoreCloser_SealedReopenStaysPendingUntilUnseal(t *testing.T) {
 	}
 }
 
+// TestMoveStoreCloser_ClosesAndReopensInDatabaseNameOrder pins that a
+// tenant's stores are closed, attached and awaited in database name order
+// whatever order ListStarted returns them in.
+func TestMoveStoreCloser_ClosesAndReopensInDatabaseNameOrder(t *testing.T) {
+	names := []string{"e", "b", "d", "a", "f", "c"}
+	sorted := []string{"a", "b", "c", "d", "e", "f"}
+	var wantCalls, wantCaughtUp []string
+	for _, db := range sorted {
+		wantCalls = append(wantCalls, "close acme/"+db)
+		wantCaughtUp = append(wantCaughtUp, "acme/"+db)
+	}
+	for _, db := range sorted {
+		wantCalls = append(wantCalls, "attach acme/"+db)
+	}
+	for i := 0; i < 20; i++ {
+		shards := &fakeMoveShards{started: map[StartedShard]bool{
+			{TenantID: "other", Database: "z"}: true,
+		}}
+		for _, db := range names {
+			shards.started[StartedShard{TenantID: "acme", Database: db}] = true
+		}
+		var caughtUp []string
+		c, err := NewMoveStoreCloser(shards, &fakeMoveBarriers{}, func(_ context.Context, tenantID, db string) (bool, error) {
+			caughtUp = append(caughtUp, tenantID+"/"+db)
+			return true, nil
+		}, time.Millisecond)
+		if err != nil {
+			t.Fatalf("NewMoveStoreCloser: %v", err)
+		}
+		ctx := context.Background()
+		if err := c.CloseTenantStores(ctx, "acme"); err != nil {
+			t.Fatalf("run %d: close: %v", i, err)
+		}
+		if err := c.OpenTenantStores(ctx, "acme"); err != nil {
+			t.Fatalf("run %d: open: %v", i, err)
+		}
+		if !reflect.DeepEqual(shards.calls, wantCalls) {
+			t.Fatalf("run %d: shard calls = %v, want %v", i, shards.calls, wantCalls)
+		}
+		if !reflect.DeepEqual(caughtUp, wantCaughtUp) {
+			t.Fatalf("run %d: caught up = %v, want %v", i, caughtUp, wantCaughtUp)
+		}
+	}
+}
+
 func TestMoveStoreCloser_PermanentReopenFailureStaysPending(t *testing.T) {
 	shards := &fakeMoveShards{started: map[StartedShard]bool{
 		{TenantID: "acme", Database: "a"}: true,

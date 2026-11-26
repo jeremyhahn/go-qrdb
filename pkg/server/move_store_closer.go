@@ -226,14 +226,20 @@ func (c *MoveStoreCloser) CloseTenantStores(ctx context.Context, tenantID string
 		dbs = appendUnique(dbs, db)
 	}
 	if c.shards != nil {
+		// ListStarted carries no order: close the tenant's started
+		// shards in database name order, so closes are deterministic.
+		var started []string
 		for _, s := range c.shards.ListStarted() {
-			if s.TenantID != tenantID {
-				continue
+			if s.TenantID == tenantID {
+				started = appendUnique(started, s.Database)
 			}
-			if err := c.shards.Close(tenantID, s.Database); err != nil {
+		}
+		sort.Strings(started)
+		for _, db := range started {
+			if err := c.shards.Close(tenantID, db); err != nil {
 				return err
 			}
-			dbs = appendUnique(dbs, s.Database)
+			dbs = appendUnique(dbs, db)
 		}
 	}
 	sort.Strings(dbs)
@@ -335,8 +341,11 @@ func (c *MoveStoreCloser) reopen(ctx context.Context, tenantID string) error {
 		if err != nil {
 			return fail(fmt.Errorf("move: list local replicas of tenant %s: %w", tenantID, err))
 		}
-		dbs = placed
+		dbs = append([]string(nil), placed...)
 	}
+	// Attach and await the stores in database name order, so a reopen is
+	// deterministic whatever order the replica lookup returned.
+	sort.Strings(dbs)
 	if !recorded && !hostRecorded && c.hosts != nil {
 		// No close record survives a restart: the tenant metadata says
 		// whether this tenant's stores include a volume tenant Host.
