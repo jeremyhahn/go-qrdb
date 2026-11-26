@@ -291,6 +291,13 @@ func (m *Manager) CreateWithCredentials(ctx context.Context, cfg DatabaseConfig,
 // dropped tombstone to absent, which is live for the empty incarnation; a
 // marker holding a live incarnation -- the name created through the API on
 // some node -- refuses the provisioning with *AlreadyExistsError.
+//
+// An object-storage database is the exception: it is one lifetime's. It gets
+// a fresh incarnation like a created one, recorded in this node's catalog,
+// so a restart's Provision reaches Open and keeps the same namespace owner,
+// and a successor of the same tenant and name never shares a dropped one's
+// owner (releaseDatabaseNamespace). Another node that provisions the same
+// namespace is refused with the namespace owner error.
 func (m *Manager) Provision(ctx context.Context, cfg DatabaseConfig) (*Database, error) {
 	// A provisioned database is created on every node independently, so a
 	// raft one would need a shard ID every node agrees on without a claim,
@@ -320,7 +327,8 @@ func (m *Manager) Provision(ctx context.Context, cfg DatabaseConfig) (*Database,
 }
 
 // create is CreateWithCredentials and Provision. shared selects the empty,
-// node-shared incarnation (see Provision).
+// node-shared incarnation (see Provision), except for an object-storage
+// database, which always gets its own.
 func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Credentials, shared bool) (*Database, error) {
 	// The node's defaults are filled in once, here, and recorded with the
 	// rest of the config; opening the database never consults them again.
@@ -413,11 +421,12 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	// by. With no reclaimer there is no store to mark it in, and the
 	// database is live while its marker is absent (an empty incarnation);
 	// a provisioned database shares the empty incarnation on purpose. An
-	// object-storage database always gets one, reclaimer or not: its
-	// namespace's owner marker names it, so a dropped incarnation's release
-	// can never reclaim a successor of the same name (releaseDatabaseNamespace).
+	// object-storage database always gets one, reclaimer or not, provisioned
+	// or created: its namespace's owner marker names it, so a dropped
+	// incarnation's release can never reclaim a successor of the same name
+	// (releaseDatabaseNamespace).
 	incarnation := ""
-	if (m.reclaimer != nil || cfg.Backend == BackendObjstore) && !shared {
+	if (m.reclaimer != nil && !shared) || cfg.Backend == BackendObjstore {
 		var err error
 		if incarnation, err = NewIncarnation(); err != nil {
 			return nil, err

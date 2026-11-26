@@ -782,6 +782,142 @@ func TestManager_ReleaseSparesSuccessorIncarnation(t *testing.T) {
 	}
 }
 
+// noopReclaimer is a data plane whose keyspaces hold nothing of the
+// object-storage databases these tests drive: every fence, reclaim and
+// unfence lands.
+type noopReclaimer struct{}
+
+func (noopReclaimer) ReclaimDatabaseKeyspace(context.Context, string, string, string, string) error {
+	return nil
+}
+
+func (noopReclaimer) FenceDatabaseKeyspace(context.Context, string, string, string, string) error {
+	return nil
+}
+
+func (noopReclaimer) UnfenceDatabaseKeyspace(context.Context, string, string, string, string) error {
+	return nil
+}
+
+// withReclaimer runs fn standalone (no reclaimer) and with a data plane
+// attached.
+func withReclaimer(t *testing.T, fn func(t *testing.T, attach func(*database.Manager))) {
+	t.Run("standalone", func(t *testing.T) { fn(t, func(*database.Manager) {}) })
+	t.Run("reclaimer", func(t *testing.T) {
+		fn(t, func(m *database.Manager) { m.SetKeyspaceReclaimer(noopReclaimer{}) })
+	})
+}
+
+// TestManager_ProvisionedReleaseSparesSuccessor: a provisioned
+// object-storage database owns its namespace as its own incarnation, so a
+// successor provisioned onto the same namespace after the drop is never
+// reclaimed by the dropped one's release.
+func TestManager_ProvisionedReleaseSparesSuccessor(t *testing.T) {
+	withReclaimer(t, func(t *testing.T, attach func(*database.Manager)) {
+		ctx := context.Background()
+		base := t.TempDir()
+		root := filepath.Join(base, "objects")
+		otherRoot := filepath.Join(base, "other")
+		dataA, dataB := t.TempDir(), t.TempDir()
+		t.Cleanup(func() { releaseLostArmed.Store(false) })
+		mgrA := newManager(t, dataA)
+		attach(mgrA)
+		if _, err := mgrA.Provision(ctx, releaseFaultObjstore(t, "blobs", root)); err != nil {
+			t.Fatalf("Provision on A: %v", err)
+		}
+		mgrB := newManager(t, dataB)
+		attach(mgrB)
+		var hookErr error
+		hooked := false
+		mgrA.SetCatalog(&afterDeleteCatalog{Catalog: databasetest.Catalog(dataA), after: func() {
+			hooked = true
+			_, hookErr = mgrB.Provision(ctx, releaseFaultObjstore(t, "blobs", root))
+		}})
+		releaseLostArmed.Store(true)
+		if err := mgrA.Drop(ctx, "blobs"); err != nil {
+			t.Fatalf("Drop on A: %v", err)
+		}
+		var owned *objstore.NamespaceOwnedError
+		if !hooked || !errors.As(hookErr, &owned) {
+			t.Fatalf("successor Provision during the pending release = %v (ran %v), want *NamespaceOwnedError", hookErr, hooked)
+		}
+		if len(releaseLedgerFiles(t, dataA)) == 0 {
+			t.Fatal("the drop whose release reported a failure kept no ledger entry")
+		}
+
+		successor, err := mgrB.Provision(ctx, releaseFaultObjstore(t, "blobs", root))
+		if err != nil {
+			t.Fatalf("successor Provision after the release: %v", err)
+		}
+		if err := successor.Backend().Put(ctx, []byte("key"), []byte("w")); err != nil {
+			t.Fatalf("successor Put: %v", err)
+		}
+		// A's next object-storage create retries the recorded release of
+		// the dropped incarnation.
+		if _, err := mgrA.Provision(ctx, localObjstore("other", otherRoot)); err != nil {
+			t.Fatalf("Provision on A: %v", err)
+		}
+		got, err := successor.Backend().Get(ctx, []byte("key"))
+		if err != nil || string(got) != "w" {
+			t.Fatalf("successor Get(key) after the old release = %q, %v; want \"w\"", got, err)
+		}
+		if !hasOwnerMarker(t, root) {
+			t.Fatal("the old incarnation's release removed the successor's owner marker")
+		}
+		if left := releaseLedgerFiles(t, dataA); len(left) != 0 {
+			t.Fatalf("the release of a namespace another incarnation owns was not forgotten: %v", left)
+		}
+	})
+}
+
+// TestManager_ProvisionedObjstoreKeepsIncarnationAcrossRestart: a
+// provisioned object-storage database gets its own incarnation, records it,
+// and a restart's Provision reopens it as the same owner.
+func TestManager_ProvisionedObjstoreKeepsIncarnationAcrossRestart(t *testing.T) {
+	withReclaimer(t, func(t *testing.T, attach func(*database.Manager)) {
+		ctx := context.Background()
+		dataDir := t.TempDir()
+		cfg := localObjstore("blobs", filepath.Join(t.TempDir(), "objects"))
+
+		first := newManager(t, dataDir)
+		attach(first)
+		db, err := first.Provision(ctx, cfg)
+		if err != nil {
+			t.Fatalf("Provision: %v", err)
+		}
+		incarnation := db.Incarnation()
+		if incarnation == "" {
+			t.Fatal("a provisioned object-storage database got the empty shared incarnation")
+		}
+		if again, err := first.Provision(ctx, cfg); err != nil || again != db {
+			t.Fatalf("second Provision = %p, %v; want the same database %p", again, err, db)
+		}
+		if err := db.Backend().Put(ctx, []byte("k"), []byte("v")); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		if err := first.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+
+		second := newManager(t, dataDir)
+		attach(second)
+		reopened, err := second.Provision(ctx, cfg)
+		if err != nil {
+			t.Fatalf("Provision after restart: %v", err)
+		}
+		if reopened.Incarnation() != incarnation {
+			t.Fatalf("incarnation after restart = %q, want %q", reopened.Incarnation(), incarnation)
+		}
+		got, err := reopened.Backend().Get(ctx, []byte("k"))
+		if err != nil || string(got) != "v" {
+			t.Fatalf("Get(k) after restart = %q, %v; want \"v\"", got, err)
+		}
+		if again, err := second.Provision(ctx, cfg); err != nil || again != reopened {
+			t.Fatalf("Provision after the reopen = %p, %v; want the same database %p", again, err, reopened)
+		}
+	})
+}
+
 // TestManager_ReleaseRetrySparesSuccessorIncarnation: a release retried from
 // the ledger opens the namespace as the dropped incarnation, so a successor
 // of the same tenant and name on the same namespace keeps its objects and
