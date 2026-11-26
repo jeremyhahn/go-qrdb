@@ -25,10 +25,6 @@ import (
 	"sort"
 	"sync"
 	"time"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
-	"github.com/jeremyhahn/go-qrdb/pkg/api/quic"
-	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 )
 
 // Backend is the versioned key-value store the page store reads and commits
@@ -118,15 +114,19 @@ const (
 	// DefaultStageThreshold is the default dirty-page byte total above
 	// which a commit stages its pages before one publish.
 	DefaultStageThreshold = 4 << 20
-	// transportRequestBytes is the smallest default request limit of the
-	// transports a remote page store commits through.
-	transportRequestBytes = min(grpc.DefaultMaxMessageBytes, rest.DefaultMaxBodyBytes, quic.DefaultMaxPayloadBytes)
+	// TransportRequestBytes is the smallest default request limit of the
+	// transports a remote page store commits through (gRPC
+	// DefaultMaxMessageBytes, REST DefaultMaxBodyBytes, QUIC
+	// DefaultMaxPayloadBytes). It is a literal so the lean standalone graph
+	// does not link the network APIs; TestTransportRequestBytesFitsEveryTransport
+	// fails if a transport default shrinks below it.
+	TransportRequestBytes = 4 << 20
 
 	// DefaultStageChunkBytes is the default page bytes per staging commit:
 	// half the smallest default transport request limit, so the pages
 	// base64 encoded by the JSON codec plus their keys and framing fit one
 	// request, and well under go-quicraft's 8 MiB proto.MaxEntrySize.
-	DefaultStageChunkBytes = transportRequestBytes / 2
+	DefaultStageChunkBytes = TransportRequestBytes / 2
 
 	// DefaultOptimisticStageAge is how long a serialized writer's stage
 	// sweep (Txn.Reserve) keeps the stage of an optimistic commit: an
@@ -316,7 +316,7 @@ func NewStore(b Backend, db string, opts ...Option) (*Store, error) {
 		lockKey:         lockKey,
 		stageThreshold:  DefaultStageThreshold,
 		stageChunkBytes: DefaultStageChunkBytes,
-		requestBytes:    transportRequestBytes,
+		requestBytes:    TransportRequestBytes,
 
 		optimisticStageAge: DefaultOptimisticStageAge,
 		now:                time.Now,

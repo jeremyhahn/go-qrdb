@@ -40,3 +40,23 @@ func TestDefaultStageChunkFitsEveryTransportRequest(t *testing.T) {
 		}
 	}
 }
+
+// TestTransportRequestBytesFitsEveryTransport pins the literal request cap to
+// the transports' defaults: store.go does not import the network APIs (the
+// lean standalone graph forbids it), so a transport default that shrinks
+// below the cap fails here.
+func TestTransportRequestBytesFitsEveryTransport(t *testing.T) {
+	limits := map[string]int{
+		"grpc": grpc.DefaultMaxMessageBytes,
+		"rest": rest.DefaultMaxBodyBytes,
+		"quic": quic.DefaultMaxPayloadBytes,
+	}
+	for name, limit := range limits {
+		if TransportRequestBytes > limit {
+			t.Errorf("TransportRequestBytes %d exceeds the %s default request limit %d", TransportRequestBytes, name, limit)
+		}
+	}
+	if want := min(limits["grpc"], limits["rest"], limits["quic"]); TransportRequestBytes != want {
+		t.Errorf("TransportRequestBytes = %d, want the smallest transport default %d", TransportRequestBytes, want)
+	}
+}

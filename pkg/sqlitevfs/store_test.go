@@ -1424,7 +1424,7 @@ func TestRefusedTrimLeavesNoReachablePage(t *testing.T) {
 	if n := pageKeyCount(t, b); n <= 1 {
 		t.Fatalf("%d page keys after refused trims, want leftovers past page 1", n)
 	}
-	s.requestBytes = transportRequestBytes
+	s.requestBytes = TransportRequestBytes
 	txn = beginReserved(t, s)
 	if _, err := txn.WriteAt(pageOf(0x7f), int64(truncPages-1)*testPageSize); err != nil {
 		t.Fatal(err)
