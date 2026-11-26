@@ -1371,6 +1371,37 @@ func TestTenantShardReconciler_WithPurgeOnDemotionFalse(t *testing.T) {
 	}
 }
 
+// TestTenantShardReconciler_DemotionCloseFailureKeepsShard: a demoted or
+// deleted shard whose close fails stays started, from a pass and from a
+// put or delete event alike, for the next pass to retry.
+func TestTenantShardReconciler_DemotionCloseFailureKeepsShard(t *testing.T) {
+	ctx := context.Background()
+	demoted := &placement.Placement{
+		TenantID: "acme", Database: "orders", ShardID: 1001, RF: 1, LeaderReplicaID: 2,
+		Replicas: []placement.Replica{{ReplicaID: 2, NodeID: "other:1", RaftAddr: "other:1"}},
+	}
+	store, err := placement.NewStore(newMemKV())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.Put(ctx, demoted); err != nil {
+		t.Fatalf("store.Put: %v", err)
+	}
+	factory := newFakeShardLifecycle()
+	factory.mu.Lock()
+	factory.started[raftShardKey{tenantID: "acme", database: "orders"}] = true
+	factory.closeErr = errors.New("close failed")
+	factory.mu.Unlock()
+	r := NewTenantShardReconciler(store, factory, "local:1", nil, WithPurgeOnDemotion(false))
+
+	r.ReconcileOnce(ctx)
+	r.handleEvent(ctx, placement.Event{Type: placement.EventPut, TenantID: "acme", Database: "orders", Placement: demoted})
+	r.handleEvent(ctx, placement.Event{Type: placement.EventDelete, TenantID: "acme", Database: "orders"})
+	if !factory.isStarted("acme", "orders") || factory.closeCount() != 0 {
+		t.Fatalf("a failed close must keep the shard started (closed %d)", factory.closeCount())
+	}
+}
+
 // TestTenantShardReconciler_EventDelete_PurgesByDefault proves the
 // EventDelete (full DropForTenant) path also purges by default.
 func TestTenantShardReconciler_EventDelete_PurgesByDefault(t *testing.T) {
