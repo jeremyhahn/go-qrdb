@@ -15,6 +15,7 @@
 package vector
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -23,11 +24,8 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 )
-
-// plainKV hides the atomic methods of a MemoryKVStore so the mutex path of
-// the ID allocator is exercised.
-type plainKV struct{ kvstore.KVStore }
 
 func newKVStorage(t *testing.T, kv kvstore.KVStore) *KVVectorStorage {
 	t.Helper()
@@ -42,15 +40,38 @@ func kvVec(id uint64, meta map[string]string) *VectorValue {
 	return &VectorValue{ID: id, Embedding: []float32{float32(id), 1}, Metadata: meta, CreatedAt: 1, UpdatedAt: 2, Version: 1}
 }
 
+// genOf returns the generation half of namespace's Version.
+func genOf(ctx context.Context, s *KVVectorStorage, namespace string) (uint64, error) {
+	ver, err := s.Version(ctx, namespace)
+	return ver.Generation, err
+}
+
 func TestKVVectorStorage_NilKVRefused(t *testing.T) {
 	if _, err := NewKVVectorStorage(nil); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("NewKVVectorStorage(nil) = %v, want ErrInvalidConfig", err)
 	}
 }
 
+// TestKVVectorStorage_UnguardedStoreRefused: a store without the
+// multi-guarded batch cannot commit a write with its generation, so it is
+// refused at construction.
+func TestKVVectorStorage_UnguardedStoreRefused(t *testing.T) {
+	_, err := NewKVVectorStorage(kvstore.NewMemoryKVStore())
+	var unguarded *UnguardedStoreError
+	if !errors.As(err, &unguarded) {
+		t.Fatalf("NewKVVectorStorage(MemoryKVStore) = %v, want *UnguardedStoreError", err)
+	}
+	if !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("UnguardedStoreError does not match ErrInvalidConfig: %v", err)
+	}
+	if unguarded.Store == "" || !strings.Contains(err.Error(), unguarded.Store) {
+		t.Fatalf("error %q does not name the store type %q", err, unguarded.Store)
+	}
+}
+
 func TestKVVectorStorage_NamespaceLifecycle(t *testing.T) {
 	ctx := context.Background()
-	s := newKVStorage(t, kvstore.NewMemoryKVStore())
+	s := newKVStorage(t, kvstoretest.NewGuardedMemoryStore())
 
 	if _, err := s.GetNamespaceInfo(ctx, "ns"); !errors.Is(err, ErrNamespaceNotFound) {
 		t.Fatalf("GetNamespaceInfo unknown = %v, want ErrNamespaceNotFound", err)
@@ -107,7 +128,7 @@ func TestKVVectorStorage_NamespaceLifecycle(t *testing.T) {
 
 func TestKVVectorStorage_VectorCRUDAndScans(t *testing.T) {
 	ctx := context.Background()
-	s := newKVStorage(t, kvstore.NewMemoryKVStore())
+	s := newKVStorage(t, kvstoretest.NewGuardedMemoryStore())
 	if err := s.CreateNamespace(ctx, &NamespaceInfo{Name: "ns", Dimension: 2}); err != nil {
 		t.Fatal(err)
 	}
@@ -136,6 +157,9 @@ func TestKVVectorStorage_VectorCRUDAndScans(t *testing.T) {
 		t.Fatalf("empty batch = %v", err)
 	}
 	// A namespace whose name extends "ns" must not leak into its scans.
+	if err := s.CreateNamespace(ctx, &NamespaceInfo{Name: "ns/x", Dimension: 2}); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.UpsertVector(ctx, "ns/x", kvVec(5, nil)); err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +231,7 @@ func TestKVVectorStorage_VectorCRUDAndScans(t *testing.T) {
 
 func TestKVVectorStorage_DeleteNamespaceRemovesEveryKey(t *testing.T) {
 	ctx := context.Background()
-	kv := kvstore.NewMemoryKVStore()
+	kv := kvstoretest.NewGuardedMemoryStore()
 	s := newKVStorage(t, kv)
 	if err := s.CreateNamespace(ctx, &NamespaceInfo{Name: "ns", Dimension: 2}); err != nil {
 		t.Fatal(err)
@@ -236,8 +260,8 @@ func TestKVVectorStorage_DeleteNamespaceRemovesEveryKey(t *testing.T) {
 			t.Fatalf("key %q of the deleted namespace survives", k)
 		}
 	}
-	if len(keys) != 4 {
-		t.Fatalf("keys = %v, want the 4 keys of namespace keep", keys)
+	if len(keys) != 5 {
+		t.Fatalf("keys = %v, want the 5 keys of namespace keep", keys)
 	}
 }
 
@@ -245,8 +269,8 @@ func TestKVVectorStorage_DeleteNamespaceRemovesEveryKey(t *testing.T) {
 // delete advances the namespace's generation; a missing namespace has none.
 func TestKVVectorStorage_GenerationAdvancesOnEveryWrite(t *testing.T) {
 	ctx := context.Background()
-	s := newKVStorage(t, kvstore.NewMemoryKVStore())
-	if _, err := s.Generation(ctx, "ns"); !errors.Is(err, ErrNamespaceNotFound) {
+	s := newKVStorage(t, kvstoretest.NewGuardedMemoryStore())
+	if _, err := genOf(ctx, s, "ns"); !errors.Is(err, ErrNamespaceNotFound) {
 		t.Fatalf("Generation(missing) err = %v, want ErrNamespaceNotFound", err)
 	}
 	if err := s.CreateNamespace(ctx, &NamespaceInfo{Name: "ns", Dimension: 2}); err != nil {
@@ -262,7 +286,7 @@ func TestKVVectorStorage_GenerationAdvancesOnEveryWrite(t *testing.T) {
 		if err := write(); err != nil {
 			t.Fatalf("write %d: %v", i, err)
 		}
-		gen, err := s.Generation(ctx, "ns")
+		gen, err := genOf(ctx, s, "ns")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -274,12 +298,12 @@ func TestKVVectorStorage_GenerationAdvancesOnEveryWrite(t *testing.T) {
 
 // interleavingKV runs during, once, after the first Exists call has read.
 type interleavingKV struct {
-	*kvstore.MemoryKVStore
+	*kvstoretest.GuardedMemoryStore
 	during func()
 }
 
 func (k *interleavingKV) Exists(ctx context.Context, key string) (bool, error) {
-	exists, err := k.MemoryKVStore.Exists(ctx, key)
+	exists, err := k.GuardedMemoryStore.Exists(ctx, key)
 	if hook := k.during; hook != nil {
 		k.during = nil
 		hook()
@@ -287,14 +311,134 @@ func (k *interleavingKV) Exists(ctx context.Context, key string) (bool, error) {
 	return exists, err
 }
 
+// genHookKV runs onGen once, right after the first read of a generation key:
+// between a writer's version read and its guarded batch, which is where a
+// replica's delete or recreate races it.
+type genHookKV struct {
+	*kvstoretest.GuardedMemoryStore
+	onGen func()
+}
+
+func (k *genHookKV) Get(ctx context.Context, key string) ([]byte, error) {
+	value, err := k.GuardedMemoryStore.Get(ctx, key)
+	if hook := k.onGen; hook != nil && strings.HasPrefix(key, kvGenPrefix) {
+		k.onGen = nil
+		hook()
+	}
+	return value, err
+}
+
+// TestKVVectorStorage_ReplicaWriteRacingDeleteIsRefused is Codex round 3 (a):
+// replica B reads the namespace version, replica A deletes the namespace
+// before B's batch lands, and B's write must be refused rather than survive
+// into A's recreate.
+func TestKVVectorStorage_ReplicaWriteRacingDeleteIsRefused(t *testing.T) {
+	ctx := context.Background()
+	mem := kvstoretest.NewGuardedMemoryStore()
+	a := newKVStorage(t, mem)
+	hook := &genHookKV{GuardedMemoryStore: mem}
+	b := newKVStorage(t, hook)
+	if err := a.CreateNamespace(ctx, &NamespaceInfo{Name: "ns", Dimension: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.UpsertVector(ctx, "ns", kvVec(1, nil)); err != nil {
+		t.Fatal(err)
+	}
+	hook.onGen = func() {
+		if err := a.DeleteNamespace(ctx, "ns"); err != nil {
+			t.Fatalf("racing delete: %v", err)
+		}
+	}
+	if err := b.UpsertVector(ctx, "ns", kvVec(2, nil)); !errors.Is(err, ErrNamespaceNotFound) {
+		t.Fatalf("upsert racing a delete = %v, want ErrNamespaceNotFound", err)
+	}
+	if err := b.UpsertVector(ctx, "ns", kvVec(3, nil)); !errors.Is(err, ErrNamespaceNotFound) {
+		t.Fatalf("upsert after a delete = %v, want ErrNamespaceNotFound", err)
+	}
+	if err := a.CreateNamespace(ctx, &NamespaceInfo{Name: "ns", Dimension: 2}); err != nil {
+		t.Fatal(err)
+	}
+	vecs, err := b.ScanNamespace(ctx, "ns", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vecs) != 0 {
+		t.Fatalf("recreated namespace holds %d old vectors, want none", len(vecs))
+	}
+	if _, err := a.GetVector(ctx, "ns", 1); !errors.Is(err, ErrVectorNotFound) {
+		t.Fatalf("old vector 1 after recreate = %v, want ErrVectorNotFound", err)
+	}
+}
+
+// TestKVVectorStorage_RecreatedNamespaceRetiresTheOldIncarnation is Codex
+// round 3 (a)+(b): a vector of the old incarnation that the delete's sweep
+// did not reach is still invisible to the recreate, and the generation after
+// delete+recreate is above every generation before the delete.
+func TestKVVectorStorage_RecreatedNamespaceRetiresTheOldIncarnation(t *testing.T) {
+	ctx := context.Background()
+	mem := kvstoretest.NewGuardedMemoryStore()
+	s := newKVStorage(t, mem)
+	if err := s.CreateNamespace(ctx, &NamespaceInfo{Name: "ns", Dimension: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.BatchUpsertVectors(ctx, "ns", []*VectorValue{kvVec(1, nil), kvVec(2, nil)}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := genOf(ctx, s, "ns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldInc, err := mem.Get(ctx, kvIncKey("ns"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteNamespace(ctx, "ns"); err != nil {
+		t.Fatal(err)
+	}
+	// A straggler in the old incarnation, as a sweep cut short leaves it.
+	straggler, err := vectorPut("ns", oldInc, kvVec(1, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mem.Put(ctx, straggler.Key, straggler.Value); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := genOf(ctx, s, "ns"); !errors.Is(err, ErrNamespaceNotFound) {
+		t.Fatalf("Generation of a deleted namespace = %v, want ErrNamespaceNotFound", err)
+	}
+	if err := s.CreateNamespace(ctx, &NamespaceInfo{Name: "ns", Dimension: 2}); err != nil {
+		t.Fatal(err)
+	}
+	ver, err := s.Version(ctx, "ns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ver.Generation != 0 || before == 0 {
+		t.Fatalf("generation before delete = %d, after recreate = %d; want > 0 then 0", before, ver.Generation)
+	}
+	if bytes.Equal(ver.Incarnation[:], oldInc) {
+		t.Fatal("recreated namespace kept the old incarnation")
+	}
+	vecs, err := s.ScanNamespace(ctx, "ns", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vecs) != 0 {
+		t.Fatalf("recreated namespace shows %d vectors of the old incarnation", len(vecs))
+	}
+	if _, err := s.GetVector(ctx, "ns", 1); !errors.Is(err, ErrVectorNotFound) {
+		t.Fatalf("GetVector of the straggler = %v, want ErrVectorNotFound", err)
+	}
+}
+
 // TestKVVectorStorage_CreateNamespaceRacingReplicaKeepsTheFirst: a create on
 // one replica that interleaves with another replica's create and ID
 // allocation is refused and leaves the first creator's metadata and counter.
 func TestKVVectorStorage_CreateNamespaceRacingReplicaKeepsTheFirst(t *testing.T) {
 	ctx := context.Background()
-	mem := kvstore.NewMemoryKVStore()
+	mem := kvstoretest.NewGuardedMemoryStore()
 	first := newKVStorage(t, mem)
-	kv := &interleavingKV{MemoryKVStore: mem}
+	kv := &interleavingKV{GuardedMemoryStore: mem}
 	late := newKVStorage(t, kv)
 	kv.during = func() {
 		if err := first.CreateNamespace(ctx, &NamespaceInfo{Name: "ns", Dimension: 2}); err != nil {
@@ -328,7 +472,7 @@ func TestKVVectorStorage_CreateNamespaceRacingReplicaKeepsTheFirst(t *testing.T)
 // allocated afterwards on every replica never repeat.
 func TestKVVectorStorage_ConcurrentCreateNamespaceOneWinner(t *testing.T) {
 	ctx := context.Background()
-	mem := kvstore.NewMemoryKVStore()
+	mem := kvstoretest.NewGuardedMemoryStore()
 	const replicas = 16
 	stores := make([]*KVVectorStorage, replicas)
 	for i := range stores {
@@ -392,8 +536,7 @@ func TestKVVectorStorage_ConcurrentCreateNamespaceOneWinner(t *testing.T) {
 
 func TestKVVectorStorage_IDsPersistAcrossInstances(t *testing.T) {
 	for name, kv := range map[string]kvstore.KVStore{
-		"atomic": kvstore.NewMemoryKVStore(),
-		"plain":  plainKV{kvstore.NewMemoryKVStore()},
+		"guarded": kvstoretest.NewGuardedMemoryStore(),
 	} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
@@ -435,7 +578,7 @@ func TestKVVectorStorage_IDsPersistAcrossInstances(t *testing.T) {
 }
 
 func TestKVVectorStorage_ClosedAndCanceled(t *testing.T) {
-	s := newKVStorage(t, kvstore.NewMemoryKVStore())
+	s := newKVStorage(t, kvstoretest.NewGuardedMemoryStore())
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := s.UpsertVector(ctx, "ns", kvVec(1, nil)); !errors.Is(err, ErrContextCanceled) {

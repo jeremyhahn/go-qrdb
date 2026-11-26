@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -49,12 +50,12 @@ func attachPrefixHomes(t testing.TB, svc VectorService) {
 // prefix-scoped; resolveErr, when set, is the error Resolve returns.
 type fakeVectorHomes struct {
 	mu         sync.Mutex
-	homes      map[string]*kvstore.MemoryKVStore
+	homes      map[string]*kvstoretest.GuardedMemoryStore
 	resolveErr error
 }
 
 func newFakeVectorHomes() *fakeVectorHomes {
-	return &fakeVectorHomes{homes: map[string]*kvstore.MemoryKVStore{}}
+	return &fakeVectorHomes{homes: map[string]*kvstoretest.GuardedMemoryStore{}}
 }
 
 func (f *fakeVectorHomes) InHome(_ context.Context, tenantID string) (bool, error) {
@@ -69,13 +70,13 @@ func (f *fakeVectorHomes) Resolve(_ context.Context, tenantID string) (kvstore.K
 	}
 	home, ok := f.homes[tenantID]
 	if !ok {
-		home = kvstore.NewMemoryKVStore()
+		home = kvstoretest.NewGuardedMemoryStore()
 		f.homes[tenantID] = home
 	}
 	return home, nil
 }
 
-func (f *fakeVectorHomes) home(tenantID string) *kvstore.MemoryKVStore {
+func (f *fakeVectorHomes) home(tenantID string) *kvstoretest.GuardedMemoryStore {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.homes[tenantID]

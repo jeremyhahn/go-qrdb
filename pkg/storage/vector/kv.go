@@ -15,14 +15,16 @@
 package vector
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -39,6 +41,8 @@ const (
 	kvVectorPrefix    = "v/"
 	kvIDPrefix        = "id/"
 	kvGenPrefix       = "gen/"
+	kvIncPrefix       = "inc/"
+	kvIncLen          = 16
 	kvIDHexLen        = 16
 )
 
@@ -56,14 +60,27 @@ const (
 // The KV store is not owned: Close marks this view closed and leaves the
 // store open.
 type KVVectorStorage struct {
-	kv kvstore.KVStore
-
-	// mu serialises read-modify-write sequences (namespace create/update and,
-	// when the store has no CompareAndSwap, ID allocation).
-	mu sync.Mutex
+	kv kvstore.MultiGuardedBatchKVStore
 
 	closed atomic.Bool
 }
+
+// UnguardedStoreError is returned by NewKVVectorStorage for a store that does
+// not implement kvstore.MultiGuardedBatchKVStore: every write commits its data
+// with the namespace generation in one guarded batch, so a store without that
+// primitive cannot keep replicas' cached indexes coherent. It matches
+// ErrInvalidConfig under errors.Is.
+type UnguardedStoreError struct {
+	// Store is the Go type of the refused store.
+	Store string
+}
+
+func (e *UnguardedStoreError) Error() string {
+	return fmt.Sprintf("%v: KV store %s has no multi-guarded batch", ErrInvalidConfig, e.Store)
+}
+
+// Unwrap lets errors.Is(err, ErrInvalidConfig) match.
+func (e *UnguardedStoreError) Unwrap() error { return ErrInvalidConfig }
 
 // NewKVVectorStorage returns a vector store over kv. A nil kv is refused with
 // ErrInvalidConfig.
@@ -71,7 +88,11 @@ func NewKVVectorStorage(kv kvstore.KVStore) (*KVVectorStorage, error) {
 	if kv == nil {
 		return nil, fmt.Errorf("%w: nil KV store", ErrInvalidConfig)
 	}
-	return &KVVectorStorage{kv: kv}, nil
+	guarded, ok := kv.(kvstore.MultiGuardedBatchKVStore)
+	if !ok {
+		return nil, &UnguardedStoreError{Store: fmt.Sprintf("%T", kv)}
+	}
+	return &KVVectorStorage{kv: guarded}, nil
 }
 
 func kvNamespaceKey(namespace string) string { return kvNamespacePrefix + namespace }
@@ -80,10 +101,17 @@ func kvIDKey(namespace string) string { return kvIDPrefix + namespace }
 
 func kvGenKey(namespace string) string { return kvGenPrefix + namespace }
 
-func kvVectorNSPrefix(namespace string) string { return kvVectorPrefix + namespace + "/" }
+func kvIncKey(namespace string) string { return kvIncPrefix + namespace }
 
-func kvVectorKey(namespace string, id uint64) string {
-	return fmt.Sprintf("%s%016x", kvVectorNSPrefix(namespace), id)
+// kvVectorNSPrefix is the key prefix of one incarnation's vectors: a
+// recreated namespace gets a new incarnation, so a vector a replica wrote
+// into the old one is never read back under the new one.
+func kvVectorNSPrefix(namespace string, inc []byte) string {
+	return kvVectorPrefix + namespace + "/" + hex.EncodeToString(inc) + "/"
+}
+
+func kvVectorKey(namespace string, inc []byte, id uint64) string {
+	return fmt.Sprintf("%s%016x", kvVectorNSPrefix(namespace, inc), id)
 }
 
 // kvParseVectorID returns the ID a vector key under prefix carries, and false
@@ -117,12 +145,84 @@ func (s *KVVectorStorage) checkOpenCtx(ctx context.Context) error {
 	return nil
 }
 
-func (s *KVVectorStorage) putVector(ctx context.Context, namespace string, vec *VectorValue) error {
+func vectorPut(namespace string, inc []byte, vec *VectorValue) (kvstore.KV, error) {
 	value, err := schema.EncodeVectorValue(toSchemaVectorValue(vec))
 	if err != nil {
-		return err
+		return kvstore.KV{}, err
 	}
-	return s.kv.Put(ctx, kvVectorKey(namespace, vec.ID), value)
+	return kvstore.KV{Key: kvVectorKey(namespace, inc, vec.ID), Value: value}, nil
+}
+
+// readIncarnation returns the namespace's current incarnation, or nil when
+// the namespace does not exist.
+func (s *KVVectorStorage) readIncarnation(ctx context.Context, namespace string) ([]byte, error) {
+	inc, err := s.kv.Get(ctx, kvIncKey(namespace))
+	if err != nil {
+		return nil, err
+	}
+	if inc != nil && len(inc) != kvIncLen {
+		return nil, fmt.Errorf("vector: namespace %q incarnation is %d bytes, want %d", namespace, len(inc), kvIncLen)
+	}
+	return inc, nil
+}
+
+// readVersion returns the raw incarnation and generation records. inc is nil
+// when the namespace does not exist; genRaw is nil when the generation key
+// was never written.
+func (s *KVVectorStorage) readVersion(ctx context.Context, namespace string) (inc, genRaw []byte, gen uint64, err error) {
+	inc, err = s.readIncarnation(ctx, namespace)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	genRaw, err = s.kv.Get(ctx, kvGenKey(namespace))
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	if genRaw != nil {
+		if gen, err = decodeID(genRaw); err != nil {
+			return nil, nil, 0, err
+		}
+	}
+	return inc, genRaw, gen, nil
+}
+
+// commit applies one write to the namespace's current incarnation in a single
+// guarded batch together with the generation advance: the batch holds only
+// while the incarnation and generation read are unchanged, so a write never
+// lands in a deleted or recreated namespace and never lands without the
+// generation step replicas rebuild on. A lost race re-reads and retries; a
+// namespace that is gone (or was recreated under a new incarnation between
+// the caller's read and the batch) is ErrNamespaceNotFound.
+func (s *KVVectorStorage) commit(ctx context.Context, namespace string, build func(inc []byte) ([]kvstore.KV, error)) error {
+	var first []byte
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		inc, genRaw, gen, err := s.readVersion(ctx, namespace)
+		if err != nil {
+			return err
+		}
+		if inc == nil || (first != nil && !bytes.Equal(first, inc)) {
+			return ErrNamespaceNotFound
+		}
+		first = inc
+		writes, err := build(inc)
+		if err != nil {
+			return err
+		}
+		writes = append(writes, kvstore.KV{Key: kvGenKey(namespace), Value: encodeID(gen + 1)})
+		applied, err := s.kv.PutAllIfAllUnchanged(ctx, []kvstore.Guard{
+			{Key: kvIncKey(namespace), Value: inc},
+			{Key: kvGenKey(namespace), Value: genRaw},
+		}, writes)
+		if err != nil {
+			return err
+		}
+		if applied {
+			return nil
+		}
+	}
 }
 
 // UpsertVector inserts or overwrites a vector in namespace.
@@ -136,10 +236,13 @@ func (s *KVVectorStorage) UpsertVector(ctx context.Context, namespace string, ve
 	if vec.ID == 0 {
 		return ErrInvalidID
 	}
-	if err := s.putVector(ctx, namespace, vec); err != nil {
-		return err
-	}
-	return s.advance(ctx, namespace)
+	return s.commit(ctx, namespace, func(inc []byte) ([]kvstore.KV, error) {
+		put, err := vectorPut(namespace, inc, vec)
+		if err != nil {
+			return nil, err
+		}
+		return []kvstore.KV{put}, nil
+	})
 }
 
 // GetVector retrieves a vector by ID.
@@ -150,7 +253,14 @@ func (s *KVVectorStorage) GetVector(ctx context.Context, namespace string, id ui
 	if id == 0 {
 		return nil, ErrInvalidID
 	}
-	raw, err := s.kv.Get(ctx, kvVectorKey(namespace, id))
+	inc, err := s.readIncarnation(ctx, namespace)
+	if err != nil {
+		return nil, err
+	}
+	if inc == nil {
+		return nil, ErrVectorNotFound
+	}
+	raw, err := s.kv.Get(ctx, kvVectorKey(namespace, inc, id))
 	if err != nil {
 		return nil, err
 	}
@@ -172,18 +282,28 @@ func (s *KVVectorStorage) DeleteVector(ctx context.Context, namespace string, id
 	if id == 0 {
 		return ErrInvalidID
 	}
-	key := kvVectorKey(namespace, id)
-	ok, err := s.kv.Exists(ctx, key)
+	inc, err := s.readIncarnation(ctx, namespace)
 	if err != nil {
 		return err
 	}
-	if !ok {
+	if inc == nil {
 		return ErrVectorNotFound
 	}
-	if err := s.kv.Delete(ctx, key); err != nil {
-		return err
+	err = s.commit(ctx, namespace, func(inc []byte) ([]kvstore.KV, error) {
+		key := kvVectorKey(namespace, inc, id)
+		ok, err := s.kv.Exists(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, ErrVectorNotFound
+		}
+		return []kvstore.KV{{Key: key, Delete: true}}, nil
+	})
+	if errors.Is(err, ErrNamespaceNotFound) {
+		return ErrVectorNotFound
 	}
-	return s.advance(ctx, namespace)
+	return err
 }
 
 // BatchUpsertVectors validates every vector, then writes each one.
@@ -202,12 +322,17 @@ func (s *KVVectorStorage) BatchUpsertVectors(ctx context.Context, namespace stri
 			return ErrInvalidID
 		}
 	}
-	for _, vec := range vecs {
-		if err := s.putVector(ctx, namespace, vec); err != nil {
-			return err
+	return s.commit(ctx, namespace, func(inc []byte) ([]kvstore.KV, error) {
+		writes := make([]kvstore.KV, 0, len(vecs)+1)
+		for _, vec := range vecs {
+			put, err := vectorPut(namespace, inc, vec)
+			if err != nil {
+				return nil, err
+			}
+			writes = append(writes, put)
 		}
-	}
-	return s.advance(ctx, namespace)
+		return writes, nil
+	})
 }
 
 // BatchDeleteVectors deletes every vector named in ids; a missing ID is not
@@ -219,20 +344,28 @@ func (s *KVVectorStorage) BatchDeleteVectors(ctx context.Context, namespace stri
 	if len(ids) == 0 {
 		return ErrEmptyBatch
 	}
-	for _, id := range ids {
-		if err := s.kv.Delete(ctx, kvVectorKey(namespace, id)); err != nil {
-			return err
+	return s.commit(ctx, namespace, func(inc []byte) ([]kvstore.KV, error) {
+		writes := make([]kvstore.KV, 0, len(ids)+1)
+		for _, id := range ids {
+			writes = append(writes, kvstore.KV{Key: kvVectorKey(namespace, inc, id), Delete: true})
 		}
-	}
-	return s.advance(ctx, namespace)
+		return writes, nil
+	})
 }
 
 // scanVectors returns every vector of namespace with an ID >= fromID that
 // keep accepts, in ascending ID order.
 func (s *KVVectorStorage) scanVectors(ctx context.Context, namespace string, fromID uint64, keep func(*VectorValue) bool) ([]*VectorValue, error) {
-	prefix := kvVectorNSPrefix(namespace)
 	results := make([]*VectorValue, 0)
-	err := s.kv.Scan(ctx, prefix, func(key string, value []byte) error {
+	inc, err := s.readIncarnation(ctx, namespace)
+	if err != nil {
+		return nil, err
+	}
+	if inc == nil {
+		return results, nil
+	}
+	prefix := kvVectorNSPrefix(namespace, inc)
+	err = s.kv.Scan(ctx, prefix, func(key string, value []byte) error {
 		id, ok := kvParseVectorID(key, prefix)
 		if !ok || id < fromID {
 			return nil
@@ -324,14 +457,6 @@ func (s *KVVectorStorage) getNamespace(ctx context.Context, namespace string) (*
 	return fromSchemaNamespaceInfo(si), nil
 }
 
-func (s *KVVectorStorage) putNamespace(ctx context.Context, info *NamespaceInfo) error {
-	value, err := schema.EncodeNamespaceInfo(toSchemaNamespaceInfo(info))
-	if err != nil {
-		return err
-	}
-	return s.kv.Put(ctx, kvNamespaceKey(info.Name), value)
-}
-
 func encodeID(id uint64) []byte {
 	b := make([]byte, 8)
 	binary.BigEndian.PutUint64(b, id)
@@ -354,52 +479,51 @@ func (s *KVVectorStorage) CreateNamespace(ctx context.Context, info *NamespaceIn
 	if info == nil || info.Name == "" {
 		return ErrInvalidNamespace
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	exists, err := s.kv.Exists(ctx, kvNamespaceKey(info.Name))
+	value, err := schema.EncodeNamespaceInfo(toSchemaNamespaceInfo(info))
 	if err != nil {
 		return err
 	}
-	if exists {
-		return ErrNamespaceExists
-	}
-	if atomicKV, ok := s.kv.(kvstore.AtomicKVStore); ok {
-		return s.createNamespaceIfAbsent(ctx, atomicKV, info)
-	}
-	if err := s.kv.Put(ctx, kvIDKey(info.Name), encodeID(0)); err != nil {
+	inc := make([]byte, kvIncLen)
+	if _, err := rand.Read(inc); err != nil {
 		return err
 	}
-	if err := s.kv.Put(ctx, kvGenKey(info.Name), encodeID(0)); err != nil {
-		return err
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		exists, err := s.kv.Exists(ctx, kvNamespaceKey(info.Name))
+		if err != nil {
+			return err
+		}
+		if exists {
+			return ErrNamespaceExists
+		}
+		// A fresh incarnation starts its generation at 0; the incarnation, not
+		// the generation, tells a recreated namespace from the deleted one.
+		// The record goes last, so a store that exposes a batch's writes in
+		// order never shows the namespace before its counter and incarnation.
+		applied, err := s.kv.PutAllIfAllUnchanged(ctx, []kvstore.Guard{
+			{Key: kvNamespaceKey(info.Name)},
+			{Key: kvIncKey(info.Name)},
+		}, []kvstore.KV{
+			{Key: kvIDKey(info.Name), Value: encodeID(0)},
+			{Key: kvIncKey(info.Name), Value: inc},
+			{Key: kvGenKey(info.Name), Value: encodeID(0)},
+			{Key: kvNamespaceKey(info.Name), Value: value},
+		})
+		if err != nil {
+			return err
+		}
+		if applied {
+			return nil
+		}
 	}
-	infoCopy := *info
-	return s.putNamespace(ctx, &infoCopy)
 }
 
 // createNamespaceIfAbsent creates info's counters and then its metadata, each
 // only where absent, so a concurrent create on another replica of the store
 // neither resets the ID counter nor replaces the metadata: the create whose
 // metadata lands first wins and every other one is ErrNamespaceExists.
-func (s *KVVectorStorage) createNamespaceIfAbsent(ctx context.Context, atomicKV kvstore.AtomicKVStore, info *NamespaceInfo) error {
-	value, err := schema.EncodeNamespaceInfo(toSchemaNamespaceInfo(info))
-	if err != nil {
-		return err
-	}
-	for _, key := range []string{kvIDKey(info.Name), kvGenKey(info.Name)} {
-		if _, err := atomicKV.PutIfAbsent(ctx, key, encodeID(0)); err != nil {
-			return err
-		}
-	}
-	stored, err := atomicKV.PutIfAbsent(ctx, kvNamespaceKey(info.Name), value)
-	if err != nil {
-		return err
-	}
-	if !stored {
-		return ErrNamespaceExists
-	}
-	return nil
-}
-
 // UpdateNamespace replaces the namespace's index parameters and metadata in
 // place; its vectors are untouched.
 func (s *KVVectorStorage) UpdateNamespace(ctx context.Context, namespace string, update *NamespaceUpdate) error {
@@ -409,16 +533,44 @@ func (s *KVVectorStorage) UpdateNamespace(ctx context.Context, namespace string,
 	if namespace == "" || update == nil {
 		return ErrInvalidNamespace
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	info, err := s.getNamespace(ctx, namespace)
-	if err != nil {
-		return err
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		inc, err := s.readIncarnation(ctx, namespace)
+		if err != nil {
+			return err
+		}
+		raw, err := s.kv.Get(ctx, kvNamespaceKey(namespace))
+		if err != nil {
+			return err
+		}
+		if inc == nil || raw == nil {
+			return ErrNamespaceNotFound
+		}
+		si, err := schema.DecodeNamespaceInfo(raw)
+		if err != nil {
+			return err
+		}
+		info := fromSchemaNamespaceInfo(si)
+		info.IndexConfig = maps.Clone(update.IndexConfig)
+		info.Metadata = maps.Clone(update.Metadata)
+		info.UpdatedAt = update.UpdatedAt
+		value, err := schema.EncodeNamespaceInfo(toSchemaNamespaceInfo(info))
+		if err != nil {
+			return err
+		}
+		applied, err := s.kv.PutAllIfAllUnchanged(ctx, []kvstore.Guard{
+			{Key: kvIncKey(namespace), Value: inc},
+			{Key: kvNamespaceKey(namespace), Value: raw},
+		}, []kvstore.KV{{Key: kvNamespaceKey(namespace), Value: value}})
+		if err != nil {
+			return err
+		}
+		if applied {
+			return nil
+		}
 	}
-	info.IndexConfig = maps.Clone(update.IndexConfig)
-	info.Metadata = maps.Clone(update.Metadata)
-	info.UpdatedAt = update.UpdatedAt
-	return s.putNamespace(ctx, info)
 }
 
 // DeleteNamespace removes the namespace's registry entry, its ID counter and
@@ -427,16 +579,41 @@ func (s *KVVectorStorage) DeleteNamespace(ctx context.Context, namespace string)
 	if err := s.checkOpen(); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	exists, err := s.kv.Exists(ctx, kvNamespaceKey(namespace))
-	if err != nil {
-		return err
+	var inc []byte
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		cur, genRaw, _, err := s.readVersion(ctx, namespace)
+		if err != nil {
+			return err
+		}
+		if cur == nil {
+			return ErrNamespaceNotFound
+		}
+		// One batch retires the incarnation with its record, counter and
+		// generation: a replica write racing this delete is refused by its
+		// incarnation guard, and a recreate gets a new incarnation, so no
+		// cached (incarnation, generation) of this one ever matches again.
+		applied, err := s.kv.PutAllIfAllUnchanged(ctx, []kvstore.Guard{
+			{Key: kvIncKey(namespace), Value: cur},
+			{Key: kvGenKey(namespace), Value: genRaw},
+		}, []kvstore.KV{
+			{Key: kvNamespaceKey(namespace), Delete: true},
+			{Key: kvIncKey(namespace), Delete: true},
+			{Key: kvIDKey(namespace), Delete: true},
+			{Key: kvGenKey(namespace), Delete: true},
+		})
+		if err != nil {
+			return err
+		}
+		if applied {
+			inc = cur
+			break
+		}
 	}
-	if !exists {
-		return ErrNamespaceNotFound
-	}
-	prefix := kvVectorNSPrefix(namespace)
+	// The retired incarnation is unreachable now; sweep its vectors.
+	prefix := kvVectorNSPrefix(namespace, inc)
 	keys, err := s.kv.List(ctx, prefix)
 	if err != nil {
 		return err
@@ -449,13 +626,7 @@ func (s *KVVectorStorage) DeleteNamespace(ctx context.Context, namespace string)
 			return err
 		}
 	}
-	if err := s.kv.Delete(ctx, kvIDKey(namespace)); err != nil {
-		return err
-	}
-	if err := s.kv.Delete(ctx, kvGenKey(namespace)); err != nil {
-		return err
-	}
-	return s.kv.Delete(ctx, kvNamespaceKey(namespace))
+	return nil
 }
 
 // ListNamespaces lists every registered namespace.
@@ -528,70 +699,57 @@ func (s *KVVectorStorage) allocate(namespace string, count uint64) (uint64, erro
 // increment adds count to the counter stored under key and returns the new
 // value; a missing counter is ErrNamespaceNotFound.
 func (s *KVVectorStorage) increment(ctx context.Context, key string, count uint64) (uint64, error) {
-	if atomicKV, ok := s.kv.(kvstore.AtomicKVStore); ok {
-		for {
-			cur, err := atomicKV.Get(ctx, key)
-			if err != nil {
-				return 0, err
-			}
-			if cur == nil {
-				return 0, ErrNamespaceNotFound
-			}
-			last, err := decodeID(cur)
-			if err != nil {
-				return 0, err
-			}
-			swapped, err := atomicKV.CompareAndSwap(ctx, key, cur, encodeID(last+count))
-			if err != nil {
-				return 0, err
-			}
-			if swapped {
-				return last + count, nil
-			}
+	for {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		cur, err := s.kv.Get(ctx, key)
+		if err != nil {
+			return 0, err
+		}
+		if cur == nil {
+			return 0, ErrNamespaceNotFound
+		}
+		last, err := decodeID(cur)
+		if err != nil {
+			return 0, err
+		}
+		applied, err := s.kv.PutAllIfAllUnchanged(ctx, []kvstore.Guard{{Key: key, Value: cur}},
+			[]kvstore.KV{{Key: key, Value: encodeID(last + count)}})
+		if err != nil {
+			return 0, err
+		}
+		if applied {
+			return last + count, nil
 		}
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	cur, err := s.kv.Get(ctx, key)
-	if err != nil {
-		return 0, err
-	}
-	if cur == nil {
-		return 0, ErrNamespaceNotFound
-	}
-	last, err := decodeID(cur)
-	if err != nil {
-		return 0, err
-	}
-	if err := s.kv.Put(ctx, key, encodeID(last+count)); err != nil {
-		return 0, err
-	}
-	return last + count, nil
 }
 
-// advance moves namespace's write generation past a write that has landed.
-func (s *KVVectorStorage) advance(ctx context.Context, namespace string) error {
-	_, err := s.increment(ctx, kvGenKey(namespace), 1)
-	if errors.Is(err, ErrNamespaceNotFound) {
-		return nil
-	}
-	return err
+// NamespaceVersion identifies the exact contents of a namespace: Incarnation
+// changes on every delete+recreate, and Generation advances in the same
+// guarded batch as every vector write and delete (and on namespace delete; it
+// is never reset). Two reads that return equal versions saw the same vectors.
+type NamespaceVersion struct {
+	Incarnation [kvIncLen]byte
+	Generation  uint64
 }
 
-// Generation returns namespace's write generation, which every vector write
-// and delete advances after it lands.
-func (s *KVVectorStorage) Generation(ctx context.Context, namespace string) (uint64, error) {
+// Version returns namespace's current incarnation and write generation, or
+// ErrNamespaceNotFound when the namespace does not exist.
+func (s *KVVectorStorage) Version(ctx context.Context, namespace string) (NamespaceVersion, error) {
 	if err := s.checkOpenCtx(ctx); err != nil {
-		return 0, err
+		return NamespaceVersion{}, err
 	}
-	raw, err := s.kv.Get(ctx, kvGenKey(namespace))
+	inc, _, gen, err := s.readVersion(ctx, namespace)
 	if err != nil {
-		return 0, err
+		return NamespaceVersion{}, err
 	}
-	if raw == nil {
-		return 0, ErrNamespaceNotFound
+	if inc == nil {
+		return NamespaceVersion{}, ErrNamespaceNotFound
 	}
-	return decodeID(raw)
+	ver := NamespaceVersion{Generation: gen}
+	copy(ver.Incarnation[:], inc)
+	return ver, nil
 }
 
 // NextID allocates the next unique ID for a registered namespace.
