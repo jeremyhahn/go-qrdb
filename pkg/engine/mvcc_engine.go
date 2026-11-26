@@ -2130,6 +2130,16 @@ func (e *MVCCEngine) handleMovePrefix(s *mvcc.Store, lr *lease.Lessor, batch sto
 		return sm.Result{Data: protocol.EncodeAppError(protocol.AppErrorConflict,
 			fmt.Sprintf("move prefix: %d live keys under the source, expected %d", got, expected))}, nil, nil
 	}
+	// A destination key longer than the client key limit could never be
+	// written by a client: the whole move is refused before anything is
+	// staged, so neither the source nor the destination changes.
+	for i := 0; i < len(ops); i += 2 {
+		if n := len(ops[i].Key); n > protocol.MaxClientKeyLength {
+			return sm.Result{Data: protocol.EncodeAppError(protocol.AppErrorInvalid,
+				fmt.Sprintf("move prefix: destination key of %d bytes exceeds the %d-byte key limit",
+					n, protocol.MaxClientKeyLength))}, nil, nil
+		}
+	}
 	return e.applyDecodedBatch(s, lr, batch, append(ops, extra...), 0)
 }
 

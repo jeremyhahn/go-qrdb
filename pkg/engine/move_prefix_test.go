@@ -16,6 +16,7 @@ package engine
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -131,6 +132,37 @@ func TestMVCCEngine_MovePrefix_CountMismatchWritesNothing(t *testing.T) {
 	}
 	if v, _ := mvccValue(t, eng, "meta"); v != "v-meta" {
 		t.Fatalf("meta = %q: a refused move applied an extra op", v)
+	}
+}
+
+// TestMVCCEngine_MovePrefix_RefusesDestinationKeyOverLimit moves a key of
+// the maximum client length under a 1-byte source to a 2-byte destination:
+// the generated key is one byte over the limit, so the whole move is
+// refused as invalid and neither the source nor the destination changes.
+func TestMVCCEngine_MovePrefix_RefusesDestinationKeyOverLimit(t *testing.T) {
+	eng, stg := newMVCCEngine(t)
+	defer func() { _ = stg.Close() }()
+	defer func() { _ = eng.Close(context.Background()) }()
+	long := "s" + strings.Repeat("k", protocol.MaxClientKeyLength-1)
+	seedMVCC(t, eng, long)
+	before := eng.Store().CurrentRevision()
+
+	results := applyMVCCEntries(t, eng, []sm.Entry{movePrefixEntry(t, 20, "s", "pp", 1, nil)})
+	msg, refused := protocol.DecodeAppError(results[0].Data)
+	if !refused || !strings.Contains(msg, strconv.Itoa(protocol.MaxClientKeyLength+1)) {
+		t.Fatalf("result = %+v, want the key-length refusal naming the length", results[0])
+	}
+	if !strings.HasPrefix(string(results[0].Data), string(protocol.EncodeAppError(protocol.AppErrorInvalid, ""))) {
+		t.Fatalf("refusal kind is not AppErrorInvalid: %q", results[0].Data)
+	}
+	if got := eng.Store().CurrentRevision(); got != before {
+		t.Fatalf("revision = %d, want %d: a refused move writes nothing", got, before)
+	}
+	if !mvccLive(t, eng, long) {
+		t.Fatal("a refused move removed the source key")
+	}
+	if mvccLive(t, eng, "pp"+long[1:]) {
+		t.Fatal("a refused move wrote the destination key")
 	}
 }
 

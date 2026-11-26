@@ -59,6 +59,13 @@ the meta record. WAL mode is not supported (decision
 The extended code `SQLITE_BUSY_SNAPSHOT` is 517; `code & 0xff` is
 `SQLITE_BUSY`, so a busy handler that checks the primary code covers both.
 
+## CLI transports
+
+`qrdb sqlite` needs a binary-safe transaction and range wire, because page
+keys and values are raw bytes. It refuses the REST and MCP transports before
+it writes anything: their keys are JSON strings, so they carry only UTF-8
+keys.
+
 ## Restore
 
 A restore to a revision through a scope's MVCC service
