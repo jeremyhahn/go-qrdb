@@ -19,6 +19,15 @@ import (
 // raftGroupRegistry builds a resolver over a raft backend factory for a
 // tenant of the given isolation that owns the backend: raft database "app"
 // (OD-1 A: one Raft group per database, whatever the tenant's isolation).
+// fixedIsolationPolicy is a ClusterIsolationPolicyReader that answers the
+// policy value the cluster records, as TenantService.ClusterIsolationPolicy
+// does.
+type fixedIsolationPolicy struct{ policy tenant.ClusterIsolationPolicy }
+
+func (p fixedIsolationPolicy) ClusterIsolationPolicy(context.Context) (tenant.ClusterIsolationPolicy, error) {
+	return p.policy, nil
+}
+
 func raftGroupRegistry(t *testing.T, tenantID string, isolation tenant.IsolationType, dataRoot string, register bool) (*restServiceRegistry, *RaftBackendFactory, *DatabaseServiceRegistry) {
 	t.Helper()
 	// A volume tenant's group log always runs on a dedicated WAL, which the
@@ -38,7 +47,8 @@ func raftGroupRegistry(t *testing.T, tenantID string, isolation tenant.Isolation
 	src.add(tenantID, "app", 1100, dataRoot)
 	lookup := func(context.Context, string) (tenant.IsolationType, error) { return isolation, nil }
 	f := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg, src, volTestLogger(),
-		WithMultiplexLogDB(mux), WithTenantIsolation(lookup))
+		WithMultiplexLogDB(mux), WithTenantIsolation(lookup),
+		WithClusterIsolationPolicy(fixedIsolationPolicy{policy: tenant.ClusterIsolationPolicyOperatorAccess}))
 	t.Cleanup(func() { _ = f.CloseAll() })
 
 	info := &tenant.TenantInfo{ID: tenantID, IsolationType: isolation}

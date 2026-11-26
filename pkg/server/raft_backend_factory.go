@@ -250,14 +250,18 @@ type RaftBackendFactory struct {
 	nodeGroupRoot string
 	// leaderOf reads a shard's current leader replica. It is the host's
 	// LeaderID; LeadsShard reads leadership through it alone.
-	leaderOf       func(shardID uint64) (replicaID uint64, known bool, err error)
-	adapter        *raftbackend.HostAdapter
-	featureGate    *featuregate.Gate
-	localReplicaID uint64
-	localRaftAddr  string
-	barrierReg     *seal.BarrierRegistry
-	dbInfo         raftDatabaseInfoSource
-	logger         *slog.Logger
+	leaderOf    func(shardID uint64) (replicaID uint64, known bool, err error)
+	adapter     *raftbackend.HostAdapter
+	featureGate *featuregate.Gate
+	// isolationPolicy is the live cluster isolation policy every database
+	// group's vector service enforces (strict isolation refuses a
+	// system-tenant namespace); without it no vector service is built.
+	isolationPolicy tenant.ClusterIsolationPolicyReader
+	localReplicaID  uint64
+	localRaftAddr   string
+	barrierReg      *seal.BarrierRegistry
+	dbInfo          raftDatabaseInfoSource
+	logger          *slog.Logger
 
 	// walMux, when non-nil, is the shared host's multiplex LogDB into which a
 	// dedicated per-tenant-KEY WAL is registered for a shard that opted into
@@ -496,6 +500,14 @@ func (f *RaftBackendFactory) HostsDatabase(tenantID, db string) (bool, error) {
 
 func WithFeatureGate(gate *featuregate.Gate) RaftBackendOption {
 	return func(f *RaftBackendFactory) { f.featureGate = gate }
+}
+
+// WithClusterIsolationPolicy wires the live cluster isolation policy into
+// every database group's vector service -- the same reader lifecycle wires
+// into the shared vector service. A factory without one builds no vector
+// service rather than one that skips the strict-isolation check.
+func WithClusterIsolationPolicy(r tenant.ClusterIsolationPolicyReader) RaftBackendOption {
+	return func(f *RaftBackendFactory) { f.isolationPolicy = r }
 }
 
 // WithImportSessionConfig bounds a chunked import session on every shard
@@ -1863,12 +1875,18 @@ func (f *RaftBackendFactory) stopShard(rs *raftShard) error {
 // write is an OpVector* proposal into the database's group and every read an
 // engine lookup through host, as a local binding's vector service does over
 // its binding store. The returned close stops the service.
-func newRaftShardVector(host service.Host, shardID uint64) (service.VectorServicer, func() error, error) {
+func newRaftShardVector(host service.Host, shardID uint64, policy tenant.ClusterIsolationPolicyReader) (service.VectorServicer, func() error, error) {
+	if policy == nil {
+		// A vector service without the policy reader skips the
+		// strict-isolation check on namespace create: refuse to build one.
+		return nil, nil, errRaftVectorNoIsolationPolicy
+	}
 	l, err := logger.New(logger.LogConfig{Level: "warn", Format: "json", Output: "stderr"})
 	if err != nil {
 		return nil, nil, err
 	}
-	svc, err := service.NewVectorService(nil, logger.NewAdapter(l), service.WithVectorApplyHost(host, shardID))
+	svc, err := service.NewVectorService(nil, logger.NewAdapter(l), service.WithVectorApplyHost(host, shardID),
+		service.WithClusterIsolationPolicyReader(policy))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1880,6 +1898,10 @@ func newRaftShardVector(host service.Host, shardID uint64) (service.VectorServic
 	}
 	return svc, closeFn, nil
 }
+
+// errRaftVectorNoIsolationPolicy refuses a database group vector service
+// built without the cluster isolation policy reader.
+var errRaftVectorNoIsolationPolicy = errors.New("raft database vector service: no cluster isolation policy reader wired")
 
 // withVector returns rs's services with its own vector service, building
 // that service on the first call. A build that fails leaves the bundle
@@ -1894,7 +1916,7 @@ func (f *RaftBackendFactory) withVector(rs *raftShard) *DatabaseServices {
 	rs.vectorMu.Lock()
 	defer rs.vectorMu.Unlock()
 	if rs.vector == nil && !rs.vectorStopped {
-		vec, closeVec, err := newRaftShardVector(f.adapter, rs.shardID)
+		vec, closeVec, err := newRaftShardVector(f.adapter, rs.shardID, f.isolationPolicy)
 		if err != nil {
 			f.logger.Warn("dedicated raft database vector service unavailable",
 				slog.String("tenant", rs.tenantID), slog.String("database", rs.database),

@@ -314,6 +314,15 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 		// groups on the node data dir.
 		isolation := TenantServiceIsolation(cfg.TenantSvc)
 		raftOpts := []RaftBackendOption{WithTenantIsolation(isolation)}
+		// Each database group's vector service enforces the same live
+		// isolation policy lifecycle wires into the shared vector service.
+		// A use-time TenantLookup that reads the policy wins: it follows a
+		// tenant service rebuilt in place.
+		if reader, ok := cfg.TenantLookup.(tenant.ClusterIsolationPolicyReader); ok && reader != nil {
+			raftOpts = append(raftOpts, WithClusterIsolationPolicy(reader))
+		} else if reader, ok := cfg.TenantSvc.(tenant.ClusterIsolationPolicyReader); ok {
+			raftOpts = append(raftOpts, WithClusterIsolationPolicy(reader))
+		}
 		if cfg.PlacementStore != nil {
 			nodeDataDir := ""
 			if cfg.Manager != nil {
