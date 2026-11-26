@@ -140,7 +140,7 @@ var goldenAdminPermissions = []permission.Permission{
 	// system-tenant Admin (owner ruling, 2026-10-06 -- see
 	// pkg/permission/cluster_join_token_scope.go).
 	permission.ClusterJoinToken,
-	permission.MVCCRestore,
+	permission.MVCCRestore, permission.MVCCMovePrefix,
 	// Database lifecycle, seal and unseal included, own tenant only
 	// (go-qrdb#1278). Key custody -- rekey, initialize_shamir, officer_* --
 	// stays out.
@@ -212,7 +212,7 @@ var goldenOperatorPermissions = []permission.Permission{
 	permission.MVCCPutWithLease, permission.MVCCGetRevision,
 	permission.MVCCGetAtRevision, permission.MVCCRange,
 	permission.MVCCCompact, permission.MVCCCurrentRevision,
-	permission.MVCCRestore,
+	permission.MVCCRestore, permission.MVCCMovePrefix,
 	permission.TransactionExecute,
 	permission.BatchExecute,
 	permission.WatchWatch, permission.WatchWatchPrefix,
