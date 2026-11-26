@@ -212,3 +212,40 @@ func TestVolumeMoveTransitionAudit_RecordsEachTransition(t *testing.T) {
 		t.Fatalf("refused write = %v, want nil", err)
 	}
 }
+
+// An operator's cancel, applied or refused, is recorded as
+// volume_pool.move_cancel with the ctx's subject as the actor; a ctx with
+// no identity (the reconciler's own transitions) records "system".
+func TestVolumeMoveTransitionAudit_CancelCarriesTheOperator(t *testing.T) {
+	ring := audit.NewRingBuffer(16)
+	r := NewVolumeMoveTransitionAudit(ring)
+	operator := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "ops-alice"})
+	steps := []struct {
+		ctx                        context.Context
+		transition, actor, outcome string
+	}{
+		{operator, volume.MoveTransitionCancel, "ops-alice", audit.OutcomeSuccess},
+		{operator, volume.MoveTransitionCancelRefused, "ops-alice", audit.OutcomeFailure + ":move-past-commit"},
+		{context.Background(), volume.MoveTransitionCutover, "system", audit.OutcomeSuccess},
+	}
+	for _, s := range steps {
+		if err := r.RecordMoveTransition(s.ctx, s.transition, "acme", "", ""); err != nil {
+			t.Fatalf("RecordMoveTransition(%s): %v", s.transition, err)
+		}
+	}
+	evs := ring.Snapshot()
+	if len(evs) != len(steps) {
+		t.Fatalf("recorded %d events, want %d", len(evs), len(steps))
+	}
+	for i, s := range steps {
+		ev := evs[i]
+		if ev.Actor != s.actor || ev.Outcome != s.outcome || ev.TenantID != "acme" {
+			t.Fatalf("event %d = %+v, want actor %s outcome %s", i, ev, s.actor, s.outcome)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		if evs[i].Action != "volume_pool.move_cancel" {
+			t.Fatalf("event %d action = %q, want volume_pool.move_cancel", i, evs[i].Action)
+		}
+	}
+}

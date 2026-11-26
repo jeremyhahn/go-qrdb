@@ -82,9 +82,10 @@ type Catalog struct {
 
 	// moveAdmission and moveAuditor are the optional post-construction
 	// seams MoveTenant orchestrates through (move_service.go).
-	moveAdmission atomic.Pointer[moveAdmissionBox]
-	moveAuditor   atomic.Pointer[moveAuditorBox]
-	moveRecorder  atomic.Pointer[moveRecorderBox]
+	moveAdmission   atomic.Pointer[moveAdmissionBox]
+	moveAuditor     atomic.Pointer[moveAuditorBox]
+	moveRecorder    atomic.Pointer[moveRecorderBox]
+	moveTransitions atomic.Pointer[moveTransitionBox]
 }
 
 // Compile-time proof that Catalog satisfies both exported seams.

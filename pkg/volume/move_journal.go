@@ -794,7 +794,11 @@ func (c *Catalog) FailRetireStep(ctx context.Context, tenantID, nodeID, reason s
 // refused at CompleteMoveStep and FailMoveStep. A move already aborting is
 // returned unchanged. A move cut over is past its commit point and refused
 // with *MoveConflictError; no journal returns *MoveNotFoundError and an
-// empty tenant *InvalidMoveRequestError.
+// empty tenant *InvalidMoveRequestError. A cancel that changed the journal
+// is reported to the SetMoveTransitionRecorder recorder as
+// MoveTransitionCancel and a refused one as MoveTransitionCancelRefused,
+// both with ctx, so the record names the operator; a repeat that changes
+// nothing records nothing.
 func (c *Catalog) CancelMove(ctx context.Context, tenantID string) (*Move, error) {
 	if tenantID == "" {
 		return nil, &InvalidMoveRequestError{Reason: "empty tenant id"}
@@ -809,12 +813,15 @@ func (c *Catalog) CancelMove(ctx context.Context, tenantID string) (*Move, error
 	if current.State == MoveStateAborting || current.CancelRequested {
 		return current, nil
 	}
-	return c.updateMove(ctx, tenantID, func(m *Move) error {
+	changed := false
+	m, err := c.updateMove(ctx, tenantID, func(m *Move) error {
+		changed = false
 		if m.CancelRequested {
 			return nil
 		}
 		switch m.State {
 		case MoveStateCopying:
+			changed = true
 			if m.StepNode != "" {
 				// A copy is running: its holder awaits it, and the step's
 				// completion or failure turns the move aborting with the
@@ -829,6 +836,7 @@ func (c *Catalog) CancelMove(ctx context.Context, tenantID string) (*Move, error
 			m.Error = "cancelled by operator"
 			return nil
 		case MoveStateAdmitted, MoveStateCopied:
+			changed = true
 			m.State = MoveStateAborting
 			m.StepNode = ""
 			m.StepAttempts = 0
@@ -840,6 +848,30 @@ func (c *Catalog) CancelMove(ctx context.Context, tenantID string) (*Move, error
 			return &MoveConflictError{TenantID: tenantID, Reason: "move is " + m.State + ": past its commit point, cannot cancel"}
 		}
 	})
+	var conflict *MoveConflictError
+	switch {
+	case err == nil && changed:
+		c.recordCancel(ctx, MoveTransitionCancel, tenantID)
+	case errors.As(err, &conflict):
+		c.recordCancel(ctx, MoveTransitionCancelRefused, tenantID)
+	}
+	return m, err
+}
+
+// recordCancel reports an operator's cancel, applied or refused, with the
+// request's context, so the record carries the operator's identity. The
+// recorder is best effort: its error is logged and does not undo the
+// journal write.
+func (c *Catalog) recordCancel(ctx context.Context, transition, tenantID string) {
+	r := c.currentMoveTransitionRecorder()
+	if r == nil {
+		return
+	}
+	if err := r.RecordMoveTransition(ctx, transition, tenantID, "", ""); err != nil {
+		c.logger.Warn("volume: recording the move cancel failed",
+			slog.String("tenant", tenantID), slog.String("transition", transition),
+			slog.String("error", err.Error()))
+	}
 }
 
 // GrantAbortStep grants the next node its abort step of a move rolled back

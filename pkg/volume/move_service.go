@@ -62,6 +62,27 @@ func (c *Catalog) currentMoveCutoverRecorder() MoveCutoverRecorder {
 	return nil
 }
 
+type moveTransitionBox struct{ r MoveTransitionRecorder }
+
+// SetMoveTransitionRecorder installs the recorder CancelMove reports an
+// operator's cancel to, with the request's context, so the record carries
+// the operator's identity (the reconciler, which applies the cancel later,
+// has none). nil records nothing.
+func (c *Catalog) SetMoveTransitionRecorder(r MoveTransitionRecorder) {
+	if r == nil {
+		c.moveTransitions.Store(nil)
+		return
+	}
+	c.moveTransitions.Store(&moveTransitionBox{r: r})
+}
+
+func (c *Catalog) currentMoveTransitionRecorder() MoveTransitionRecorder {
+	if b := c.moveTransitions.Load(); b != nil {
+		return b.r
+	}
+	return nil
+}
+
 func (c *Catalog) currentMoveAdmission() MoveAdmission {
 	if b := c.moveAdmission.Load(); b != nil {
 		return b.a

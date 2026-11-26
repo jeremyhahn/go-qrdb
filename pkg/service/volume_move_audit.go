@@ -160,8 +160,10 @@ func NewVolumeMoveTransitionAudit(logger audit.AuditLogger) volume.MoveTransitio
 }
 
 // RecordMoveTransition implements volume.MoveTransitionRecorder. A node's
-// failed step is recorded with a failure outcome; every other transition
-// with success.
+// failed step and an operator's refused cancel (recorded as move_cancel)
+// carry a failure outcome; every other transition success. The actor is
+// the ctx's authenticated subject (an operator's CancelMove), else
+// "system" (the reconciler's own transitions).
 func (a *volumeMoveTransitionAudit) RecordMoveTransition(ctx context.Context, transition, tenantID, nodeID, phase string) error {
 	attrs := map[string]any{}
 	if nodeID != "" {
@@ -171,11 +173,19 @@ func (a *volumeMoveTransitionAudit) RecordMoveTransition(ctx context.Context, tr
 		attrs["phase"] = phase
 	}
 	outcome := audit.OutcomeSuccess
-	if transition == volume.MoveTransitionFail {
+	switch transition {
+	case volume.MoveTransitionFail:
 		outcome = audit.OutcomeFailure + ":move-step-failed"
+	case volume.MoveTransitionCancelRefused:
+		transition = volume.MoveTransitionCancel
+		outcome = audit.OutcomeFailure + ":move-past-commit"
+	}
+	actor := moveActor(ctx)
+	if actor == "" {
+		actor = "system"
 	}
 	audit.EmitBestEffort(ctx, a.audit, volumeMoveAuditComponent, audit.AuditEvent{
-		Actor:      "system",
+		Actor:      actor,
 		TenantID:   tenantID,
 		Resource:   "volume_pool",
 		Action:     ActionVolumePoolMovePrefix + transition,

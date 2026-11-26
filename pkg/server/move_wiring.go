@@ -156,6 +156,7 @@ func WireTenantMoves(cfg TenantMoveConfig) (*TenantMoveWorker, error) {
 	}
 	cfg.Catalog.SetMoveAdmission(cfg.Tenants)
 	cfg.Catalog.SetMoveCutoverRecorder(cfg.Tenants)
+	cfg.Catalog.SetMoveTransitionRecorder(cfg.Transitions)
 	if cfg.StartAudit != nil {
 		cfg.Catalog.SetMoveStartAuditor(cfg.StartAudit)
 	}

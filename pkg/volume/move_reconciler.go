@@ -557,6 +557,9 @@ const (
 	MoveTransitionFail     = "fail"
 	MoveTransitionCutover  = "cutover"
 	MoveTransitionCancel   = "cancel"
+	// MoveTransitionCancelRefused is an operator's cancel that CancelMove
+	// refused because the move is past its commit point.
+	MoveTransitionCancelRefused = "cancel-refused"
 )
 
 // MoveTransitionRecorder records a tenant move's journal transition (the
