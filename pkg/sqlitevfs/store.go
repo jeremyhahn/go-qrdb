@@ -688,9 +688,12 @@ func (t *Txn) commitRemoval(ctx context.Context, now int64, reads []ReadCheck) (
 	return rev, nil
 }
 
-// sweepStages deletes, in one Backend.Commit, every staged page key of the
-// database live at revision rev. The caller holds the writer lock.
-func (s *Store) sweepStages(ctx context.Context, rev int64) error {
+// sweepStages deletes every staged page key of the database live at
+// revision rev, in delete-only Backend.Commits each under the transport
+// request cap. The caller holds the writer lock with fencing token token;
+// the lease is renewed between chunks, and the first failed chunk or lost
+// lease stops the sweep and is returned.
+func (s *Store) sweepStages(ctx context.Context, rev int64, token int64) error {
 	root, err := StageRoot(s.db)
 	if err != nil {
 		return err
@@ -699,11 +702,24 @@ func (s *Store) sweepStages(ctx context.Context, rev int64) error {
 	if err != nil {
 		return err
 	}
-	if len(keys) == 0 {
-		return nil
+	spent := encodedRequestBytes(nil, nil, nil)
+	for len(keys) > 0 {
+		head, rest := s.splitDeletes(spent, keys)
+		if len(head) == 0 {
+			return fmt.Errorf("sqlitevfs: stage key of %d bytes does not fit a request under the cap %d", len(keys[0]), s.requestBytes)
+		}
+		if _, err := s.backend.Commit(ctx, nil, nil, head); err != nil {
+			return err
+		}
+		keys = rest
+		if len(keys) > 0 {
+			// Renews the lease between chunks and stops once it was lost.
+			if err := s.writer.Check(ctx, s.lockKey, token); err != nil {
+				return err
+			}
+		}
 	}
-	_, err = s.backend.Commit(ctx, nil, nil, keys)
-	return err
+	return nil
 }
 
 // Txn is one transaction on a database file: a snapshot at the revision
@@ -786,7 +802,8 @@ func (t *Txn) Size() int64 {
 // Holding the lock, Reserve sweeps abandoned stages: only the lock holder
 // stages pages, so every key under StageRoot seen under the lock was left by
 // a writer that crashed or lost its lease, and Reserve deletes them all in
-// one Backend.Commit. A failed sweep releases the lock and is returned.
+// delete-only Backend.Commits under the transport request cap, renewing
+// the lease between them. A failed sweep releases the lock and is returned.
 // Every lock call, read and sweep Reserve makes uses its own ctx.
 func (t *Txn) Reserve(ctx context.Context) error {
 	if t.done {
@@ -821,7 +838,7 @@ func (t *Txn) Reserve(ctx context.Context) error {
 		return fmt.Errorf("%w: %q moved from generation %d change counter %d to generation %d change counter %d",
 			ErrSnapshotChanged, s.db, t.base.Generation, t.base.ChangeCounter, current.Generation, current.ChangeCounter)
 	}
-	if err := s.sweepStages(ctx, rev); err != nil {
+	if err := s.sweepStages(ctx, rev, t.token); err != nil {
 		_ = t.release(ctx)
 		return fmt.Errorf("sqlitevfs: sweep abandoned stages of %q: %w", s.db, err)
 	}

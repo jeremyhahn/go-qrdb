@@ -150,3 +150,91 @@ func TestFailedStageCleanupChunksDeletesUnderTheCap(t *testing.T) {
 		t.Fatalf("%d stage keys left after the failed commit", len(keys))
 	}
 }
+
+// sweepStageKeys is more abandoned stage keys than one delete request under
+// truncCap carries.
+const sweepStageKeys = 600
+
+// abandonStage writes n stage keys of one commit of app.db straight to b,
+// as a writer that crashed after staging leaves them.
+func abandonStage(t *testing.T, b *MVCCBackend, n int) {
+	t.Helper()
+	commitID, err := newCommitID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	puts := make(map[string][]byte, n)
+	for pgno := 1; pgno <= n; pgno++ {
+		key, err := StageKey("app.db", commitID, uint32(pgno))
+		if err != nil {
+			t.Fatal(err)
+		}
+		puts[string(key)] = []byte{0xEE}
+	}
+	if _, err := b.Commit(t.Context(), nil, puts, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// failNthDelete fails the n-th delete-only Commit it is sent.
+type failNthDelete struct {
+	*requestRecorder
+	n, deletes int
+}
+
+func (b *failNthDelete) Commit(ctx context.Context, reads []ReadCheck, puts map[string][]byte, deletes [][]byte) (int64, error) {
+	if len(puts) == 0 && len(deletes) > 0 {
+		b.deletes++
+		if b.deletes == b.n {
+			return 0, errInjected
+		}
+	}
+	return b.requestRecorder.Commit(ctx, reads, puts, deletes)
+}
+
+// TestReserveSweepsAbandonedStagesInChunks checks that a stage with more
+// keys than one request carries is swept by Reserve in delete requests each
+// under the cap, and that a failed chunk fails Reserve and releases the lock.
+func TestReserveSweepsAbandonedStagesInChunks(t *testing.T) {
+	b := newTestBackend(t)
+	rec := &requestRecorder{MVCCBackend: b}
+	s := newLockedStore(t, rec, newMemLocker(), "a")
+	s.requestBytes = truncCap
+	abandonStage(t, b, sweepStageKeys)
+	root, err := StageRoot("app.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	txn := beginReserved(t, s)
+	if rec.commits < 2 {
+		t.Fatalf("%d commits: the sweep was not split", rec.commits)
+	}
+	if rec.maxEst >= truncCap || rec.maxJSON >= truncCap {
+		t.Fatalf("a request of %d bytes (JSON %d) reached the cap %d", rec.maxEst, rec.maxJSON, truncCap)
+	}
+	if keys := liveKeys(t, b, root); len(keys) != 0 {
+		t.Fatalf("%d stage keys left after the sweep", len(keys))
+	}
+	writePages(t, txn, 0x21)
+	commit(t, txn)
+
+	t.Run("failed chunk", func(t *testing.T) {
+		b := newTestBackend(t)
+		fb := &failNthDelete{requestRecorder: &requestRecorder{MVCCBackend: b}, n: 2}
+		locker := newMemLocker()
+		s := newLockedStore(t, fb, locker, "a")
+		s.requestBytes = truncCap
+		abandonStage(t, b, sweepStageKeys)
+		txn := begin(t, s)
+		if err := txn.Reserve(t.Context()); !errors.Is(err, errInjected) {
+			t.Fatalf("Reserve err = %v, want errInjected", err)
+		}
+		if l, err := locker.Status(t.Context(), s.lockKey); err != nil || l != nil {
+			t.Fatalf("lock after a failed sweep = %v, %v, want released", l, err)
+		}
+		if keys := liveKeys(t, b, root); len(keys) == 0 || len(keys) == sweepStageKeys {
+			t.Fatalf("%d stage keys left, want the first chunk swept and the rest live", len(keys))
+		}
+	})
+}
