@@ -41,6 +41,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/sqlitevfs"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
@@ -1742,7 +1743,7 @@ func (t *Transport) ImportCommit(ctx context.Context, sessionID string) (*transp
 		return nil, &NilServiceError{Service: "BatchServicer"}
 	}
 
-	result, err := t.batchSvc.ImportCommit(ctx, sessionID)
+	result, err := t.batchSvc.ImportCommit(service.WithImportRowGuard(ctx, sqliteImportRowGuard), sessionID)
 	if err != nil {
 		return nil, translateError(err)
 	}
@@ -1760,6 +1761,19 @@ func (t *Transport) ImportCommit(ctx context.Context, sessionID string) (*transp
 		Failed:    result.Failed,
 		Errors:    errs,
 	}, nil
+}
+
+// sqliteImportRowGuard refuses an imported row whose key lies in a SQLite
+// VFS database (sqlite/<db>/...). The network transports install the same
+// guard through the server's per-database registry; the embedded default
+// database calls the batch service directly, so ImportCommit installs it
+// here. A plain import would otherwise overwrite pages or metadata the VFS
+// owns.
+func sqliteImportRowGuard(key string) error {
+	if _, ok := sqlitevfs.DatabaseOfKey([]byte(key)); ok {
+		return &service.SQLiteKeyError{Key: key}
+	}
+	return nil
 }
 
 // ImportAbort discards a chunked import session without applying
