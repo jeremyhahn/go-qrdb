@@ -311,6 +311,11 @@ type RaftBackendFactory struct {
 	// leaves it nil.
 	identitiesOverride func(ctx context.Context, shardID, replicaID uint64, join bool, peers map[uint64]string) (map[uint64]string, error)
 
+	// servingOverride, when non-nil, replaces WaitForShardServing in a
+	// start. It is a TEST-ONLY seam, used to hold a start in flight and show
+	// what happens to it meanwhile. Production leaves it nil.
+	servingOverride func(ctx context.Context, host *quicraft.Host, shardID uint64) error
+
 	// pendingRestore tracks shards evicted from shards by StopForRestore that
 	// have not yet been restarted by RestartAfterRestore, keyed by shard ID
 	// so RestartAfterRestore (which is given only the shard ID by
@@ -1283,7 +1288,11 @@ func (f *RaftBackendFactory) startPlanned(ctx context.Context, key raftShardKey,
 	f.starting[key] = start
 	f.mu.Unlock()
 
-	if werr := WaitForShardServing(ctx, f.host, plan.shardID); werr != nil {
+	awaitServing := WaitForShardServing
+	if f.servingOverride != nil {
+		awaitServing = f.servingOverride
+	}
+	if werr := awaitServing(ctx, f.host, plan.shardID); werr != nil {
 		_ = f.stopShard(rs)
 		err = &RaftBackendError{TenantID: plan.tenantID, Database: plan.db, Op: "await-leader", Err: werr}
 	}

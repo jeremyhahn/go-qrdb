@@ -54,6 +54,11 @@ type ShardLifecycle interface {
 	// detect orphans.
 	ListStarted() []StartedShard
 
+	// ListOnHost returns every shard this node holds, those still starting
+	// included. A placement deleted while its shard starts is found here,
+	// so the reconciler retires it once the start completes.
+	ListOnHost() []StartedShard
+
 	// CloseShardIfOwned stops the shard for (tenantID, db), purging its
 	// dataDir when purge is set, only when the shard under that name on
 	// this host is shardID. The comparison, the invalidation of a start
@@ -869,10 +874,12 @@ func (r *TenantShardReconciler) rememberName(tenantID, databaseID, name string, 
 	r.placedNames.Store(key, placedShard{name: name, shardID: shardID})
 }
 
-// startedShardName returns the name the locally started shard shardID of
-// tenantID runs under, or "" when none runs.
+// startedShardName returns the name the local shard shardID of tenantID
+// runs or is starting under, or "" when this node holds none. A shard still
+// starting counts: CloseShardIfOwned waits for its start and then closes
+// it, so a placement deleted during the start does not leave it running.
 func (r *TenantShardReconciler) startedShardName(tenantID string, shardID uint64) string {
-	for _, s := range r.factory.ListStarted() {
+	for _, s := range r.factory.ListOnHost() {
 		if s.ShardID == shardID && s.TenantID == tenantID {
 			return s.Database
 		}
