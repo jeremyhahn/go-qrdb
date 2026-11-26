@@ -10,6 +10,8 @@ package seal
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -391,13 +393,19 @@ func (m *MoveStepRunner) placements(ctx context.Context, step volume.MoveStep) (
 
 // copyBackStagingName is the directory, in the source pool beside the
 // tenant's own, that a copy-back fills and verifies before it replaces the
-// source. It is one path component, as placementRoot requires. It begins
-// with volume.ReservedPathPrefix, which no assignment path or tenant id may
-// begin with, so it is never another tenant's directory: a staging directory
-// found there can only be this tenant's earlier attempt, and copy-back
-// removes it before it stages again.
+// source. It is one path component, as placementRoot requires, and its
+// length does not depend on the tenant's path: volume.ReservedPathPrefix,
+// "copyback." and the first 32 hex digits of the path's SHA-256, 48 bytes
+// in all, so a valid assignment path of any length (up to the 255-byte
+// component limit) still has a staging name the filesystem accepts. It is
+// deterministic, so a retried copy-back finds its earlier attempt. It
+// begins with volume.ReservedPathPrefix, which no assignment path may
+// begin with, so it is never another tenant's directory: a staging
+// directory found there can only be this tenant's earlier attempt, and
+// copy-back removes it before it stages again.
 func copyBackStagingName(path string) string {
-	return volume.ReservedPathPrefix + "copyback." + path
+	sum := sha256.Sum256([]byte(path))
+	return volume.ReservedPathPrefix + "copyback." + hex.EncodeToString(sum[:])[:32]
 }
 
 // copyBackInPlaceName is the directory, inside a source root that is a mount

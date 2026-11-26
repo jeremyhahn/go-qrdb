@@ -49,6 +49,13 @@ type moveFixture struct {
 
 func newMoveFixture(t *testing.T, opts ...Option) *moveFixture {
 	t.Helper()
+	return newMoveFixtureAt(t, moveTestTenant, opts...)
+}
+
+// newMoveFixtureAt is newMoveFixture with the tenant's assignment reserved
+// at path in the default pool.
+func newMoveFixtureAt(t *testing.T, path string, opts ...Option) *moveFixture {
+	t.Helper()
 	ctx := context.Background()
 	defaultRoot := t.TempDir()
 	catalog, open, kv := newTestVolumeFixtureKV(t, defaultRoot)
@@ -76,7 +83,7 @@ func newMoveFixture(t *testing.T, opts ...Option) *moveFixture {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
 
-	a, err := catalog.Reserve(ctx, moveTestTenant, "default", moveTestTenant, 0)
+	a, err := catalog.Reserve(ctx, moveTestTenant, "default", path, 0)
 	if err != nil {
 		t.Fatalf("Reserve: %v", err)
 	}
