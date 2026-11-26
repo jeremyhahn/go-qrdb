@@ -172,11 +172,11 @@ func (h *bindingHost) CheckConfigBinding(shardID uint64, b featuregate.ConfigBin
 	return h.gate.CheckConfigBinding(shardID, b)
 }
 
-func (h *bindingHost) ProposeBound(shardID uint64, b featuregate.ConfigBinding, propose func(<-chan struct{}) (<-chan struct{}, error)) error {
+func (h *bindingHost) ProposeBound(ctx context.Context, shardID uint64, b featuregate.ConfigBinding, propose func(<-chan struct{}) (<-chan struct{}, error)) error {
 	if h.entered != nil {
 		h.entered <- struct{}{}
 	}
-	return h.gate.ProposeBound(shardID, b, propose)
+	return h.gate.ProposeBound(ctx, shardID, b, propose)
 }
 
 func (h *bindingHost) AdmitReplicaAt(shardID uint64, raftAddr string) (featuregate.ConfigBinding, error) {
@@ -833,6 +833,98 @@ func TestAdminService_AddObserverMemberAmbiguousTimeoutStaysFenced(t *testing.T)
 
 	first, second := ambiguousBoundAdds(t, h, old, next, (*AdminService).AddObserverMember)
 	assertAmbiguousBoundAdds(t, h, old, next, first, second)
+}
+
+// cancelledWhileFenced runs an ambiguous add of old, then an add of next
+// whose context is cancelled while it waits on the first add's fence, then
+// a third add of next that must still wait for the first add's outcome.
+// It returns the cancelled add's error and the third add's.
+func cancelledWhileFenced(t *testing.T, h *bindingHost, old, next cluster.Member,
+	add func(*AdminService, context.Context, uint64, uint64, string, string) error) (cancelled, third error) {
+	t.Helper()
+	svc, ok := NewAdminService(h).(*AdminService)
+	if !ok {
+		t.Fatal("NewAdminService did not return *AdminService")
+	}
+	svc.resultOf = h.resultOf
+	h.ambiguousAddr = old.Address
+	h.ambiguousDelivered = make(chan quicraft.RequestResult, 1)
+	h.entered = make(chan struct{}, 3)
+	close(h.resume)
+
+	if err := add(svc, context.Background(), bindingSystemShard, old.NodeID, old.Address, ""); err == nil {
+		t.Fatal("ambiguous add = nil, want its timeout error")
+	}
+	<-h.entered
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cancelledDone := make(chan error, 1)
+	go func() {
+		cancelledDone <- add(svc, ctx, bindingSystemShard, next.NodeID, next.Address, "")
+	}()
+	select {
+	case <-h.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the second add never reached ProposeBound")
+	}
+	cancel()
+	select {
+	case cancelled = <-cancelledDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("a fenced add did not return after its context was cancelled")
+	}
+
+	thirdDone := make(chan error, 1)
+	go func() {
+		thirdDone <- add(svc, context.Background(), bindingSystemShard, next.NodeID, next.Address, "")
+	}()
+	select {
+	case <-h.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the third add never reached ProposeBound")
+	}
+	select {
+	case err := <-thirdDone:
+		t.Fatalf("the third add returned %v while the first add's outcome was unknown", err)
+	default:
+	}
+	h.commitAmbiguous()
+	select {
+	case third = <-thirdDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the third add never returned after the first committed")
+	}
+	return cancelled, third
+}
+
+func assertCancelledWhileFenced(t *testing.T, h *bindingHost, old, next cluster.Member, cancelled, third error) {
+	t.Helper()
+	if !errors.Is(cancelled, context.Canceled) {
+		t.Fatalf("cancelled add = %v, want context.Canceled", cancelled)
+	}
+	assertAmbiguousBoundAdds(t, h, old, next, errors.New("ambiguous"), third)
+}
+
+// TestAdminService_AddMemberCancelledWhileFenced: a second add waiting on
+// an ambiguous add's fence returns its context's error when that context is
+// cancelled, proposes nothing, and leaves the first add fenced.
+func TestAdminService_AddMemberCancelledWhileFenced(t *testing.T) {
+	old := cluster.Member{NodeID: 5, Address: "n5:1", ReleaseVersion: "0.58.0-alpha"}
+	next := cluster.Member{NodeID: 4, Address: "n4:1", ReleaseVersion: "0.60.0-alpha"}
+	h := newBindingHostAt(t, 0, old, next)
+
+	cancelled, third := cancelledWhileFenced(t, h, old, next, (*AdminService).AddMember)
+	assertCancelledWhileFenced(t, h, old, next, cancelled, third)
+}
+
+func TestAdminService_AddObserverMemberCancelledWhileFenced(t *testing.T) {
+	old := cluster.Member{NodeID: 5, Address: "n5:1", ReleaseVersion: "0.58.0-alpha"}
+	next := cluster.Member{NodeID: 4, Address: "n4:1", ReleaseVersion: "0.60.0-alpha"}
+	h := newBindingHostAt(t, 0, old, next)
+
+	cancelled, third := cancelledWhileFenced(t, h, old, next, (*AdminService).AddObserverMember)
+	assertCancelledWhileFenced(t, h, old, next, cancelled, third)
 }
 
 // resultStub is a membershipResult with a fixed Result error and ResultC.

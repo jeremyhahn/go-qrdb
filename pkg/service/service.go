@@ -1287,10 +1287,12 @@ func (s *AdminService) AddMember(ctx context.Context, shardID, replicaID uint64,
 // outcome is unknown (any maybe-applied failure after it may have reached
 // raft) returns its error at once,
 // but the lock stays held until the add's outcome is definitive (pending), or
-// until the gate closes (stop), which also stops resolving it.
+// until the gate closes (stop), which also stops resolving it. ctx is the
+// handler's: an add waiting for that lock gives up with ctx.Err() when ctx
+// ends, and proposes nothing.
 func (s *AdminService) requestAddBound(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string, binding featuregate.ConfigBinding,
 	request func(context.Context, <-chan struct{}, uint64, uint64, string, string, uint64) (<-chan struct{}, error)) error {
-	return proposeBound(s.host, shardID, binding, func(stop <-chan struct{}) (<-chan struct{}, error) {
+	return proposeBound(ctx, s.host, shardID, binding, func(stop <-chan struct{}) (<-chan struct{}, error) {
 		return request(ctx, stop, shardID, replicaID, raftAddr, identity, binding.ConfigChangeID)
 	})
 }

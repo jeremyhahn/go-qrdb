@@ -172,13 +172,18 @@ func (a *HostAdapter) CheckConfigBinding(shardID uint64, b featuregate.ConfigBin
 // binding rechecked first (featuregate.Gate.ProposeBound); an ungated adapter
 // binds nothing and runs propose directly with the closed
 // featuregate.Unfenced stop, so propose resolves no ambiguous outcome and
-// reports no pending.
-func (a *HostAdapter) ProposeBound(shardID uint64, b featuregate.ConfigBinding, propose func(stop <-chan struct{}) (pending <-chan struct{}, err error)) error {
+// reports no pending. ctx bounds the wait for the gate's lock; an ungated
+// adapter takes no lock and returns ctx.Err() without running propose when
+// ctx has already ended.
+func (a *HostAdapter) ProposeBound(ctx context.Context, shardID uint64, b featuregate.ConfigBinding, propose func(stop <-chan struct{}) (pending <-chan struct{}, err error)) error {
 	if a.gate == nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		_, err := propose(featuregate.Unfenced)
 		return err
 	}
-	return a.gate.ProposeBound(shardID, b, propose)
+	return a.gate.ProposeBound(ctx, shardID, b, propose)
 }
 
 // FeatureEnabled reports whether every replica of shardID's group can apply

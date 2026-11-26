@@ -104,11 +104,17 @@ func admitReplica(h any, shardID uint64, raftAddr string) (featuregate.ConfigBin
 // node commits in between; its stop closes when the gate closes. With no gate
 // or a binding that is not Required, nothing is fenced: propose gets an
 // already closed stop, so it resolves nothing and returns no pending.
-func proposeBound(h any, shardID uint64, b featuregate.ConfigBinding, propose func(stop <-chan struct{}) (pending <-chan struct{}, err error)) error {
+// ctx bounds the wait for the gate's lock, which an ambiguous add's fence
+// can hold: a request whose ctx ends first returns ctx.Err() and proposes
+// nothing. Unfenced, propose is skipped only when ctx has already ended.
+func proposeBound(ctx context.Context, h any, shardID uint64, b featuregate.ConfigBinding, propose func(stop <-chan struct{}) (pending <-chan struct{}, err error)) error {
 	if b.Required {
 		if a, ok := h.(configBoundAdmitter); ok {
-			return a.ProposeBound(shardID, b, propose)
+			return a.ProposeBound(ctx, shardID, b, propose)
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	_, err := propose(featuregate.Unfenced)
 	return err
@@ -131,11 +137,12 @@ func staleConfiguration(err error) bool {
 // compares a binding to change ID 0 itself, which go-quicraft cannot.
 // ProposeBound runs that comparison and the proposal through its result
 // under the gate's per-node lock (featuregate.Gate.ProposeBound), passing
-// propose a stop that closes when the gate closes.
+// propose a stop that closes when the gate closes; it waits for that lock
+// only until ctx ends.
 type configBoundAdmitter interface {
 	AdmitReplicaAt(shardID uint64, raftAddr string) (featuregate.ConfigBinding, error)
 	CheckConfigBinding(shardID uint64, b featuregate.ConfigBinding) error
-	ProposeBound(shardID uint64, b featuregate.ConfigBinding, propose func(stop <-chan struct{}) (pending <-chan struct{}, err error)) error
+	ProposeBound(ctx context.Context, shardID uint64, b featuregate.ConfigBinding, propose func(stop <-chan struct{}) (pending <-chan struct{}, err error)) error
 }
 
 // WriteGuard is a precondition carried by every write proposed under a

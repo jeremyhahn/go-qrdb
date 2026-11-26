@@ -304,12 +304,45 @@ func TestHostAdapter_ProposeBound(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			ran := false
-			err := tc.adapter.ProposeBound(1, tc.binding, func(<-chan struct{}) (<-chan struct{}, error) {
+			err := tc.adapter.ProposeBound(context.Background(), 1, tc.binding, func(<-chan struct{}) (<-chan struct{}, error) {
 				ran = true
 				return nil, tc.result
 			})
 			tc.wantErr(t, err)
 			assert.Equal(t, tc.ran, ran)
+		})
+	}
+}
+
+// TestHostAdapter_ProposeBound_CancelledContext: an add whose context has
+// ended proposes nothing, gated (the gate's lock wait observes it) or
+// ungated (standalone: no lock, the context is only forwarded).
+func TestHostAdapter_ProposeBound_CancelledContext(t *testing.T) {
+	gate := gateOver(t, groups{1: {ConfigChangeID: 1, Replicas: map[uint64]string{1: "n1"}}})
+	gated := NewWithInner(nil, &mockQuicraftHost{})
+	WithFeatureGate(gate)(gated)
+	ungated := NewWithInner(nil, &mockQuicraftHost{})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	for _, tc := range []struct {
+		name    string
+		adapter *HostAdapter
+		binding featuregate.ConfigBinding
+	}{
+		{"ungated", ungated, featuregate.ConfigBinding{}},
+		{"ungated required", ungated, featuregate.ConfigBinding{ConfigChangeID: 1, Required: true}},
+		{"gated required", gated, featuregate.ConfigBinding{ConfigChangeID: 1, Required: true}},
+		{"gated unbound", gated, featuregate.ConfigBinding{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ran := false
+			err := tc.adapter.ProposeBound(ctx, 1, tc.binding, func(<-chan struct{}) (<-chan struct{}, error) {
+				ran = true
+				return nil, nil
+			})
+			require.ErrorIs(t, err, context.Canceled)
+			assert.False(t, ran, "an add whose context ended was proposed")
 		})
 	}
 }

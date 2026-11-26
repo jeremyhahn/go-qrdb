@@ -98,8 +98,8 @@ func TestProposeBound_ConcurrentLeadersNeverBothAdmitAGap(t *testing.T) {
 	errs := make([]error, 2)
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); errs[0] = a.ProposeBound(systemShard, bindA, propose) }()
-	go func() { defer wg.Done(); errs[1] = b.ProposeBound(systemShard, bindB, propose) }()
+	go func() { defer wg.Done(); errs[0] = a.ProposeBound(context.Background(), systemShard, bindA, propose) }()
+	go func() { defer wg.Done(); errs[1] = b.ProposeBound(context.Background(), systemShard, bindB, propose) }()
 	wg.Wait()
 
 	assert.LessOrEqual(t, proposed.Load(), int32(1), "both non-adjacent adds were proposed")
@@ -126,12 +126,12 @@ func TestProposeBound_SequentialLeadersRefuseOnALiveIntent(t *testing.T) {
 	kv := newMemKV()
 	a, b, bindA, bindB := twoLeaders(t, kv)
 
-	require.NoError(t, a.ProposeBound(systemShard, bindA, func(<-chan struct{}) (<-chan struct{}, error) { return nil, nil }))
+	require.NoError(t, a.ProposeBound(context.Background(), systemShard, bindA, func(<-chan struct{}) (<-chan struct{}, error) { return nil, nil }))
 	assert.Equal(t, []string{ReleaseIntentPrefix + "n4:7000/0.58.0-alpha/1/3"}, intentsOf(t, kv, "n4:7000"))
 
 	ran := false
 	var gap *release.GapError
-	require.ErrorAs(t, b.ProposeBound(systemShard, bindB, func(<-chan struct{}) (<-chan struct{}, error) { ran = true; return nil, nil }), &gap)
+	require.ErrorAs(t, b.ProposeBound(context.Background(), systemShard, bindB, func(<-chan struct{}) (<-chan struct{}, error) { ran = true; return nil, nil }), &gap)
 	assert.False(t, ran)
 	assert.Equal(t, release.GapError{Channel: "raft-membership", Local: "0.58.0-alpha", Peer: "0.60.0-alpha"}, *gap)
 	assert.Empty(t, intentsOf(t, kv, "n5:7000"))
@@ -155,7 +155,7 @@ func TestProposeBound_UncommittedAddWithdrawsItsIntent(t *testing.T) {
 	a, _, bindA, _ := twoLeaders(t, kv)
 
 	refusedAdd := assert.AnError
-	require.ErrorIs(t, a.ProposeBound(systemShard, bindA, func(<-chan struct{}) (<-chan struct{}, error) { return nil, refusedAdd }), refusedAdd)
+	require.ErrorIs(t, a.ProposeBound(context.Background(), systemShard, bindA, func(<-chan struct{}) (<-chan struct{}, error) { return nil, refusedAdd }), refusedAdd)
 	assert.Empty(t, intentsOf(t, kv, "n4:7000"))
 }
 
@@ -182,7 +182,7 @@ func TestProposeBound_AmbiguousAddKeepsItsIntentAfterItsResolutionEnds(t *testin
 
 	ambiguous := errors.New("add timed out, outcome unknown")
 	pending := make(chan struct{})
-	require.ErrorIs(t, a.ProposeBound(systemShard, bindA, func(<-chan struct{}) (<-chan struct{}, error) { return pending, ambiguous }), ambiguous)
+	require.ErrorIs(t, a.ProposeBound(context.Background(), systemShard, bindA, func(<-chan struct{}) (<-chan struct{}, error) { return pending, ambiguous }), ambiguous)
 	intent := []string{ReleaseIntentPrefix + "n4:7000/0.58.0-alpha/1/3"}
 	require.Equal(t, intent, intentsOf(t, kv, "n4:7000"))
 
@@ -192,7 +192,7 @@ func TestProposeBound_AmbiguousAddKeepsItsIntentAfterItsResolutionEnds(t *testin
 	assert.Equal(t, intent, intentsOf(t, kv, "n4:7000"), "an ambiguous add's intent was withdrawn while the add can still commit")
 
 	var gap *release.GapError
-	require.ErrorAs(t, b.ProposeBound(systemShard, bindB, func(<-chan struct{}) (<-chan struct{}, error) {
+	require.ErrorAs(t, b.ProposeBound(context.Background(), systemShard, bindB, func(<-chan struct{}) (<-chan struct{}, error) {
 		t.Fatal("a non-adjacent add proposed past a kept intent")
 		return nil, nil
 	}), &gap)
@@ -213,7 +213,7 @@ func TestRecordRelease_RetiresAKeptIntentOnceItsCandidateRecords(t *testing.T) {
 	a, _, bindA, _ := twoLeaders(t, kv)
 
 	pending := make(chan struct{})
-	require.NoError(t, a.ProposeBound(systemShard, bindA, func(<-chan struct{}) (<-chan struct{}, error) { return pending, nil }))
+	require.NoError(t, a.ProposeBound(context.Background(), systemShard, bindA, func(<-chan struct{}) (<-chan struct{}, error) { return pending, nil }))
 	close(pending)
 	waitFenceEnd(t, a)
 	key := ReleaseIntentPrefix + "n4:7000/0.58.0-alpha/1/3"
@@ -281,7 +281,7 @@ func TestProposeBound_RefusesAnAddAcrossARecordedRestart(t *testing.T) {
 
 	ran := false
 	var gap *release.GapError
-	require.ErrorAs(t, leader.ProposeBound(systemShard, binding, func(<-chan struct{}) (<-chan struct{}, error) { ran = true; return nil, nil }), &gap)
+	require.ErrorAs(t, leader.ProposeBound(context.Background(), systemShard, binding, func(<-chan struct{}) (<-chan struct{}, error) { ran = true; return nil, nil }), &gap)
 	assert.False(t, ran, "the add was proposed across the recorded restart")
 	assert.Equal(t, release.GapError{Channel: "raft-membership", Local: "0.58.0-alpha", Peer: "0.60.0-alpha"}, *gap)
 	assert.Empty(t, intentsOf(t, kv, "n5:7000"))
@@ -381,7 +381,7 @@ func TestRecordRelease_KeepsAnIntentWhileItsAddIsInFlight(t *testing.T) {
 	a, b, bindA, _ := twoLeaders(t, kv)
 
 	pending := make(chan struct{})
-	require.NoError(t, a.ProposeBound(systemShard, bindA, func(<-chan struct{}) (<-chan struct{}, error) { return pending, nil }))
+	require.NoError(t, a.ProposeBound(context.Background(), systemShard, bindA, func(<-chan struct{}) (<-chan struct{}, error) { return pending, nil }))
 	intent := []string{ReleaseIntentPrefix + "n4:7000/0.58.0-alpha/1/3"}
 	require.Equal(t, intent, intentsOf(t, kv, "n4:7000"))
 

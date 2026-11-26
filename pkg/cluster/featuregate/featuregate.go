@@ -430,8 +430,9 @@ type Gate struct {
 	// (ProposeBound), so no other add through this node commits between a
 	// recheck and its append. An add whose outcome is ambiguous (its wait
 	// timed out after it may have reached raft) keeps it held until the
-	// outcome is known or the Gate closes.
-	proposeMu sync.Mutex
+	// outcome is known or the Gate closes. A waiter takes it with its
+	// request's context, so it gives up when that context ends.
+	proposeMu ctxLock
 
 	// kept holds the intent keys of ambiguous adds whose outcome this
 	// process never saw; retireIntents does not retire them by the Own and
@@ -480,6 +481,48 @@ type Gate struct {
 	wg      sync.WaitGroup
 }
 
+// ctxLock is a mutual-exclusion lock whose Lock gives up when a context
+// ends. It is a 1-buffered channel: a held lock has its token in the
+// channel. As with sync.Mutex, any goroutine may Unlock a held lock, which
+// is how ProposeBound hands it to an ambiguous add's fence goroutine.
+type ctxLock chan struct{}
+
+func newCtxLock() ctxLock { return make(ctxLock, 1) }
+
+// Lock takes the lock, or returns ctx.Err() without it when ctx ends
+// first. A ctx that has already ended never takes the lock.
+func (l ctxLock) Lock(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case l <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// TryLock takes the lock if it is free and reports whether it did.
+func (l ctxLock) TryLock() bool {
+	select {
+	case l <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+// Unlock releases a held lock; unlocking a free lock panics, as with
+// sync.Mutex.
+func (l ctxLock) Unlock() {
+	select {
+	case <-l:
+	default:
+		panic("featuregate: unlock of unlocked proposal lock")
+	}
+}
+
 // New returns a gate with no advertisements and nothing activated: until a
 // feature is activated cluster-wide, Enabled answers false for every group,
 // local-only or not.
@@ -498,6 +541,7 @@ func New(cfg Config) (*Gate, error) {
 		logger:      cfg.Logger,
 		activated:   make(map[feature.Feature]*atomic.Bool, len(supported)),
 		fenceStop:   make(chan struct{}),
+		proposeMu:   newCtxLock(),
 	}
 	if g.refresh <= 0 {
 		g.refresh = DefaultRefreshInterval
@@ -762,6 +806,12 @@ func (g *Gate) CheckConfigBinding(shardID uint64, b ConfigBinding) error {
 // keeps proposing the add after the Gate is gone. Any other binding runs
 // propose with no lock, no check and the closed Unfenced stop, and ignores
 // pending.
+//
+// ctx bounds the wait for the proposal lock (an ambiguous add's fence can
+// hold it for long): when ctx ends first ProposeBound returns ctx.Err()
+// without running CheckConfigBinding, the intent claim or propose, and the
+// lock's holder keeps it. An unfenced binding takes no lock and only skips
+// propose when ctx has already ended.
 // Unfenced is the stop a bound proposal gets when nothing fences it (no Gate,
 // a binding that is not Required, another shard): already closed, so an
 // ambiguous outcome is returned as is and nothing resolves it afterwards.
@@ -771,12 +821,17 @@ var Unfenced <-chan struct{} = func() chan struct{} {
 	return c
 }()
 
-func (g *Gate) ProposeBound(shardID uint64, b ConfigBinding, propose func(stop <-chan struct{}) (pending <-chan struct{}, err error)) error {
+func (g *Gate) ProposeBound(ctx context.Context, shardID uint64, b ConfigBinding, propose func(stop <-chan struct{}) (pending <-chan struct{}, err error)) error {
 	if !b.Required || shardID != g.systemShard {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		_, err := propose(Unfenced)
 		return err
 	}
-	g.proposeMu.Lock()
+	if err := g.proposeMu.Lock(ctx); err != nil {
+		return err
+	}
 	if err := g.CheckConfigBinding(shardID, b); err != nil {
 		g.proposeMu.Unlock()
 		return err
