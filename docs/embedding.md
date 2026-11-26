@@ -198,6 +198,21 @@ unique index and holds its unique value. A `qrdb kv del` is seen by the DAO
 and frees the value. A unit of work committed through the client store is
 read back by `qrdb kv get`.
 
+A `NewDAOTransactional` transaction is all-or-nothing. `Commit`, and the
+`dao.BatchSave`, `dao.BatchDelete` and `dao.WithTx` helpers built on it,
+apply every queued save and delete as one `PutAllIfAllUnchanged` batch, the
+path `sdk.NewDAOUnitOfWork` uses. Every `SaveWithCondition` is evaluated
+before anything is written and the batch is guarded on the exact bytes (or
+absence) the condition saw, so a record changed after evaluation refuses the
+whole commit. The refusals are: a failed condition (`sdk.IsDAOConditionFailed`),
+a guard that no longer holds (`sdk.IsDAOTransactionCommitError` wrapping
+`sdk.ErrKVNotApplied`), an ID collision (`*sdk.DAOIDCollisionError`), and a
+store without `sdk.MultiGuardedBatchKVStore`
+(`*sdk.DAOAtomicBatchUnsupportedError`; there is no one-op-at-a-time
+fallback). Each leaves the store unchanged. The `TestTransactional_*` cases in
+`sdk/go/conformance` check this over the embedded store and the service
+store on a standalone node and on a single-node raft group.
+
 A DAO with a unique index over your own Pebble storage
 (`ExampleNewEmbeddedKVStore` in `sdk/go/example_dao_stores_test.go`, compiled
 and run by `go test`):
