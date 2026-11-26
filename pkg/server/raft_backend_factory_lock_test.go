@@ -123,7 +123,7 @@ func TestRaftBackendFactory_HeldReadBlocksNoOtherCaller(t *testing.T) {
 		}
 	})
 	within(t, "ListStarted", func() {
-		if got := f.ListStarted(); !slices.Equal(got, []StartedShard{{TenantID: "rt", Database: "b"}}) {
+		if got := f.ListStarted(); !slices.Equal(shardKeys(got), []string{"rt/b"}) {
 			t.Errorf("ListStarted = %v, want only b: a is still being planned", got)
 		}
 	})
@@ -202,7 +202,7 @@ func TestRaftBackendFactory_ShardStoppedDuringReadPlansAgain(t *testing.T) {
 	if n := held.calls.Load(); n != 2 {
 		t.Fatalf("identity reads for shard 1001 = %d, want 2: the stop during the read must send the start back to plan", n)
 	}
-	if got := f.ListStarted(); !slices.Equal(got, []StartedShard{{TenantID: "rt", Database: "a"}}) {
+	if got := f.ListStarted(); !slices.Equal(shardKeys(got), []string{"rt/a"}) {
 		t.Fatalf("ListStarted = %v, want only a", got)
 	}
 }
@@ -241,6 +241,17 @@ func requireAwaitLeader(t *testing.T, what string, err error) {
 	}
 }
 
+// shardKeys maps a started-shard listing to "tenant/database" keys, so a
+// test compares which shards are listed and not the placement flag or the
+// shard handle a listing also carries.
+func shardKeys(shards []StartedShard) []string {
+	keys := make([]string, len(shards))
+	for i, s := range shards {
+		keys[i] = s.TenantID + "/" + s.Database
+	}
+	return keys
+}
+
 // TestRaftBackendFactory_StartWithoutQuorumBlocksNoOtherCaller: a founding
 // start whose quorum never forms waits for its leader without holding the
 // factory: another database resolves and ListStarted answers meanwhile. The
@@ -263,7 +274,7 @@ func TestRaftBackendFactory_StartWithoutQuorumBlocksNoOtherCaller(t *testing.T) 
 		}
 	})
 	within(t, "ListStarted", func() {
-		if got := f.ListStarted(); !slices.Equal(got, []StartedShard{{TenantID: "rt", Database: "b"}}) {
+		if got := f.ListStarted(); !slices.Equal(shardKeys(got), []string{"rt/b"}) {
 			t.Errorf("ListStarted = %v, want only b: a has not served", got)
 		}
 	})
@@ -271,7 +282,7 @@ func TestRaftBackendFactory_StartWithoutQuorumBlocksNoOtherCaller(t *testing.T) 
 
 	cancel()
 	requireAwaitLeader(t, "Services(a)", (<-a).err)
-	if got := f.ListStarted(); !slices.Equal(got, []StartedShard{{TenantID: "rt", Database: "b"}}) {
+	if got := f.ListStarted(); !slices.Equal(shardKeys(got), []string{"rt/b"}) {
 		t.Fatalf("ListStarted after a's failed start = %v, want only b", got)
 	}
 	if _, err := f.host.ShardInfo(1001); err == nil {
@@ -358,18 +369,18 @@ func TestRaftBackendFactory_ListOnHostIncludesStartsInFlight(t *testing.T) {
 
 	a := resolveAsync(ctx, f, "rt", "a")
 	awaitStarting(t, f, "rt", "a")
-	if got := f.ListStarted(); !slices.Equal(got, []StartedShard{{TenantID: "rt", Database: "b"}}) {
+	if got := f.ListStarted(); !slices.Equal(shardKeys(got), []string{"rt/b"}) {
 		t.Fatalf("ListStarted = %v, want only the serving b", got)
 	}
 	got := f.ListOnHost()
 	slices.SortFunc(got, func(x, y StartedShard) int { return strings.Compare(x.Database, y.Database) })
-	if want := []StartedShard{{TenantID: "rt", Database: "a"}, {TenantID: "rt", Database: "b"}}; !slices.Equal(got, want) {
+	if want := []string{"rt/a", "rt/b"}; !slices.Equal(shardKeys(got), want) {
 		t.Fatalf("ListOnHost = %v, want %v: the start in flight runs on the host", got, want)
 	}
 
 	cancel()
 	requireAwaitLeader(t, "Services(a)", (<-a).err)
-	if got := f.ListOnHost(); !slices.Equal(got, []StartedShard{{TenantID: "rt", Database: "b"}}) {
+	if got := f.ListOnHost(); !slices.Equal(shardKeys(got), []string{"rt/b"}) {
 		t.Fatalf("ListOnHost after the failed start = %v, want only b", got)
 	}
 }
