@@ -128,7 +128,9 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 		SOCSRPEM:          []byte(req.SOCSRPEM),
 		SOCertPEM:         []byte(req.SOCertPEM),
 		SOChainPEM:        []byte(req.SOChainPEM),
-		SOPIN:             []byte(req.SOPin),
+		// OnboardTenant wipes SOPIN (secure.NewSecret), also on failure; a
+		// copy leaves the caller's PIN as is, as CreateTenantRequest says.
+		SOPIN: bytes.Clone(req.SOPin),
 	})
 	if err != nil {
 		// An undone id a serving node has not yet released names its retry
