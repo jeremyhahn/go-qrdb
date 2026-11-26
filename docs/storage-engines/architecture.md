@@ -570,10 +570,17 @@ every knob lives under `pebble.Options.Experimental`
 `SecondaryCacheSizeBytes`), which is Pebble's own naming for "no API
 stability promise." Two concrete caveats: (1) it requires
 `FormatMajorVersion >= FormatMinForSharedObjects` (`= FormatVirtualSSTables`);
-Pebble's `Options.EnsureDefaults` bumps the format version for us
-automatically the moment `CreateOnShared != CreateOnSharedNone` is set, so this needs no manual version pinning on our side,
-but it does mean a store opened with remote storage can never be read by an
-older Pebble build. (2) Every Pebble instance that writes to a shared locator
+every main store is already above it, because go-qrdb pins the format:
+`pkg/storage/pebble.FormatMajorVersion` (`FormatValueSeparation`) is the
+on-disk format of every main store, and it changes only by a code change, never
+by a Pebble bump. `Open` in `pkg/storage/pebble` (the one open path of the
+state machines, `PebbleStorage` and the vector adapter) creates new stores at
+the pin and raises older stores to it. It refuses a caller's
+`Options.FormatMajorVersion` above the pin with a `*ConfigError`, and refuses a
+store whose on-disk format is above the pin (a newer build wrote it) with a
+`*FormatVersionError`, closing it again before any use.
+The re-encrypt destination, opened outside `Open`, is created at the pin too.
+A raised store can never be read by an older Pebble build. (2) Every Pebble instance that writes to a shared locator
 needs a `CreatorID` (`SetCreatorID`, `objstorage.CreatorID`), assigned once and
 persisted locally — this is the "whose object is this" identity the design
 below (OS-4) builds on.
