@@ -1,6 +1,8 @@
 package main
 
 import (
+	"log/slog"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -29,4 +31,13 @@ func installBindingFactory(dbManager *database.Manager, dataDir string, defaults
 		return nil, err
 	}
 	return bf, nil
+}
+
+// newBootDatabaseManager builds the database manager of one boot iteration of
+// runStart. The manager never outlives its iteration: Manager.SetBackendFactory
+// refuses a new factory while a database is open, so an in-process encryption
+// migration, whose next iteration installs a factory sealed under the new
+// encryptor, needs a manager with no database open yet.
+func newBootDatabaseManager(dataDir string, defaults database.Defaults) *database.Manager {
+	return database.NewManager(slog.Default(), dataDir, database.WithDefaults(defaults))
 }

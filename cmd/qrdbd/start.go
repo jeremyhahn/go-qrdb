@@ -1544,8 +1544,8 @@ func runStart(f *startFlags) (err error) {
 	if f.mode == capabilities.ModeStandalone {
 		dbDefaults.RunMode = database.RunModeStandalone
 	}
-	dbManager := database.NewManager(slog.Default(), f.dataDir, database.WithDefaults(dbDefaults))
-	defer func() { _ = dbManager.Close() }()
+	// The database manager itself is built per boot iteration
+	// (newBootDatabaseManager, below).
 
 	// Use default database configs when no YAML config was provided.
 	if len(f.databases) == 0 {
@@ -1633,6 +1633,15 @@ func runStart(f *startFlags) (err error) {
 			// down. It is a child of sigCtx, so process shutdown still cancels it.
 			bootCtx, bootCancel := context.WithCancel(sigCtx)
 			defer bootCancel()
+
+			// One database manager per boot iteration: this iteration's
+			// binding factory (sealed under this iteration's encryptor) is
+			// installed before its catalog opens any database, and the
+			// databases the iteration opened close with it, so an
+			// in-process encryption migration's next iteration reopens them
+			// through the new factory instead of meeting them still open.
+			dbManager := newBootDatabaseManager(f.dataDir, dbDefaults)
+			defer func() { _ = dbManager.Close() }()
 
 			// Build the seal subsystem BEFORE the state machine factory and
 			// before host construction. The data-plane Pebble instance is opened

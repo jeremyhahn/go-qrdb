@@ -6,9 +6,12 @@ import (
 	"log/slog"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -57,5 +60,49 @@ func TestInstallBindingFactory_RaftModeAndStandalone(t *testing.T) {
 			t.Fatalf("second installBindingFactory(raftMode=%v): %v", raftMode, err)
 		}
 		_ = m.Close()
+	}
+}
+
+// An in-process encryption migration ends a boot iteration with its
+// databases open and starts the next one with a factory sealed under the new
+// encryptor. The open databases refuse that factory on the old manager, so
+// each iteration builds its own (newBootDatabaseManager): the next
+// iteration's install succeeds while the previous one still holds an open
+// database.
+func TestNewBootDatabaseManager_EncryptionMigrationInstallsFactory(t *testing.T) {
+	tenants := func() tenant.TenantServicer { return prefixTenantService{} }
+	barriers := func() *seal.BarrierRegistry { return nil }
+	for _, raftMode := range []bool{true, false} {
+		dir := t.TempDir()
+		cat, err := database.NewKVCatalog(kvstore.NewMemoryKVStore(), nil)
+		if err != nil {
+			t.Fatalf("NewKVCatalog: %v", err)
+		}
+
+		first := newBootDatabaseManager(dir, database.Defaults{})
+		if _, err := installBindingFactory(first, dir, database.Defaults{}, nil, qrdbconfig.StorageConfig{},
+			tenants, barriers, raftMode); err != nil {
+			t.Fatalf("raftMode=%v: first iteration install: %v", raftMode, err)
+		}
+		first.SetCatalog(cat)
+		if _, err := first.Create(database.DatabaseConfig{TenantID: "acme", Name: "orders", Backend: database.BackendMemory}); err != nil {
+			t.Fatalf("raftMode=%v: Create: %v", raftMode, err)
+		}
+
+		enc := atrest.New(sealtest.UnsealedBarrier(t))
+		_, err = installBindingFactory(first, dir, database.Defaults{}, enc, qrdbconfig.StorageConfig{},
+			tenants, barriers, raftMode)
+		var inUse *database.BackendFactoryInUseError
+		if !errors.As(err, &inUse) {
+			t.Fatalf("raftMode=%v: re-install on the open manager err = %v, want *BackendFactoryInUseError", raftMode, err)
+		}
+
+		next := newBootDatabaseManager(dir, database.Defaults{})
+		if _, err := installBindingFactory(next, dir, database.Defaults{}, enc, qrdbconfig.StorageConfig{},
+			tenants, barriers, raftMode); err != nil {
+			t.Fatalf("raftMode=%v: next iteration install with the migrated encryptor: %v", raftMode, err)
+		}
+		_ = first.Close()
+		_ = next.Close()
 	}
 }
