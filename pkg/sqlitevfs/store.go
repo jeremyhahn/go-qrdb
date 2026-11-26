@@ -234,6 +234,47 @@ func (s *Store) readMeta(ctx context.Context, rev int64) (Meta, bool, error) {
 	return meta, found, nil
 }
 
+// ImageKey is one key a restore of the database may write, and the bytes
+// it writes there.
+type ImageKey struct {
+	Key   string
+	Bytes int64
+}
+
+// ImageAt lists every key a restore to rev may write: the metadata record
+// (at its size at rev, at least as large as the one the restore writes,
+// which differs only in fixed-width counters) and every page of the
+// database image at rev, each a full page. A restore can rewrite all of
+// them even when the revision diff names only the metadata key, so this is
+// the plan an admission or quota check prices. A database absent at rev
+// has nothing to write but the cleared metadata.
+func (s *Store) ImageAt(ctx context.Context, rev int64) ([]ImageKey, error) {
+	value, found, err := s.backend.GetAt(ctx, s.metaKey, rev)
+	if err != nil {
+		return nil, fmt.Errorf("sqlitevfs: read meta of %q at revision %d: %w", s.db, rev, err)
+	}
+	meta := Meta{FormatVersion: FormatVersion}
+	if found {
+		if err := meta.UnmarshalBinary(value); err != nil {
+			return nil, err
+		}
+	}
+	metaBytes := int64(len(value))
+	if enc, err := meta.MarshalBinary(); err == nil && int64(len(enc)) > metaBytes {
+		metaBytes = int64(len(enc))
+	}
+	out := make([]ImageKey, 0, int(meta.PageCount)+1)
+	out = append(out, ImageKey{Key: string(s.metaKey), Bytes: metaBytes})
+	for pgno := uint32(1); pgno <= meta.PageCount && pgno != 0; pgno++ {
+		key, err := PageKey(s.db, pgno)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, ImageKey{Key: string(key), Bytes: int64(meta.PageSize)})
+	}
+	return out, nil
+}
+
 // Begin starts a transaction: it pins the backend's current revision and
 // reads the meta record at it. An absent meta record is an empty database
 // (size 0, page size not yet set). ctx is the context of every read the

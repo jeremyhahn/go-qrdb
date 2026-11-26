@@ -191,6 +191,54 @@ func TestSQLiteVFSQuota_PlainCommitPastLimitIsErrFull(t *testing.T) {
 	}
 }
 
+// A restore naming only sqlite/<db>/meta rewrites every page of the image
+// it points at, so it is priced at the whole image, not the one small
+// diff key: one that does not fit the limit is refused and writes nothing.
+func TestSQLiteVFSQuota_RestorePricesTheWholeImage(t *testing.T) {
+	for name, scene := range lockScenesWith {
+		t.Run(name, func(t *testing.T) {
+			q := newQuotaScene(t, scene)
+			a := q.store(t, lockTenantA, lockHolderA)
+			a.commitPages(t, 0x41, 0x42, 0x43, 0x44)
+			r := a.revision(t)
+			a.commitPages(t, 0x51, 0x52, 0x53, 0x54)
+			a.assertPages(t, 0x51, 0x52, 0x53, 0x54)
+			metaKey, err := sqlitevfs.MetaKey(wiringDB)
+			if err != nil {
+				t.Fatalf("MetaKey: %v", err)
+			}
+			// The meta record fits; the four pages it restores do not.
+			q.ts.limit.Store(q.acct.Usage(lockTenantA) + 2*wiringPageSize)
+			mvccSvc, err := q.registry.MVCCService(lockTenantA, lockTestDB)
+			if err != nil {
+				t.Fatalf("MVCCService: %v", err)
+			}
+			req := &service.RestoreRevisionRequest{Revision: r, Keys: []string{string(metaKey)}, Force: true}
+			plan, err := mvccSvc.RestoreToRevision(t.Context(), &service.RestoreRevisionRequest{Revision: r, Keys: req.Keys, DryRun: true})
+			if err != nil {
+				t.Fatalf("dry run: %v", err)
+			}
+			var priced int64
+			for _, c := range plan.Changes {
+				priced += c.ValueBytes
+			}
+			if priced < 4*wiringPageSize {
+				t.Fatalf("dry run prices %d bytes, want at least the 4-page image (%d)", priced, 4*wiringPageSize)
+			}
+			before := a.revision(t)
+			_, err = mvccSvc.RestoreToRevision(t.Context(), req)
+			var exceeded *quota.ExceededError
+			if !errors.As(err, &exceeded) {
+				t.Fatalf("restore of a 4-page image past the limit = %v, want *quota.ExceededError", err)
+			}
+			if got := a.revision(t); got != before {
+				t.Fatalf("a refused restore moved the revision from %d to %d", before, got)
+			}
+			q.store(t, lockTenantA, lockHolderA).assertPages(t, 0x51, 0x52, 0x53, 0x54)
+		})
+	}
+}
+
 func TestSQLiteVFSQuota_StagedCommitPastLimitIsErrFull(t *testing.T) {
 	for name, scene := range lockScenesWith {
 		t.Run(name, func(t *testing.T) {

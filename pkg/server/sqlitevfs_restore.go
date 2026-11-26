@@ -83,8 +83,25 @@ func withSQLiteRestoreHook(svcs *DatabaseServices) *DatabaseServices {
 // SQLite database whose keys it changed. A bump failure is returned wrapped
 // together with the restore's result: the restore itself has been applied.
 func (s *sqliteRestoreMVCC) RestoreToRevision(ctx context.Context, req *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error) {
-	if req == nil || req.DryRun {
+	if req == nil {
 		return s.MVCCKVServicer.RestoreToRevision(ctx, req)
+	}
+	if req.DryRun {
+		plan, err := s.MVCCKVServicer.RestoreToRevision(ctx, req)
+		if err != nil || plan == nil {
+			return plan, err
+		}
+		dbs := restoredDatabases(plan.Changes)
+		if len(dbs) == 0 {
+			return plan, nil
+		}
+		changes, err := s.imageChanges(ctx, plan.Changes, dbs, req.Revision)
+		if err != nil {
+			return nil, err
+		}
+		priced := *plan
+		priced.Changes = changes
+		return &priced, nil
 	}
 	observed, err := s.kv.CurrentRevision(ctx)
 	if err != nil {
@@ -100,9 +117,13 @@ func (s *sqliteRestoreMVCC) RestoreToRevision(ctx context.Context, req *service.
 	if len(dbs) == 0 {
 		return s.MVCCKVServicer.RestoreToRevision(ctx, req)
 	}
+	changes, err := s.imageChanges(ctx, plan.Changes, dbs, req.Revision)
+	if err != nil {
+		return nil, err
+	}
 	result := &service.RestoreRevisionResult{
 		Revision: plan.Revision,
-		Changes:  plan.Changes,
+		Changes:  changes,
 		Skipped:  plan.Skipped,
 	}
 	var otherKeys []string
@@ -153,7 +174,7 @@ func (s *sqliteRestoreMVCC) RestoreToRevision(ctx context.Context, req *service.
 		}
 		return nil, fmt.Errorf("sqlitevfs restore hook: restore database %q to revision %d: %w", db, req.Revision, err)
 	}
-	for _, c := range plan.Changes {
+	for _, c := range changes {
 		db, ok := sqlitevfs.DatabaseOfKey([]byte(c.Key))
 		switch {
 		case !ok:
@@ -184,6 +205,40 @@ func restoredDatabases(changes []service.RestoreKeyChange) []string {
 		dbs = append(dbs, db)
 	}
 	return dbs
+}
+
+// imageChanges returns changes with every SQLite key replaced by the
+// complete image of its database at rev: the metadata record and every
+// page, each priced at the bytes the restore may write. The revision diff
+// names only the keys that differ (restoring sqlite/<db>/meta alone is one
+// small change), but the Store rewrites the pages the restored metadata
+// points at, so a quota check pricing the diff would admit a restore far
+// past MaxStorageBytes. Non-SQLite changes are kept as they are.
+func (s *sqliteRestoreMVCC) imageChanges(ctx context.Context, changes []service.RestoreKeyChange, dbs []string, rev int64) ([]service.RestoreKeyChange, error) {
+	backend, err := sqlitevfs.NewServiceBackend(s.kv, s.txn)
+	if err != nil {
+		return nil, fmt.Errorf("sqlitevfs restore hook: %w", err)
+	}
+	out := make([]service.RestoreKeyChange, 0, len(changes))
+	for _, c := range changes {
+		if _, ok := sqlitevfs.DatabaseOfKey([]byte(c.Key)); !ok {
+			out = append(out, c)
+		}
+	}
+	for _, db := range dbs {
+		store, err := sqlitevfs.NewStore(backend, db)
+		if err != nil {
+			return nil, fmt.Errorf("sqlitevfs restore hook: database %q: %w", db, err)
+		}
+		image, err := store.ImageAt(ctx, rev)
+		if err != nil {
+			return nil, fmt.Errorf("sqlitevfs restore hook: image of %q at revision %d: %w", db, rev, err)
+		}
+		for _, k := range image {
+			out = append(out, service.RestoreKeyChange{Key: k.Key, Action: service.RestoreActionRevert, ToRevision: rev, ValueBytes: k.Bytes})
+		}
+	}
+	return out, nil
 }
 
 // MovePrefix forwards to the wrapped service.
