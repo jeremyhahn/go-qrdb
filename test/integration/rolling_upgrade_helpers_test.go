@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -251,6 +252,80 @@ func activatedOn(logs []*nodeLog, f feature.Feature) []int {
 		}
 	}
 	return on
+}
+
+// upgradeProbeAppliedLog is the line a qrdb_upgrade_probe qrdbd logs, with the
+// key, each time its state machine applies protocol.OpUpgradeProbe
+// (store.UpgradeProbeAppliedLog, defined only under that tag). Every member
+// applies every committed entry, so the line on a node shows that the key
+// travelled through the Raft log as the gated command, not as a plain put.
+const upgradeProbeAppliedLog = "upgrade-probe: applied OpUpgradeProbe"
+
+// probeAppliedKeys returns the keys a node log shows applied as
+// OpUpgradeProbe, with any "<tenant>/<database>/" namespace kept.
+func probeAppliedKeys(log string) []string {
+	var keys []string
+	for _, line := range strings.Split(log, "\n") {
+		i := strings.Index(line, upgradeProbeAppliedLog)
+		if i < 0 {
+			continue
+		}
+		rest := line[i+len(upgradeProbeAppliedLog):]
+		if j := strings.Index(rest, `"key":"`); j >= 0 {
+			v := rest[j+len(`"key":"`):]
+			if end := strings.IndexByte(v, '"'); end >= 0 {
+				keys = append(keys, v[:end])
+			}
+			continue
+		}
+		if j := strings.Index(rest, "key="); j >= 0 {
+			v := strings.Trim(strings.Fields(rest[j+len("key="):] + " ")[0], `"`)
+			keys = append(keys, v)
+		}
+	}
+	return keys
+}
+
+// probeKeyMatches reports whether an applied key is want, at the root of the
+// keyspace or inside a database namespace.
+func probeKeyMatches(applied, want string) bool {
+	return applied == want || strings.HasSuffix(applied, "/"+want)
+}
+
+// awaitProbeApplied polls every node's log until it shows each of keys
+// applied as OpUpgradeProbe: the gated command replicated to every member.
+func awaitProbeApplied(t *testing.T, c *upgradeCluster, keys []string) {
+	t.Helper()
+	deadline := time.Now().Add(60 * time.Second)
+	for i, l := range c.logs {
+		var missing []string
+		if !pollUntil(time.Until(deadline), 200*time.Millisecond, func() bool {
+			applied := probeAppliedKeys(l.String())
+			missing = missing[:0]
+			for _, want := range keys {
+				if !slices.ContainsFunc(applied, func(a string) bool { return probeKeyMatches(a, want) }) {
+					missing = append(missing, want)
+				}
+			}
+			return len(missing) == 0
+		}) {
+			t.Fatalf("node %d never applied %v as OpUpgradeProbe", i+1, missing)
+		}
+	}
+}
+
+// requireNoProbeApplied fails if any node's log shows any key applied as
+// OpUpgradeProbe: before activation the gated command must never enter the
+// Raft log. Each put it follows was acknowledged after its commit, and every
+// member that is up applies what is committed before it serves a
+// linearizable read, so callers check after requireReadsEverywhere.
+func requireNoProbeApplied(t *testing.T, c *upgradeCluster, when string) {
+	t.Helper()
+	for i, l := range c.logs {
+		if applied := probeAppliedKeys(l.String()); len(applied) != 0 {
+			t.Fatalf("node %d applied %v as OpUpgradeProbe %s", i+1, applied, when)
+		}
+	}
 }
 
 // putAcked puts key=value through node over proto, retrying while the
