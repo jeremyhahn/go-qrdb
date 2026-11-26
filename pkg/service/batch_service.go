@@ -324,6 +324,40 @@ func (s *BatchService) SetImportKeyGuard(guard func(key string) error) {
 	s.importKeyGuard = guard
 }
 
+// importRowGuardKey is the context key WithImportRowGuard stores under.
+type importRowGuardKey struct{}
+
+// WithImportRowGuard returns a context whose import (ImportCommit) consults
+// guard for every row's user-supplied key, before the namespace KeyPrefix
+// is applied and before the row is proposed. A refused row follows
+// Import's row-failure semantics: a transactional import aborts, a
+// non-transactional one records the row as failed and writes nothing for
+// it. A guard already on ctx is composed: both must accept the key. The
+// guard travels with the request, not the shared service, so a wrapper
+// resolved per request (the SQLite key guard in pkg/server) installs it
+// without mutating a BatchService other databases share.
+func WithImportRowGuard(ctx context.Context, guard func(key string) error) context.Context {
+	if guard == nil {
+		return ctx
+	}
+	if prev := importRowGuardFrom(ctx); prev != nil {
+		inner := guard
+		guard = func(key string) error {
+			if err := prev(key); err != nil {
+				return err
+			}
+			return inner(key)
+		}
+	}
+	return context.WithValue(ctx, importRowGuardKey{}, guard)
+}
+
+// importRowGuardFrom returns the guard WithImportRowGuard put on ctx, or nil.
+func importRowGuardFrom(ctx context.Context) func(key string) error {
+	guard, _ := ctx.Value(importRowGuardKey{}).(func(key string) error)
+	return guard
+}
+
 // BatchServiceOption configures optional BatchService behavior at
 // construction.
 type BatchServiceOption func(*BatchService)
@@ -1197,6 +1231,16 @@ func (s *BatchService) importRecords(ctx context.Context, records []map[string]s
 
 		if s.importKeyGuard != nil {
 			if guardErr := s.importKeyGuard(storedKey); guardErr != nil {
+				if opts.Transactional {
+					return nil, &ImportTransactionAbortedError{Row: rowNum, Key: key, Message: guardErr.Error()}
+				}
+				result.Failed++
+				result.Errors = append(result.Errors, ImportError{Row: rowNum, Key: key, Message: guardErr.Error()})
+				continue
+			}
+		}
+		if ctxGuard := importRowGuardFrom(ctx); ctxGuard != nil {
+			if guardErr := ctxGuard(key); guardErr != nil {
 				if opts.Transactional {
 					return nil, &ImportTransactionAbortedError{Row: rowNum, Key: key, Message: guardErr.Error()}
 				}

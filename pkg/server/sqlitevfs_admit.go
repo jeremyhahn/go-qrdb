@@ -440,3 +440,15 @@ func (b sqliteKeyGuardBatch) ExecuteWithMode(ctx context.Context, ops []service.
 	}
 	return b.BatchServicer.ExecuteWithMode(ctx, ops, mode)
 }
+
+// ImportCommit refuses every imported row whose key belongs to a SQLite
+// database. Import proposes its rows directly (it never reaches Execute),
+// so without this a tenant could import sqlite/<db>/meta or a page with no
+// entitlement or count accounting and then build on it through a
+// transaction (row Q5). The guard rides the request context, so it is
+// checked on whichever node runs the commit, standalone or raft.
+func (b sqliteKeyGuardBatch) ImportCommit(ctx context.Context, sessionID string) (*service.ImportResult, error) {
+	return b.BatchServicer.ImportCommit(service.WithImportRowGuard(ctx, func(key string) error {
+		return sqliteKeyOwned([]byte(key))
+	}), sessionID)
+}
