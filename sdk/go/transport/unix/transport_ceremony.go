@@ -90,7 +90,7 @@ func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRI
 	}
 	resp, err := t.client.CeremonySignCSR(ctx, &pb.CeremonySignCSRRequest{
 		Username: req.Username,
-		SoPin:    soPIN,
+		SoPin:    string(soPIN),
 		CsrPem:   req.CSRPEM,
 		Role:     req.Role,
 	})

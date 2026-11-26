@@ -196,7 +196,7 @@ func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRI
 	// PIN check (req.SOPin), so it needs the same fixed per-transport
 	// source (go-qrdb#560 review C).
 	ctx = auth.WithRemoteAddr(ctx, "embedded")
-	result, err := t.ceremonySvc.CeremonySignCSR(ctx, req.Username, req.SOPin, req.CSRPEM, req.Role)
+	result, err := t.ceremonySvc.CeremonySignCSR(ctx, req.Username, string(req.SOPin), req.CSRPEM, req.Role)
 	if err != nil {
 		return nil, delayed("CeremonySignCSR", err)
 	}

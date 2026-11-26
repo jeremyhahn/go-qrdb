@@ -52,14 +52,14 @@ func TestRequest_CeremonyInitialize_PerSourceLockoutDoesNotCrossSources(t *testi
 	var out *transport.CeremonyInitializeResponse
 	for i := 0; i < auth.SOPINFreeFailures; i++ {
 		err := tr.Request(ctx, "CeremonyInitialize",
-			&transport.CeremonyInitializeRequest{SOPin: "wrong-pin", AdminGenerate: true}, &out)
+			&transport.CeremonyInitializeRequest{SOPin: transport.Secret("wrong-pin"), AdminGenerate: true}, &out)
 		if !errors.Is(err, pin.ErrPINInvalid) {
 			t.Fatalf("embedded, attempt %d: got %v, want pin.ErrPINInvalid", i+1, err)
 		}
 	}
 	// One more wrong guess: now locked out.
 	lockedErr := tr.Request(ctx, "CeremonyInitialize",
-		&transport.CeremonyInitializeRequest{SOPin: "wrong-pin", AdminGenerate: true}, &out)
+		&transport.CeremonyInitializeRequest{SOPin: transport.Secret("wrong-pin"), AdminGenerate: true}, &out)
 	if !errors.Is(lockedErr, pin.ErrPINLocked) {
 		t.Fatalf("embedded after %d wrong guesses: got %v, want pin.ErrPINLocked", auth.SOPINFreeFailures+1, lockedErr)
 	}

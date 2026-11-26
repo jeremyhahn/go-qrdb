@@ -287,8 +287,8 @@ func CeremonyInitFrom(req *transport.CeremonyInitializeRequest) (*service.Ceremo
 		}
 	}
 	return &service.CeremonyInitializeOptions{
-		SOPin:                  req.SOPin,
-		UserPin:                req.UserPin,
+		SOPin:                  string(req.SOPin),
+		UserPin:                string(req.UserPin),
 		CredentialSealStrategy: req.CredentialSealStrategy,
 		Threshold:              req.Threshold,
 		Policy:                 seal.FactorPolicy(req.Policy),

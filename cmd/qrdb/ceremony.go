@@ -89,7 +89,7 @@ func newCeremonySignCSRCmd() *cobra.Command {
 
 			resp, err := client.Ceremony().CeremonySignCSR(cmd.Context(), &transport.SignCSRInitRequest{
 				Username: username,
-				SOPin:    soPin,
+				SOPin:    transport.Secret(soPin),
 				CSRPEM:   string(csrData),
 				Role:     role,
 			})

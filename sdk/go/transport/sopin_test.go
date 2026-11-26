@@ -110,7 +110,7 @@ func TestSOPINFromContext_UnopenablePINRefusesTheCall(t *testing.T) {
 	if _, _, err := SOPINFromContext(ctx); !errors.As(err, &nilSecret) {
 		t.Fatalf("SOPINFromContext = %v, want *secure.NilSecretError", err)
 	}
-	if _, err := ResolveSOPIN(ctx, "BarrierSeal", ""); !errors.As(err, &nilSecret) {
+	if _, err := ResolveSOPIN(ctx, "BarrierSeal", nil); !errors.As(err, &nilSecret) {
 		t.Fatalf("ResolveSOPIN = %v, want the open error", err)
 	}
 	called := false
@@ -150,12 +150,12 @@ func TestResolveSOPIN(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := ResolveSOPIN(tc.ctx, "BarrierRekey", tc.request)
+			got, err := ResolveSOPIN(tc.ctx, "BarrierRekey", Secret(tc.request))
 			var conflict *SOPINConflictError
 			if tc.refused != errors.As(err, &conflict) {
 				t.Fatalf("err = %v, refused want %v", err, tc.refused)
 			}
-			if got != tc.want {
+			if string(got) != tc.want {
 				t.Fatalf("pin = %q, want %q", got, tc.want)
 			}
 			if tc.refused && (conflict.Method != "BarrierRekey" || strings.Contains(err.Error(), "5678") || strings.Contains(err.Error(), "1234")) {

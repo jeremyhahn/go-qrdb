@@ -292,23 +292,23 @@ func Run(t *testing.T, startServer func(t *testing.T, f *Fixture) Client) {
 		defer release()
 		calls := map[string]func() error{
 			"BarrierRekeyStart": func() error {
-				_, err := c.BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: transport.DomainUnseal, Threshold: 2, SOPin: "other"})
+				_, err := c.BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: transport.DomainUnseal, Threshold: 2, SOPin: transport.Secret("other")})
 				return err
 			},
 			"BarrierGenerateRecoveryKeys": func() error {
-				_, err := c.BarrierGenerateRecoveryKeys(ctx, &transport.BarrierGenerateRecoveryKeysRequest{Threshold: 2, SOPin: "other"})
+				_, err := c.BarrierGenerateRecoveryKeys(ctx, &transport.BarrierGenerateRecoveryKeysRequest{Threshold: 2, SOPin: transport.Secret("other")})
 				return err
 			},
 			"BarrierInitializeShamir": func() error {
-				_, err := c.BarrierInitializeShamir(ctx, &transport.BarrierInitializeShamirRequest{Threshold: 2, TotalShares: 3, SOPin: "other"})
+				_, err := c.BarrierInitializeShamir(ctx, &transport.BarrierInitializeShamirRequest{Threshold: 2, TotalShares: 3, SOPin: transport.Secret("other")})
 				return err
 			},
 			"CeremonyInitialize": func() error {
-				_, err := c.CeremonyInitialize(ctx, &transport.CeremonyInitializeRequest{SOPin: "other"})
+				_, err := c.CeremonyInitialize(ctx, &transport.CeremonyInitializeRequest{SOPin: transport.Secret("other")})
 				return err
 			},
 			"CeremonySignCSR": func() error {
-				_, err := c.CeremonySignCSR(ctx, &transport.SignCSRInitRequest{Username: "officer", SOPin: "other", CSRPEM: "csr", Role: "officer"})
+				_, err := c.CeremonySignCSR(ctx, &transport.SignCSRInitRequest{Username: "officer", SOPin: transport.Secret("other"), CSRPEM: "csr", Role: "officer"})
 				return err
 			},
 		}

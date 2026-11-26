@@ -238,12 +238,12 @@ func RoundFromPB(r *pb.BarrierQuorumRound) *transport.QuorumRound {
 
 // RekeyToPB encodes a rekey-round request.
 func RekeyToPB(req *transport.RekeyStartRequest) *pb.BarrierRekeyStartRequest {
-	return &pb.BarrierRekeyStartRequest{Domain: req.Domain, Threshold: int32(req.Threshold), Policy: req.Policy, SoPin: req.SOPin} //nolint:gosec
+	return &pb.BarrierRekeyStartRequest{Domain: req.Domain, Threshold: int32(req.Threshold), Policy: req.Policy, SoPin: string(req.SOPin)} //nolint:gosec
 }
 
 // RevokeToPB encodes a holder revocation.
 func RevokeToPB(req *transport.OfficerRevokeRequest) *pb.BarrierOfficerRevokeRequest {
-	return &pb.BarrierOfficerRevokeRequest{Domain: req.Domain, Username: req.Username, Threshold: int32(req.Threshold), SoPin: req.SOPin} //nolint:gosec
+	return &pb.BarrierOfficerRevokeRequest{Domain: req.Domain, Username: req.Username, Threshold: int32(req.Threshold), SoPin: string(req.SOPin)} //nolint:gosec
 }
 
 // TenantRekeyToPB encodes a tenant rekey-round request.
@@ -285,8 +285,8 @@ func CeremonyInitToPB(req *transport.CeremonyInitializeRequest) (*pb.CeremonyIni
 		}
 	}
 	return &pb.CeremonyInitializeRequest{
-		SoPin:                  req.SOPin,
-		UserPin:                req.UserPin,
+		SoPin:                  string(req.SOPin),
+		UserPin:                string(req.UserPin),
 		CredentialSealStrategy: req.CredentialSealStrategy,
 		Threshold:              int32(req.Threshold), //nolint:gosec
 		Policy:                 req.Policy,

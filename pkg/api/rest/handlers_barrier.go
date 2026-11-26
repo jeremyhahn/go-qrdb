@@ -235,7 +235,7 @@ func (s *Server) handleBarrierShamirInitialize(w http.ResponseWriter, r *http.Re
 	// Refuse an initialize the service would refuse before any PIN is
 	// written or compared, then provision the SO / User PINs. PINs supplied with no backend configured
 	// are refused, never ignored.
-	if err := service.ProvisionInitializePINs(r.Context(), s.barrierSvc, s.pinBackend, req.SOPin, req.UserPin); err != nil {
+	if err := service.ProvisionInitializePINs(r.Context(), s.barrierSvc, s.pinBackend, string(req.SOPin), string(req.UserPin)); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
@@ -452,7 +452,7 @@ func (s *Server) handleBarrierRecoveryGenerate(w http.ResponseWriter, r *http.Re
 
 	// Verify the SO PIN before generating recovery keys; fails closed
 	// when no PIN backend is configured.
-	if err := pin.RequireSOPIN(r.Context(), s.pinBackend, req.SOPin); err != nil {
+	if err := pin.RequireSOPIN(r.Context(), s.pinBackend, string(req.SOPin)); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}

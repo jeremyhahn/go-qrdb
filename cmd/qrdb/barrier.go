@@ -231,8 +231,8 @@ Examples:
 			req := &transport.BarrierInitializeRequest{
 				Secret:          secretBytes(f.passphrase),
 				BarrierStrategy: f.strategy,
-				SOPin:           f.soPin,
-				UserPin:         f.userPin,
+				SOPin:           transport.Secret(f.soPin),
+				UserPin:         transport.Secret(f.userPin),
 			}
 			defer secure.Wipe(req.Secret)
 			if err := client.Barrier().BarrierInitialize(cmd.Context(), req); err != nil {
@@ -343,8 +343,8 @@ Example:
 				Threshold:   f.threshold,
 				TotalShares: f.total,
 				Policy:      f.policy,
-				SOPin:       f.soPin,
-				UserPin:     f.userPin,
+				SOPin:       transport.Secret(f.soPin),
+				UserPin:     transport.Secret(f.userPin),
 			}
 			resp, err := client.Barrier().BarrierInitializeShamir(cmd.Context(), req)
 			if err != nil {
@@ -742,7 +742,7 @@ Example:
 			req := &transport.BarrierGenerateRecoveryKeysRequest{
 				Threshold: f.threshold,
 				Policy:    f.policy,
-				SOPin:     f.soPin,
+				SOPin:     transport.Secret(f.soPin),
 			}
 			resp, err := client.Barrier().BarrierGenerateRecoveryKeys(cmd.Context(), req)
 			if err != nil {

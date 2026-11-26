@@ -136,7 +136,7 @@ func handleCeremonyInitialize(svc service.CeremonyServicer, ca ceremony.Ceremony
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_ceremony_initialize", Err: err}
 		}
-		in.SOPin, in.UserPin = soPIN, userPIN
+		in.SOPin, in.UserPin = transport.Secret(soPIN), transport.Secret(userPIN)
 		if in.Secret, err = secretArg(req, "secret"); err != nil {
 			return nil, &ToolError{Tool: "qrdb_ceremony_initialize", Err: err}
 		}

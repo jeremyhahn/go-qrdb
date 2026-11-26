@@ -143,7 +143,7 @@ func TestBarrierSecret_SameHostRedirectIsRefused(t *testing.T) {
 func createTenantWithSOPIN(tr *Transport) error {
 	_, err := tr.CreateTenant(context.Background(), &transport.CreateTenantRequest{
 		ID: "acme", Name: "acme", AdminUsername: "admin", AdminCSRPEM: "csr",
-		SOUsername: "so", SOCSRPEM: "csr", SOPin: soTLSTestPIN,
+		SOUsername: "so", SOCSRPEM: "csr", SOPin: transport.Secret(soTLSTestPIN),
 	})
 	return err
 }

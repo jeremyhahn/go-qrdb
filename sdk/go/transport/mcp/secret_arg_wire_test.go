@@ -112,7 +112,7 @@ func TestSecretWire_BarrierInitializeAndUnseal(t *testing.T) {
 	for _, secret := range [][]byte{nonUTF8Secret, bomSecret} {
 		tr, rec := newWireProbe(t)
 		_ = tr.BarrierInitialize(t.Context(), &transport.BarrierInitializeRequest{
-			Secret: append([]byte(nil), secret...), SOPin: "so-pin\xfe", UserPin: "user-pin",
+			Secret: append([]byte(nil), secret...), SOPin: transport.Secret("so-pin\xfe"), UserPin: transport.Secret("user-pin"),
 		})
 		call := rec.last(t)
 		if call.Name != "qrdb_barrier_initialize" {
@@ -141,10 +141,10 @@ func TestSecretWire_SOPINTools(t *testing.T) {
 	_ = tr.BarrierSeal(ctx)
 	requireB64Arg(t, rec.last(t), "so_pin", pin)
 
-	_, _ = tr.BarrierGenerateRecoveryKeys(t.Context(), &transport.BarrierGenerateRecoveryKeysRequest{Threshold: 2, SOPin: "recovery-so-pin"})
+	_, _ = tr.BarrierGenerateRecoveryKeys(t.Context(), &transport.BarrierGenerateRecoveryKeysRequest{Threshold: 2, SOPin: transport.Secret("recovery-so-pin")})
 	requireB64Arg(t, rec.last(t), "so_pin", []byte("recovery-so-pin"))
 
-	_, _ = tr.CeremonySignCSR(t.Context(), &transport.SignCSRInitRequest{Username: "alice", SOPin: "csr-so-pin", CSRPEM: "csr", Role: "admin"})
+	_, _ = tr.CeremonySignCSR(t.Context(), &transport.SignCSRInitRequest{Username: "alice", SOPin: transport.Secret("csr-so-pin"), CSRPEM: "csr", Role: "admin"})
 	call := rec.last(t)
 	requireB64Arg(t, call, "so_pin", []byte("csr-so-pin"))
 	if call.Arguments["username"] != "alice" {
@@ -157,7 +157,7 @@ func TestSecretWire_SOPINTools(t *testing.T) {
 func TestSecretWire_ShamirAndEncryption(t *testing.T) {
 	tr, rec := newWireProbe(t)
 	_, _ = tr.BarrierInitializeShamir(t.Context(), &transport.BarrierInitializeShamirRequest{
-		Threshold: 2, TotalShares: 3, SOPin: "shamir-so", UserPin: "shamir-user",
+		Threshold: 2, TotalShares: 3, SOPin: transport.Secret("shamir-so"), UserPin: transport.Secret("shamir-user"),
 	})
 	call := rec.last(t)
 	requireB64Arg(t, call, "so_pin", []byte("shamir-so"))
@@ -175,7 +175,7 @@ func TestSecretWire_ShamirAndEncryption(t *testing.T) {
 func TestSecretWire_CeremonyInitialize(t *testing.T) {
 	tr, rec := newWireProbe(t)
 	_, _ = tr.CeremonyInitialize(t.Context(), &transport.CeremonyInitializeRequest{
-		SOPin: "cer-so", UserPin: "cer-user", Threshold: 1, Hostname: "db.example.com",
+		SOPin: transport.Secret("cer-so"), UserPin: transport.Secret("cer-user"), Threshold: 1, Hostname: "db.example.com",
 		AdminGenerate: true, Secret: append([]byte(nil), bomSecret...),
 	})
 	call := rec.last(t)
@@ -195,7 +195,7 @@ func TestSecretWire_CeremonyInitialize(t *testing.T) {
 // it comes from the request or from transport.WithSOPIN.
 func TestSecretWire_HolderRekeyAndRevoke(t *testing.T) {
 	tr, rec := newWireProbe(t)
-	_, _ = tr.BarrierRekeyStart(t.Context(), &transport.RekeyStartRequest{Domain: "unseal", Threshold: 2, SOPin: "rekey-so\xff"})
+	_, _ = tr.BarrierRekeyStart(t.Context(), &transport.RekeyStartRequest{Domain: "unseal", Threshold: 2, SOPin: transport.Secret("rekey-so\xff")})
 	call := rec.last(t)
 	requireB64Arg(t, call, "so_pin", []byte("rekey-so\xff"))
 	if call.Arguments["domain"] != "unseal" {

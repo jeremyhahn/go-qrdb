@@ -42,8 +42,8 @@ func (t *Transport) BarrierInitialize(ctx context.Context, req *transport.Barrie
 	}
 	_, err := t.client.BarrierInitialize(ctx, &pb.BarrierInitializeRequest{
 		Secret:  req.Secret,
-		SoPin:   req.SOPin,
-		UserPin: req.UserPin,
+		SoPin:   string(req.SOPin),
+		UserPin: string(req.UserPin),
 	})
 	if err != nil {
 		return mapGRPCError("BarrierInitialize", err)
@@ -84,14 +84,14 @@ func (t *Transport) BarrierChangePassphrase(ctx context.Context, req *transport.
 		return err
 	}
 	// The server verifies the SO PIN the request carries, as for BarrierSeal.
-	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierChangePassphrase", "")
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierChangePassphrase", nil)
 	if err != nil {
 		return err
 	}
 	_, err = t.client.BarrierChangePassphrase(ctx, &pb.BarrierChangePassphraseRequest{
 		Current: req.Current,
 		Next:    req.Next,
-		SoPin:   soPIN,
+		SoPin:   string(soPIN),
 	})
 	if err != nil {
 		return mapGRPCError("BarrierChangePassphrase", err)
@@ -105,11 +105,11 @@ func (t *Transport) BarrierSeal(ctx context.Context) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
-	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierSeal", "")
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierSeal", nil)
 	if err != nil {
 		return err
 	}
-	_, err = t.client.BarrierSeal(ctx, &pb.BarrierSealRequest{SoPin: soPIN})
+	_, err = t.client.BarrierSeal(ctx, &pb.BarrierSealRequest{SoPin: string(soPIN)})
 	if err != nil {
 		return mapGRPCError("BarrierSeal", err)
 	}
@@ -171,8 +171,8 @@ func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.
 		Threshold:   int32(req.Threshold),   //nolint:gosec
 		TotalShares: int32(req.TotalShares), //nolint:gosec
 		Policy:      req.Policy,
-		SoPin:       soPIN,
-		UserPin:     req.UserPin,
+		SoPin:       string(soPIN),
+		UserPin:     string(req.UserPin),
 	})
 	if err != nil {
 		return nil, mapGRPCError("BarrierInitializeShamir", err)
@@ -231,7 +231,7 @@ func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transp
 	resp, err := t.client.BarrierRecoveryGenerate(ctx, &pb.BarrierRecoveryGenerateRequest{
 		Threshold: int32(req.Threshold), //nolint:gosec
 		Policy:    req.Policy,
-		SoPin:     soPIN,
+		SoPin:     string(soPIN),
 	})
 	if err != nil {
 		return nil, mapGRPCError("BarrierGenerateRecoveryKeys", err)

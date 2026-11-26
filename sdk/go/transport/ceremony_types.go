@@ -53,8 +53,8 @@ type CeremonyOfficerRequest struct {
 // with *NoAdminCredentialSelectedError, there is no credential-less default
 // (go-qrdb#548 review). See docs/firstboot/user.md.
 type CeremonyInitializeRequest struct {
-	SOPin                  string                   `json:"so_pin"`
-	UserPin                string                   `json:"user_pin"`
+	SOPin                  Secret                   `json:"so_pin"`
+	UserPin                Secret                   `json:"user_pin"`
 	CredentialSealStrategy string                   `json:"credential_seal_strategy,omitempty"`
 	Threshold              int                      `json:"threshold"`
 	Policy                 string                   `json:"policy,omitempty"`
@@ -141,7 +141,7 @@ type CeremonyStatusResponse struct {
 // ceremony.
 type SignCSRInitRequest struct {
 	Username string `json:"username"`
-	SOPin    string `json:"so_pin"`
+	SOPin    Secret `json:"so_pin"`
 	CSRPEM   string `json:"csr_pem"`
 	Role     string `json:"role"`
 }

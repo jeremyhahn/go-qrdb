@@ -54,7 +54,7 @@ func (t *Transport) BarrierInitialize(ctx context.Context, req *transport.Barrie
 	if t.barrierSvc == nil {
 		return &NilServiceError{Service: "BarrierServicer"}
 	}
-	if err := service.ProvisionInitializePINs(ctx, t.barrierSvc, t.pinBackend, req.SOPin, req.UserPin); err != nil {
+	if err := service.ProvisionInitializePINs(ctx, t.barrierSvc, t.pinBackend, string(req.SOPin), string(req.UserPin)); err != nil {
 		return delayed("BarrierInitialize", err)
 	}
 	return t.barrierSvc.BarrierInitialize(ctx, req.Secret)
@@ -94,11 +94,11 @@ func (t *Transport) BarrierChangePassphrase(ctx context.Context, req *transport.
 	}
 	// The SO PIN bound by transport.WithSOPIN, verified exactly as the
 	// network transports verify the one their request carries.
-	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierChangePassphrase", "")
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierChangePassphrase", nil)
 	if err != nil {
 		return err
 	}
-	if err := pin.RequireSOPIN(ctx, t.pinBackend, soPIN); err != nil {
+	if err := pin.RequireSOPIN(ctx, t.pinBackend, string(soPIN)); err != nil {
 		return delayed("BarrierChangePassphrase", err)
 	}
 	return t.barrierSvc.BarrierChangePassphrase(ctx, req.Current, req.Next)
@@ -189,7 +189,7 @@ func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.
 	if t.barrierSvc == nil {
 		return nil, &NilServiceError{Service: "BarrierServicer"}
 	}
-	if err := service.ProvisionInitializePINs(ctx, t.barrierSvc, t.pinBackend, req.SOPin, req.UserPin); err != nil {
+	if err := service.ProvisionInitializePINs(ctx, t.barrierSvc, t.pinBackend, string(req.SOPin), string(req.UserPin)); err != nil {
 		return nil, delayed("BarrierInitializeShamir", err)
 	}
 	info, err := t.barrierSvc.BarrierInitializeShamir(ctx, req.Threshold, req.TotalShares, seal.FactorPolicy(req.Policy))
@@ -357,7 +357,7 @@ func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transp
 	if t.barrierSvc == nil {
 		return nil, &NilServiceError{Service: "BarrierServicer"}
 	}
-	if err := pin.RequireSOPIN(ctx, t.pinBackend, req.SOPin); err != nil {
+	if err := pin.RequireSOPIN(ctx, t.pinBackend, string(req.SOPin)); err != nil {
 		return nil, delayed("BarrierGenerateRecoveryKeys", err)
 	}
 	info, err := t.barrierSvc.BarrierGenerateRecoveryKeys(ctx, req.Threshold, seal.FactorPolicy(req.Policy))
@@ -739,7 +739,7 @@ func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyS
 	if err != nil {
 		return nil, delayed("BarrierRekeyStart", err)
 	}
-	round, err := svc.BarrierRekeyStart(ctx, seal.QuorumDomain(req.Domain), req.Threshold, seal.FactorPolicy(req.Policy), req.SOPin)
+	round, err := svc.BarrierRekeyStart(ctx, seal.QuorumDomain(req.Domain), req.Threshold, seal.FactorPolicy(req.Policy), string(req.SOPin))
 	if err != nil {
 		return nil, delayed("BarrierRekeyStart", err)
 	}
@@ -760,7 +760,7 @@ func (t *Transport) BarrierOfficerRevoke(ctx context.Context, req *transport.Off
 	if err != nil {
 		return nil, delayed("BarrierOfficerRevoke", err)
 	}
-	round, err := svc.BarrierOfficerRevoke(ctx, seal.QuorumDomain(req.Domain), req.Username, req.Threshold, req.SOPin)
+	round, err := svc.BarrierOfficerRevoke(ctx, seal.QuorumDomain(req.Domain), req.Username, req.Threshold, string(req.SOPin))
 	if err != nil {
 		return nil, delayed("BarrierOfficerRevoke", err)
 	}

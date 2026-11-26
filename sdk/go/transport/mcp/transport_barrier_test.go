@@ -203,8 +203,8 @@ func TestBarrierInitialize_Success(t *testing.T) {
 
 	err := tr.BarrierInitialize(context.Background(), &transport.BarrierInitializeRequest{
 		Secret:  []byte("passphrase"),
-		SOPin:   "123456",
-		UserPin: "567890",
+		SOPin:   transport.Secret("123456"),
+		UserPin: transport.Secret("567890"),
 	})
 	if err != nil {
 		t.Fatalf("BarrierInitialize: %v", err)
@@ -353,8 +353,8 @@ func TestBarrierInitializeShamir_Success(t *testing.T) {
 	resp, err := tr.BarrierInitializeShamir(context.Background(), &transport.BarrierInitializeShamirRequest{
 		Threshold:   2,
 		TotalShares: 3,
-		SOPin:       "111111",
-		UserPin:     "222222",
+		SOPin:       transport.Secret("111111"),
+		UserPin:     transport.Secret("222222"),
 	})
 	if err != nil {
 		t.Fatalf("BarrierInitializeShamir: %v", err)
@@ -401,7 +401,7 @@ func TestBarrierGenerateRecoveryKeys_Success(t *testing.T) {
 	resp, err := tr.BarrierGenerateRecoveryKeys(context.Background(), &transport.BarrierGenerateRecoveryKeysRequest{
 		Threshold: 1,
 		Policy:    transport.PolicyAnyEnrolled,
-		SOPin:     "1234",
+		SOPin:     transport.Secret("1234"),
 	})
 	if err != nil {
 		t.Fatalf("BarrierGenerateRecoveryKeys: %v", err)

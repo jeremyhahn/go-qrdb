@@ -141,14 +141,14 @@ func TestMCP_BarrierHolders_RoundTrip(t *testing.T) {
 		t.Fatalf("BarrierQuorumSubmit = %+v, service saw %+v", out, svc.submit)
 	}
 
-	round, err := tr.BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: "unseal", Threshold: 3, Policy: "any-enrolled", SOPin: "so-pin-1"})
+	round, err := tr.BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: "unseal", Threshold: 3, Policy: "any-enrolled", SOPin: transport.Secret("so-pin-1")})
 	if err != nil {
 		t.Fatalf("BarrierRekeyStart: %v", err)
 	}
 	if round.NewThreshold != 3 || round.Policy != "any-enrolled" {
 		t.Fatalf("BarrierRekeyStart = %+v", round)
 	}
-	rev, err := tr.BarrierOfficerRevoke(ctx, &transport.OfficerRevokeRequest{Domain: "unseal", Username: "erin", SOPin: "so-pin-2"})
+	rev, err := tr.BarrierOfficerRevoke(ctx, &transport.OfficerRevokeRequest{Domain: "unseal", Username: "erin", SOPin: transport.Secret("so-pin-2")})
 	if err != nil {
 		t.Fatalf("BarrierOfficerRevoke: %v", err)
 	}
@@ -205,11 +205,11 @@ func TestMCP_BarrierHolders_RefusalsAndClosed(t *testing.T) {
 			return err
 		},
 		"BarrierRekeyStart": func() error {
-			_, err := tr.BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: "unseal", Threshold: 2, SOPin: "p"})
+			_, err := tr.BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: "unseal", Threshold: 2, SOPin: transport.Secret("p")})
 			return err
 		},
 		"BarrierOfficerRevoke": func() error {
-			_, err := tr.BarrierOfficerRevoke(ctx, &transport.OfficerRevokeRequest{Domain: "unseal", Username: "u", SOPin: "p"})
+			_, err := tr.BarrierOfficerRevoke(ctx, &transport.OfficerRevokeRequest{Domain: "unseal", Username: "u", SOPin: transport.Secret("p")})
 			return err
 		},
 	}

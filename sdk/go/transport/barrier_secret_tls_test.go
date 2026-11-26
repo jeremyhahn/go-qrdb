@@ -36,39 +36,39 @@ func TestBarrierSecretCarriers(t *testing.T) {
 		{"BarrierInitialize nil", (*BarrierInitializeRequest)(nil), ""},
 		{"BarrierInitialize empty", &BarrierInitializeRequest{}, ""},
 		{"BarrierInitialize secret", &BarrierInitializeRequest{Secret: b}, BarrierSecretInit},
-		{"BarrierInitialize SO PIN", &BarrierInitializeRequest{SOPin: testSecret}, soPINSecret},
-		{"BarrierInitialize user PIN", &BarrierInitializeRequest{UserPin: testSecret}, BarrierSecretUserPIN},
-		{"BarrierInitialize secret first", &BarrierInitializeRequest{Secret: b, SOPin: testSecret, UserPin: testSecret}, BarrierSecretInit},
+		{"BarrierInitialize SO PIN", &BarrierInitializeRequest{SOPin: Secret(testSecret)}, soPINSecret},
+		{"BarrierInitialize user PIN", &BarrierInitializeRequest{UserPin: Secret(testSecret)}, BarrierSecretUserPIN},
+		{"BarrierInitialize secret first", &BarrierInitializeRequest{Secret: b, SOPin: Secret(testSecret), UserPin: Secret(testSecret)}, BarrierSecretInit},
 		{"BarrierUnseal nil", (*BarrierUnsealRequest)(nil), ""},
 		{"BarrierUnseal empty", &BarrierUnsealRequest{}, ""},
 		{"BarrierUnseal key", &BarrierUnsealRequest{Secret: b}, BarrierSecretUnsealKey},
 		{"BarrierInitializeShamir nil", (*BarrierInitializeShamirRequest)(nil), ""},
 		{"BarrierInitializeShamir empty", &BarrierInitializeShamirRequest{Threshold: 2}, ""},
-		{"BarrierInitializeShamir SO PIN", &BarrierInitializeShamirRequest{SOPin: testSecret, UserPin: testSecret}, soPINSecret},
-		{"BarrierInitializeShamir user PIN", &BarrierInitializeShamirRequest{UserPin: testSecret}, BarrierSecretUserPIN},
+		{"BarrierInitializeShamir SO PIN", &BarrierInitializeShamirRequest{SOPin: Secret(testSecret), UserPin: Secret(testSecret)}, soPINSecret},
+		{"BarrierInitializeShamir user PIN", &BarrierInitializeShamirRequest{UserPin: Secret(testSecret)}, BarrierSecretUserPIN},
 		{"BarrierEnableEncryption nil", (*BarrierEnableEncryptionRequest)(nil), ""},
 		{"BarrierEnableEncryption empty", &BarrierEnableEncryptionRequest{TenantID: "acme"}, ""},
 		{"BarrierEnableEncryption passphrase", &BarrierEnableEncryptionRequest{Passphrase: b}, BarrierSecretPassphrase},
 		{"BarrierGenerateRecoveryKeys nil", (*BarrierGenerateRecoveryKeysRequest)(nil), ""},
 		{"BarrierGenerateRecoveryKeys empty", &BarrierGenerateRecoveryKeysRequest{Threshold: 2}, ""},
-		{"BarrierGenerateRecoveryKeys SO PIN", &BarrierGenerateRecoveryKeysRequest{SOPin: testSecret}, soPINSecret},
+		{"BarrierGenerateRecoveryKeys SO PIN", &BarrierGenerateRecoveryKeysRequest{SOPin: Secret(testSecret)}, soPINSecret},
 		{"QuorumSubmit nil", (*QuorumSubmitRequest)(nil), ""},
 		{"QuorumSubmit empty", &QuorumSubmitRequest{Username: "officer"}, ""},
 		{"QuorumSubmit share", &QuorumSubmitRequest{Share: b}, BarrierSecretShare},
 		{"RekeyStart nil", (*RekeyStartRequest)(nil), ""},
 		{"RekeyStart empty", &RekeyStartRequest{Threshold: 2}, ""},
-		{"RekeyStart SO PIN", &RekeyStartRequest{SOPin: testSecret}, soPINSecret},
+		{"RekeyStart SO PIN", &RekeyStartRequest{SOPin: Secret(testSecret)}, soPINSecret},
 		{"OfficerRevoke nil", (*OfficerRevokeRequest)(nil), ""},
 		{"OfficerRevoke empty", &OfficerRevokeRequest{Username: "officer"}, ""},
-		{"OfficerRevoke SO PIN", &OfficerRevokeRequest{SOPin: testSecret}, soPINSecret},
+		{"OfficerRevoke SO PIN", &OfficerRevokeRequest{SOPin: Secret(testSecret)}, soPINSecret},
 		{"CeremonyInitialize nil", (*CeremonyInitializeRequest)(nil), ""},
 		{"CeremonyInitialize empty", &CeremonyInitializeRequest{}, ""},
-		{"CeremonyInitialize SO PIN first", &CeremonyInitializeRequest{SOPin: testSecret, UserPin: testSecret, Secret: b}, soPINSecret},
-		{"CeremonyInitialize user PIN", &CeremonyInitializeRequest{UserPin: testSecret, Secret: b}, BarrierSecretUserPIN},
+		{"CeremonyInitialize SO PIN first", &CeremonyInitializeRequest{SOPin: Secret(testSecret), UserPin: Secret(testSecret), Secret: b}, soPINSecret},
+		{"CeremonyInitialize user PIN", &CeremonyInitializeRequest{UserPin: Secret(testSecret), Secret: b}, BarrierSecretUserPIN},
 		{"CeremonyInitialize secret", &CeremonyInitializeRequest{Secret: b}, BarrierSecretInit},
 		{"SignCSRInit nil", (*SignCSRInitRequest)(nil), ""},
 		{"SignCSRInit empty", &SignCSRInitRequest{Username: "officer"}, ""},
-		{"SignCSRInit SO PIN", &SignCSRInitRequest{SOPin: testSecret}, soPINSecret},
+		{"SignCSRInit SO PIN", &SignCSRInitRequest{SOPin: Secret(testSecret)}, soPINSecret},
 		{"TenantBarrierInit nil", (*TenantBarrierInitRequest)(nil), ""},
 		{"TenantBarrierInit empty", &TenantBarrierInitRequest{TenantID: "acme"}, ""},
 		{"TenantBarrierInit passphrase", &TenantBarrierInitRequest{Passphrase: b}, BarrierSecretPassphrase},
@@ -81,7 +81,7 @@ func TestBarrierSecretCarriers(t *testing.T) {
 		{"CreateTenant nil", (*CreateTenantRequest)(nil), ""},
 		{"CreateTenant without an SO", &CreateTenantRequest{ID: "acme", AdminUsername: "admin"}, ""},
 		{"CreateTenant SO without a PIN", &CreateTenantRequest{ID: "acme", AdminUsername: "admin", SOUsername: "so"}, ""},
-		{"CreateTenant SO PIN", &CreateTenantRequest{ID: "acme", AdminUsername: "admin", SOUsername: "so", SOPin: testSecret}, soPINSecret},
+		{"CreateTenant SO PIN", &CreateTenantRequest{ID: "acme", AdminUsername: "admin", SOUsername: "so", SOPin: Secret(testSecret)}, soPINSecret},
 		{"DatabaseQuorumSubmit nil", (*DatabaseQuorumSubmitRequest)(nil), ""},
 		{"DatabaseQuorumSubmit empty", &DatabaseQuorumSubmitRequest{Database: "db1"}, ""},
 		{"DatabaseQuorumSubmit share", &DatabaseQuorumSubmitRequest{QuorumSubmitRequest: QuorumSubmitRequest{Share: b}}, BarrierSecretShare},
@@ -135,7 +135,7 @@ func TestRequireTLSForBarrierSecret(t *testing.T) {
 // TestRequireTLSForBarrierSecret_SOPINKeepsItsError: a request's own SO PIN is
 // refused with the SO PIN's error, as it is when bound by WithSOPIN.
 func TestRequireTLSForBarrierSecret_SOPINKeepsItsError(t *testing.T) {
-	err := RequireTLSForBarrierSecret("unix", false, &RekeyStartRequest{SOPin: testSecret})
+	err := RequireTLSForBarrierSecret("unix", false, &RekeyStartRequest{SOPin: Secret(testSecret)})
 	var soErr *SOPINRequiresTLSError
 	if !errors.As(err, &soErr) || soErr.Transport != "unix" {
 		t.Fatalf("err = %v, want *SOPINRequiresTLSError from unix", err)
@@ -150,7 +150,7 @@ func TestRequireTLSForBarrierSecret_SOPINKeepsItsError(t *testing.T) {
 // enrols an SO with a PIN is refused over plaintext with the SO PIN's error,
 // and the same request without a PIN, or over TLS, is let through.
 func TestRequireTLSForBarrierSecret_CreateTenantSOPIN(t *testing.T) {
-	withPIN := &CreateTenantRequest{ID: "acme", AdminUsername: "admin", SOUsername: "so", SOPin: testSecret}
+	withPIN := &CreateTenantRequest{ID: "acme", AdminUsername: "admin", SOUsername: "so", SOPin: Secret(testSecret)}
 	err := RequireTLSForBarrierSecret("grpc", false, withPIN)
 	var soErr *SOPINRequiresTLSError
 	if !errors.As(err, &soErr) || soErr.Transport != "grpc" {
@@ -172,7 +172,7 @@ func TestRequireTLSForBarrierSecret_CreateTenantSOPIN(t *testing.T) {
 // a request without a PIN leaves the context unmarked.
 func TestGuardBarrierSecret_CreateTenantSOPIN(t *testing.T) {
 	ctx := context.Background()
-	marked, err := GuardBarrierSecret(ctx, "rest", true, &CreateTenantRequest{ID: "acme", SOPin: testSecret})
+	marked, err := GuardBarrierSecret(ctx, "rest", true, &CreateTenantRequest{ID: "acme", SOPin: Secret(testSecret)})
 	if err != nil {
 		t.Fatalf("GuardBarrierSecret over TLS: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestGuardBarrierSecret_CreateTenantSOPIN(t *testing.T) {
 	if _, ok := barrierSecretInContext(unmarked); ok {
 		t.Fatal("tenant creation without a PIN marks its context")
 	}
-	_, err = GuardBarrierSecret(ctx, "mcp", false, &CreateTenantRequest{ID: "acme", SOPin: testSecret})
+	_, err = GuardBarrierSecret(ctx, "mcp", false, &CreateTenantRequest{ID: "acme", SOPin: Secret(testSecret)})
 	var soErr *SOPINRequiresTLSError
 	if !errors.As(err, &soErr) || soErr.Transport != "mcp" {
 		t.Fatalf("err = %v, want *SOPINRequiresTLSError from mcp", err)
@@ -247,7 +247,7 @@ func TestSOPINRoundTripper_RefusesAPlaintextHopForABarrierSecret(t *testing.T) {
 		soPIN   bool
 	}{
 		{"barrier secret on http", &QuorumSubmitRequest{Share: []byte(testSecret)}, "http://db.example.com:8443/v1/barrier/quorum", true, false},
-		{"SO PIN field on http", &SignCSRInitRequest{SOPin: testSecret}, "http://db.example.com:8443/v1/ceremony/sign-csr", true, true},
+		{"SO PIN field on http", &SignCSRInitRequest{SOPin: Secret(testSecret)}, "http://db.example.com:8443/v1/ceremony/sign-csr", true, true},
 		{"barrier secret on https", &QuorumSubmitRequest{Share: []byte(testSecret)}, "https://db.example.com:8443/v1/barrier/quorum", false, false},
 	}
 	for _, tc := range cases {

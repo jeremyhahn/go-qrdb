@@ -125,7 +125,7 @@ func TestCreateTenantSOPIN_RedirectIsRefused(t *testing.T) {
 	createWithPIN := func(tr *Transport) error {
 		_, err := tr.CreateTenant(context.Background(), &transport.CreateTenantRequest{
 			ID: "acme", Name: "acme", AdminUsername: "admin", AdminCSRPEM: "csr",
-			SOUsername: "so", SOCSRPEM: "csr", SOPin: soTLSTestPIN,
+			SOUsername: "so", SOCSRPEM: "csr", SOPin: transport.Secret(soTLSTestPIN),
 		})
 		return err
 	}

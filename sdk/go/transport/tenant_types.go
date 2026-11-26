@@ -177,7 +177,7 @@ type CreateTenantRequest struct {
 	SOChainPEM string `json:"so_chain_pem,omitempty"`
 	// SOPin is the SO's second factor, the PIN the SO gate
 	// (auth.so_dual_factor) asks the SO for.
-	SOPin string `json:"so_pin,omitempty"`
+	SOPin Secret `json:"so_pin,omitempty"`
 }
 
 // UpdateTenantRequest contains the mutable fields for updating a tenant.

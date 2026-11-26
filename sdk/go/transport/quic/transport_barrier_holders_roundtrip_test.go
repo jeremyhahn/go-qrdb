@@ -237,7 +237,7 @@ func TestQUICRoundTrip_BarrierHolders_QuorumRevokeAndClusterUnseal(t *testing.T)
 		t.Fatalf("BarrierQuorumSubmit = %+v", out)
 	}
 
-	round, err := tr.BarrierOfficerRevoke(ctx, &transport.OfficerRevokeRequest{Domain: "unseal", Username: "bob", Threshold: 2, SOPin: "so-pin"})
+	round, err := tr.BarrierOfficerRevoke(ctx, &transport.OfficerRevokeRequest{Domain: "unseal", Username: "bob", Threshold: 2, SOPin: transport.Secret("so-pin")})
 	if err != nil {
 		t.Fatalf("BarrierOfficerRevoke: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestQUICRoundTrip_BarrierHolders_QuorumRevokeAndClusterUnseal(t *testing.T)
 		t.Fatalf("BarrierOfficerRevoke with a bound PIN: err %v, service saw %q", err, svc.seen().soPIN)
 	}
 	var conflict *transport.SOPINConflictError
-	if _, err := tr.BarrierOfficerRevoke(pinCtx, &transport.OfficerRevokeRequest{Domain: "unseal", Username: "dave", SOPin: "other"}); !errors.As(err, &conflict) {
+	if _, err := tr.BarrierOfficerRevoke(pinCtx, &transport.OfficerRevokeRequest{Domain: "unseal", Username: "dave", SOPin: transport.Secret("other")}); !errors.As(err, &conflict) {
 		t.Fatalf("BarrierOfficerRevoke with a conflicting PIN: err = %v, want *transport.SOPINConflictError", err)
 	}
 	if svc.seen().username == "dave" {
@@ -299,7 +299,7 @@ func TestQUICRoundTrip_BarrierHolders_ServiceErrors(t *testing.T) {
 			return err
 		},
 		"BarrierOfficerRevoke": func() error {
-			_, err := tr.BarrierOfficerRevoke(ctx, &transport.OfficerRevokeRequest{Domain: "unseal", Username: "bob", SOPin: "pin"})
+			_, err := tr.BarrierOfficerRevoke(ctx, &transport.OfficerRevokeRequest{Domain: "unseal", Username: "bob", SOPin: transport.Secret("pin")})
 			return err
 		},
 		"BarrierClusterUnseal": func() error { _, err := tr.BarrierClusterUnseal(ctx); return err },

@@ -59,11 +59,11 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 	// exactly (go-qrdb#1130).
 	delete(args, "so_pin")
 	delete(args, "user_pin")
-	if soPIN != "" {
-		putStringSecret(args, "so_pin", soPIN)
+	if len(soPIN) != 0 {
+		putSecret(args, "so_pin", soPIN)
 	}
-	if req.UserPin != "" {
-		putStringSecret(args, "user_pin", req.UserPin)
+	if len(req.UserPin) != 0 {
+		putSecret(args, "user_pin", req.UserPin)
 	}
 	putSecret(args, "secret", req.Secret)
 
@@ -123,7 +123,7 @@ func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRI
 		"csr_pem":  req.CSRPEM,
 		"role":     req.Role,
 	}
-	putStringSecret(args, "so_pin", soPIN)
+	putSecret(args, "so_pin", soPIN)
 	text, err := t.callTool(ctx, "qrdb_ceremony_sign_csr", args)
 	if err != nil {
 		return nil, &transport.RequestError{Method: "CeremonySignCSR", Err: err}

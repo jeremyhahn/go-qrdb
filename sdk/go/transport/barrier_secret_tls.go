@@ -248,8 +248,8 @@ func (r *BarrierInitializeRequest) barrierSecret() BarrierSecretKind {
 	}
 	return cmp.Or(
 		secretIf(len(r.Secret) > 0, BarrierSecretInit),
-		secretIf(r.SOPin != "", soPINSecret),
-		secretIf(r.UserPin != "", BarrierSecretUserPIN),
+		secretIf(len(r.SOPin) != 0, soPINSecret),
+		secretIf(len(r.UserPin) != 0, BarrierSecretUserPIN),
 	)
 }
 
@@ -272,8 +272,8 @@ func (r *BarrierInitializeShamirRequest) barrierSecret() BarrierSecretKind {
 		return ""
 	}
 	return cmp.Or(
-		secretIf(r.SOPin != "", soPINSecret),
-		secretIf(r.UserPin != "", BarrierSecretUserPIN),
+		secretIf(len(r.SOPin) != 0, soPINSecret),
+		secretIf(len(r.UserPin) != 0, BarrierSecretUserPIN),
 	)
 }
 
@@ -288,7 +288,7 @@ func (r *BarrierGenerateRecoveryKeysRequest) barrierSecret() BarrierSecretKind {
 	if r == nil {
 		return ""
 	}
-	return secretIf(r.SOPin != "", soPINSecret)
+	return secretIf(len(r.SOPin) != 0, soPINSecret)
 }
 
 func (r *QuorumSubmitRequest) barrierSecret() BarrierSecretKind {
@@ -302,14 +302,14 @@ func (r *RekeyStartRequest) barrierSecret() BarrierSecretKind {
 	if r == nil {
 		return ""
 	}
-	return secretIf(r.SOPin != "", soPINSecret)
+	return secretIf(len(r.SOPin) != 0, soPINSecret)
 }
 
 func (r *OfficerRevokeRequest) barrierSecret() BarrierSecretKind {
 	if r == nil {
 		return ""
 	}
-	return secretIf(r.SOPin != "", soPINSecret)
+	return secretIf(len(r.SOPin) != 0, soPINSecret)
 }
 
 func (r *CeremonyInitializeRequest) barrierSecret() BarrierSecretKind {
@@ -317,8 +317,8 @@ func (r *CeremonyInitializeRequest) barrierSecret() BarrierSecretKind {
 		return ""
 	}
 	return cmp.Or(
-		secretIf(r.SOPin != "", soPINSecret),
-		secretIf(r.UserPin != "", BarrierSecretUserPIN),
+		secretIf(len(r.SOPin) != 0, soPINSecret),
+		secretIf(len(r.UserPin) != 0, BarrierSecretUserPIN),
 		secretIf(len(r.Secret) > 0, BarrierSecretInit),
 	)
 }
@@ -327,7 +327,7 @@ func (r *SignCSRInitRequest) barrierSecret() BarrierSecretKind {
 	if r == nil {
 		return ""
 	}
-	return secretIf(r.SOPin != "", soPINSecret)
+	return secretIf(len(r.SOPin) != 0, soPINSecret)
 }
 
 func (r *TenantBarrierInitRequest) barrierSecret() BarrierSecretKind {
@@ -364,7 +364,7 @@ func (r *CreateTenantRequest) barrierSecret() BarrierSecretKind {
 	if r == nil {
 		return ""
 	}
-	return secretIf(r.SOPin != "", soPINSecret)
+	return secretIf(len(r.SOPin) != 0, soPINSecret)
 }
 
 // barrierSecret is declared rather than promoted from QuorumSubmitRequest: the

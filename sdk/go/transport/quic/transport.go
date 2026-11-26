@@ -1408,13 +1408,13 @@ func (t *Transport) requireTLS(req transport.BarrierSecretCarrier) error {
 // resolveSOPIN is transport.ResolveSOPIN, refusing a PIN -- the request's own
 // or one bound by transport.WithSOPIN -- when the configured address names the
 // plaintext http:// scheme explicitly.
-func (t *Transport) resolveSOPIN(ctx context.Context, method, explicit string) (string, error) {
+func (t *Transport) resolveSOPIN(ctx context.Context, method string, explicit transport.Secret) (transport.Secret, error) {
 	pin, err := transport.ResolveSOPIN(ctx, method, explicit)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	if pin != "" && transport.IsHTTP(t.config.Address) {
-		return "", &transport.SOPINRequiresTLSError{Transport: "quic"}
+	if len(pin) != 0 && transport.IsHTTP(t.config.Address) {
+		return nil, &transport.SOPINRequiresTLSError{Transport: "quic"}
 	}
 	return pin, nil
 }

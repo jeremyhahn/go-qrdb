@@ -148,7 +148,7 @@ be named the SO, by its username and key together.`,
 				VolumePool:        volumePool,
 				AdminUsername:     adminUsername,
 				SOUsername:        soUsername,
-				SOPin:             soPin,
+				SOPin:             transport.Secret(soPin),
 			}
 			// A list, not a map keyed by path: one file may serve two
 			// flags, as when the admin is named the SO with its own CSR.

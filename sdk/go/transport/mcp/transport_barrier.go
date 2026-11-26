@@ -42,11 +42,11 @@ func (t *Transport) BarrierInitialize(ctx context.Context, req *transport.Barrie
 
 	args := map[string]any{}
 	putSecret(args, "secret", req.Secret)
-	if req.SOPin != "" {
-		putStringSecret(args, "so_pin", req.SOPin)
+	if len(req.SOPin) != 0 {
+		putSecret(args, "so_pin", req.SOPin)
 	}
-	if req.UserPin != "" {
-		putStringSecret(args, "user_pin", req.UserPin)
+	if len(req.UserPin) != 0 {
+		putSecret(args, "user_pin", req.UserPin)
 	}
 	if _, err := t.callTool(ctx, "qrdb_barrier_initialize", args); err != nil {
 		return &transport.RequestError{Method: "BarrierInitialize", Err: err}
@@ -95,15 +95,15 @@ func (t *Transport) BarrierChangePassphrase(ctx context.Context, req *transport.
 	}
 
 	// The server verifies the SO PIN the arguments carry, as for BarrierSeal.
-	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierChangePassphrase", "")
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierChangePassphrase", nil)
 	if err != nil {
 		return &transport.RequestError{Method: "BarrierChangePassphrase", Err: err}
 	}
 	args := map[string]any{}
 	putSecret(args, "current", req.Current)
 	putSecret(args, "next", req.Next)
-	if soPIN != "" {
-		putStringSecret(args, "so_pin", soPIN)
+	if len(soPIN) != 0 {
+		putSecret(args, "so_pin", soPIN)
 	}
 	if _, err := t.callTool(ctx, "qrdb_barrier_change_passphrase", args); err != nil {
 		return &transport.RequestError{Method: "BarrierChangePassphrase", Err: err}
@@ -121,14 +121,14 @@ func (t *Transport) BarrierSeal(ctx context.Context) error {
 
 	// The barrier SO PIN, when one is configured, comes from the PIN bound by
 	// transport.WithSOPIN: BarrierSeal takes no request of its own.
-	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierSeal", "")
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierSeal", nil)
 	if err != nil {
 		return &transport.RequestError{Method: "BarrierSeal", Err: err}
 	}
 	var args map[string]any
-	if soPIN != "" {
+	if len(soPIN) != 0 {
 		args = map[string]any{}
-		putStringSecret(args, "so_pin", soPIN)
+		putSecret(args, "so_pin", soPIN)
 	}
 	if _, err := t.callTool(ctx, "qrdb_barrier_seal", args); err != nil {
 		return &transport.RequestError{Method: "BarrierSeal", Err: err}
@@ -201,11 +201,11 @@ func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.
 	if req.Policy != "" {
 		args["policy"] = req.Policy
 	}
-	if soPIN != "" {
-		putStringSecret(args, "so_pin", soPIN)
+	if len(soPIN) != 0 {
+		putSecret(args, "so_pin", soPIN)
 	}
-	if req.UserPin != "" {
-		putStringSecret(args, "user_pin", req.UserPin)
+	if len(req.UserPin) != 0 {
+		putSecret(args, "user_pin", req.UserPin)
 	}
 	text, err := t.callTool(ctx, "qrdb_barrier_shamir_initialize", args)
 	if err != nil {
@@ -293,8 +293,8 @@ func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transp
 	if req.Policy != "" {
 		args["policy"] = req.Policy
 	}
-	if soPIN != "" {
-		putStringSecret(args, "so_pin", soPIN)
+	if len(soPIN) != 0 {
+		putSecret(args, "so_pin", soPIN)
 	}
 	text, err := t.callTool(ctx, "qrdb_barrier_recovery_generate", args)
 	if err != nil {
@@ -372,7 +372,7 @@ func (t *Transport) callHolderTool(ctx context.Context, method, tool string, req
 // callHolderSOPINTool is callHolderTool for a holder request carrying the SO
 // PIN. soPIN leaves the generic encoding of req, whose so_pin it replaces,
 // and travels as so_pin_b64, so a PIN that is not UTF-8 arrives exactly.
-func (t *Transport) callHolderSOPINTool(ctx context.Context, method, tool string, req any, soPIN string, dest any) error {
+func (t *Transport) callHolderSOPINTool(ctx context.Context, method, tool string, req any, soPIN transport.Secret, dest any) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -381,8 +381,8 @@ func (t *Transport) callHolderSOPINTool(ctx context.Context, method, tool string
 		return &transport.RequestError{Method: method, Err: err}
 	}
 	delete(args, "so_pin")
-	if soPIN != "" {
-		putStringSecret(args, "so_pin", soPIN)
+	if len(soPIN) != 0 {
+		putSecret(args, "so_pin", soPIN)
 	}
 	return t.callEncodedHolderTool(ctx, method, tool, args, dest)
 }
@@ -513,7 +513,7 @@ func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyS
 		return nil, err
 	}
 	resolved := *req
-	resolved.SOPin = ""
+	resolved.SOPin = nil
 	var resp transport.QuorumRound
 	if err := t.callHolderSOPINTool(ctx, "BarrierRekeyStart", "qrdb_barrier_rekey_start", &resolved, soPIN, &resp); err != nil {
 		return nil, err
@@ -535,7 +535,7 @@ func (t *Transport) BarrierOfficerRevoke(ctx context.Context, req *transport.Off
 		return nil, err
 	}
 	resolved := *req
-	resolved.SOPin = ""
+	resolved.SOPin = nil
 	var resp transport.QuorumRound
 	if err := t.callHolderSOPINTool(ctx, "BarrierOfficerRevoke", "qrdb_barrier_officer_revoke", &resolved, soPIN, &resp); err != nil {
 		return nil, err

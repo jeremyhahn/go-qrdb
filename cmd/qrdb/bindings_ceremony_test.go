@@ -262,7 +262,7 @@ func TestCeremonyBinding_SignCSR_Success(t *testing.T) {
 	svc := &stubCeremonyServicer{}
 	b := newCeremonyTestBinding(t, svc)
 
-	resp, err := b.SignCSR(&transport.SignCSRInitRequest{Username: "alice", SOPin: "so-pin", CSRPEM: "csr", Role: "so"})
+	resp, err := b.SignCSR(&transport.SignCSRInitRequest{Username: "alice", SOPin: transport.Secret("so-pin"), CSRPEM: "csr", Role: "so"})
 	if err != nil {
 		t.Fatalf("SignCSR: %v", err)
 	}

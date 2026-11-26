@@ -636,8 +636,8 @@ func (e *holderE2E) enrolAndInitialize() {
 	opts, err := holderwire.CeremonyInitFrom(&transport.CeremonyInitializeRequest{
 		SOUsername: "ciso",
 		SOCSRPEM:   string(soCSR),
-		SOPin:      e2eSOPIN,
-		UserPin:    e2eUserPIN,
+		SOPin:      transport.Secret(e2eSOPIN),
+		UserPin:    transport.Secret(e2eUserPIN),
 		Threshold:  e2eThreshold,
 		Policy:     string(seal.FactorPolicyDesignated),
 		Officers:   officers,
@@ -833,7 +833,7 @@ func TestShareHolders_ConformAcrossEverySDKTransport(t *testing.T) {
 			// --- Revoking a holder is a quorum-gated rekey. ------------------------
 			admin := e.adminClient()
 			adminCtx := e.adminCtx()
-			round, err := admin.BarrierOfficerRevoke(adminCtx, &transport.OfficerRevokeRequest{Domain: transport.DomainUnseal, Username: "cust-erin", SOPin: e2eSOPIN})
+			round, err := admin.BarrierOfficerRevoke(adminCtx, &transport.OfficerRevokeRequest{Domain: transport.DomainUnseal, Username: "cust-erin", SOPin: transport.Secret(e2eSOPIN)})
 			if err != nil {
 				t.Fatalf("revoke: %v", err)
 			}
@@ -861,7 +861,7 @@ func TestShareHolders_ConformAcrossEverySDKTransport(t *testing.T) {
 
 			// --- A rekey to the any-enrolled policy. ------------------------------
 			if _, err := admin.BarrierRekeyStart(adminCtx, &transport.RekeyStartRequest{
-				Domain: transport.DomainUnseal, Threshold: e2eThreshold, Policy: transport.PolicyAnyEnrolled, SOPin: e2eSOPIN,
+				Domain: transport.DomainUnseal, Threshold: e2eThreshold, Policy: transport.PolicyAnyEnrolled, SOPin: transport.Secret(e2eSOPIN),
 			}); err != nil {
 				t.Fatalf("rekey start: %v", err)
 			}

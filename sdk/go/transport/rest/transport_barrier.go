@@ -70,13 +70,13 @@ func (t *Transport) BarrierChangePassphrase(ctx context.Context, req *transport.
 		return err
 	}
 	// The server verifies the SO PIN the body carries, as for BarrierSeal.
-	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierChangePassphrase", "")
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierChangePassphrase", nil)
 	if err != nil {
 		return err
 	}
 	body := struct {
 		*transport.BarrierChangePassphraseRequest
-		SOPin string `json:"so_pin,omitempty"`
+		SOPin transport.Secret `json:"so_pin,omitempty"`
 	}{req, soPIN}
 
 	return t.postJSONDecode(ctx, "BarrierChangePassphrase", "/v1/barrier/change-passphrase", body, nil)
@@ -91,13 +91,13 @@ func (t *Transport) BarrierSeal(ctx context.Context) error {
 
 	// The barrier SO PIN, when one is configured, comes from the PIN bound by
 	// transport.WithSOPIN: BarrierSeal takes no request of its own.
-	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierSeal", "")
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierSeal", nil)
 	if err != nil {
 		return err
 	}
 	var body any
-	if soPIN != "" {
-		body = map[string]string{"so_pin": soPIN}
+	if len(soPIN) != 0 {
+		body = map[string]transport.Secret{"so_pin": soPIN}
 	}
 	return t.postJSONDecode(ctx, "BarrierSeal", "/v1/barrier/seal", body, nil)
 }

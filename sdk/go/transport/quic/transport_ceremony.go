@@ -92,7 +92,7 @@ func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRI
 	}
 	payload, err := proto.Marshal(&pb.CeremonySignCSRRequest{
 		Username: req.Username,
-		SoPin:    soPIN,
+		SoPin:    string(soPIN),
 		CsrPem:   req.CSRPEM,
 		Role:     req.Role,
 	})

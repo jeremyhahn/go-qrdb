@@ -56,8 +56,8 @@ import "time"
 type BarrierInitializeRequest struct {
 	Secret          []byte `json:"secret"`
 	BarrierStrategy string `json:"barrier_strategy,omitempty"`
-	SOPin           string `json:"so_pin,omitempty"`
-	UserPin         string `json:"user_pin,omitempty"`
+	SOPin           Secret `json:"so_pin,omitempty"`
+	UserPin         Secret `json:"user_pin,omitempty"`
 }
 
 // BarrierUnsealRequest holds the secret used to unseal the barrier when
@@ -162,7 +162,7 @@ type ClusterSeal struct {
 // an SO PIN has been provisioned, and refuses the seal when no backend is
 // configured.
 type BarrierSealRequest struct {
-	SOPin string `json:"so_pin,omitempty"`
+	SOPin Secret `json:"so_pin,omitempty"`
 }
 
 // BarrierInitializeShamirRequest initializes the barrier under Shamir custody.
@@ -181,8 +181,8 @@ type BarrierInitializeShamirRequest struct {
 	Threshold   int    `json:"threshold"`
 	TotalShares int    `json:"total_shares"`
 	Policy      string `json:"policy,omitempty"`
-	SOPin       string `json:"so_pin,omitempty"`
-	UserPin     string `json:"user_pin,omitempty"`
+	SOPin       Secret `json:"so_pin,omitempty"`
+	UserPin     Secret `json:"user_pin,omitempty"`
 }
 
 // BarrierInitializeShamirResponse is the share-free result of a Shamir
@@ -226,7 +226,7 @@ type BarrierEnableEncryptionResponse struct {
 type BarrierGenerateRecoveryKeysRequest struct {
 	Threshold int    `json:"threshold"`
 	Policy    string `json:"policy,omitempty"`
-	SOPin     string `json:"so_pin,omitempty"`
+	SOPin     Secret `json:"so_pin,omitempty"`
 }
 
 // BarrierRecoveryKeysResponse is the share-free result of recovery key
@@ -434,7 +434,7 @@ type RekeyStartRequest struct {
 	Domain    string `json:"domain"`
 	Threshold int    `json:"threshold"`
 	Policy    string `json:"policy,omitempty"`
-	SOPin     string `json:"so_pin,omitempty"`
+	SOPin     Secret `json:"so_pin,omitempty"`
 }
 
 // OfficerRevokeRequest revokes a holder. Revocation is a rekey round that
@@ -445,7 +445,7 @@ type OfficerRevokeRequest struct {
 	Domain    string `json:"domain"`
 	Username  string `json:"username"`
 	Threshold int    `json:"threshold,omitempty"`
-	SOPin     string `json:"so_pin,omitempty"`
+	SOPin     Secret `json:"so_pin,omitempty"`
 }
 
 // QuorumRound describes an open quorum round.

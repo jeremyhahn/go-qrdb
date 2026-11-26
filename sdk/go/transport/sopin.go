@@ -15,7 +15,9 @@
 package transport
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -37,6 +39,32 @@ const SOPINHeader = "X-QRDB-SO-PIN"
 const SOPINMetadataKey = "x-qrdb-so-pin"
 
 // soPINKey is the context key WithSOPIN binds under.
+// Secret is a PIN or unseal secret a request carries as bytes the caller
+// can wipe. Its JSON form is a plain JSON string, byte-identical to the
+// string field it replaces, so the wire format does not change.
+type Secret []byte
+
+// MarshalJSON encodes the secret as a JSON string.
+func (s Secret) MarshalJSON() ([]byte, error) {
+	return json.Marshal(string(s))
+}
+
+// UnmarshalJSON decodes a JSON string (or null) into the secret.
+func (s *Secret) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		return nil
+	}
+	var str string
+	if err := json.Unmarshal(data, &str); err != nil {
+		return err
+	}
+	*s = Secret(str)
+	return nil
+}
+
+// Wipe zeroes the secret's bytes in place.
+func (s Secret) Wipe() { clear(s) }
+
 type soPINKey struct{}
 
 // soPIN holds the SDK's own copy of an SO PIN for the calls made with one
@@ -139,20 +167,21 @@ func (e *SOPINConflictError) Error() string {
 // ResolveSOPIN returns the SO PIN a request carries in its so_pin field, on
 // every network transport: the request's own SOPin, or the PIN bound by
 // WithSOPIN when the request has none. Both set and different is a
-// *SOPINConflictError.
-func ResolveSOPIN(ctx context.Context, method, requestPIN string) (string, error) {
+// *SOPINConflictError. The bound PIN is returned as a fresh copy the caller
+// wipes; a request PIN is returned as is.
+func ResolveSOPIN(ctx context.Context, method string, requestPIN Secret) (Secret, error) {
 	bound, ok, err := SOPINFromContext(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if !ok {
 		return requestPIN, nil
 	}
 	defer secure.Wipe(bound)
-	if requestPIN != "" && requestPIN != string(bound) {
-		return "", &SOPINConflictError{Method: method}
+	if len(requestPIN) != 0 && !bytes.Equal(requestPIN, bound) {
+		return nil, &SOPINConflictError{Method: method}
 	}
-	return string(bound), nil
+	return append(Secret(nil), bound...), nil
 }
 
 // SOPINUnaryClientInterceptor sends the PIN bound by WithSOPIN in the

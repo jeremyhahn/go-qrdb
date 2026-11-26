@@ -95,8 +95,8 @@ func TestUnixRT_CeremonyInitialize(t *testing.T) {
 	defer cleanup()
 
 	resp, err := tr.CeremonyInitialize(context.Background(), &transport.CeremonyInitializeRequest{
-		SOPin:     "1234",
-		UserPin:   "5678",
+		SOPin:     transport.Secret("1234"),
+		UserPin:   transport.Secret("5678"),
 		Threshold: 2,
 		Officers: []transport.CeremonyOfficerRequest{
 			{Username: "officer1", CSRPEM: "csr-pem-1"},
@@ -133,7 +133,7 @@ func TestUnixRT_CeremonySignCSR(t *testing.T) {
 
 	resp, err := tr.CeremonySignCSR(context.Background(), &transport.SignCSRInitRequest{
 		Username: "officer1",
-		SOPin:    "1234",
+		SOPin:    transport.Secret("1234"),
 		CSRPEM:   "csr-pem",
 		Role:     "officer",
 	})

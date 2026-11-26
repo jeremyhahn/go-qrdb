@@ -31,7 +31,7 @@ func TestE2E_BarrierInitialize_HappyPath(t *testing.T) {
 		return wire.StatusOK, nil
 	})
 	if err := tr.BarrierInitialize(context.Background(), &transport.BarrierInitializeRequest{
-		Secret: []byte("s"), SOPin: "1234", UserPin: "5678",
+		Secret: []byte("s"), SOPin: transport.Secret("1234"), UserPin: transport.Secret("5678"),
 	}); err != nil {
 		t.Fatalf("BarrierInitialize: %v", err)
 	}

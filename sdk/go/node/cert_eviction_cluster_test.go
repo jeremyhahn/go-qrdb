@@ -115,7 +115,7 @@ func TestClusteredNode_KeyBCacheEvictionPropagatesToEveryNode(t *testing.T) {
 		AdminCSRPEM:   string(adminCSRPEM),
 		SOUsername:    "acme-so",
 		SOCSRPEM:      string(soCSRPEM),
-		SOPin:         "acme-so-pin-1234",
+		SOPin:         transport.Secret("acme-so-pin-1234"),
 	}); err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}

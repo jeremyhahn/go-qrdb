@@ -108,8 +108,8 @@ func TestEmbedded_BarrierInitialize_PersistsPINs(t *testing.T) {
 
 	if err := tr.BarrierInitialize(context.Background(), &transport.BarrierInitializeRequest{
 		Secret:  []byte("s"),
-		SOPin:   "so-1234",
-		UserPin: "u-5678",
+		SOPin:   transport.Secret("so-1234"),
+		UserPin: transport.Secret("u-5678"),
 	}); err != nil {
 		t.Fatalf("BarrierInitialize: %v", err)
 	}
