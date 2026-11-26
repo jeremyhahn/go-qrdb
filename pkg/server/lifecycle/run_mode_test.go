@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
@@ -154,6 +155,52 @@ func TestClaimRunMode_InvalidModeRefused(t *testing.T) {
 	}
 }
 
+// TestClaimRunMode_ConcurrentOppositeModes pins that two first starts in
+// opposite modes on one fresh directory cannot both claim it: exactly one
+// succeeds, the other gets *RunModeMismatchError, and the marker names the
+// winner. flock locks belong to an open file description and each claim
+// opens the lock file itself, so goroutines in one process contend exactly
+// as two daemons do.
+func TestClaimRunMode_ConcurrentOppositeModes(t *testing.T) {
+	modes := []string{capabilities.ModeStandalone, capabilities.ModeRaft}
+	for i := 0; i < 32; i++ {
+		dir := t.TempDir()
+		start := make(chan struct{})
+		errs := make([]error, len(modes))
+		var wg sync.WaitGroup
+		for j, mode := range modes {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				errs[j] = ClaimRunMode(dir, mode)
+			}()
+		}
+		close(start)
+		wg.Wait()
+		winner := -1
+		for j, err := range errs {
+			if err == nil {
+				if winner >= 0 {
+					t.Fatalf("round %d: both modes claimed %s", i, dir)
+				}
+				winner = j
+				continue
+			}
+			var mm *RunModeMismatchError
+			if !errors.As(err, &mm) {
+				t.Fatalf("round %d: %s claim err = %v, want *RunModeMismatchError", i, modes[j], err)
+			}
+		}
+		if winner < 0 {
+			t.Fatalf("round %d: neither mode claimed %s: %v", i, dir, errs)
+		}
+		if got, _ := readRunModeMarker(t, dir); got != modes[winner]+"\n" {
+			t.Fatalf("round %d: marker = %q, want winner %s", i, got, modes[winner])
+		}
+	}
+}
+
 // TestClaimRunMode_MarkerIOFailures pins the guard failing closed when the
 // marker cannot be read or written: each failure is a *RunModeMarkerError
 // naming the path and wrapping the OS error, and no marker is left behind.
@@ -199,7 +246,7 @@ func TestClaimRunMode_MarkerIOFailures(t *testing.T) {
 		{
 			name:     "marker cannot be written",
 			setup:    readOnlyDir,
-			wantPath: func(d string) string { return filepath.Join(d, runModeMarker) + ".tmp" },
+			wantPath: func(d string) string { return filepath.Join(d, runModeMarker) + ".lock" },
 			wantErr:  fs.ErrPermission,
 			needPerm: true,
 		},

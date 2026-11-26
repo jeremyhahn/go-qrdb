@@ -41,8 +41,10 @@ func requireOnlyMarker(t *testing.T, dir string) {
 	if err != nil {
 		t.Fatalf("ReadDir: %v", err)
 	}
+	// The seeding claim leaves the marker and the lock file it claimed under;
+	// anything else was written by the refused start.
 	for _, e := range entries {
-		if e.Name() != ".qrdb-run-mode" {
+		if e.Name() != ".qrdb-run-mode" && e.Name() != ".qrdb-run-mode.lock" {
 			t.Fatalf("refused start created %s in the data directory", e.Name())
 		}
 	}
