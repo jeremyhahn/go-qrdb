@@ -39,7 +39,7 @@ func (b *SealBinding) Initialize(_ string) error {
 }
 
 // InitializeShamir returns a FeatureDisabledError.
-func (b *SealBinding) InitializeShamir(_ string, _, _ int) (*BootstrapResult, error) {
+func (b *SealBinding) InitializeShamir(_, _ int, _ string) (*BootstrapResult, error) {
 	return nil, &FeatureDisabledError{Feature: "embedded"}
 }
 

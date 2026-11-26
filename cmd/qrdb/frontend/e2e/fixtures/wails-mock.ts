@@ -47,6 +47,9 @@ export interface MockTenantInfo {
     allow_system_managed_barrier?: boolean;
     allow_dedicated_wal?: boolean;
   } | null;
+  isolation_type?: string;
+  description?: string;
+  metadata?: Record<string, string>;
   created_at: string;
   updated_at: string;
 }
@@ -87,6 +90,11 @@ export interface MockState {
   isFirstRun: boolean;
   wizardState: Record<string, unknown> | null;
   configInitialized: boolean;
+  /**
+   * CeremonyBinding.Status override. Unset reports "operational" with the
+   * mock pin once configured ("awaiting_init" before).
+   */
+  ceremonyStatus?: { state: string; spkiPin?: string };
   /** Server topology mode — controls whether the Cluster nav item is visible. */
   serverMode: 'standalone' | 'raft';
   /**
@@ -108,6 +116,33 @@ export interface MockState {
     sharesProvided: number;
     sharesTotal: number;
     strategy?: string;
+    /** The node barrier's cluster seal state (SealStatus.clusterSeal). */
+    clusterSeal?: {
+      active: boolean;
+      sealed: boolean;
+      epoch: number;
+      principal?: string;
+      principalTenant?: string;
+      node?: string;
+      at?: string;
+      local?: string;
+    };
+    /** The node barrier's cluster migration (SealStatus.clusterMigration). */
+    clusterMigration?: {
+      unconfirmed?: boolean;
+      target?: string;
+      generation?: number;
+      acked: number;
+      total: number;
+      nodes?: { nodeId: string; step?: string; phase?: string; attempts?: number; detail?: string }[];
+    };
+    /**
+     * The desktop binding's answer for a node the cluster seal holds
+     * (SealStatus.clusterHeld): the node refused status with 503 SEALED, so
+     * SealBinding.Status reports {sealed: true, initialized: true,
+     * clusterHeld: true} and nothing else.
+     */
+    clusterHeld?: boolean;
   };
   unsealProgress: {
     sealed: boolean;
@@ -157,6 +192,11 @@ export interface MockState {
    * semantics. See wails-mock.ts's MVCCBinding.RestoreToRevision.
    */
   restoreSimulateConflict?: boolean;
+  /**
+   * Databases whose store keeps no revisions: MVCCBinding.CurrentRevision
+   * answers 501 when called with one of them.
+   */
+  noRevisionDatabases?: string[];
   errors: Record<string, string>;
 }
 
@@ -357,6 +397,15 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
       await hold.gate;
     }
 
+    // noteMvccDatabase records which database each MVCCBinding call was
+    // scoped to ("" is the connection's default database).
+    function noteMvccDatabase(method: string, database: string): void {
+      const w = window as unknown as {
+        __QRDB_MOCK_MVCC_CALLS__?: Array<{ method: string; database: string }>;
+      };
+      (w.__QRDB_MOCK_MVCC_CALLS__ ??= []).push({ method, database });
+    }
+
     // settingsEnvelope unwraps a database settings request the way the Go
     // binding decodes it: the config sits under one key ({raft: {...}}). A
     // bare config object fails, as it does against the real binding, where
@@ -369,7 +418,11 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
     }
 
     // Stateful in-memory stores for CRUD bindings
-    const kvStore = new Map<string, string>();
+    // kvStore, revisionHistory, kvLeaseBindings, leaseStore, mvccRevision
+    // and compactedRevision hold the keyspace of the database the current
+    // KV/MVCC/Lease call is scoped to; useDatabase() swaps them, so each
+    // database keeps its own store as it does on a real server.
+    let kvStore = new Map<string, string>();
 
     // The platform's node-keyspace compaction policy, as AdminBinding holds
     // it: null when none is set.
@@ -385,7 +438,10 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
     // every write, KV or MVCC. Each key's history is an ordered list of
     // (revision, value) entries; value === null marks a delete.
     let mvccRevision = 0;
-    const revisionHistory = new Map<string, Array<{ revision: number; value: string | null }>>();
+    // Highest revision MVCCBinding.Compact has discarded history up to; a
+    // GetAtRevision below it fails as a compacted read does on a real daemon.
+    let compactedRevision = 0;
+    let revisionHistory = new Map<string, Array<{ revision: number; value: string | null }>>();
 
     /** Records a write (value !== null) or delete (value === null) for key, bumping the shared revision counter, and returns the new revision. */
     function recordRevision(key: string, value: string | null): number {
@@ -435,7 +491,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
     const certStore = new Map<string, {
       serial: string;
       username: string;
-      tenantId: string;
+      tenantID: string;
       issuedAt: string;
       expiresAt: string;
       revoked: boolean;
@@ -521,9 +577,121 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
     // Group id -> member user ids.
     const groupMembers = new Map<string, string[]>();
 
+    // Volume pool catalog store (VolumePoolBinding). Assignments are the
+    // tenants placed on each pool; tests seed them through
+    // window.__volumePoolAssign because tenant placement is not a
+    // VolumePoolBinding method.
+    type MockVolumePool = {
+      name: string;
+      provider: string;
+      description?: string;
+      capacityBytes: number;
+      reservedBytes: number;
+      usedBytes: number;
+      tenantCount: number;
+      nodes: { ready: number; locked: number; unavailable: number; unmapped: number };
+      overcommit: number;
+      createdAt: string;
+      updatedAt: string;
+    };
+    const volumePoolStore = new Map<string, MockVolumePool>();
+    const volumePoolAssignments = new Map<string, { tenantId: string; reservedBytes: number }[]>();
+    const volumePoolView = (p: MockVolumePool): MockVolumePool => {
+      const assigned = volumePoolAssignments.get(p.name) ?? [];
+      return {
+        ...p,
+        nodes: { ...p.nodes },
+        tenantCount: assigned.length,
+        reservedBytes: assigned.reduce((sum, a) => sum + a.reservedBytes, 0),
+      };
+    };
+    (window as unknown as Record<string, unknown>).__volumePoolAssign = (
+      pool: string,
+      tenantId: string,
+      reservedBytes: number,
+    ) => {
+      const list = volumePoolAssignments.get(pool) ?? [];
+      list.push({ tenantId, reservedBytes });
+      volumePoolAssignments.set(pool, list);
+    };
+    // ListTenants paginates by offset tokens. A test may hold every page
+    // after the first (a request with a page token) until it releases
+    // them, and read how many tenant pages were requested and answered.
+    const volumePoolTenantHolds: Array<() => void> = [];
+    let volumePoolHoldTenantPages = false;
+    let volumePoolTenantPageCalls = 0;
+    let volumePoolTenantPagesAnswered = 0;
+    (window as unknown as Record<string, unknown>).__volumePoolHoldTenantPages = (on: boolean) => {
+      volumePoolHoldTenantPages = on;
+    };
+    (window as unknown as Record<string, unknown>).__volumePoolReleaseTenantPages = () => {
+      for (const release of volumePoolTenantHolds.splice(0)) release();
+    };
+    // The first page (empty pageToken) has its own hold, so a test can
+    // assert the pool's loading state before any tenant page answers; the
+    // later-page hold above stays off the first page for the pagination tests.
+    const volumePoolFirstTenantPageHolds: Array<() => void> = [];
+    let volumePoolHoldFirstTenantPage = false;
+    (window as unknown as Record<string, unknown>).__volumePoolHoldFirstTenantPage = (on: boolean) => {
+      volumePoolHoldFirstTenantPage = on;
+    };
+    (window as unknown as Record<string, unknown>).__volumePoolReleaseFirstTenantPage = () => {
+      volumePoolHoldFirstTenantPage = false;
+      for (const release of volumePoolFirstTenantPageHolds.splice(0)) release();
+    };
+    (window as unknown as Record<string, unknown>).__volumePoolTenantPageStats = () => ({
+      requested: volumePoolTenantPageCalls,
+      answered: volumePoolTenantPagesAnswered,
+    });
+
     // Lease store
-    const leaseStore = new Map<number, { id: number; ttl: number; granted_ttl: number; remaining_ttl: number }>();
+    let leaseStore = new Map<number, { id: number; ttl: number; granted_ttl: number; remaining_ttl: number }>();
     let leaseIdCounter = 0;
+    // Lease each key is bound to (mvcc.putWithLease); a plain kv.put
+    // releases the binding, as the server does.
+    let kvLeaseBindings = new Map<string, number>();
+
+    // One keyspace per database; "" (and "system") is the connection's
+    // default database, the one every unscoped binding reaches.
+    type Keyspace = {
+      store: Map<string, string>;
+      history: Map<string, Array<{ revision: number; value: string | null }>>;
+      leases: typeof leaseStore;
+      leaseBindings: Map<string, number>;
+      revision: number;
+      compacted: number;
+    };
+    const keyspaces = new Map<string, Keyspace>();
+    let currentDatabase = "";
+    keyspaces.set("", {
+      store: kvStore,
+      history: revisionHistory,
+      leases: leaseStore,
+      leaseBindings: kvLeaseBindings,
+      revision: mvccRevision,
+      compacted: compactedRevision,
+    });
+
+    /** Points the keyspace variables at database's store, creating it empty on first use. */
+    function useDatabase(database: string | undefined): void {
+      const name = !database || database === "system" ? "" : database;
+      if (name === currentDatabase) return;
+      const current = keyspaces.get(currentDatabase) as Keyspace;
+      current.revision = mvccRevision;
+      current.compacted = compactedRevision;
+      let next = keyspaces.get(name);
+      if (!next) {
+        next = { store: new Map(), history: new Map(), leases: new Map(), leaseBindings: new Map(), revision: 0, compacted: 0 };
+        keyspaces.set(name, next);
+      }
+      kvStore = next.store;
+      revisionHistory = next.history;
+      leaseStore = next.leases;
+      kvLeaseBindings = next.leaseBindings;
+      mvccRevision = next.revision;
+      compactedRevision = next.compacted;
+      currentDatabase = name;
+    }
 
     // Collection and document stores
     const collectionStore = new Map<string, {
@@ -602,6 +770,13 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
         },
         SealBinding: {
+          // SealBinding.EnableEncryption(req) returns cmd/qrdb's
+          // EnableEncryptionResult: the migration starts and the scope is
+          // the tenant's when req.tenant_id is set, else the system's.
+          EnableEncryption: async (req: { tenant_id?: string; strategy?: string }) => {
+            maybeReject("SealBinding.EnableEncryption");
+            return { status: "migration_started", scope: req?.tenant_id ? "tenant" : "system" };
+          },
           // SealBinding.Unseal(secret): credential barriers only. A Shamir
           // barrier opens through a holder quorum, and the real binding
           // refuses this call for it.
@@ -661,7 +836,48 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
           Status: async () => {
             maybeReject("SealBinding.Status");
-            return { ...getState().sealStatus };
+            const st = getState().sealStatus;
+            if (st.clusterHeld) {
+              // A held node refuses status with 503 SEALED; the binding
+              // answers with the held flag and nothing of the barrier.
+              return {
+                sealed: true,
+                initialized: true,
+                strategy: "",
+                sharesRequired: 0,
+                sharesProvided: 0,
+                sharesTotal: 0,
+                clusterSeal: null,
+                clusterMigration: null,
+                clusterHeld: true,
+              };
+            }
+            return { ...st };
+          },
+          // SealBinding.ClusterUnseal(): clears the replicated cluster seal
+          // record, written through this node by the caller, and returns it.
+          ClusterUnseal: async () => {
+            maybeReject("SealBinding.ClusterUnseal");
+            const s = getState();
+            const prev = s.sealStatus.clusterSeal;
+            const next = {
+              active: true,
+              sealed: false,
+              epoch: (prev?.epoch ?? 0) + 1,
+              principal: "admin",
+              principalTenant: "system",
+              node: "127.0.0.1:7000",
+              at: "2026-11-12T10:00:00Z",
+              local: "serving",
+            };
+            s.sealStatus.clusterSeal = next;
+            // A held node's own barrier was unsealed all along; once the
+            // record clears it serves, and answers status again.
+            if (s.sealStatus.clusterHeld) {
+              s.sealStatus.clusterHeld = false;
+              s.sealStatus.sealed = false;
+            }
+            return { ...next };
           },
         },
         CeremonyBinding: {
@@ -739,6 +955,8 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
           Status: async () => {
             maybeReject("CeremonyBinding.Status");
+            const override = getState().ceremonyStatus;
+            if (override) return { ...override };
             return {
               state: getState().configInitialized ? "operational" : "awaiting_init",
               spkiPin: "mockpin",
@@ -918,10 +1136,14 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           };
         })(),
         EmbeddedServerBinding: {
-          StartEmbedded: async (_config: unknown) => {
+          StartEmbedded: async (config: unknown) => {
             maybeReject("EmbeddedServerBinding.StartEmbedded");
             const s = getState();
             s.embeddedRunning = true;
+            // The Go binding persists the config it started with.
+            const saved = s as { embeddedSavedConfig?: boolean; embeddedSavedConfigValue?: unknown };
+            saved.embeddedSavedConfig = true;
+            saved.embeddedSavedConfigValue = config;
           },
           StopEmbedded: async () => {
             maybeReject("EmbeddedServerBinding.StopEmbedded");
@@ -929,14 +1151,55 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             s.embeddedRunning = false;
           },
           IsEmbedded: () => getState().embeddedRunning,
+          HasSavedConfig: async () => {
+            maybeReject("EmbeddedServerBinding.HasSavedConfig");
+            return (getState() as { embeddedSavedConfig?: boolean }).embeddedSavedConfig === true;
+          },
+          RestoreEmbedded: async () => {
+            maybeReject("EmbeddedServerBinding.RestoreEmbedded");
+            const s = getState();
+            if ((s as { embeddedSavedConfig?: boolean }).embeddedSavedConfig !== true) {
+              throw new Error("no saved embedded server config");
+            }
+            s.embeddedRunning = true;
+          },
+          SavedConfig: async () => {
+            maybeReject("EmbeddedServerBinding.SavedConfig");
+            const s = getState() as {
+              embeddedSavedConfig?: boolean;
+              embeddedSavedConfigValue?: unknown;
+            };
+            if (s.embeddedSavedConfig !== true) {
+              throw new Error("no saved embedded server config");
+            }
+            // A state seeded with only the flag saved a default config.
+            return (
+              s.embeddedSavedConfigValue ?? {
+                storageBackend: "memory",
+                dataDir: "/mock/saved",
+                raftEnabled: false,
+              }
+            );
+          },
+          ClearSavedConfig: async () => {
+            maybeReject("EmbeddedServerBinding.ClearSavedConfig");
+            (getState() as { embeddedSavedConfig?: boolean }).embeddedSavedConfig = false;
+          },
         },
+        // Every KVBinding method takes the database it is scoped to first,
+        // as the Go binding does.
         KVBinding: {
-          Put: async (key: string, value: string) => {
+          Put: async (database: string, key: string, value: string) => {
+            useDatabase(database);
             maybeReject("KVBinding.Put");
             kvStore.set(key, value);
+            kvLeaseBindings.delete(key);
             recordRevision(key, value);
           },
-          Get: async (key: string) => {
+          Get: async (database: string, key: string) => {
+            // A held Get still reads the database it was sent to.
+            await maybeHold("KVBinding.Get");
+            useDatabase(database);
             maybeReject("KVBinding.Get");
             const val = kvStore.get(key);
             if (val === undefined) {
@@ -944,12 +1207,20 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             }
             return val;
           },
-          Delete: async (key: string) => {
+          Delete: async (database: string, key: string) => {
+            // Held per database ("KVBinding.Delete@<database>"); a held
+            // Delete still deletes in the database it was sent to.
+            await maybeHold(`KVBinding.Delete@${database}`);
+            useDatabase(database);
             maybeReject("KVBinding.Delete");
             kvStore.delete(key);
             recordRevision(key, null);
           },
-          List: async (prefix: string) => {
+          List: async (database: string, prefix: string) => {
+            // Held per database ("KVBinding.List@<database>"), so a test can
+            // delay one database's listing while another's completes.
+            await maybeHold(`KVBinding.List@${database}`);
+            useDatabase(database);
             maybeReject("KVBinding.List");
             const keys: string[] = [];
             for (const k of kvStore.keys()) {
@@ -959,11 +1230,16 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             }
             return keys;
           },
-          Exists: async (key: string) => {
+          // Exists runs the same Get the Go binding does: only a missing key
+          // answers false, and any other Get failure is the call's error.
+          Exists: async (database: string, key: string) => {
+            useDatabase(database);
             maybeReject("KVBinding.Exists");
+            maybeReject("KVBinding.Get");
             return kvStore.has(key);
           },
-          Scan: async (prefix: string) => {
+          Scan: async (database: string, prefix: string) => {
+            useDatabase(database);
             maybeReject("KVBinding.Scan");
             // Return a Record<string, string> mapping key → value, as expected by
             // the AuditLog component's `client.kv.scan()` call.
@@ -976,6 +1252,56 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             return result;
           },
         },
+        // InvitationBinding mirrors cmd/qrdb/bindings_invitations.go. Invite
+        // issues a single-use token; Redeem (unauthenticated, dials its own
+        // server) exchanges an issued token plus a CSR for a certificate and
+        // consumes the token, so an unknown or reused token rejects.
+        InvitationBinding: (() => {
+          const issued = new Map<
+            string,
+            { userID: string; username: string; tenantID: string }
+          >();
+          let seq = 0;
+          return {
+            Invite: async (req: { username: string; email?: string; name?: string; roleIDs?: string[] }) => {
+              maybeReject("InvitationBinding.Invite");
+              if (!req || !req.username) throw new Error("username is required");
+              seq += 1;
+              const token = `inv-token-${seq}-${req.username}`;
+              const userID = `user-inv-${seq}`;
+              issued.set(token, { userID, username: req.username, tenantID: "default" });
+              return {
+                id: `invitation-${seq}`,
+                token,
+                userID,
+                username: req.username,
+                expiresAt: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+              };
+            },
+            Redeem: async (req: {
+              server?: string;
+              transport?: string;
+              caFile?: string;
+              tenantID: string;
+              token: string;
+              csrPEM: string;
+            }) => {
+              maybeReject("InvitationBinding.Redeem");
+              const inv = issued.get(req.token);
+              if (!inv) throw new Error("invitation token is invalid or expired");
+              if (!req.csrPEM || !req.csrPEM.includes("CERTIFICATE REQUEST")) {
+                throw new Error("csrPEM must be a PEM certificate request");
+              }
+              issued.delete(req.token);
+              return {
+                userID: inv.userID,
+                username: inv.username,
+                tenantID: req.tenantID || inv.tenantID,
+                certPEM: `-----BEGIN CERTIFICATE-----\nMOCK-${inv.username}\n-----END CERTIFICATE-----\n`,
+              };
+            },
+          };
+        })(),
         AdminBinding: {
           Health: async () => {
             maybeReject("AdminBinding.Health");
@@ -1017,6 +1343,24 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             nodeCompaction = policy && policy.mode && policy.mode !== "off" ? { ...policy } : null;
             return nodeCompaction;
           },
+          // JoinTokenMintable and MintJoinToken mirror AdminBinding: minting
+          // is offered only when the active profile is an authenticated
+          // external connection (__QRDB_MOCK_REMOTE__), never the embedded
+          // one, and MintJoinToken refuses there just as the Go binding does.
+          JoinTokenMintable: async () => {
+            maybeReject("AdminBinding.JoinTokenMintable");
+            return (window as unknown as Record<string, unknown>).__QRDB_MOCK_REMOTE__ === true;
+          },
+          MintJoinToken: async (nodeId: string, _ttlSeconds: number) => {
+            maybeReject("AdminBinding.MintJoinToken");
+            if ((window as unknown as Record<string, unknown>).__QRDB_MOCK_REMOTE__ !== true) {
+              throw new Error("join tokens are minted only over an authenticated remote connection");
+            }
+            return {
+              token: `mock-join-token-${nodeId}`,
+              expires_at: "2030-01-01T00:00:00Z",
+            };
+          },
           GetTopology: async () => {
             maybeReject("AdminBinding.GetTopology");
             return {
@@ -1036,9 +1380,13 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
         },
         MVCCBinding: {
-          PutWithLease: async (key: string, value: string, leaseId?: number) => {
+          PutWithLease: async (database: string, key: string, value: string, leaseId?: number) => {
+            noteMvccDatabase("PutWithLease", database);
+            useDatabase(database);
             maybeReject("MVCCBinding.PutWithLease");
             kvStore.set(key, value);
+            if (leaseId) kvLeaseBindings.set(key, leaseId);
+            else kvLeaseBindings.delete(key);
             const rev = recordRevision(key, value);
             return { revision: rev, leaseId: leaseId ?? 0 };
           },
@@ -1049,14 +1397,29 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           // base64-decodes) -- so, unlike KVBinding's plaintext strings,
           // every key/value this binding returns must be base64-encoded
           // here to round-trip correctly.
-          GetRevision: async (key: string) => {
+          GetRevision: async (database: string, key: string) => {
+            noteMvccDatabase("GetRevision", database);
+            useDatabase(database);
             maybeReject("MVCCBinding.GetRevision");
+            await maybeHold("MVCCBinding.GetRevision");
             const val = kvStore.get(key);
             if (val === undefined) throw new Error(`key "${key}" not found`);
-            return { key: encodeB64(key), value: encodeB64(val), revision: currentModRevision(key), version: 1 };
+            const leaseId = kvLeaseBindings.get(key) ?? 0;
+            return {
+              key: encodeB64(key),
+              value: encodeB64(val),
+              revision: currentModRevision(key),
+              version: 1,
+              ...(leaseId ? { leaseId } : {}),
+            };
           },
-          GetAtRevision: async (key: string, revision: number) => {
+          GetAtRevision: async (database: string, key: string, revision: number) => {
+            noteMvccDatabase("GetAtRevision", database);
+            useDatabase(database);
             maybeReject("MVCCBinding.GetAtRevision");
+            if (revision < compactedRevision) {
+              throw new Error(`mvcc: required revision ${revision} has been compacted (compacted to ${compactedRevision})`);
+            }
             const val = valueAtRevision(key, revision);
             if (val === null) throw new Error(`key "${key}" not found at revision ${revision}`);
             return { key: encodeB64(key), value: encodeB64(val), revision };
@@ -1068,7 +1431,9 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           // live kvStore, so a caller can browse the keyspace exactly as it
           // looked at that revision -- including keys since deleted, and
           // excluding keys not yet created.
-          Range: async (start: string, end: string, opts?: { revision?: number }) => {
+          Range: async (database: string, start: string, end: string, opts?: { revision?: number }) => {
+            noteMvccDatabase("Range", database);
+            useDatabase(database);
             maybeReject("MVCCBinding.Range");
             const asOf = opts && typeof opts.revision === "number" && opts.revision > 0 ? opts.revision : null;
             const kvs: { key: string; value: string }[] = [];
@@ -1088,10 +1453,24 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             }
             return { kvs: kvs.map((kv) => ({ key: encodeB64(kv.key), value: encodeB64(kv.value) })), count: kvs.length };
           },
-          Compact: async (_revision: number) => {
+          Compact: async (database: string, revision: number) => {
+            noteMvccDatabase("Compact", database);
+            useDatabase(database);
             maybeReject("MVCCBinding.Compact");
+            if (revision > mvccRevision) {
+              throw new Error(`mvcc: required revision ${revision} is a future revision`);
+            }
+            if (revision > compactedRevision) compactedRevision = revision;
+            (window as unknown as { __mvccCompactedRevision?: number }).__mvccCompactedRevision = compactedRevision;
           },
-          CurrentRevision: async () => {
+          CurrentRevision: async (database: string) => {
+            noteMvccDatabase("CurrentRevision", database);
+            useDatabase(database);
+            await maybeHold("MVCCBinding.CurrentRevision");
+            // A store without revisions answers 501, per database.
+            if ((getState().noRevisionDatabases ?? []).includes(database)) {
+              throw new Error("501 Not Implemented");
+            }
             maybeReject("MVCCBinding.CurrentRevision");
             return mvccRevision;
           },
@@ -1108,13 +1487,15 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           // already-camelCase fields here would double-transform nothing
           // (single words are unaffected) but would misrepresent the wire
           // shape this mock exists to stand in for.
-          RestoreToRevision: async (req: {
+          RestoreToRevision: async (database: string, req: {
             revision: number;
             prefix?: string;
             keys?: string[];
             dry_run?: boolean;
             force?: boolean;
           }) => {
+            noteMvccDatabase("RestoreToRevision", database);
+            useDatabase(database);
             maybeReject("MVCCBinding.RestoreToRevision");
             const revision = Number(req.revision) || 0;
             const dryRun = Boolean(req.dry_run);
@@ -1235,8 +1616,9 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
         },
         BatchBinding: {
-          Execute: async (ops: { type: number | string; key: string; value?: string }[]) => {
+          Execute: async (database: string, ops: { type: number | string; key: string; value?: string }[]) => {
             maybeReject("BatchBinding.Execute");
+            useDatabase(database);
             const responses = ops.map((op: { type: number | string; key: string; value?: string }) => {
               // Handle both numeric (from SDK) and string op types
               const typeStr = typeof op.type === "number"
@@ -1259,7 +1641,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             });
             return { responses };
           },
-          ImportFile: async (_filePath: string, _opts: unknown) => {
+          ImportFile: async (_database: string, _filePath: string, _opts: unknown) => {
             maybeReject("BatchBinding.ImportFile");
             return { total: 3, succeeded: 3, failed: 0, errors: [] };
           },
@@ -1341,7 +1723,10 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           }
 
           return {
-            Create: async (req: { name: string; field_name: string; unique?: boolean; sparse?: boolean; numeric?: boolean }) => {
+            // Every index binding takes the scoped database first, as the Go
+            // binding does; collection indexes already carry the database in
+            // their names, so the mock keeps one index store.
+            Create: async (_database: string, req: { name: string; field_name: string; unique?: boolean; sparse?: boolean; numeric?: boolean }) => {
               maybeReject("IndexBinding.Create");
               const entries = new Map<string, string[]>();
               // Backfill from any documents that already exist in the collection.
@@ -1378,12 +1763,12 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
                 entries,
               });
             },
-            Drop: async (name: string) => {
+            Drop: async (_database: string, name: string) => {
               maybeReject("IndexBinding.Drop");
               if (!indexStore.has(name)) throw new Error(`index "${name}" not found`);
               indexStore.delete(name);
             },
-            Query: async (indexName: string, value: string) => {
+            Query: async (_database: string, indexName: string, value: string) => {
               maybeReject("IndexBinding.Query");
               const idx = indexStore.get(indexName);
               if (idx === undefined) return { keys: [] };
@@ -1400,7 +1785,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               const keys = idx.entries.get(value) ?? [];
               return { keys: [...keys] };
             },
-            Scan: async (indexName: string, start: string, end: string) => {
+            Scan: async (_database: string, indexName: string, start: string, end: string) => {
               maybeReject("IndexBinding.Scan");
               const idx = indexStore.get(indexName);
               if (idx === undefined) return { entries: [] };
@@ -1428,7 +1813,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               }
               return { entries: result };
             },
-            List: async () => {
+            List: async (_database: string) => {
               maybeReject("IndexBinding.List");
               return { names: Array.from(indexStore.keys()) };
             },
@@ -1439,18 +1824,21 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           };
         })(),
         LeaseBinding: {
-          Grant: async (ttl: number) => {
+          Grant: async (database: string, ttl: number) => {
+            useDatabase(database);
             maybeReject("LeaseBinding.Grant");
             const id = ++leaseIdCounter;
             leaseStore.set(id, { id, ttl, granted_ttl: ttl, remaining_ttl: ttl });
             return { id, ttl, granted_ttl: ttl, remaining_ttl: ttl };
           },
-          Revoke: async (id: number) => {
+          Revoke: async (database: string, id: number) => {
+            useDatabase(database);
             maybeReject("LeaseBinding.Revoke");
             if (!leaseStore.has(id)) throw new Error(`lease ${id} not found`);
             leaseStore.delete(id);
           },
-          KeepAlive: async (id: number) => {
+          KeepAlive: async (database: string, id: number) => {
+            useDatabase(database);
             maybeReject("LeaseBinding.KeepAlive");
             const lease = leaseStore.get(id);
             if (!lease) throw new Error(`lease ${id} not found`);
@@ -1459,13 +1847,15 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             lease.remaining_ttl = lease.granted_ttl;
             return { ...lease };
           },
-          TimeToLive: async (id: number) => {
+          TimeToLive: async (database: string, id: number) => {
+            useDatabase(database);
             maybeReject("LeaseBinding.TimeToLive");
             const lease = leaseStore.get(id);
             if (!lease) throw new Error(`lease ${id} not found`);
             return { ...lease };
           },
-          List: async () => {
+          List: async (database: string) => {
+            useDatabase(database);
             maybeReject("LeaseBinding.List");
             return Array.from(leaseStore.values());
           },
@@ -1475,13 +1865,17 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           const tsRetentionStore = new Map<string, number>();
           const tsDeletedMetrics = new Set<string>();
           return {
-            Write: async (metric: string, value: number, timestampNs: number) => {
+            Write: async (_database: string, point: Record<string, unknown>) => {
+              // TimeSeriesBinding.Write(point *TSDataPoint): one snake_case object.
               maybeReject("TimeSeriesBinding.Write");
+              const metric = point["metric"] as string;
+              const value = point["value"] as number;
+              const timestampNs = (point["timestamp_ns"] ?? point["timestampNs"] ?? Date.now() * 1_000_000) as number;
               if (!tsDeletedMetrics.has(metric)) {
                 tsPoints.push({ metric, value, timestampNs });
               }
             },
-            WriteBatch: async (points: Array<{ metric: string; value: number; timestampNs: number }>) => {
+            WriteBatch: async (_database: string, points: Array<{ metric: string; value: number; timestampNs: number }>) => {
               maybeReject("TimeSeriesBinding.WriteBatch");
               for (const p of points) {
                 if (!tsDeletedMetrics.has(p.metric)) {
@@ -1489,7 +1883,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
                 }
               }
             },
-            WritePoint: async (point: Record<string, unknown>) => {
+            WritePoint: async (_database: string, point: Record<string, unknown>) => {
               maybeReject("TimeSeriesBinding.WritePoint");
               const metric = point["metric"] as string;
               const tsNs = (point["timestamp_ns"] ?? point["timestampNs"]) as number;
@@ -1502,7 +1896,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
                 });
               }
             },
-            Query: async (req: Record<string, unknown>) => {
+            Query: async (_database: string, req: Record<string, unknown>) => {
               maybeReject("TimeSeriesBinding.Query");
               const startNs = (req["start_ns"] ?? req["startNs"]) as number;
               const endNs = (req["end_ns"] ?? req["endNs"]) as number;
@@ -1511,7 +1905,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               );
               return { points: filtered.map((p) => ({ metric: p.metric, value: p.value, timestampNs: p.timestampNs, tags: p.tags ?? [] })) };
             },
-            Aggregate: async (req: Record<string, unknown>) => {
+            Aggregate: async (_database: string, req: Record<string, unknown>) => {
               maybeReject("TimeSeriesBinding.Aggregate");
               const startNs = (req["start_ns"] ?? req["startNs"]) as number;
               const endNs = (req["end_ns"] ?? req["endNs"]) as number;
@@ -1529,11 +1923,11 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
                 default: return { result: 0 };
               }
             },
-            RichQuery: async () => {
+            RichQuery: async (_database: string) => {
               maybeReject("TimeSeriesBinding.RichQuery");
               return { series: [] };
             },
-            DeleteSeries: async (req: { metric: string }) => {
+            DeleteSeries: async (_database: string, req: { metric: string }) => {
               maybeReject("TimeSeriesBinding.DeleteSeries");
               let deleted = 0;
               for (let i = tsPoints.length - 1; i >= 0; i--) {
@@ -1546,15 +1940,17 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               tsDeletedMetrics.add(req.metric);
               return { deleted };
             },
-            GetRetention: async (req: { metric: string }) => {
+            GetRetention: async (_database: string, req: { metric: string }) => {
               maybeReject("TimeSeriesBinding.GetRetention");
-              return { days: tsRetentionStore.get(req.metric) ?? 0 };
+              // As the Go binding: an unset policy is the engine's non-nil
+              // empty policy (duration 0), not null.
+              return { policy: { durationNs: tsRetentionStore.get(req.metric) ?? 0 } };
             },
-            SetRetention: async (req: { metric: string; days: number }) => {
+            SetRetention: async (_database: string, req: { metric: string; policy?: { duration_ns?: number } }) => {
               maybeReject("TimeSeriesBinding.SetRetention");
-              tsRetentionStore.set(req.metric, req.days);
+              tsRetentionStore.set(req.metric, req.policy?.duration_ns ?? 0);
             },
-            ListMetrics: async (req?: { prefix?: string }) => {
+            ListMetrics: async (_database: string, req?: { prefix?: string }) => {
               maybeReject("TimeSeriesBinding.ListMetrics");
               const metricSet = new Set<string>();
               for (const p of tsPoints) {
@@ -1578,13 +1974,25 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           UpsertVector: async () => ({}),
           GetVector: async () => ({}),
           DeleteVector: async () => {},
-          BatchUpsert: async () => ({}),
-          BatchDeleteVectors: async () => ({}),
+          // The Go BatchUpsertResponse / BatchDeleteVectorsResponse shapes.
+          BatchUpsert: async (_database: unknown, req: { vectors?: unknown[] }) => ({
+            ids: [], versions: [], timestamp: 0, success: true,
+            inserted_count: (req?.vectors ?? []).length,
+          }),
+          BatchDeleteVectors: async (_database: unknown, req: { ids?: unknown[] }) => ({
+            deleted_count: (req?.ids ?? []).length, failed_ids: [], timestamp: 0, success: true,
+          }),
           ListVectors: async () => ({ vectors: [] }),
           UpdateMetadata: async () => {},
           SearchSimilar: async () => ({ results: [] }),
           SearchByMetadata: async () => ({ results: [] }),
-          HybridSearch: async () => ({ results: [] }),
+          // transport.HybridSearchRequest: query_vector is required.
+          HybridSearch: async (_database: unknown, req: { query_vector?: number[] }) => {
+            if (!Array.isArray(req?.query_vector) || req.query_vector.length === 0) {
+              throw new Error("query vector is required");
+            }
+            return { results: [] };
+          },
           SearchByID: async () => ({ results: [] }),
           RebuildIndex: async () => ({}),
           GetRebuildProgress: async () => ({}),
@@ -1713,6 +2121,87 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             user.certBindings = (user.certBindings ?? []).filter((b) => b.thumbprint !== thumbprint);
             user.updatedAt = new Date().toISOString();
             return { ...user, roleIds: [...(user.roleIds ?? [])] };
+          },
+        },
+        VolumePoolBinding: {
+          List: async () => {
+            maybeReject("VolumePoolBinding.List");
+            return Array.from(volumePoolStore.values())
+              .sort((a, b) => a.name.localeCompare(b.name))
+              .map(volumePoolView);
+          },
+          Get: async (name: string) => {
+            maybeReject("VolumePoolBinding.Get");
+            const p = volumePoolStore.get(name);
+            if (!p) throw new Error(`volume pool "${name}" not found`);
+            return {
+              ...volumePoolView(p),
+              nodeReports: [
+                { nodeId: "node-1", state: "ready", sizeBytes: p.capacityBytes, freeBytes: p.capacityBytes, detail: "mock", reportedAt: p.updatedAt },
+              ],
+            };
+          },
+          Create: async (req: { name: string; provider?: string; description?: string; capacityBytes?: number; overcommit?: number }) => {
+            maybeReject("VolumePoolBinding.Create");
+            if (!req.name) throw new Error("volume pool name is required");
+            if (volumePoolStore.has(req.name)) throw new Error(`volume pool "${req.name}" already exists`);
+            const overcommit = req.overcommit && req.overcommit > 0 ? req.overcommit : 1;
+            if (overcommit < 1) throw new Error("overcommit must be >= 1.0");
+            const now = new Date().toISOString();
+            const p: MockVolumePool = {
+              name: req.name,
+              provider: req.provider || "dir",
+              description: req.description || undefined,
+              capacityBytes: req.capacityBytes ?? 0,
+              reservedBytes: 0,
+              usedBytes: 0,
+              tenantCount: 0,
+              nodes: { ready: 1, locked: 0, unavailable: 0, unmapped: 0 },
+              overcommit,
+              createdAt: now,
+              updatedAt: now,
+            };
+            volumePoolStore.set(p.name, p);
+            return volumePoolView(p);
+          },
+          Update: async (name: string, req: { description?: string; capacityBytes?: number; overcommit?: number }) => {
+            maybeReject("VolumePoolBinding.Update");
+            const p = volumePoolStore.get(name);
+            if (!p) throw new Error(`volume pool "${name}" not found`);
+            if (req.overcommit !== undefined && req.overcommit < 1) throw new Error("overcommit must be >= 1.0");
+            if (req.description !== undefined) p.description = req.description;
+            if (req.capacityBytes !== undefined) p.capacityBytes = req.capacityBytes;
+            if (req.overcommit !== undefined) p.overcommit = req.overcommit;
+            p.updatedAt = new Date().toISOString();
+            return volumePoolView(p);
+          },
+          Delete: async (name: string) => {
+            maybeReject("VolumePoolBinding.Delete");
+            if (!volumePoolStore.has(name)) throw new Error(`volume pool "${name}" not found`);
+            const assigned = volumePoolAssignments.get(name) ?? [];
+            if (assigned.length > 0) {
+              throw new Error(`volume pool "${name}" has assigned tenants: ${assigned.map((a) => a.tenantId).join(", ")}`);
+            }
+            volumePoolStore.delete(name);
+          },
+          ListTenants: async (name: string, pageSize: number, pageToken: string) => {
+            maybeReject("VolumePoolBinding.ListTenants");
+            if (!volumePoolStore.has(name)) throw new Error(`volume pool "${name}" not found`);
+            volumePoolTenantPageCalls++;
+            if (pageToken && volumePoolHoldTenantPages) {
+              await new Promise<void>((resolve) => volumePoolTenantHolds.push(resolve));
+            }
+            if (!pageToken && volumePoolHoldFirstTenantPage) {
+              await new Promise<void>((resolve) => volumePoolFirstTenantPageHolds.push(resolve));
+            }
+            const all = volumePoolAssignments.get(name) ?? [];
+            const start = pageToken ? Number(pageToken) : 0;
+            const end = pageSize > 0 ? start + pageSize : all.length;
+            volumePoolTenantPagesAnswered++;
+            return {
+              tenants: all.slice(start, end),
+              ...(end < all.length ? { nextPageToken: String(end) } : {}),
+            };
           },
         },
         RoleBinding: {
@@ -1897,7 +2386,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             certStore.set(serial, {
               serial,
               username: req.username,
-              tenantId: "default",
+              tenantID: "default",
               issuedAt: now,
               expiresAt,
               revoked: false,
@@ -1927,7 +2416,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             certStore.set(serial, {
               serial,
               username: req.username,
-              tenantId: "default",
+              tenantID: "default",
               issuedAt: now,
               expiresAt,
               revoked: false,
@@ -2317,6 +2806,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               };
             }
             if (/^SELECT\s+\*\s+FROM\s+KV\s*$/i.test(q)) {
+              useDatabase("");
               const kvRows: Record<string, string>[] = [];
               for (const [k, v] of kvStore.entries()) {
                 kvRows.push({ key: k, value: v });
@@ -2360,28 +2850,43 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
         ConnectionManagerBinding: (() => {
           // Track saved profiles so Connect can determine isEmbedded.
           const savedProfiles: Record<string, Record<string, unknown>> = {};
+          // The profile RestoreEmbedded connected, if any (the desktop binding
+          // saves or reuses an embedded profile and makes it active).
+          const restored = (): Record<string, unknown> | undefined =>
+            (getState() as { restoredProfile?: Record<string, unknown> }).restoredProfile;
+          const restoredConnected = (): boolean =>
+            (getState() as { restoredConnected?: boolean }).restoredConnected === true;
+          const listProfiles = (): Array<Record<string, unknown>> => {
+            const s = getState();
+            const list: Array<Record<string, unknown>> = [];
+            if (s.configInitialized) {
+              const profileType = s.profileType ?? "embedded";
+              list.push({
+                id: "mock-profile-1",
+                name: "Local Database",
+                type: profileType,
+                ...(profileType === "embedded"
+                  ? { embedded: { dataDir: "/mock/data" } }
+                  : {
+                      external: {
+                        transport: "unix",
+                        address: "/mock/run/qrdbd.sock",
+                      },
+                    }),
+                serverMode: s.serverMode,
+                createdAt: "2026-01-01T00:00:00Z",
+              });
+            }
+            const r = restored();
+            if (r) list.push(r);
+            return list;
+          };
+          // A saved profile, else the listed one: the binding reads the type of every profile.
+          const profileById = (id: string): Record<string, unknown> | undefined =>
+            savedProfiles[id] ?? listProfiles().find((p) => p.id === id);
           return {
             ListProfiles: async () => {
-              const s = getState();
-              if (s.configInitialized) {
-                const profileType = s.profileType ?? "embedded";
-                return [{
-                  id: "mock-profile-1",
-                  name: "Local Database",
-                  type: profileType,
-                  ...(profileType === "embedded"
-                    ? { embedded: { dataDir: "/mock/data" } }
-                    : {
-                        external: {
-                          transport: "unix",
-                          address: "/mock/run/qrdbd.sock",
-                        },
-                      }),
-                  serverMode: s.serverMode,
-                  createdAt: "2026-01-01T00:00:00Z",
-                }];
-              }
-              return [];
+              return listProfiles();
             },
             SaveProfile: async (profile: Record<string, unknown>) => {
               if (profile.id) savedProfiles[profile.id as string] = profile;
@@ -2390,9 +2895,31 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               delete savedProfiles[id];
             },
             Connect: async (profileId: string) => {
+              maybeReject("ConnectionManagerBinding.Connect");
+              if (profileId === restored()?.id) {
+                (getState() as { restoredConnected?: boolean }).restoredConnected = true;
+                return { profileId, status: "connected", isEmbedded: true };
+              }
               const s = getState();
-              const profile = savedProfiles[profileId];
+              const profile = profileById(profileId);
               const isEmbedded = profile?.type === "embedded";
+              (window as unknown as Record<string, unknown>).__lastConnectProfileId = profileId;
+              // Connecting an embedded profile starts its server, and the Go
+              // binding saves the config it started (StartEmbedded), the
+              // listed mock profile's included.
+              const startedConfig = isEmbedded
+                ? profile?.embedded
+                : profile === undefined &&
+                    profileId === "mock-profile-1" &&
+                    s.configInitialized &&
+                    (s.profileType ?? "embedded") === "embedded"
+                  ? { dataDir: "/mock/data" }
+                  : undefined;
+              if (startedConfig !== undefined) {
+                const saved = s as { embeddedSavedConfig?: boolean; embeddedSavedConfigValue?: unknown };
+                saved.embeddedSavedConfig = true;
+                saved.embeddedSavedConfigValue = startedConfig;
+              }
               // Embedded profiles auto-initialize their in-process seal barrier
               // on Connect (see initEmbeddedBarrier in embedded_barrier.go) —
               // EXCEPT shamir-mode barriers, which the desktop SealBinding
@@ -2423,12 +2950,23 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               }
               return { profileId, status, isEmbedded };
             },
-            Disconnect: async (_profileId: string) => {
-              // no-op in mock
+            Disconnect: async (profileId: string) => {
+              maybeReject("ConnectionManagerBinding.Disconnect");
+              // Only the restored profile tracks its connection in the mock.
+              if (profileId === restored()?.id) {
+                (getState() as { restoredConnected?: boolean }).restoredConnected = false;
+              }
             },
             GetState: async (profileId: string) => {
               const s = getState();
-              const profile = savedProfiles[profileId];
+              if (profileId === restored()?.id) {
+                return {
+                  profileId,
+                  status: restoredConnected() ? "connected" : "disconnected",
+                  isEmbedded: true,
+                };
+              }
+              const profile = profileById(profileId);
               const isEmbedded = profile?.type === "embedded";
               if (!s.configInitialized) {
                 return { profileId, status: "disconnected", isEmbedded };
@@ -2445,6 +2983,8 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             },
             GetActiveProfileID: async () => {
               const s = getState();
+              const r = restored();
+              if (r && restoredConnected()) return r.id as string;
               return s.configInitialized ? "mock-profile-1" : "";
             },
             IsEmbeddedAvailable: async () => {
@@ -2571,6 +3111,29 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               shamir_total: tb.shamir_total ?? 0,
             };
           },
+          // TenantBinding.Update(tenantID, req): the path id wins over
+          // req.tenant_id, as in the Go binding; only present fields apply.
+          Update: async (
+            tenantId: string,
+            req: {
+              tenant_id?: string;
+              name?: string;
+              isolation_type?: string;
+              description?: string | null;
+              metadata?: Record<string, string>;
+            },
+          ) => {
+            maybeReject("TenantBinding.Update");
+            const s = getState();
+            const t = s.tenants.find((t: { id: string }) => t.id === tenantId);
+            if (!t) throw new Error(`tenant "${tenantId}" not found`);
+            if (req?.name) t.name = req.name;
+            if (req?.isolation_type) t.isolation_type = req.isolation_type;
+            if (req?.description !== undefined && req.description !== null) t.description = req.description;
+            if (req?.metadata !== undefined) t.metadata = req.metadata;
+            t.updated_at = new Date().toISOString();
+            return { tenant: { ...t } };
+          },
           UpdateQuotas: async (req: { tenant_id: string; quotas: MockTenantInfo["quotas"] }) => {
             maybeReject("TenantBinding.UpdateQuotas");
             const s = getState();
@@ -2665,7 +3228,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             return {
               backup_id: req.backup_id,
               shards_restored: 3,
-              duration: "1.2s",
+              duration_ms: 1200,
               errors: [],
             };
           },
@@ -2727,7 +3290,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
         },
         LockBinding: {
-          Acquire: async (req: { key: string; holder_id?: string; ttl: number; reentrant?: boolean }) => {
+          Acquire: async (_database: string, req: { key: string; holder_id?: string; ttl: number; reentrant?: boolean }) => {
             maybeReject("LockBinding.Acquire");
             const existing = lockStore.get(req.key);
             if (existing && !(req.reentrant && existing.reentrant && existing.holderId === req.holder_id)) {
@@ -2747,7 +3310,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             lockStore.set(req.key, info);
             return { ...info };
           },
-          TryLock: async (req: { key: string; holder_id?: string; ttl: number; reentrant?: boolean }) => {
+          TryLock: async (_database: string, req: { key: string; holder_id?: string; ttl: number; reentrant?: boolean }) => {
             maybeReject("LockBinding.TryLock");
             if (lockStore.has(req.key)) {
               throw new Error(`lock "${req.key}" is already held`);
@@ -2766,7 +3329,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             lockStore.set(req.key, info);
             return { ...info };
           },
-          Release: async (req: { key: string; fencing_token: number }) => {
+          Release: async (_database: string, req: { key: string; fencing_token: number }) => {
             maybeReject("LockBinding.Release");
             const existing = lockStore.get(req.key);
             if (!existing || existing.fencingToken !== req.fencing_token) {
@@ -2774,7 +3337,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             }
             lockStore.delete(req.key);
           },
-          Extend: async (req: { key: string; fencing_token: number }) => {
+          Extend: async (_database: string, req: { key: string; fencing_token: number }) => {
             maybeReject("LockBinding.Extend");
             const existing = lockStore.get(req.key);
             if (!existing || existing.fencingToken !== req.fencing_token) {
@@ -2783,13 +3346,13 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             existing.acquiredAt = Math.floor(Date.now() / 1000);
             return { ...existing };
           },
-          Status: async (key: string) => {
+          Status: async (_database: string, key: string) => {
             maybeReject("LockBinding.Status");
             const existing = lockStore.get(key);
             if (!existing) throw new Error(`lock "${key}" not found`);
             return { ...existing };
           },
-          List: async (prefix?: string) => {
+          List: async (_database: string, prefix?: string) => {
             maybeReject("LockBinding.List");
             const all = [...lockStore.values()];
             const filtered = prefix ? all.filter((l) => l.key.startsWith(prefix)) : all;
@@ -2799,6 +3362,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
         RebalanceBinding: {
           GetShardStats: async (shardId: number) => {
             maybeReject("RebalanceBinding.GetShardStats");
+            await maybeHold("RebalanceBinding.GetShardStats");
             return {
               shardId,
               keyCount: 1000,
@@ -2822,7 +3386,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             return {
               movesCompleted: plan.moves.length,
               movesFailed: 0,
-              duration: "3.5s",
+              duration_ms: 3500,
               finalImbalance: 0.05,
             };
           },
@@ -2957,41 +3521,59 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
         },
         VlogBinding: (() => {
-          const logs = new Map<string, string[]>();
+          // Every VlogBinding method takes the database first; logs are
+          // kept per database, as the registry scopes them.
+          const dbs = new Map<string, Map<string, string[]>>();
+          const logsOf = (db: string) => {
+            const name = db === "system" ? "" : db;
+            let m = dbs.get(name);
+            if (!m) {
+              m = new Map<string, string[]>();
+              dbs.set(name, m);
+            }
+            return m;
+          };
           const key = { version: 1, public_key: "cGs=" };
           return {
-            Create: async (r: { log: string }) => {
+            Create: async (db: string, r: { log: string }) => {
               maybeReject("VlogBinding.Create");
-              logs.set(r.log, []);
-              return { tenant_id: "acme", database: "default", log: r.log, key };
+              logsOf(db).set(r.log, []);
+              return { tenant_id: "acme", database: db || "default", log: r.log, key };
             },
-            List: async () => ({ logs: [...logs.keys()] }),
-            Append: async (r: { log: string; entries: string[] }) => {
+            List: async (db: string) => {
+              maybeReject("VlogBinding.List");
+              return { logs: [...logsOf(db).keys()] };
+            },
+            Append: async (db: string, r: { log: string; entries: string[] }) => {
+              const logs = logsOf(db);
               const l = logs.get(r.log) ?? [];
               const first_index = l.length;
               l.push(...r.entries);
               logs.set(r.log, l);
               return { first_index, count: r.entries.length };
             },
-            Get: async (r: { log: string; from?: number; limit?: number }) => {
+            Get: async (db: string, r: { log: string; from?: number; limit?: number }) => {
               const from = r.from ?? 0;
-              const l = (logs.get(r.log) ?? []).slice(from, r.limit ? from + r.limit : undefined);
+              const l = (logsOf(db).get(r.log) ?? []).slice(from, r.limit ? from + r.limit : undefined);
               return { entries: l.map((body, i) => ({ index: from + i, body })) };
             },
-            ProveInclusion: async (r: { index: number; size: number }) => ({ index: r.index, size: r.size, hashes: [] }),
-            ProveConsistency: async (r: { size1: number; size2: number }) => ({ size1: r.size1, size2: r.size2, hashes: [] }),
-            Head: async (r: { log: string }) => ({
-              size: (logs.get(r.log) ?? []).length,
+            ProveInclusion: async (_db: string, r: { index: number; size: number }) => {
+              maybeReject("VlogBinding.ProveInclusion");
+              return { index: r.index, size: r.size, hashes: [] };
+            },
+            ProveConsistency: async (_db: string, r: { size1: number; size2: number }) => ({ size1: r.size1, size2: r.size2, hashes: [] }),
+            Head: async (db: string, r: { log: string }) => ({
+              size: (logsOf(db).get(r.log) ?? []).length,
               root: "",
               bodies_from: 0,
               checkpoint_size: 0,
             }),
-            SignHead: async (r: { log: string }) => ({
-              head: { size: (logs.get(r.log) ?? []).length, root: "", key_version: 1, signature_type: "ed25519", signature: "" },
+            SignHead: async (db: string, r: { log: string }) => ({
+              head: { size: (logsOf(db).get(r.log) ?? []).length, root: "", key_version: 1, signature_type: "ed25519", signature: "" },
               checkpoint: "",
             }),
             RotateKey: async () => ({ key: { version: 2, public_key: "cGsy" } }),
-            ExpireBodies: async (r: { cutoff: number }) => ({ expired: r.cutoff }),
+            ExpireBodies: async (_db: string, r: { cutoff: number }) => ({ expired: r.cutoff }),
           };
         })(),
       },
@@ -3066,6 +3648,30 @@ export async function holdCall(page: Page, method: string): Promise<void> {
     });
     w.__QRDB_MOCK_HOLDS__ = { ...(w.__QRDB_MOCK_HOLDS__ ?? {}), [m]: { calls: 0, gate, open } };
   }, method);
+}
+
+/**
+ * Returns how many calls of a held binding method have arrived so far.
+ */
+export async function heldCallCount(page: Page, method: string): Promise<number> {
+  return page.evaluate((m: string) => {
+    const w = window as unknown as {
+      __QRDB_MOCK_HOLDS__?: Record<string, { calls: number }>;
+    };
+    return w.__QRDB_MOCK_HOLDS__?.[m]?.calls ?? 0;
+  }, method);
+}
+
+/**
+ * Returns every MVCCBinding call so far with the database it was scoped to.
+ */
+export async function mvccCalls(page: Page): Promise<Array<{ method: string; database: string }>> {
+  return page.evaluate(() => {
+    const w = window as unknown as {
+      __QRDB_MOCK_MVCC_CALLS__?: Array<{ method: string; database: string }>;
+    };
+    return [...(w.__QRDB_MOCK_MVCC_CALLS__ ?? [])];
+  });
 }
 
 /**

@@ -50,16 +50,21 @@ const VectorShardID uint64 = 2
 // vectorService is the concrete implementation of VectorService.
 // It orchestrates vector storage, HNSW indexing, and metadata operations.
 type vectorService struct {
-	storage        vector.Storage
-	raftNode       interfaces.RaftNode
-	featureGates   FeatureGatedHost // cluster feature gates; nil reads the raft node's
-	shardID        uint64
-	nodeID         string
-	hnswIndexes    map[string]interfaces.HNSWIndex // Map scoped-namespace -> HNSW index
-	indexFactory   interfaces.HNSWIndexFactory     // Factory for creating HNSW indexes
-	logger         interfaces.Logger
-	metrics        *vectorServiceMetrics
-	mu             sync.RWMutex
+	storage      vector.Storage
+	raftNode     interfaces.RaftNode
+	featureGates FeatureGatedHost // cluster feature gates; nil reads the raft node's
+	shardID      uint64
+	nodeID       string
+	hnswIndexes  map[string]interfaces.HNSWIndex // Map scoped-namespace -> HNSW index
+	indexFactory interfaces.HNSWIndexFactory     // Factory for creating HNSW indexes
+	logger       interfaces.Logger
+	metrics      *vectorServiceMetrics
+	mu           sync.RWMutex
+	// writeMu serializes each vector write with its live HNSW index update,
+	// so the index applies writes of an ID in the order storage (or the
+	// Raft log) took them; it also makes an upsert's existence check and
+	// write one step.
+	writeMu        sync.Mutex
 	closed         bool
 	indexMu        sync.RWMutex
 	rebuildJobs    map[string]*RebuildJobState
@@ -801,6 +806,13 @@ func vectorStorageError(op, namespace string, id uint64, err error) error {
 
 // proposeToRaft proposes a vector command to Raft for consensus.
 func (v *vectorService) proposeToRaft(ctx context.Context, cmd *statemachine.VectorCommand) error {
+	return v.proposeToRaftResult(ctx, cmd, nil)
+}
+
+// proposeToRaftResult is proposeToRaft that also stores the accepted
+// state-machine result in out (when out is non-nil), for a caller that reads
+// what the apply reported, such as whether an upsert created the vector.
+func (v *vectorService) proposeToRaftResult(ctx context.Context, cmd *statemachine.VectorCommand, out *sm.Result) error {
 	if v.raftNode == nil {
 		return nil
 	}
@@ -838,6 +850,9 @@ func (v *vectorService) proposeToRaft(ctx context.Context, cmd *statemachine.Vec
 	}
 	if resultErr := checkResultError(smResult); resultErr != nil {
 		return resultErr
+	}
+	if out != nil {
+		*out = smResult
 	}
 
 	return nil
@@ -1364,6 +1379,15 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 		return nil, &VectorServiceClosedError{}
 	}
 
+	v.writeMu.Lock()
+	defer v.writeMu.Unlock()
+	return v.upsertVectorLocked(ctx, scoped, req)
+}
+
+// upsertVectorLocked is UpsertVector's body: the caller holds v.mu read
+// and v.writeMu and has validated req, so a read-modify-write such as
+// UpdateMetadata runs its read and this write as one step.
+func (v *vectorService) upsertVectorLocked(ctx context.Context, scoped string, req *UpsertVectorRequest) (*UpsertVectorResponse, error) {
 	nsInfo, err := v.storage.GetNamespaceInfo(ctx, scoped)
 	if err != nil {
 		if v.metrics != nil {
@@ -1387,7 +1411,11 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 
 	if v.raftNode != nil {
 		cmd := statemachine.NewUpsertCommand(scoped, req.ID, req.Vector, req.Metadata, v.nodeID)
-		if err := v.proposeToRaft(ctx, cmd); err != nil {
+		var applied sm.Result
+		// The proposal and its index insert are one step under writeMu
+		// (held by the caller), so a concurrent delete of the ID cannot
+		// land between them.
+		if err := v.proposeToRaftResult(ctx, cmd, &applied); err != nil {
 			if v.metrics != nil {
 				v.metrics.operationErrors.With("upsert_vector", "raft_error").Inc()
 			}
@@ -1425,6 +1453,7 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 			Version:   1,
 			Timestamp: now,
 			Success:   true,
+			Created:   statemachine.UpsertCreated(applied.Data),
 		}, nil
 	}
 
@@ -1437,7 +1466,13 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 		Version:   1,
 	}
 
-	if err := v.storage.UpsertVector(ctx, scoped, vecValue); err != nil {
+	// The existence read, the write and the index insert are one step under
+	// writeMu (held by the caller), so of two upserts of a missing ID exactly
+	// one reports created and a concurrent delete of the ID cannot land
+	// between write and index.
+	created := v.vectorIsNew(ctx, scoped, req.ID)
+	err = v.storage.UpsertVector(ctx, scoped, vecValue)
+	if err != nil {
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("upsert_vector", "storage_error").Inc()
 		}
@@ -1473,7 +1508,16 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 		Version:   1,
 		Timestamp: now,
 		Success:   true,
+		Created:   created,
 	}, nil
+}
+
+// vectorIsNew reports whether no vector with id is stored in the scoped
+// namespace yet, so an upsert can say whether it created or replaced one.
+// Only a not-found answer counts as new: a read error leaves it false.
+func (v *vectorService) vectorIsNew(ctx context.Context, scoped string, id uint64) bool {
+	_, err := v.storage.GetVector(ctx, scoped, id)
+	return errors.Is(err, vector.ErrVectorNotFound)
 }
 
 // GetVector retrieves a vector by ID with optional metadata.
@@ -1555,7 +1599,10 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 
 	if v.raftNode != nil {
 		cmd := statemachine.NewDeleteCommand(scoped, req.ID, v.nodeID)
+		// The proposal and its index delete are one step under writeMu.
+		v.writeMu.Lock()
 		if err := v.proposeToRaft(ctx, cmd); err != nil {
+			v.writeMu.Unlock()
 			if v.metrics != nil {
 				v.metrics.operationErrors.With("delete_vector", "raft_error").Inc()
 			}
@@ -1574,6 +1621,7 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 				}).Warn("failed to delete vector from local HNSW index")
 			}
 		}
+		v.writeMu.Unlock()
 
 		if v.metrics != nil {
 			v.metrics.vectorsDeleted.Inc()
@@ -1591,7 +1639,11 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 		}, nil
 	}
 
-	if err := v.storage.DeleteVector(ctx, scoped, req.ID); err != nil {
+	// The storage delete and its index delete are one step under writeMu.
+	v.writeMu.Lock()
+	err := v.storage.DeleteVector(ctx, scoped, req.ID)
+	if err != nil {
+		v.writeMu.Unlock()
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("delete_vector", "storage_error").Inc()
 		}
@@ -1611,6 +1663,7 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 			}).Warn("failed to delete vector from HNSW index")
 		}
 	}
+	v.writeMu.Unlock()
 
 	if v.metrics != nil {
 		v.metrics.vectorsDeleted.Inc()
@@ -1697,7 +1750,10 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 		}
 
 		cmd := statemachine.NewBatchUpsertCommand(scoped, batchIDs, batchVectors, v.nodeID)
+		// The proposal and its index inserts are one step under writeMu.
+		v.writeMu.Lock()
 		if err := v.proposeToRaft(ctx, cmd); err != nil {
+			v.writeMu.Unlock()
 			if v.metrics != nil {
 				v.metrics.operationErrors.With("batch_upsert", "raft_error").Inc()
 			}
@@ -1721,6 +1777,7 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 				}
 			}
 		}
+		v.writeMu.Unlock()
 
 		if v.metrics != nil {
 			v.metrics.vectorsUpserted.Add(float64(len(req.Vectors)))
@@ -1753,7 +1810,10 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 		}
 	}
 
+	// The storage write and its index inserts are one step under writeMu.
+	v.writeMu.Lock()
 	if err := v.storage.BatchUpsertVectors(ctx, scoped, vecs); err != nil {
+		v.writeMu.Unlock()
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("batch_upsert", "storage_error").Inc()
 		}
@@ -1775,6 +1835,7 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 			}
 		}
 	}
+	v.writeMu.Unlock()
 
 	if v.metrics != nil {
 		v.metrics.vectorsUpserted.Add(float64(len(req.Vectors)))
@@ -1945,12 +2006,7 @@ func (v *vectorService) SearchByMetadata(ctx context.Context, req *SearchByMetad
 		limit = 1000
 	}
 
-	opts := &vector.ScanOptions{
-		Limit:  limit,
-		Offset: req.Offset,
-	}
-
-	vecs, err := v.storage.ScanByMultipleFilters(ctx, scoped, filters, opts)
+	vecs, err := v.storage.ScanByMultipleFilters(ctx, scoped, filters, &vector.ScanOptions{Limit: limit, Offset: req.Offset})
 	if err != nil {
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("search_by_metadata", "scan_failed").Inc()
@@ -2597,6 +2653,9 @@ func (v *vectorService) validateSearchByMetadataRequest(req *SearchByMetadataReq
 	if req.Namespace == "" {
 		return &InvalidVectorError{Reason: "namespace is required"}
 	}
+	if req.Offset < 0 {
+		return &InvalidVectorError{Reason: "offset cannot be negative"}
+	}
 	return nil
 }
 
@@ -2987,7 +3046,10 @@ func (v *vectorService) validateGetCompactionProgressRequest(req *GetCompactionP
 // Extended Vector Operations
 // =============================================================================
 
-// BatchDeleteVectors removes multiple vectors from the namespace.
+// BatchDeleteVectors removes multiple vectors from the namespace: from
+// storage in one batch, then from the live HNSW index, so SearchSimilar no
+// longer returns them. If the batch storage call fails it falls back to
+// DeleteVector per ID and reports the IDs that could not be deleted.
 func (v *vectorService) BatchDeleteVectors(ctx context.Context, req *BatchDeleteVectorsRequest) (*BatchDeleteVectorsResponse, error) {
 	start := time.Now()
 
@@ -3000,11 +3062,57 @@ func (v *vectorService) BatchDeleteVectors(ctx context.Context, req *BatchDelete
 	if len(req.IDs) == 0 {
 		return nil, &InvalidVectorError{Reason: "vector IDs must not be empty"}
 	}
+	for _, id := range req.IDs {
+		if id == 0 {
+			return nil, &InvalidVectorError{Reason: "ID must be greater than 0"}
+		}
+	}
 
 	scoped := scopedFromContext(ctx, req.Namespace)
 
+	// A Raft-configured service deletes through consensus, as DeleteVector
+	// does: one batch delete command carries every ID, so each replica
+	// applies the same delete and none is left serving the vectors. A
+	// failed proposal deletes nothing and is the caller's answer; it never
+	// falls back to a node-local write.
+	if v.raftNode != nil {
+		err := v.admit(func() error {
+			// The proposal and its index removal are one step under writeMu.
+			v.writeMu.Lock()
+			defer v.writeMu.Unlock()
+			cmd := statemachine.NewBatchDeleteCommand(scoped, req.IDs, v.nodeID)
+			if err := v.proposeToRaft(ctx, cmd); err != nil {
+				if v.metrics != nil {
+					v.metrics.operationErrors.With("batch_delete", "raft_error").Inc()
+				}
+				return err
+			}
+			v.removeFromLiveIndex(scoped, req.Namespace, req.IDs)
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		if v.metrics != nil {
+			v.metrics.operationDuration.With("batch_delete").Observe(time.Since(start).Seconds())
+		}
+		return &BatchDeleteVectorsResponse{
+			DeletedCount: len(req.IDs),
+			Timestamp:    time.Now().UnixNano(),
+			Success:      true,
+		}, nil
+	}
+
 	err := v.admit(func() error {
-		return v.storage.BatchDeleteVectors(ctx, scoped, req.IDs)
+		// The storage delete and its index removal are one step under
+		// writeMu; the per-ID fallback below runs after the lock is released.
+		v.writeMu.Lock()
+		defer v.writeMu.Unlock()
+		if err := v.storage.BatchDeleteVectors(ctx, scoped, req.IDs); err != nil {
+			return err
+		}
+		v.removeFromLiveIndex(scoped, req.Namespace, req.IDs)
+		return nil
 	})
 	var closedErr *VectorServiceClosedError
 	if errors.As(err, &closedErr) {
@@ -3051,6 +3159,34 @@ func (v *vectorService) BatchDeleteVectors(ctx context.Context, req *BatchDelete
 		Timestamp:    time.Now().UnixNano(),
 		Success:      true,
 	}, nil
+}
+
+// removeFromLiveIndex drops ids from the namespace's live HNSW index after
+// storage has deleted them and moves the delete metrics, as DeleteVector does
+// for one ID. A failed index removal is logged and the rest go on. Callers
+// hold v.mu read-locked with v.closed checked (v.admit).
+func (v *vectorService) removeFromLiveIndex(scoped, namespace string, ids []uint64) {
+	v.indexMu.RLock()
+	index, exists := v.hnswIndexes[scoped]
+	v.indexMu.RUnlock()
+
+	if exists {
+		for _, id := range ids {
+			if err := index.Delete(id); err != nil {
+				v.logger.WithFields(map[string]interface{}{
+					"namespace": namespace,
+					"id":        id,
+					"error":     err,
+				}).Warn("failed to delete vector from HNSW index")
+			}
+		}
+	}
+
+	if v.metrics != nil {
+		n := float64(len(ids))
+		v.metrics.vectorsDeleted.Add(n)
+		v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Sub(n)
+	}
 }
 
 // ListVectors returns vectors in a namespace with pagination.
@@ -3169,17 +3305,21 @@ func (v *vectorService) UpdateMetadata(ctx context.Context, req *UpdateVectorMet
 
 	scoped := scopedFromContext(ctx, req.Namespace)
 
-	var existingVector *vector.VectorValue
-	err := v.admit(func() error {
-		var err error
-		existingVector, err = v.storage.GetVector(ctx, scoped, req.ID)
-		if err != nil {
-			return vectorStorageError("find vector", req.Namespace, req.ID, err)
-		}
-		return nil
-	})
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	if v.closed {
+		return nil, &VectorServiceClosedError{}
+	}
+
+	// The read of the stored vector and the write of its new metadata are
+	// one step under writeMu, so a concurrent upsert or metadata update of
+	// the ID cannot land between them and be overwritten.
+	v.writeMu.Lock()
+	defer v.writeMu.Unlock()
+
+	existingVector, err := v.storage.GetVector(ctx, scoped, req.ID)
 	if err != nil {
-		return nil, err
+		return nil, vectorStorageError("find vector", req.Namespace, req.ID, err)
 	}
 
 	var newMetadata map[string]interface{}
@@ -3208,7 +3348,10 @@ func (v *vectorService) UpdateMetadata(ctx context.Context, req *UpdateVectorMet
 		ShardID:   req.ShardID,
 	}
 
-	resp, err := v.UpsertVector(ctx, upsertReq)
+	if err := v.validateUpsertVectorRequest(upsertReq); err != nil {
+		return nil, err
+	}
+	resp, err := v.upsertVectorLocked(ctx, scoped, upsertReq)
 	if err != nil {
 		return nil, err
 	}

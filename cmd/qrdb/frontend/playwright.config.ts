@@ -28,7 +28,9 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  workers: process.env.CI ? 1 : undefined,
+  // Capped: at the default worker count (one per core, 56 on a lane host)
+  // the mocked suite ran out of memory (exit 137); 6 workers ran it clean.
+  workers: process.env.CI ? 4 : 6,
   reporter: "html",
   use: {
     baseURL: origin,

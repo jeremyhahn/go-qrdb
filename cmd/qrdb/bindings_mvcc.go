@@ -27,6 +27,18 @@ type MVCCBinding struct {
 	conn   *ConnectionBinding
 }
 
+// client returns the connection's client scoped to database, as the GUI's
+// per-database workspace selects it. "" and "system" name the connection's
+// default database. A transport that cannot scope refuses rather than serve
+// the default database under another name.
+func (b *MVCCBinding) client(database string) (*sdk.Client, error) {
+	cl, err := b.conn.loadClient()
+	if err != nil {
+		return nil, err
+	}
+	return cl.DatabaseScoped(database)
+}
+
 // NewMVCCBinding creates a new MVCCBinding backed by the given connection.
 func NewMVCCBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *MVCCBinding {
 	return &MVCCBinding{logger: log, conn: conn}
@@ -34,9 +46,9 @@ func NewMVCCBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *MVCCBindi
 
 // PutWithLease stores a key-value pair with an attached lease. When the
 // lease expires, the key is automatically deleted.
-func (b *MVCCBinding) PutWithLease(key string, value string, leaseID int64) (*transport.MVCCKeyValue, error) {
+func (b *MVCCBinding) PutWithLease(database string, key string, value string, leaseID int64) (*transport.MVCCKeyValue, error) {
 	b.logger.Debug("PutWithLease called", "key", key, "leaseID", leaseID)
-	cl, err := b.conn.loadClient()
+	cl, err := b.client(database)
 	if err != nil {
 		b.logger.Error("PutWithLease failed", "error", err)
 		return nil, err
@@ -51,9 +63,9 @@ func (b *MVCCBinding) PutWithLease(key string, value string, leaseID int64) (*tr
 }
 
 // GetRevision retrieves a key-value pair with full MVCC revision metadata.
-func (b *MVCCBinding) GetRevision(key string) (*transport.MVCCKeyValue, error) {
+func (b *MVCCBinding) GetRevision(database string, key string) (*transport.MVCCKeyValue, error) {
 	b.logger.Debug("GetRevision called", "key", key)
-	cl, err := b.conn.loadClient()
+	cl, err := b.client(database)
 	if err != nil {
 		b.logger.Error("GetRevision failed", "error", err)
 		return nil, err
@@ -68,9 +80,9 @@ func (b *MVCCBinding) GetRevision(key string) (*transport.MVCCKeyValue, error) {
 }
 
 // GetAtRevision retrieves a key-value pair at a historical revision.
-func (b *MVCCBinding) GetAtRevision(key string, revision int64) (*transport.MVCCKeyValue, error) {
+func (b *MVCCBinding) GetAtRevision(database string, key string, revision int64) (*transport.MVCCKeyValue, error) {
 	b.logger.Debug("GetAtRevision called", "key", key, "revision", revision)
-	cl, err := b.conn.loadClient()
+	cl, err := b.client(database)
 	if err != nil {
 		b.logger.Error("GetAtRevision failed", "error", err)
 		return nil, err
@@ -86,9 +98,9 @@ func (b *MVCCBinding) GetAtRevision(key string, revision int64) (*transport.MVCC
 
 // Range returns key-value pairs in the half-open interval [start, end)
 // with the specified options.
-func (b *MVCCBinding) Range(start, end string, opts *transport.RangeOptions) (*transport.RangeResponse, error) {
+func (b *MVCCBinding) Range(database string, start, end string, opts *transport.RangeOptions) (*transport.RangeResponse, error) {
 	b.logger.Debug("Range called", "start", start, "end", end)
-	cl, err := b.conn.loadClient()
+	cl, err := b.client(database)
 	if err != nil {
 		b.logger.Error("Range failed", "error", err)
 		return nil, err
@@ -107,9 +119,9 @@ func (b *MVCCBinding) Range(start, end string, opts *transport.RangeOptions) (*t
 }
 
 // Compact discards all MVCC revisions older than the specified revision.
-func (b *MVCCBinding) Compact(revision int64) error {
+func (b *MVCCBinding) Compact(database string, revision int64) error {
 	b.logger.Debug("Compact called", "revision", revision)
-	cl, err := b.conn.loadClient()
+	cl, err := b.client(database)
 	if err != nil {
 		b.logger.Error("Compact failed", "error", err)
 		return err
@@ -130,9 +142,9 @@ func (b *MVCCBinding) Compact(revision int64) error {
 // *transport.RestoreRevisionResult returned unconverted, whose
 // Changes/Conflicts "key" fields the TS SDK base64-decodes back to
 // plaintext for the caller.
-func (b *MVCCBinding) RestoreToRevision(req *transport.RestoreRevisionRequest) (*transport.RestoreRevisionResult, error) {
+func (b *MVCCBinding) RestoreToRevision(database string, req *transport.RestoreRevisionRequest) (*transport.RestoreRevisionResult, error) {
 	b.logger.Debug("RestoreToRevision called")
-	cl, err := b.conn.loadClient()
+	cl, err := b.client(database)
 	if err != nil {
 		b.logger.Error("RestoreToRevision failed", "error", err)
 		return nil, err
@@ -147,9 +159,9 @@ func (b *MVCCBinding) RestoreToRevision(req *transport.RestoreRevisionRequest) (
 }
 
 // CurrentRevision returns the latest committed MVCC revision.
-func (b *MVCCBinding) CurrentRevision() (int64, error) {
+func (b *MVCCBinding) CurrentRevision(database string) (int64, error) {
 	b.logger.Debug("CurrentRevision called")
-	cl, err := b.conn.loadClient()
+	cl, err := b.client(database)
 	if err != nil {
 		b.logger.Error("CurrentRevision failed", "error", err)
 		return 0, err

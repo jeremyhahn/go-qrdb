@@ -440,8 +440,15 @@ func (v *VectorConsensusFSM) applyUpsertVector(ctx context.Context, cmd *VectorC
 		"id":        cmd.ID,
 	}).Debug("Applying UpsertVector")
 
+	created := false
 	// Apply to storage if available
 	if v.storage != nil {
+		// Raft applies commands one at a time, so this existence read and
+		// the write below are one atomic step: of two upserts of a missing
+		// ID exactly one reports created.
+		_, getErr := v.storage.GetVector(ctx, cmd.Namespace, cmd.ID)
+		created = errors.Is(getErr, vectorStorage.ErrVectorNotFound)
+
 		// Convert metadata from map[string]interface{} to map[string]string
 		metadata := make(map[string]string)
 		for k, val := range cmd.Metadata {
@@ -503,7 +510,7 @@ func (v *VectorConsensusFSM) applyUpsertVector(ctx context.Context, cmd *VectorC
 		"namespace": cmd.Namespace,
 		"id":        cmd.ID,
 	}).Debug("Vector upserted via Raft consensus")
-	return sm.Result{Value: 1}, nil
+	return sm.Result{Value: 1, Data: upsertResultData(created)}, nil
 }
 
 // applyDeleteVector removes a vector from storage and HNSW index.
@@ -523,6 +530,10 @@ func (v *VectorConsensusFSM) applyDeleteVector(ctx context.Context, cmd *VectorC
 					"ids":       len(cmd.IDs),
 					"error":     err,
 				}).Error("Failed to batch delete vectors from storage")
+				// The durable records survive, so the index keeps them
+				// too and the caller learns of the failure, as a failed
+				// batch upsert reports its storage error.
+				return sm.Result{}, err
 			}
 		}
 

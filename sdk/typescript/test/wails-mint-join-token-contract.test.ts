@@ -13,19 +13,17 @@
 // limitations under the License.
 
 /**
- * Wire contract for WailsClient.admin.mintJoinToken: unlike every other
- * AdminClient verb, this one is deliberately UNIMPLEMENTED on the desktop
- * binding. The embedded transport the webview talks to carries no
- * authorization of its own (docs/embedded's trust-model note), and minting
- * a cluster join token is ScopeCross and platform-only -- exactly the kind
- * of admin verb that must never be reachable through a less-trusted
- * binding than the authenticated remote transports it IS implemented on
- * (REST, gRPC, QUIC, Unix, MCP).
+ * Wire contract for WailsClient.admin.mintJoinToken and
+ * admin.joinTokenMintable. The desktop binding forwards a mint to the
+ * active connection only when that connection is an authenticated external
+ * (remote) one; the Go AdminBinding refuses the embedded server, whose
+ * transport carries no authorization of its own (docs/embedding.md,
+ * "Trust model"). joinTokenMintable reports which case applies so the GUI
+ * offers the form exactly when the mint can succeed.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { WailsClient } from '../src/wails.js';
-import { NotImplementedError } from '../src/errors.js';
 
 type BindingFn = (...args: unknown[]) => Promise<unknown>;
 
@@ -41,21 +39,41 @@ describe('WailsClient admin.mintJoinToken', () => {
         vi.unstubAllGlobals();
     });
 
-    it('refuses with NotImplementedError, never calling into any binding', async () => {
-        const mintJoinToken = vi.fn<BindingFn>();
+    it('forwards node id and ttl to AdminBinding.MintJoinToken and decodes the reply', async () => {
+        const mintJoinToken = vi.fn<BindingFn>(async () => ({
+            token: 'tok-1',
+            expires_at: '2030-01-01T00:00:00Z',
+        }));
         installAdminBinding({ MintJoinToken: mintJoinToken });
 
         const client = new WailsClient();
-        await expect(client.admin.mintJoinToken('node-1', 60)).rejects.toThrow(NotImplementedError);
-        expect(mintJoinToken).not.toHaveBeenCalled();
+        const resp = await client.admin.mintJoinToken('node-1', 60);
+        expect(mintJoinToken).toHaveBeenCalledWith('node-1', 60);
+        expect(resp).toEqual({ token: 'tok-1', expiresAt: '2030-01-01T00:00:00Z' });
     });
 
-    it('refuses the same way with no ttlSeconds argument', async () => {
-        installAdminBinding({});
-        const client = new WailsClient();
-        await expect(client.admin.mintJoinToken('node-2')).rejects.toMatchObject({
-            name: 'NotImplementedError',
-            method: 'admin.mintJoinToken',
+    it('sends ttl 0 (server default) when no ttlSeconds is given', async () => {
+        const mintJoinToken = vi.fn<BindingFn>(async () => ({ token: 't', expires_at: '' }));
+        installAdminBinding({ MintJoinToken: mintJoinToken });
+        await new WailsClient().admin.mintJoinToken('node-2');
+        expect(mintJoinToken).toHaveBeenCalledWith('node-2', 0);
+    });
+
+    it('surfaces the binding refusal on an embedded connection', async () => {
+        installAdminBinding({
+            MintJoinToken: async () => {
+                throw new Error('join tokens are minted only over an authenticated remote connection');
+            },
         });
+        await expect(new WailsClient().admin.mintJoinToken('node-3')).rejects.toThrow(
+            /authenticated remote connection/,
+        );
+    });
+
+    it('joinTokenMintable reports the binding capability', async () => {
+        installAdminBinding({ JoinTokenMintable: async () => true });
+        await expect(new WailsClient().admin.joinTokenMintable()).resolves.toBe(true);
+        installAdminBinding({ JoinTokenMintable: async () => false });
+        await expect(new WailsClient().admin.joinTokenMintable()).resolves.toBe(false);
     });
 });

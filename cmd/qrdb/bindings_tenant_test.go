@@ -454,6 +454,150 @@ func TestTenantBinding_Delete_NotConnected(t *testing.T) {
 	}
 }
 
+func TestTenantBinding_Update_Success(t *testing.T) {
+	var gotID string
+	var gotPatch tenant.TenantPatch
+	svc := &mockTenantService{
+		updateFn: func(_ context.Context, tenantID string, patch tenant.TenantPatch) (*tenant.TenantInfo, error) {
+			gotID = tenantID
+			gotPatch = patch
+			now := time.Now()
+			return &tenant.TenantInfo{ID: tenantID, Name: patch.Name, CreatedAt: now, UpdatedAt: now}, nil
+		},
+	}
+	b := newTestTenantBinding(t, svc)
+
+	// The path argument wins over the request body's tenant id, as the CLI
+	// tenant update builds it.
+	for _, bodyID := range []string{"", "other-tenant"} {
+		gotID, gotPatch = "", tenant.TenantPatch{}
+		resp, err := b.Update("tenant-001", &transport.UpdateTenantRequest{TenantID: bodyID, Name: "Renamed"})
+		if err != nil {
+			t.Fatalf("Update(body id %q): %v", bodyID, err)
+		}
+		if gotID != "tenant-001" {
+			t.Errorf("body id %q: service got tenant id %q, want tenant-001", bodyID, gotID)
+		}
+		if gotPatch.Name != "Renamed" {
+			t.Errorf("body id %q: patch name %q, want Renamed", bodyID, gotPatch.Name)
+		}
+		if resp == nil || resp.Tenant.ID != "tenant-001" || resp.Tenant.Name != "Renamed" {
+			t.Errorf("body id %q: response %+v, want tenant-001 named Renamed", bodyID, resp)
+		}
+	}
+}
+
+func TestTenantBinding_Update_DoesNotMutateRequest(t *testing.T) {
+	svc := &mockTenantService{
+		updateFn: func(_ context.Context, tenantID string, patch tenant.TenantPatch) (*tenant.TenantInfo, error) {
+			return &tenant.TenantInfo{ID: tenantID, Name: patch.Name}, nil
+		},
+	}
+	b := newTestTenantBinding(t, svc)
+
+	req := &transport.UpdateTenantRequest{TenantID: "other-tenant", Name: "Renamed"}
+	if _, err := b.Update("tenant-001", req); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if req.TenantID != "other-tenant" {
+		t.Errorf("caller's request TenantID = %q, want it untouched", req.TenantID)
+	}
+}
+
+func TestTenantBinding_Update_NilRequest(t *testing.T) {
+	called := false
+	svc := &mockTenantService{
+		updateFn: func(_ context.Context, tenantID string, _ tenant.TenantPatch) (*tenant.TenantInfo, error) {
+			called = true
+			return &tenant.TenantInfo{ID: tenantID}, nil
+		},
+	}
+	b := newTestTenantBinding(t, svc)
+
+	if _, err := b.Update("tenant-001", nil); err == nil {
+		t.Fatal("expected error for a nil request")
+	}
+	if called {
+		t.Error("service was called for a nil request")
+	}
+}
+
+func TestTenantBinding_Update_ServiceError(t *testing.T) {
+	svc := &mockTenantService{
+		updateFn: func(context.Context, string, tenant.TenantPatch) (*tenant.TenantInfo, error) {
+			return nil, errors.New("update refused")
+		},
+	}
+	b := newTestTenantBinding(t, svc)
+
+	if _, err := b.Update("tenant-001", &transport.UpdateTenantRequest{Name: "Renamed"}); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestTenantBinding_Update_NotConnected(t *testing.T) {
+	conn := NewConnectionBinding(testLogger(t))
+	b := NewTenantBinding(testLogger(t), conn)
+
+	if _, err := b.Update("tenant-001", &transport.UpdateTenantRequest{Name: "Renamed"}); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestTenantBinding_UpdateQuotas_Success(t *testing.T) {
+	b := newTestTenantBinding(t, &mockTenantService{})
+
+	resp, err := b.UpdateQuotas(&transport.UpdateTenantQuotasRequest{
+		TenantID: "tenant-001",
+		Quotas:   transport.TenantQuotas{MaxDatabases: 7, MaxKeys: 1000},
+	})
+	if err != nil {
+		t.Fatalf("UpdateQuotas: %v", err)
+	}
+	if resp == nil || resp.Tenant.ID != "tenant-001" {
+		t.Fatalf("response %+v, want tenant-001", resp)
+	}
+	if resp.Tenant.Quotas == nil || resp.Tenant.Quotas.MaxDatabases != 7 || resp.Tenant.Quotas.MaxKeys != 1000 {
+		t.Errorf("quotas %+v did not reach the tenant service", resp.Tenant.Quotas)
+	}
+}
+
+func TestTenantBinding_UpdateQuotas_NotConnected(t *testing.T) {
+	conn := NewConnectionBinding(testLogger(t))
+	b := NewTenantBinding(testLogger(t), conn)
+
+	if _, err := b.UpdateQuotas(&transport.UpdateTenantQuotasRequest{TenantID: "tenant-001"}); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestTenantBinding_UpdateEntitlements_Success(t *testing.T) {
+	b := newTestTenantBinding(t, &mockTenantService{})
+
+	resp, err := b.UpdateEntitlements(&transport.UpdateTenantEntitlementsRequest{
+		TenantID:     "tenant-001",
+		Entitlements: transport.TenantEntitlements{AllowDedicatedRaft: true},
+	})
+	if err != nil {
+		t.Fatalf("UpdateEntitlements: %v", err)
+	}
+	if resp == nil || resp.Tenant.ID != "tenant-001" {
+		t.Fatalf("response %+v, want tenant-001", resp)
+	}
+	if resp.Tenant.Entitlements == nil || !resp.Tenant.Entitlements.AllowDedicatedRaft {
+		t.Errorf("entitlements %+v did not reach the tenant service", resp.Tenant.Entitlements)
+	}
+}
+
+func TestTenantBinding_UpdateEntitlements_NotConnected(t *testing.T) {
+	conn := NewConnectionBinding(testLogger(t))
+	b := NewTenantBinding(testLogger(t), conn)
+
+	if _, err := b.UpdateEntitlements(&transport.UpdateTenantEntitlementsRequest{TenantID: "tenant-001"}); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // TenantBinding.BarrierInit tests
 // ---------------------------------------------------------------------------

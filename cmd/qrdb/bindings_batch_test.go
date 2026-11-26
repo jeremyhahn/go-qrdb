@@ -71,7 +71,7 @@ func newBatchBindingNoConn(t *testing.T) *BatchBinding {
 
 func TestBatchBinding_ImportFile_NotConnected(t *testing.T) {
 	b := newBatchBindingNoConn(t)
-	_, err := b.ImportFile("/tmp/test.csv", WailsImportOptions{
+	_, err := b.ImportFile("", "/tmp/test.csv", WailsImportOptions{
 		Format:    "csv",
 		KeyField:  "id",
 		ValueMode: "row",
@@ -87,7 +87,7 @@ func TestBatchBinding_ImportFile_NotConnected(t *testing.T) {
 
 func TestBatchBinding_ImportFile_FileNotFound(t *testing.T) {
 	b := newTestBatchBinding(t)
-	_, err := b.ImportFile("/nonexistent/path/data.csv", WailsImportOptions{
+	_, err := b.ImportFile("", "/nonexistent/path/data.csv", WailsImportOptions{
 		Format:    "csv",
 		KeyField:  "id",
 		ValueMode: "row",
@@ -117,7 +117,7 @@ func TestBatchBinding_ImportFile_Success(t *testing.T) {
 
 	// The mock batch service returns nil result (zero-value), so the embedded
 	// transport will return an empty ImportResult.
-	result, err := b.ImportFile(path, WailsImportOptions{
+	result, err := b.ImportFile("", path, WailsImportOptions{
 		Format:     "csv",
 		KeyField:   "id",
 		ValueMode:  "row",
@@ -139,7 +139,7 @@ func TestBatchBinding_ImportFile_CollectionRejected(t *testing.T) {
 	// Deliberately use a not-connected binding: if the rejection happened
 	// after loadClient(), this would instead fail with NotConnectedError.
 	b := newBatchBindingNoConn(t)
-	_, err := b.ImportFile("/tmp/test.csv", WailsImportOptions{
+	_, err := b.ImportFile("", "/tmp/test.csv", WailsImportOptions{
 		Format:     "csv",
 		KeyField:   "id",
 		ValueMode:  "row",
@@ -170,7 +170,7 @@ func TestCollectionImportUnsupportedError_Error(t *testing.T) {
 
 func TestBatchBinding_ImportFile_ErrorWrapsUnderlying(t *testing.T) {
 	b := newBatchBindingNoConn(t)
-	_, err := b.ImportFile("/some/file.csv", WailsImportOptions{})
+	_, err := b.ImportFile("", "/some/file.csv", WailsImportOptions{})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -233,6 +233,20 @@ func TestBatchBinding_AvailableImportFormats_NonEmpty(t *testing.T) {
 	formats := b.AvailableImportFormats()
 	if len(formats) == 0 {
 		t.Fatal("expected at least one import format")
+	}
+}
+
+// The binding reports the one shared list the REST route also serves.
+func TestBatchBinding_AvailableImportFormats_EqualsSharedList(t *testing.T) {
+	b := newBatchBindingNoConn(t)
+	got, want := b.AvailableImportFormats(), sdk.ImportFormats()
+	if len(got) != len(want) {
+		t.Fatalf("AvailableImportFormats = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("AvailableImportFormats = %v, want %v", got, want)
+		}
 	}
 }
 

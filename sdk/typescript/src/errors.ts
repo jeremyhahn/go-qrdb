@@ -392,6 +392,35 @@ export class CertNotFoundError extends QRDBError {
     }
 }
 
+/**
+ * Thrown when a PKCS#12 archive cannot be built from the given certificate
+ * and key: a missing or malformed PEM block, an unsupported key encoding,
+ * or a crypto failure. The archive is always built locally (no server has
+ * a PKCS#12 route), so this error never comes from the network.
+ */
+export class CertExportError extends QRDBError {
+    /** Description of why the export failed. */
+    readonly reason: string;
+
+    constructor(reason: string) {
+        super(`cert: export: ${reason}`);
+        this.name = 'CertExportError';
+        this.reason = reason;
+    }
+}
+
+/**
+ * Thrown when the private key given to a PKCS#12 export is not the key of
+ * the leaf certificate: its public half differs from the certificate's
+ * SubjectPublicKeyInfo. Raised before any archive bytes are built.
+ */
+export class CertKeyMismatchError extends CertExportError {
+    constructor(reason: string) {
+        super(`private key does not match the certificate: ${reason}`);
+        this.name = 'CertKeyMismatchError';
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Feature errors
 // ---------------------------------------------------------------------------
@@ -464,5 +493,42 @@ export class NotImplementedError extends QRDBError {
         super(`transport: method not implemented: ${method}`);
         this.name = 'NotImplementedError';
         this.method = method;
+    }
+}
+
+/**
+ * Raised when the client was reconnected to another server while a
+ * multi-request call was in flight. The call stops before sending anything
+ * more, so no part of it (and no secret it carries) reaches the new server.
+ */
+export class ConnectionChangedError extends QRDBError {
+    /** The call that was stopped. */
+    readonly operation: string;
+    /** The server the call started on. */
+    readonly origin: string;
+
+    constructor(operation: string, origin: string) {
+        super(`transport: ${operation} started on ${origin} and the client was reconnected before it finished; nothing more was sent`);
+        this.name = 'ConnectionChangedError';
+        this.operation = operation;
+        this.origin = origin;
+    }
+}
+
+/**
+ * Raised when a request carries an option this transport does not support.
+ * Nothing is sent.
+ */
+export class UnsupportedOptionError extends QRDBError {
+    /** The call that was refused. */
+    readonly operation: string;
+    /** The option the transport cannot honour. */
+    readonly option: string;
+
+    constructor(operation: string, option: string, detail: string) {
+        super(`transport: ${operation} does not support ${option}: ${detail}`);
+        this.name = 'UnsupportedOptionError';
+        this.operation = operation;
+        this.option = option;
     }
 }
