@@ -383,9 +383,12 @@ func (w *rollWriter) snapshot() map[string]string {
 // over every transport after each roll, and the history of every put and
 // get across the three rolls passes the clusterproof linearizability check
 // (docs/rolling-upgrades/engineering.md, T1): no stale read during the
-// upgrade. The
-// new feature activates only once the last node runs N+1, and its command
-// then applies on every node.
+// upgrade. The new feature activates only once the last node runs N+1:
+// after each of the first two rolls a probe put through the rolled node on
+// every transport reads back everywhere but no member applies
+// OpUpgradeProbe, and after activation the probe puts on every transport
+// are applied as OpUpgradeProbe by every member, so the gated Raft command
+// replicates only after activation.
 func TestRollingUpgrade_RollForward_CLI(t *testing.T) {
 	bins := buildUpgradeBinaries(t)
 	c := startUpgradeCluster(t, []string{bins.n, bins.n, bins.n})
@@ -399,6 +402,17 @@ func TestRollingUpgrade_RollForward_CLI(t *testing.T) {
 			if on := activatedOn(c.logs, upgradeProbeFeature); len(on) != 0 {
 				t.Fatalf("%s activated on nodes %v with only %d of 3 nodes on N+1", upgradeProbeFeature, on, i+1)
 			}
+			// A probe put through the rolled N+1 node on every transport
+			// takes the N path while one member is still on N.
+			before := make(map[string]string, len(multiProtocols))
+			for _, proto := range multiProtocols {
+				key := fmt.Sprintf("%sroll%d-%s", upgradeProbeKeyPrefix, i+1, proto.name)
+				value := "before-" + proto.name
+				putAcked(t, c.nodes[i], proto, key, value)
+				before[key] = value
+			}
+			c.requireReadsEverywhere(t, before)
+			requireNoProbeApplied(t, c, fmt.Sprintf("with only %d of 3 nodes on N+1", i+1))
 		}
 	}
 	w.checkHistory(t)
@@ -406,26 +420,34 @@ func TestRollingUpgrade_RollForward_CLI(t *testing.T) {
 	awaitActivated(t, c.logs, upgradeProbeFeature)
 
 	after := make(map[string]string, len(multiProtocols))
+	afterKeys := make([]string, 0, len(multiProtocols))
 	for k, proto := range multiProtocols {
 		key := fmt.Sprintf("%safter-%s", upgradeProbeKeyPrefix, proto.name)
 		value := "probe-" + proto.name
 		putAcked(t, c.nodes[k%3], proto, key, value)
 		after[key] = value
+		afterKeys = append(afterKeys, key)
 	}
 	c.requireReadsEverywhere(t, after)
+	awaitProbeApplied(t, c, afterKeys)
 	c.requireReadsEverywhere(t, w.snapshot())
 }
 
 // TestRollingUpgrade_RollBackBeforeActivation_CLI is the matrix's T3: one
-// node rolled to N+1 and back to N before the new feature activates. While
-// the cluster is mixed the feature never activates and a probe-prefixed put
-// is an ordinary put; after the rollback every write made in the mixed
-// cluster reads back on every node over every transport.
+// node rolled to N+1 and back to N before the new feature activates, both
+// rolls under the rollWriter workload over every transport. While the
+// cluster is mixed the feature never activates and a probe-prefixed put
+// through the N+1 node on every transport is an ordinary put. After the
+// rollback the history of every put and get across both rolls passes the
+// clusterproof linearizability check, every acknowledged and mixed-phase
+// write reads back on every node over every transport, the feature never
+// activated, and no member ever applied OpUpgradeProbe.
 func TestRollingUpgrade_RollBackBeforeActivation_CLI(t *testing.T) {
 	bins := buildUpgradeBinaries(t)
 	c := startUpgradeCluster(t, []string{bins.n, bins.n, bins.n})
+	w := newRollWriter(c)
 
-	c.roll(t, 0, bins.next)
+	w.during(t, 0, bins.next)
 
 	want := make(map[string]string, 2*len(multiProtocols))
 	for k, proto := range multiProtocols {
@@ -445,11 +467,15 @@ func TestRollingUpgrade_RollBackBeforeActivation_CLI(t *testing.T) {
 	if on := activatedOn(c.logs, upgradeProbeFeature); len(on) != 0 {
 		t.Fatalf("%s activated on nodes %v in a mixed N/N+1 cluster", upgradeProbeFeature, on)
 	}
+	requireNoProbeApplied(t, c, "in a mixed N/N+1 cluster")
 
-	c.roll(t, 0, bins.n)
+	w.during(t, 0, bins.n)
+	w.checkHistory(t)
 
+	maps.Copy(want, w.snapshot())
 	c.requireReadsEverywhere(t, want)
 	if on := activatedOn(c.logs, upgradeProbeFeature); len(on) != 0 {
 		t.Fatalf("%s activated on nodes %v after the rollback to N", upgradeProbeFeature, on)
 	}
+	requireNoProbeApplied(t, c, "after the rollback to N")
 }
