@@ -46,6 +46,7 @@ type fakeShardLifecycle struct {
 	closed    []raftShardKey
 	purged    []raftShardKey
 	attachFn  func(tenantID, db string) error
+	closeErr  error
 	// passes counts ListStarted calls: ReconcileOnce makes exactly one per
 	// pass, so this counts reconcile passes.
 	passes int
@@ -75,6 +76,9 @@ func (f *fakeShardLifecycle) Attach(_ context.Context, tenantID, db string) erro
 func (f *fakeShardLifecycle) Close(tenantID, db string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.closeErr != nil {
+		return f.closeErr
+	}
 	key := raftShardKey{tenantID: tenantID, database: db}
 	delete(f.started, key)
 	f.closed = append(f.closed, key)
@@ -413,6 +417,62 @@ func TestTenantShardReconciler_BootReattach(t *testing.T) {
 	}
 	if !factory.isStarted("globex", "invoices") {
 		t.Error("globex/invoices should be started after boot reattach")
+	}
+}
+
+// TestTenantShardReconciler_RestartsPromotedObserver: an active local replica
+// still running with the observer role latched is closed and restarted as a
+// voter; a failed close leaves it running for the next pass.
+func TestTenantShardReconciler_RestartsPromotedObserver(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	p := placement1("acme", "orders", 1001)
+	r, _ := newTestReconciler(t, factory, nil, p)
+	ctx := context.Background()
+	r.ReconcileOnce(ctx)
+	if !factory.isStarted("acme", "orders") {
+		t.Fatal("acme/orders should be started")
+	}
+
+	factory.setStartedAsObserver("acme", "orders", true)
+	factory.mu.Lock()
+	factory.closeErr = errors.New("stop failed")
+	factory.mu.Unlock()
+	r.ReconcileOnce(ctx)
+	factory.mu.Lock()
+	closed := len(factory.closed)
+	factory.closeErr = nil
+	factory.mu.Unlock()
+	if closed != 0 || !factory.isStarted("acme", "orders") {
+		t.Fatalf("a failed stop must leave the replica running (closed %d)", closed)
+	}
+
+	r.ReconcileOnce(ctx)
+	factory.mu.Lock()
+	closed = len(factory.closed)
+	factory.mu.Unlock()
+	if closed != 1 {
+		t.Fatalf("closed = %d, want the promoted observer closed once", closed)
+	}
+	if !factory.isStarted("acme", "orders") {
+		t.Fatal("the promoted replica must be restarted")
+	}
+}
+
+// TestTenantShardReconciler_SetMoveHoldNilClears: a nil hold clears the hold.
+func TestTenantShardReconciler_SetMoveHoldNilClears(t *testing.T) {
+	r := &TenantShardReconciler{}
+	r.SetMoveHold(&MoveStoreCloser{})
+	r.SetMoveHold(nil)
+	if r.moveHold.Load() != nil {
+		t.Fatal("SetMoveHold(nil) must clear the hold")
+	}
+	var reg *TenantHostRegistry
+	reg.SetMoveHold(nil) // a nil registry ignores it
+	reg = &TenantHostRegistry{}
+	reg.SetMoveHold(&MoveStoreCloser{})
+	reg.SetMoveHold(nil)
+	if reg.moveHold.Load() != nil {
+		t.Fatal("TenantHostRegistry.SetMoveHold(nil) must clear the hold")
 	}
 }
 

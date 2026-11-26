@@ -428,6 +428,7 @@ type fakeMoveHosts struct {
 	volume    map[string]bool
 	lookupErr error
 	attachErr error
+	closeErr  error
 	calls     []string
 }
 
@@ -451,6 +452,9 @@ func (f *fakeMoveHosts) Attach(_ context.Context, tenantID string) error {
 
 func (f *fakeMoveHosts) Close(tenantID string) error {
 	f.calls = append(f.calls, "close "+tenantID)
+	if f.closeErr != nil {
+		return f.closeErr
+	}
 	delete(f.started, tenantID)
 	return nil
 }
@@ -588,6 +592,59 @@ func TestMoveStoreCloser_ResumedSettleRebuildsStartedVolumeTenantHost(t *testing
 				t.Fatalf("host calls = %v, want %v", hosts.calls, want)
 			}
 		})
+	}
+}
+
+// TestMoveStoreCloser_ResumedSettleRebuildFailureStaysPending: a resumed
+// settle that cannot close the boot-started Host, or its barrier, fails and
+// leaves the reopen pending.
+func TestMoveStoreCloser_ResumedSettleRebuildFailureStaysPending(t *testing.T) {
+	boom := errors.New("boom")
+	for _, mode := range []string{"standalone", "raft"} {
+		t.Run(mode+"/host close", func(t *testing.T) {
+			hosts := &fakeMoveHosts{started: map[string]bool{"acme": true}, volume: map[string]bool{"acme": true}, closeErr: boom}
+			c := resumedVolumeCloser(t, mode, hosts)
+			if err := c.OpenTenantStores(context.Background(), "acme"); !errors.Is(err, boom) {
+				t.Fatalf("open = %v, want %v", err, boom)
+			}
+			if got := c.PendingReopen(); !reflect.DeepEqual(got, []string{"acme"}) {
+				t.Fatalf("pending = %v, want [acme]", got)
+			}
+		})
+		t.Run(mode+"/barrier close", func(t *testing.T) {
+			hosts := &fakeMoveHosts{started: map[string]bool{"acme": true}, volume: map[string]bool{"acme": true}}
+			c := resumedVolumeCloser(t, mode, hosts)
+			c.barriers = &fakeMoveBarriers{err: boom}
+			if err := c.OpenTenantStores(context.Background(), "acme"); !errors.Is(err, boom) {
+				t.Fatalf("open = %v, want %v", err, boom)
+			}
+			if got := c.PendingReopen(); !reflect.DeepEqual(got, []string{"acme"}) {
+				t.Fatalf("pending = %v, want [acme]", got)
+			}
+		})
+	}
+}
+
+// TestMoveStoreCloser_RelocateTenantDataDirs: no relocator does nothing; a
+// relocator's error is wrapped with the tenant.
+func TestMoveStoreCloser_RelocateTenantDataDirs(t *testing.T) {
+	ctx := context.Background()
+	c, err := NewMoveStoreCloser(nil, &fakeMoveBarriers{}, nil, 0)
+	if err != nil {
+		t.Fatalf("NewMoveStoreCloser: %v", err)
+	}
+	if err := c.RelocateTenantDataDirs(ctx, "acme", "/a", "/b"); err != nil {
+		t.Fatalf("no relocator = %v, want nil", err)
+	}
+	ok := &fakeDataDirs{}
+	c, _ = NewMoveStoreCloser(nil, &fakeMoveBarriers{}, nil, 0, WithMoveDataDirRelocator(ok))
+	if err := c.RelocateTenantDataDirs(ctx, "acme", "/a", "/b"); err != nil || ok.calls != 1 {
+		t.Fatalf("relocate = %v (calls %d), want nil after one call", err, ok.calls)
+	}
+	boom := errors.New("boom")
+	c, _ = NewMoveStoreCloser(nil, &fakeMoveBarriers{}, nil, 0, WithMoveDataDirRelocator(&fakeDataDirs{err: boom}))
+	if err := c.RelocateTenantDataDirs(ctx, "acme", "/a", "/b"); !errors.Is(err, boom) || err.Error() == boom.Error() {
+		t.Fatalf("relocate = %v, want %v wrapped with the tenant", err, boom)
 	}
 }
 
