@@ -38,6 +38,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
 // fakeHomeServices is a TenantHomeServices returning one bundle, or an error.
@@ -768,7 +769,7 @@ func TestAttachLocalTenantHomes_VectorsInTenantBarrier(t *testing.T) {
 func TestAttachTenantHomes_VectorsInHomeGroup(t *testing.T) {
 	n, _, nodeWide := isolatedVectorNode(t, tenant.IsolationRaft)
 	group := newMapKVServicer()
-	if !AttachTenantHomes(n, &fakeHomeServices{svcs: &server.DatabaseServices{KV: group, Transaction: newEvaluatingTxService()}}) {
+	if !AttachTenantHomes(n, &fakeHomeServices{svcs: &server.DatabaseServices{KV: group, Transaction: group}}) {
 		t.Fatal("AttachTenantHomes = false, want true")
 	}
 	if err := attachVectorTenantHomes(n); err != nil {
@@ -796,51 +797,73 @@ func TestAttachVectorTenantHomes_RefusesAResolverWithoutHomes(t *testing.T) {
 }
 
 // mapKVServicer is a map-backed KV servicer standing in for a home group's store.
+//
+// Like a real home group, its KV verbs and its transactions share one store:
+// a guarded batch (the vector store's CreateNamespace) written through
+// Execute is what a later Get or Scan reads. The store is an
+// evaluatingTxService, so a transaction's compares see real versions.
 type mapKVServicer struct {
 	mockKVServicer
-	mu   sync.Mutex
-	data map[string][]byte
+	mu sync.Mutex
+	tx *evaluatingTxService
+}
+
+// Execute runs the transaction against the shared store.
+func (m *mapKVServicer) Execute(ctx context.Context, compares []service.Compare, successOps, failureOps []service.Op) (*service.TransactionResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.tx.Execute(ctx, compares, successOps, failureOps)
+}
+
+// ExecuteWithMode is Execute; the double has one durability.
+func (m *mapKVServicer) ExecuteWithMode(ctx context.Context, compares []service.Compare, successOps, failureOps []service.Op, _ writemode.Mode) (*service.TransactionResponse, error) {
+	return m.Execute(ctx, compares, successOps, failureOps)
+}
+
+// ExecuteEntity is not served, as evaluatingTxService does not serve it.
+func (m *mapKVServicer) ExecuteEntity(ctx context.Context, req *service.TransactionEntityRequest) (*service.TransactionEntityResponse, error) {
+	return m.tx.ExecuteEntity(ctx, req)
 }
 
 func newMapKVServicer() *mapKVServicer {
-	m := &mapKVServicer{data: map[string][]byte{}}
+	m := &mapKVServicer{tx: newEvaluatingTxService()}
 	m.putFn = func(_ context.Context, key string, value []byte) error {
 		m.mu.Lock()
 		defer m.mu.Unlock()
-		m.data[key] = append([]byte(nil), value...)
+		m.tx.put(key, append([]byte(nil), value...))
 		return nil
 	}
 	m.putIfAbsentFn = func(_ context.Context, key string, value []byte) (bool, error) {
 		m.mu.Lock()
 		defer m.mu.Unlock()
-		if _, ok := m.data[key]; ok {
+		if _, ok := m.tx.data[key]; ok {
 			return false, nil
 		}
-		m.data[key] = append([]byte(nil), value...)
+		m.tx.put(key, append([]byte(nil), value...))
 		return true, nil
 	}
 	m.getFn = func(_ context.Context, key string) ([]byte, error) {
 		m.mu.Lock()
 		defer m.mu.Unlock()
-		v, ok := m.data[key]
+		kv, ok := m.tx.data[key]
 		if !ok {
 			return nil, &service.KeyNotFoundError{Key: key}
 		}
-		return append([]byte(nil), v...), nil
+		return append([]byte(nil), kv.Value...), nil
 	}
 	m.deleteFn = func(_ context.Context, key string) error {
 		m.mu.Lock()
 		defer m.mu.Unlock()
-		delete(m.data, key)
+		delete(m.tx.data, key)
 		return nil
 	}
 	m.scanFn = func(_ context.Context, prefix string) (map[string][]byte, error) {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		out := map[string][]byte{}
-		for k, v := range m.data {
+		for k, kv := range m.tx.data {
 			if strings.HasPrefix(k, prefix) {
-				out[k] = append([]byte(nil), v...)
+				out[k] = append([]byte(nil), kv.Value...)
 			}
 		}
 		return out, nil
@@ -851,11 +874,11 @@ func newMapKVServicer() *mapKVServicer {
 	m.compareAndSwapFn = func(_ context.Context, key string, expected, next []byte) (bool, error) {
 		m.mu.Lock()
 		defer m.mu.Unlock()
-		cur, ok := m.data[key]
-		if !ok || !bytes.Equal(cur, expected) {
+		cur, ok := m.tx.data[key]
+		if !ok || !bytes.Equal(cur.Value, expected) {
 			return false, nil
 		}
-		m.data[key] = append([]byte(nil), next...)
+		m.tx.put(key, append([]byte(nil), next...))
 		return true, nil
 	}
 	return m
@@ -865,7 +888,7 @@ func (m *mapKVServicer) keysWithPrefix(prefix string) []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var keys []string
-	for k := range m.data {
+	for k := range m.tx.data {
 		if strings.HasPrefix(k, prefix) {
 			keys = append(keys, k)
 		}
