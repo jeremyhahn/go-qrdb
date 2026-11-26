@@ -7,14 +7,16 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 )
 
 var errFault = errors.New("injected kv fault")
 
-// faultKV is a MemoryKVStore that fails one operation on keys under one
-// prefix, so each KV error branch of KVVectorStorage can be reached.
+// faultKV fails the one operation op on keys under prefix. "Batch" fails a
+// PutAllIfAllUnchanged that writes a key under prefix, before any write
+// lands, as a refused proposal does.
 type faultKV struct {
-	*kvstore.MemoryKVStore
+	*kvstoretest.GuardedMemoryStore
 	op, prefix string
 }
 
@@ -26,71 +28,57 @@ func (f *faultKV) Put(ctx context.Context, key string, value []byte) error {
 	if f.hit("Put", key) {
 		return errFault
 	}
-	return f.MemoryKVStore.Put(ctx, key, value)
+	return f.GuardedMemoryStore.Put(ctx, key, value)
 }
 
 func (f *faultKV) Get(ctx context.Context, key string) ([]byte, error) {
 	if f.hit("Get", key) {
 		return nil, errFault
 	}
-	return f.MemoryKVStore.Get(ctx, key)
+	return f.GuardedMemoryStore.Get(ctx, key)
 }
 
 func (f *faultKV) Delete(ctx context.Context, key string) error {
 	if f.hit("Delete", key) {
 		return errFault
 	}
-	return f.MemoryKVStore.Delete(ctx, key)
+	return f.GuardedMemoryStore.Delete(ctx, key)
 }
 
 func (f *faultKV) Exists(ctx context.Context, key string) (bool, error) {
 	if f.hit("Exists", key) {
 		return false, errFault
 	}
-	return f.MemoryKVStore.Exists(ctx, key)
+	return f.GuardedMemoryStore.Exists(ctx, key)
 }
 
 func (f *faultKV) List(ctx context.Context, prefix string) ([]string, error) {
 	if f.hit("List", prefix) {
 		return nil, errFault
 	}
-	return f.MemoryKVStore.List(ctx, prefix)
+	return f.GuardedMemoryStore.List(ctx, prefix)
 }
 
 func (f *faultKV) Scan(ctx context.Context, prefix string, fn func(string, []byte) error) error {
 	if f.hit("Scan", prefix) {
 		return errFault
 	}
-	return f.MemoryKVStore.Scan(ctx, prefix, fn)
+	return f.GuardedMemoryStore.Scan(ctx, prefix, fn)
 }
 
-func (f *faultKV) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
-	if f.hit("PutIfAbsent", key) {
-		return false, errFault
+func (f *faultKV) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	for _, w := range writes {
+		if f.hit("Batch", w.Key) {
+			return false, errFault
+		}
 	}
-	return f.MemoryKVStore.PutIfAbsent(ctx, key, value)
+	return f.GuardedMemoryStore.PutAllIfAllUnchanged(ctx, guards, writes)
 }
 
-func (f *faultKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
-	if f.hit("CompareAndSwap", key) {
-		return false, errFault
-	}
-	return f.MemoryKVStore.CompareAndSwap(ctx, key, expected, next)
-}
-
-// kvModes builds a store over the fault double with the atomic capability
-// exposed, and one with it hidden, so both allocation paths run.
-func kvModes() map[string]func(*faultKV) kvstore.KVStore {
-	return map[string]func(*faultKV) kvstore.KVStore{
-		"atomic": func(f *faultKV) kvstore.KVStore { return f },
-		"plain":  func(f *faultKV) kvstore.KVStore { return plainKV{f} },
-	}
-}
-
-func seededFaultStorage(t *testing.T, wrap func(*faultKV) kvstore.KVStore) (*KVVectorStorage, *faultKV) {
+func seededFaultStorage(t *testing.T) (*KVVectorStorage, *faultKV) {
 	t.Helper()
-	f := &faultKV{MemoryKVStore: kvstore.NewMemoryKVStore()}
-	s := newKVStorage(t, wrap(f))
+	f := &faultKV{GuardedMemoryStore: kvstoretest.NewGuardedMemoryStore()}
+	s := newKVStorage(t, f)
 	ctx := context.Background()
 	if err := s.CreateNamespace(ctx, &NamespaceInfo{Name: "ns"}); err != nil {
 		t.Fatalf("CreateNamespace: %v", err)
@@ -153,117 +141,164 @@ func TestKVVectorStorage_KVFaultsPropagate(t *testing.T) {
 			return err
 		},
 	}
-	type fault struct{ call, op, prefix, mode string }
+	type fault struct{ call, op, prefix string }
 	faults := []fault{
-		{"upsert", "Put", "v/", ""},
-		{"upsert", "Get", "gen/", ""},
-		{"upsert", "CompareAndSwap", "gen/", "atomic"},
-		{"upsert", "Put", "gen/", "plain"},
-		{"get", "Get", "v/", ""},
-		{"delete", "Exists", "v/", ""},
-		{"delete", "Delete", "v/", ""},
-		{"delete", "Get", "gen/", ""},
-		{"batch-upsert", "Put", "v/", ""},
-		{"batch-upsert", "Get", "gen/", ""},
-		{"batch-delete", "Delete", "v/", ""},
-		{"batch-delete", "Get", "gen/", ""},
-		{"scan-ns", "Scan", "v/", ""},
-		{"scan-meta", "Scan", "v/", ""},
-		{"scan-filters", "Scan", "v/", ""},
-		{"stats", "Scan", "v/", ""},
-		{"create", "Exists", "ns/", ""},
-		{"create", "PutIfAbsent", "id/", "atomic"},
-		{"create", "PutIfAbsent", "ns/", "atomic"},
-		{"create", "Put", "id/", "plain"},
-		{"create", "Put", "gen/", "plain"},
-		{"create", "Put", "ns/", "plain"},
-		{"update", "Get", "ns/", ""},
-		{"update", "Put", "ns/", ""},
-		{"drop-ns", "Exists", "ns/", ""},
-		{"drop-ns", "List", "v/", ""},
-		{"drop-ns", "Delete", "v/", ""},
-		{"drop-ns", "Delete", "id/", ""},
-		{"drop-ns", "Delete", "gen/", ""},
-		{"drop-ns", "Delete", "ns/", ""},
-		{"list-ns", "Scan", "ns/", ""},
-		{"info", "Get", "ns/", ""},
-		{"info", "Scan", "v/", ""},
-		{"next-id", "Get", "id/", ""},
-		{"next-id", "CompareAndSwap", "id/", "atomic"},
-		{"next-id", "Put", "id/", "plain"},
-		{"batch-ids", "Get", "id/", ""},
-		{"generation", "Get", "gen/", ""},
+		{"upsert", "Batch", "v/"},
+		{"upsert", "Get", "gen/"},
+		{"upsert", "Get", "inc/"},
+		{"get", "Get", "v/"},
+		{"get", "Get", "inc/"},
+		{"delete", "Get", "inc/"},
+		{"delete", "Exists", "v/"},
+		{"delete", "Batch", "v/"},
+		{"delete", "Get", "gen/"},
+		{"batch-upsert", "Batch", "v/"},
+		{"batch-upsert", "Get", "gen/"},
+		{"batch-delete", "Batch", "v/"},
+		{"batch-delete", "Get", "gen/"},
+		{"scan-ns", "Scan", "v/"},
+		{"scan-ns", "Get", "inc/"},
+		{"scan-meta", "Scan", "v/"},
+		{"scan-filters", "Scan", "v/"},
+		{"stats", "Scan", "v/"},
+		{"create", "Exists", "ns/"},
+		{"create", "Get", "gen/"},
+		{"create", "Batch", "ns/"},
+		{"update", "Get", "inc/"},
+		{"update", "Get", "ns/"},
+		{"update", "Batch", "ns/"},
+		{"drop-ns", "Get", "inc/"},
+		{"drop-ns", "Get", "gen/"},
+		{"drop-ns", "Batch", "ns/"},
+		{"drop-ns", "List", "v/"},
+		{"drop-ns", "Delete", "v/"},
+		{"list-ns", "Scan", "ns/"},
+		{"info", "Get", "ns/"},
+		{"info", "Scan", "v/"},
+		{"next-id", "Get", "id/"},
+		{"next-id", "Batch", "id/"},
+		{"batch-ids", "Get", "id/"},
+		{"generation", "Get", "gen/"},
+		{"generation", "Get", "inc/"},
 	}
-	for mode, wrap := range kvModes() {
-		for _, fc := range faults {
-			if fc.mode != "" && fc.mode != mode {
-				continue
+	for _, fc := range faults {
+		t.Run(fc.call+"/"+fc.op+"/"+fc.prefix, func(t *testing.T) {
+			s, f := seededFaultStorage(t)
+			f.op, f.prefix = fc.op, fc.prefix
+			if err := calls[fc.call](s); !errors.Is(err, errFault) {
+				t.Fatalf("%s with %s %s failing = %v, want the injected fault", fc.call, fc.op, fc.prefix, err)
 			}
-			t.Run(mode+"/"+fc.call+"/"+fc.op+"/"+fc.prefix, func(t *testing.T) {
-				s, f := seededFaultStorage(t, wrap)
-				f.op, f.prefix = fc.op, fc.prefix
-				if err := calls[fc.call](s); !errors.Is(err, errFault) {
-					t.Fatalf("%s with %s %s failing = %v, want the injected fault", fc.call, fc.op, fc.prefix, err)
-				}
-			})
-		}
+		})
+	}
+}
+
+// TestKVVectorStorage_FailedBatchLeavesDataAndGeneration is Codex round 3
+// (c): a write whose batch fails leaves neither its data nor a generation
+// step behind, so no replica can see data its index generation does not
+// cover.
+func TestKVVectorStorage_FailedBatchLeavesDataAndGeneration(t *testing.T) {
+	ctx := context.Background()
+	writes := map[string]func(s *KVVectorStorage) error{
+		"upsert": func(s *KVVectorStorage) error { return s.UpsertVector(ctx, "ns", kvVec(2, nil)) },
+		"batch-upsert": func(s *KVVectorStorage) error {
+			return s.BatchUpsertVectors(ctx, "ns", []*VectorValue{kvVec(2, nil), kvVec(3, nil)})
+		},
+		"delete":       func(s *KVVectorStorage) error { return s.DeleteVector(ctx, "ns", 1) },
+		"batch-delete": func(s *KVVectorStorage) error { return s.BatchDeleteVectors(ctx, "ns", []uint64{1}) },
+	}
+	for name, write := range writes {
+		t.Run(name, func(t *testing.T) {
+			s, f := seededFaultStorage(t)
+			before, err := s.Generation(ctx, "ns")
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.op, f.prefix = "Batch", "v/"
+			if err := write(s); !errors.Is(err, errFault) {
+				t.Fatalf("%s with the batch failing = %v, want the injected fault", name, err)
+			}
+			f.op = ""
+			after, err := s.Generation(ctx, "ns")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after != before {
+				t.Fatalf("generation after a failed %s = %d, want %d", name, after, before)
+			}
+			vecs, err := s.ScanNamespace(ctx, "ns", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(vecs) != 1 || vecs[0].ID != 1 {
+				t.Fatalf("vectors after a failed %s = %v, want only vector 1", name, vecs)
+			}
+		})
 	}
 }
 
 func TestKVVectorStorage_CorruptRecordsRefused(t *testing.T) {
 	ctx := context.Background()
 	garbage := []byte{0xff, 0xfe, 0xfd, 0xfc}
-	for mode, wrap := range kvModes() {
-		t.Run(mode, func(t *testing.T) {
-			s, f := seededFaultStorage(t, wrap)
-			mem := f.MemoryKVStore
-			if err := mem.Put(ctx, kvVectorKey("bad", 7), garbage); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := s.GetVector(ctx, "bad", 7); err == nil {
-				t.Fatal("GetVector of a corrupt record succeeded")
-			}
-			if _, err := s.ScanNamespace(ctx, "bad", nil); err == nil {
-				t.Fatal("ScanNamespace over a corrupt record succeeded")
-			}
-			if err := mem.Put(ctx, kvNamespaceKey("ns"), garbage); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := s.GetNamespaceInfo(ctx, "ns"); err == nil {
-				t.Fatal("GetNamespaceInfo of a corrupt record succeeded")
-			}
-			if _, err := s.ListNamespaces(ctx); err == nil {
-				t.Fatal("ListNamespaces over a corrupt record succeeded")
-			}
-			if err := mem.Put(ctx, kvIDKey("ns"), []byte{1, 2, 3}); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := s.NextID("ns"); err == nil {
-				t.Fatal("NextID over a short counter succeeded")
-			}
-			if err := mem.Put(ctx, kvGenKey("ns"), []byte{1, 2, 3}); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := s.Generation(ctx, "ns"); err == nil {
-				t.Fatal("Generation over a short counter succeeded")
-			}
-			if err := s.UpsertVector(ctx, "ns", kvVec(4, nil)); err == nil {
-				t.Fatal("UpsertVector advancing a short counter succeeded")
-			}
-			// A key of a longer namespace sharing the prefix is not a vector.
-			if err := mem.Put(ctx, kvVectorNSPrefix("ns")+"zz", garbage); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := s.GetStats(ctx, "ns"); err != nil {
-				t.Fatalf("GetStats with a foreign key = %v", err)
-			}
-		})
+	s, f := seededFaultStorage(t)
+	mem := f.GuardedMemoryStore
+	inc, err := mem.Get(ctx, kvIncKey("ns"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A key of a longer namespace sharing the prefix is not a vector.
+	if err := mem.Put(ctx, kvVectorNSPrefix("ns", inc)+"zz", garbage); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetStats(ctx, "ns"); err != nil {
+		t.Fatalf("GetStats with a foreign key = %v", err)
+	}
+	if err := mem.Put(ctx, kvVectorKey("ns", inc, 7), garbage); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetVector(ctx, "ns", 7); err == nil {
+		t.Fatal("GetVector of a corrupt record succeeded")
+	}
+	if _, err := s.ScanNamespace(ctx, "ns", nil); err == nil {
+		t.Fatal("ScanNamespace over a corrupt record succeeded")
+	}
+	if err := mem.Put(ctx, kvNamespaceKey("ns"), garbage); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetNamespaceInfo(ctx, "ns"); err == nil {
+		t.Fatal("GetNamespaceInfo of a corrupt record succeeded")
+	}
+	if _, err := s.ListNamespaces(ctx); err == nil {
+		t.Fatal("ListNamespaces over a corrupt record succeeded")
+	}
+	if err := s.UpdateNamespace(ctx, "ns", &NamespaceUpdate{}); err == nil {
+		t.Fatal("UpdateNamespace over a corrupt record succeeded")
+	}
+	if err := mem.Put(ctx, kvIDKey("ns"), []byte{1, 2, 3}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.NextID("ns"); err == nil {
+		t.Fatal("NextID over a short counter succeeded")
+	}
+	if err := mem.Put(ctx, kvGenKey("ns"), []byte{1, 2, 3}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Generation(ctx, "ns"); err == nil {
+		t.Fatal("Generation over a short counter succeeded")
+	}
+	if err := s.UpsertVector(ctx, "ns", kvVec(4, nil)); err == nil {
+		t.Fatal("UpsertVector advancing a short counter succeeded")
+	}
+	if err := mem.Put(ctx, kvIncKey("ns"), []byte{1, 2, 3}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetVector(ctx, "ns", 1); err == nil {
+		t.Fatal("GetVector under a short incarnation succeeded")
 	}
 }
 
 func TestKVVectorStorage_RefusesInvalidArguments(t *testing.T) {
 	ctx := context.Background()
-	s := newKVStorage(t, kvstore.NewMemoryKVStore())
+	s := newKVStorage(t, kvstoretest.NewGuardedMemoryStore())
 	checks := []struct {
 		name string
 		err  error
@@ -271,6 +306,9 @@ func TestKVVectorStorage_RefusesInvalidArguments(t *testing.T) {
 	}{
 		{"upsert nil", s.UpsertVector(ctx, "ns", nil), ErrInvalidVector},
 		{"upsert id 0", s.UpsertVector(ctx, "ns", kvVec(0, nil)), ErrInvalidID},
+		{"upsert missing namespace", s.UpsertVector(ctx, "ns", kvVec(1, nil)), ErrNamespaceNotFound},
+		{"batch upsert missing namespace", s.BatchUpsertVectors(ctx, "ns", []*VectorValue{kvVec(1, nil)}), ErrNamespaceNotFound},
+		{"batch delete missing namespace", s.BatchDeleteVectors(ctx, "ns", []uint64{1}), ErrNamespaceNotFound},
 		{"delete id 0", s.DeleteVector(ctx, "ns", 0), ErrInvalidID},
 		{"delete missing", s.DeleteVector(ctx, "ns", 9), ErrVectorNotFound},
 		{"batch upsert empty", s.BatchUpsertVectors(ctx, "ns", nil), ErrEmptyBatch},
@@ -292,6 +330,9 @@ func TestKVVectorStorage_RefusesInvalidArguments(t *testing.T) {
 	if _, err := s.GetVector(ctx, "ns", 0); !errors.Is(err, ErrInvalidID) {
 		t.Errorf("get id 0 = %v", err)
 	}
+	if _, err := s.GetVector(ctx, "ns", 1); !errors.Is(err, ErrVectorNotFound) {
+		t.Errorf("get in missing namespace = %v", err)
+	}
 	if _, err := s.BatchAllocateIDs("ns", 0); !errors.Is(err, ErrInvalidID) {
 		t.Errorf("batch ids 0 = %v", err)
 	}
@@ -301,19 +342,15 @@ func TestKVVectorStorage_RefusesInvalidArguments(t *testing.T) {
 	if _, err := s.GetNamespaceInfo(ctx, "ns"); !errors.Is(err, ErrNamespaceNotFound) {
 		t.Errorf("info missing = %v", err)
 	}
-	plain := newKVStorage(t, plainKV{kvstore.NewMemoryKVStore()})
-	if _, err := plain.NextID("ns"); !errors.Is(err, ErrNamespaceNotFound) {
-		t.Errorf("plain next id missing = %v", err)
-	}
 	if _, err := s.NextID("ns"); !errors.Is(err, ErrNamespaceNotFound) {
-		t.Errorf("atomic next id missing = %v", err)
+		t.Errorf("next id missing = %v", err)
 	}
 }
 
 func TestKVVectorStorage_ClosedAndCanceledEverywhere(t *testing.T) {
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	s := newKVStorage(t, kvstore.NewMemoryKVStore())
+	s := newKVStorage(t, kvstoretest.NewGuardedMemoryStore())
 	filters := []MetadataFilter{{Field: "k", Value: "v", Operator: FilterEqual}}
 	ctxCalls := func(ctx context.Context) map[string]error {
 		_, getErr := s.GetVector(ctx, "ns", 1)
