@@ -124,6 +124,8 @@ export {
     NotImplementedError,
     ShamirSplitMissingError,
     ShamirSplitMismatchError,
+    ConnectionChangedError,
+    UnsupportedOptionError,
 } from './errors.js';
 
 // Request/response types

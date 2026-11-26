@@ -20,7 +20,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { RestClient } from '../src/rest.js';
-import { CertExportError } from '../src/errors.js';
+import { CertExportError, ConnectionChangedError, UnsupportedOptionError } from '../src/errors.js';
 
 // ---------------------------------------------------------------------------
 // Fetch mock helpers
@@ -83,6 +83,85 @@ async function connectedClient(): Promise<RestClient> {
     await client.connection.connect('https://localhost:63002');
     return client;
 }
+
+describe('tenants.barrierInit pins its origin across a reconnect', () => {
+    beforeEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    for (const strategy of ['passphrase', 'shamir'] as const) {
+        it(`${strategy}: a connect to B while init/begin on A is in flight sends nothing to B`, async () => {
+            const serverA = 'https://a.example:63002';
+            const serverB = 'https://b.example:63002';
+            const calls: { url: string; body?: string }[] = [];
+            let releaseBegin!: () => void;
+            const beginHeld = new Promise<void>((resolve) => { releaseBegin = resolve; });
+            let beginStarted!: () => void;
+            const beginSeen = new Promise<void>((resolve) => { beginStarted = resolve; });
+            vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+                const url = typeof input === 'string' ? input : (input as URL).toString();
+                calls.push({ url, body: typeof init?.body === 'string' ? init.body : undefined });
+                if (url === `${serverA}/v1/tenants/t1/barrier/init/begin`) {
+                    beginStarted();
+                    await beginHeld;
+                }
+                return new Response(JSON.stringify({ status: 'ok' }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                });
+            });
+            const client = new RestClient(serverA);
+            await client.connection.connect(serverA);
+
+            const init = client.tenants.barrierInit({
+                tenantId: 't1', strategy, passphrase: 'correct horse', threshold: 2, shares: 3,
+            });
+            await beginSeen;
+            await client.connection.connect(serverB);
+            releaseBegin();
+
+            await expect(init).rejects.toBeInstanceOf(ConnectionChangedError);
+            const toB = calls.filter((c) => c.url.startsWith(serverB));
+            expect(toB.map((c) => c.url)).toEqual([`${serverB}/health`, `${serverB}/status`]);
+            expect(toB.some((c) => c.body?.includes('passphrase'))).toBe(false);
+            // Nothing but the held begin went to A after the connect either.
+            expect(calls.filter((c) => c.url.includes('/barrier/init/complete'))).toHaveLength(0);
+        });
+    }
+});
+
+describe('database.create refuses options REST cannot serve', () => {
+    beforeEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('mode remote is refused and nothing is sent', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({});
+        await expect(client.database.create({ name: 'r1', backend: 'memory', mode: 'remote' }))
+            .rejects.toBeInstanceOf(UnsupportedOptionError);
+        expect(calls).toHaveLength(0);
+    });
+
+    it('a connection is refused and nothing is sent', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({});
+        await expect(client.database.create({
+            name: 'r2', backend: 'memory', connection: { transport: 'rest', address: 'https://b.example' },
+        })).rejects.toBeInstanceOf(UnsupportedOptionError);
+        expect(calls).toHaveLength(0);
+    });
+
+    it('mode embedded sends the wire body without a mode field', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({ name: 'e1' });
+        await client.database.create({ name: 'e1', backend: 'memory', mode: 'embedded' });
+        expect(calls).toHaveLength(1);
+        const body = calls[0].body as Record<string, unknown>;
+        expect(body['name']).toBe('e1');
+        expect(body['mode']).toBeUndefined();
+    });
+});
 
 // ---------------------------------------------------------------------------
 // Bug 1: Transaction target/result/type must be strings, and field names must

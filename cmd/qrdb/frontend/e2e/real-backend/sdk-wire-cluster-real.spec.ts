@@ -22,6 +22,7 @@ import {
   type DomCluster,
 } from "../dom/fixtures/dom-cluster.ts";
 import { RestClient } from "../../../../../sdk/typescript/src/rest.js";
+import { UnsupportedOptionError } from "../../../../../sdk/typescript/src/errors.js";
 
 // The fixture serves a self-signed certificate; the SDK uses Node's fetch.
 process.env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0";
@@ -135,19 +136,23 @@ test.describe("SDK database cluster fields (3-node cluster)", () => {
     expect(got.connection?.address).toBe(address);
   });
 
-  test("create connection and mode are not sent (server refuses them)", async () => {
-    // The SDK strips mode and connection from create: the server's strict
-    // decoder refuses both, so a remote database is configured afterwards
-    // with updateConnection. Server gap, recorded in #1478.
+  test("create refuses a remote mode or a connection and creates nothing", async () => {
+    // A REST client can only create an embedded database on the server it
+    // talks to; a remote registration is refused before any request, not
+    // silently created embedded.
     const db = ctx.client().database;
-    const created = await db.create({
+    await expect(db.create({
       name: "wire_remote",
       backend: "memory",
       mode: "remote",
+    })).rejects.toBeInstanceOf(UnsupportedOptionError);
+    await expect(db.create({
+      name: "wire_remote",
+      backend: "memory",
       connection: { transport: "rest", address: ctx.cluster().adminUrls[1]! },
-    });
-    expect(created.mode).toBe("embedded");
-    expect(created.connection).toBeUndefined();
+    })).rejects.toBeInstanceOf(UnsupportedOptionError);
+    const names = (await db.list()).map((d) => d.name);
+    expect(names).not.toContain("wire_remote");
   });
 
   test("scale round-trips targetReplicas", async () => {

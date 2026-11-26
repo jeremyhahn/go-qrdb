@@ -313,6 +313,8 @@ import {
     ShamirSplitMismatchError,
     ShamirSplitMissingError,
     TransportError,
+    ConnectionChangedError,
+    UnsupportedOptionError,
 } from './errors.js';
 import type { AuditFilter, AuditPage } from './audit.js';
 import {
@@ -635,6 +637,12 @@ function wireBody(data: Record<string, unknown>): RequestInit {
  */
 export class RestClient implements Client {
     private baseUrl: string;
+    /**
+     * Bumped by every connection.connect. A multi-request call pins the
+     * origin and the generation it started on, and stops before a later
+     * send if the client was reconnected in between.
+     */
+    private connectionGeneration = 0;
     private connected = false;
     private serverVersion = '';
 
@@ -684,6 +692,7 @@ export class RestClient implements Client {
     get connection(): ConnectionClient {
         return {
             connect: async (address: string): Promise<void> => {
+                this.connectionGeneration++;
                 this.baseUrl = address.replace(/\/$/, '');
                 try {
                     const health = await this.fetchJSON<HealthResponse>('/health');
@@ -2208,10 +2217,23 @@ export class RestClient implements Client {
         return {
             create: async (req: CreateDatabaseRequest): Promise<DatabaseInfo> => {
                 this.ensureConnected();
-                // mode and connection describe how this client reaches the
-                // database; they are not part of the server's create request,
-                // whose strict decoder refuses an unknown field.
-                const { mode: _mode, connection: _connection, ...wire } = req;
+                // A REST client creates the database on the server it talks
+                // to: that is an embedded database of that server. A remote
+                // mode or a connection to another server is a desktop-side
+                // registration this transport cannot make, so it is refused
+                // before anything is sent rather than created embedded.
+                if (req.mode !== undefined && req.mode !== '' && req.mode !== 'embedded') {
+                    throw new UnsupportedOptionError('database.create', 'mode',
+                        `mode "${req.mode}" is not served over REST; only an embedded database can be created`);
+                }
+                if (req.connection !== undefined) {
+                    throw new UnsupportedOptionError('database.create', 'connection',
+                        'a remote connection is not served over REST; only an embedded database can be created');
+                }
+                // "embedded" is the only mode left and the server's create
+                // request has no mode field (its strict decoder refuses an
+                // unknown one).
+                const { mode: _mode, ...wire } = req;
                 return this.fetchSecretJSON<DatabaseInfo>('/v1/databases', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -2859,6 +2881,10 @@ export class RestClient implements Client {
                 // sealed; the second echoes both and keys the barrier. Only the
                 // second answer reports an initialized barrier.
                 const base = `/v1/tenants/${encodeURIComponent(req.tenantId)}/barrier/init`;
+                // Pin the server before the first await: a connect while
+                // the init is in flight must not send its later requests
+                // (and the passphrase they carry) to the new server.
+                const pin = { origin: this.baseUrl, generation: this.connectionGeneration };
                 // passphrase is base64 on the wire; the server field is
                 // `[]byte` so it can be zeroized. See seal.initialize.
                 const initBody: Record<string, unknown> = { ...req };
@@ -2866,14 +2892,14 @@ export class RestClient implements Client {
                 if (req.strategy !== 'shamir') {
                     // "none" and "passphrase" respond 204 No Content, which
                     // carries nothing to decode.
-                    const raw = await this.tenantBarrierInitRound(base, initBody);
+                    const raw = await this.tenantBarrierInitRound(pin, base, initBody);
                     return raw ?? { tenantId: req.tenantId, strategy: req.strategy ?? '' };
                 }
-                const first = await this.tenantBarrierInitRound(base, initBody);
+                const first = await this.tenantBarrierInitRound(pin, base, initBody);
                 if (!first?.roster || !first.unsealKeyCheck) {
                     throw new ShamirSplitMissingError(req.tenantId);
                 }
-                const second = await this.tenantBarrierInitRound(base, {
+                const second = await this.tenantBarrierInitRound(pin, base, {
                     ...initBody,
                     roster: first.roster,
                     unsealKeyCheck: first.unsealKeyCheck,
@@ -3344,18 +3370,36 @@ export class RestClient implements Client {
      * passphrase, so an http:// base URL is refused before init/begin.
      */
     private async tenantBarrierInitRound(
+        pin: { origin: string; generation: number },
         base: string,
         body: Record<string, unknown>,
     ): Promise<TenantBarrierInitResponse | undefined> {
         const secret = Boolean(body.passphrase);
-        const challenge = await this.fetchSecretJSON<{ nonce?: string }>(`${base}/begin`, { method: 'POST' }, secret);
+        // Every send goes to the origin the call started on, and none goes
+        // out once the client has been reconnected: a passphrase or a split
+        // meant for one server must never reach another.
+        const beginPath = `${base}/begin`;
+        this.assertConnectionPinned(pin, 'tenants.barrierInit');
+        const challenge = await requestSecret(requestJSON<{ nonce?: string }>, pin.origin, beginPath,
+            this.scopedInit(beginPath, { method: 'POST' }), secret);
         if (challenge?.nonce) {
             throw new DesktopOnlyError('tenants.barrierInit with proof of possession');
         }
+        this.assertConnectionPinned(pin, 'tenants.barrierInit');
         // "none" and "passphrase" answer 204 No Content, which fetchJSON
         // cannot parse.
-        return requestSecret(requestOptionalJSON<TenantBarrierInitResponse>, this.baseUrl, `${base}/complete`,
+        return requestSecret(requestOptionalJSON<TenantBarrierInitResponse>, pin.origin, `${base}/complete`,
             { method: 'POST', ...jsonBody(body) }, secret);
+    }
+
+    /**
+     * Throws ConnectionChangedError when the client was reconnected since
+     * pin was taken.
+     */
+    private assertConnectionPinned(pin: { origin: string; generation: number }, operation: string): void {
+        if (this.connectionGeneration !== pin.generation) {
+            throw new ConnectionChangedError(operation, pin.origin);
+        }
     }
 
     /** Database-scope-aware wrapper over {@link requestVoid}. */

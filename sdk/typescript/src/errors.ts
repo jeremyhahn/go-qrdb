@@ -495,3 +495,40 @@ export class NotImplementedError extends QRDBError {
         this.method = method;
     }
 }
+
+/**
+ * Raised when the client was reconnected to another server while a
+ * multi-request call was in flight. The call stops before sending anything
+ * more, so no part of it (and no secret it carries) reaches the new server.
+ */
+export class ConnectionChangedError extends QRDBError {
+    /** The call that was stopped. */
+    readonly operation: string;
+    /** The server the call started on. */
+    readonly origin: string;
+
+    constructor(operation: string, origin: string) {
+        super(`transport: ${operation} started on ${origin} and the client was reconnected before it finished; nothing more was sent`);
+        this.name = 'ConnectionChangedError';
+        this.operation = operation;
+        this.origin = origin;
+    }
+}
+
+/**
+ * Raised when a request carries an option this transport does not support.
+ * Nothing is sent.
+ */
+export class UnsupportedOptionError extends QRDBError {
+    /** The call that was refused. */
+    readonly operation: string;
+    /** The option the transport cannot honour. */
+    readonly option: string;
+
+    constructor(operation: string, option: string, detail: string) {
+        super(`transport: ${operation} does not support ${option}: ${detail}`);
+        this.name = 'UnsupportedOptionError';
+        this.operation = operation;
+        this.option = option;
+    }
+}
