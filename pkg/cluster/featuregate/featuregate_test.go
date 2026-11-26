@@ -601,9 +601,18 @@ func TestNew_Validates(t *testing.T) {
 }
 
 // The advertised names are exactly this binary's features.
+// testTaggedFeatures are the features a test-only build tag appends to
+// supported (upgrade_probe_test.go under qrdb_upgrade_probe).
+var testTaggedFeatures []feature.Feature
+
 func TestSupported(t *testing.T) {
-	assert.Equal(t, []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads, VerifiableLogAudit, PendingUserTTL, VerifiableLogDrop, VerifiableLogSealed, OrderedUniqueCheck, IndexRescope}, Supported())
-	assert.Equal(t, []string{string(GuardedWrites), string(ClusterShardIDs), string(PrefixCompaction), string(NodeCompaction), string(ClusterSeal), string(ImportStaging), string(RangeDelete), string(AuditAppend), string(VectorEngine), string(TimeSeriesRetention), string(LeaseCheckpoint), string(PerNodeBarrierKeys), string(VerifiableLog), string(RollingMigration), string(TenantUndo), string(VerifiableLogKeys), string(VectorManhattan), string(CommandCaps), string(LockCreateRevisionToken), string(TransactionReads), string(VerifiableLogAudit), string(PendingUserTTL), string(VerifiableLogDrop), string(VerifiableLogSealed), string(OrderedUniqueCheck), string(IndexRescope)}, SupportedNames())
+	want := append([]feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads, VerifiableLogAudit, PendingUserTTL, VerifiableLogDrop, VerifiableLogSealed, OrderedUniqueCheck, IndexRescope}, testTaggedFeatures...)
+	wantNames := []string{string(GuardedWrites), string(ClusterShardIDs), string(PrefixCompaction), string(NodeCompaction), string(ClusterSeal), string(ImportStaging), string(RangeDelete), string(AuditAppend), string(VectorEngine), string(TimeSeriesRetention), string(LeaseCheckpoint), string(PerNodeBarrierKeys), string(VerifiableLog), string(RollingMigration), string(TenantUndo), string(VerifiableLogKeys), string(VectorManhattan), string(CommandCaps), string(LockCreateRevisionToken), string(TransactionReads), string(VerifiableLogAudit), string(PendingUserTTL), string(VerifiableLogDrop), string(VerifiableLogSealed), string(OrderedUniqueCheck), string(IndexRescope)}
+	for _, f := range testTaggedFeatures {
+		wantNames = append(wantNames, string(f))
+	}
+	assert.Equal(t, want, Supported())
+	assert.Equal(t, wantNames, SupportedNames())
 }
 
 // TestCheckActivated_AdoptsTenantUndoActivation pins that this binary

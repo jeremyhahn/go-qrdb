@@ -453,7 +453,7 @@ check-public-proto:
 TEST_PKGS := ./pkg/... ./cmd/... ./test/buildgates/...
 
 .PHONY: test
-test: test-clusterproof
+test: test-clusterproof test-upgrade-probe
 	$(GOTEST) $(TAG_FLAG) $(TEST_PKGS)
 
 # Unit legs: CI splits the unit suites into parallel legs by measured wall time; `rest` and `sdk` take every package no leg names.
@@ -531,6 +531,13 @@ test-fips-leg:
 .PHONY: test-clusterproof
 test-clusterproof:
 	cd test/clusterproof && $(GOTEST) -tags "$(MIN_TAGS),clusterproof" ./...
+
+# Unit tests of the synthetic N+1 release behind the test-only qrdb_upgrade_probe tag (docs/rolling-upgrades/engineering.md).
+UPGRADE_PROBE_PKGS := ./pkg/service/ ./pkg/store/ ./pkg/cluster/featuregate/ ./pkg/api/quic/wire/
+
+.PHONY: test-upgrade-probe
+test-upgrade-probe:
+	$(GOTEST) -tags "$(strip $(BUILD_TAGS)) qrdb_upgrade_probe" $(UPGRADE_PROBE_PKGS)
 
 # The vanguard blocker probe; run it at every vanguard release (docs/api-server/architecture.md).
 .PHONY: check-vanguard-probe
@@ -1906,6 +1913,7 @@ vet-tags:
 test-tags:
 	GOTEST="$(GO) test" GOLIST="$(GO) list" ./scripts/test-tags.sh "$(TEST_TAGS_SETS)" "$(TEST_TAGS_PKGS)"
 	$(GO) test -count=1 -tags=$(CODEC_CBOR_TAGS) $(CODEC_CBOR_TEST_PKGS)
+	$(MAKE) --no-print-directory test-upgrade-probe
 
 # print-tag-sets prints the declared combinations, one per line.
 .PHONY: print-tag-sets
