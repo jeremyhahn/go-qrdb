@@ -307,11 +307,13 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 			Message: "required when Host is set; IsolationRaft needs a database manager to track shard metadata",
 		}
 	}
-	if cfg.BarrierReg != nil && cfg.TenantSvc != nil && cfg.VolumePoolConfigured && cfg.Host != nil {
+	if cfg.BarrierReg != nil && cfg.TenantSvc != nil && cfg.Host != nil {
 		// OD-1 A: every backend: raft database runs its own group, whatever
 		// its tenant's isolation; the lookup lets a prefix tenant's group run
 		// under the node barrier and roots a prefix or barrier tenant's
-		// groups on the node data dir.
+		// groups on the node data dir. Only a tenant whose groups root in a
+		// volume pool needs one: without a pool its groups are refused
+		// (RaftGroupVolumePoolRequiredError), every other tenant's run.
 		isolation := TenantServiceIsolation(cfg.TenantSvc)
 		raftOpts := []RaftBackendOption{WithTenantIsolation(isolation)}
 		// Each database group's vector service enforces the same live
@@ -331,10 +333,14 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 				// database's own group from the same table.
 				cfg.Manager.SetRaftReplicaNodes(PlacementReplicaNodes(cfg.PlacementStore))
 			}
+			var poolRoot LocalRootResolver
+			if cfg.VolumePoolConfigured {
+				poolRoot = cfg.BarrierReg.LocalTenantDataRoot
+			}
 			raftOpts = append(raftOpts,
 				WithNodeGroupRoot(nodeDataDir),
 				WithPlacementInfoSource(cfg.PlacementStore, cfg.RaftAddr,
-					IsolationRootResolver(isolation, nodeDataDir, cfg.BarrierReg.LocalTenantDataRoot)))
+					IsolationRootResolver(isolation, nodeDataDir, poolRoot)))
 		}
 		if cfg.MultiplexLogDB != nil {
 			raftOpts = append(raftOpts, WithMultiplexLogDB(cfg.MultiplexLogDB))

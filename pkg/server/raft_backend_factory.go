@@ -604,9 +604,25 @@ func IsolationRootResolver(lookup TenantIsolationLookup, nodeDataDir string, ten
 			}
 			return filepath.Join(nodeDataDir, "tenants", tenantID), nil
 		default:
+			if tenantRoot == nil {
+				return "", &RaftGroupVolumePoolRequiredError{TenantID: tenantID, Isolation: iso}
+			}
 			return tenantRoot(ctx, tenantID)
 		}
 	}
+}
+
+// RaftGroupVolumePoolRequiredError refuses a raft database group of a
+// tenant whose isolation roots it in a volume pool (IsolationVolume,
+// IsolationRaft) on a node that has no volume pool configured. Prefix and
+// barrier tenants' groups root on the node data dir and need no pool.
+type RaftGroupVolumePoolRequiredError struct {
+	TenantID  string
+	Isolation tenant.IsolationType
+}
+
+func (e *RaftGroupVolumePoolRequiredError) Error() string {
+	return fmt.Sprintf("server: %s tenant %q: its raft database groups need a volume pool, and none is configured on this node", e.Isolation, e.TenantID)
 }
 
 // WithPlacementInfoSource makes the replicated placement table the source of
