@@ -617,7 +617,11 @@ test.describe("Vector View - advanced operations", () => {
     });
     const save = detail.getByTestId("vector-detail-save-metadata");
     await expect(save).toBeDisabled();
-    await save.click({ force: true });
+    // The panel slides in; wait until the button has arrived, then send the
+    // click a disabled button can still receive programmatically: the
+    // handler itself must refuse to write.
+    await expect(save).toBeInViewport();
+    await save.dispatchEvent("click");
     const calls = await page.evaluate(() => {
       const s = (window as unknown as Record<string, unknown>).__QRDB_MOCK_STATE__ as {
         updateMetadataCalls?: number;

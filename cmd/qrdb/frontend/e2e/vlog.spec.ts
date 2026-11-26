@@ -195,9 +195,20 @@ const webVlogState: WebMockState = {
   databases: [{ name: "vlog-db", backend: "pebble", status: "open" }],
 };
 
+/** The KV Explorer the workspace opens on scans the keys and reads the MVCC revision. */
+async function routeKv(page: Page): Promise<void> {
+  await page.route("**/kv/scan**", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ pairs: {} }) }),
+  );
+  await page.route("**/kv/revision**", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ revision: 1 }) }),
+  );
+}
+
 webTest.describe("Verifiable Logs tab over REST", () => {
   webTest("is not offered when the server answers 501", async ({ page }) => {
     await injectWebRestMock(page, webVlogState);
+    await routeKv(page);
     let probed = false;
     await page.route("**/vlog/logs**", (route) => {
       probed = true;
@@ -214,6 +225,7 @@ webTest.describe("Verifiable Logs tab over REST", () => {
 
   webTest("is offered when the server lists the database's logs", async ({ page }) => {
     await injectWebRestMock(page, webVlogState);
+    await routeKv(page);
     await page.route("**/vlog/logs**", (route) => {
       void route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ logs: ["audit"] }) });
     });

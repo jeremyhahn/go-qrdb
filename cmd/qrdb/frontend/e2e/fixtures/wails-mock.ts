@@ -3540,7 +3540,10 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               logsOf(db).set(r.log, []);
               return { tenant_id: "acme", database: db || "default", log: r.log, key };
             },
-            List: async (db: string) => ({ logs: [...logsOf(db).keys()] }),
+            List: async (db: string) => {
+              maybeReject("VlogBinding.List");
+              return { logs: [...logsOf(db).keys()] };
+            },
             Append: async (db: string, r: { log: string; entries: string[] }) => {
               const logs = logsOf(db);
               const l = logs.get(r.log) ?? [];
