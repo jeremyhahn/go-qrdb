@@ -212,10 +212,10 @@ func TestClaimRunMode_MarkerIOFailures(t *testing.T) {
 func readOnlyDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0o500); err != nil {
+	if err := os.Chmod(dir, 0o500); err != nil { // #nosec G302 -- a directory needs its search bit; the test makes its own temp directory read-only
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // #nosec G302 -- restores the temp directory for t.TempDir's cleanup
 	return dir
 }
 
