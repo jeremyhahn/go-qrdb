@@ -70,6 +70,9 @@ func TestNew_NilWithoutBothServices(t *testing.T) {
 	if joinadvertise.New(leaseSvc, mvccSvc, nil) == nil {
 		t.Error("New(leaseSvc, mvccSvc) should not be nil")
 	}
+	if joinadvertise.New(leaseSvc, mvccSvc, mapKV{}) == nil {
+		t.Error("New(leaseSvc, mvccSvc, kv) should not be nil")
+	}
 }
 
 func TestAdvertiseJoiner_WritesALeaseBackedRecordSupportsReads(t *testing.T) {
@@ -268,6 +271,96 @@ func TestAdvertiseJoiner_WriteFailureRevokesTheLease(t *testing.T) {
 	}
 	if len(leases) != 0 {
 		t.Errorf("Leases() = %v, want none (the failed write's lease should have been revoked)", leases)
+	}
+}
+
+// refusingLeaseServicer fails every Grant with err.
+type refusingLeaseServicer struct {
+	service.LeaseServicer
+	err error
+}
+
+func (f *refusingLeaseServicer) Grant(context.Context, int64) (*lease.Lease, error) {
+	return nil, f.err
+}
+
+// refusingMVCCServicer fails every PutWithLease with err.
+type refusingMVCCServicer struct {
+	service.MVCCKVServicer
+	err error
+}
+
+func (f *refusingMVCCServicer) PutWithLease(context.Context, string, []byte, int64) (*service.KeyValue, error) {
+	return nil, f.err
+}
+
+// assertUnleasedRecord checks kv holds node 4's advertisement.
+func assertUnleasedRecord(t *testing.T, kv mapKV) {
+	t.Helper()
+	data, ok := kv[featuregate.AdvertisementPrefix+"4"]
+	if !ok {
+		t.Fatal("no unleased record written under the advertisement prefix")
+	}
+	var member cluster.Member
+	if err := json.Unmarshal(data, &member); err != nil {
+		t.Fatalf("unmarshal advertised record: %v", err)
+	}
+	if member.NodeID != 4 || member.Address != "10.0.0.4:63001" || member.ReleaseVersion != "0.59.0-alpha" {
+		t.Errorf("record = %+v, want node 4 at 10.0.0.4:63001 on 0.59.0-alpha", member)
+	}
+}
+
+// TestAdvertiseJoiner_GrantCapabilityRefusalFallsBackToKV: a state machine
+// without leases refuses the grant as unsupported; with both services wired
+// (as production always wires them) the record is written unleased.
+func TestAdvertiseJoiner_GrantCapabilityRefusalFallsBackToKV(t *testing.T) {
+	_, mvccSvc := newTestServices(t)
+	kv := mapKV{}
+	refusal := &service.CapabilityUnsupportedError{Message: "lease: not supported by this state machine"}
+	a := joinadvertise.New(&refusingLeaseServicer{err: refusal}, mvccSvc, kv)
+
+	if err := a.AdvertiseJoiner(context.Background(), 4, "10.0.0.4:63001", nil, "0.59.0-alpha"); err != nil {
+		t.Fatalf("AdvertiseJoiner: %v, want the unleased fallback to succeed", err)
+	}
+	assertUnleasedRecord(t, kv)
+}
+
+// TestAdvertiseJoiner_PutWithLeaseCapabilityRefusalFallsBackToKV: a state
+// machine without MVCC refuses the leased write; the granted lease is
+// revoked and the record is written unleased.
+func TestAdvertiseJoiner_PutWithLeaseCapabilityRefusalFallsBackToKV(t *testing.T) {
+	leaseSvc, mvccSvc := newTestServices(t)
+	kv := mapKV{}
+	refusal := &service.CapabilityUnsupportedError{Message: "mvcc: not supported by this state machine"}
+	a := joinadvertise.New(leaseSvc, &refusingMVCCServicer{MVCCKVServicer: mvccSvc, err: refusal}, kv)
+
+	if err := a.AdvertiseJoiner(context.Background(), 4, "10.0.0.4:63001", nil, "0.59.0-alpha"); err != nil {
+		t.Fatalf("AdvertiseJoiner: %v, want the unleased fallback to succeed", err)
+	}
+	assertUnleasedRecord(t, kv)
+	leases, err := leaseSvc.Leases(context.Background())
+	if err != nil {
+		t.Fatalf("Leases: %v", err)
+	}
+	if len(leases) != 0 {
+		t.Errorf("Leases() = %v, want none (the refused write's lease should have been revoked)", leases)
+	}
+}
+
+// TestAdvertiseJoiner_OtherGrantErrorDoesNotFallBack: a grant failure that
+// is not a capability refusal stays a *LeaseError and writes nothing.
+func TestAdvertiseJoiner_OtherGrantErrorDoesNotFallBack(t *testing.T) {
+	_, mvccSvc := newTestServices(t)
+	kv := mapKV{}
+	a := joinadvertise.New(&refusingLeaseServicer{err: errors.New("lease grant unavailable")}, mvccSvc, kv)
+
+	err := a.AdvertiseJoiner(context.Background(), 4, "10.0.0.4:63001", nil, "0.59.0-alpha")
+	var leaseErr *joinadvertise.LeaseError
+	if !errors.As(err, &leaseErr) {
+		t.Fatalf("error = %T (%v), want *joinadvertise.LeaseError", err, err)
+	}
+	if len(kv) != 0 {
+		t.Errorf("kv = %v, want nothing written on a non-capability lease error", kv)
 	}
 }
 
