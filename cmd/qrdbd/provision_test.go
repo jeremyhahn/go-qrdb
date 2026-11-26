@@ -27,6 +27,7 @@ import (
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
+	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -331,6 +332,24 @@ func TestProvisionDatabases_ReturnsAnUnexpectedLookupFailure(t *testing.T) {
 	boom := errors.New("catalog unavailable")
 	err := provisionDatabases(context.Background(), &startFlags{sqlDatabase: "shop", enablePgSQL: true}, failingProvisioner{err: boom}, electedLeader{})
 	assert.ErrorIs(t, err, boom)
+}
+
+// In raft mode the first node to provision a local database owns it; on
+// every other node Provision and GetOwned refuse with NotAReplicaError.
+// Boot skips such a database -- it neither fails nor applies its SQL or
+// protocol settings, which the provisioner would refuse the same way.
+func TestProvisionDatabases_SkipsADatabaseHeldByAnotherNode(t *testing.T) {
+	held := &placement.NotAReplicaError{TenantID: "system", Database: "orders", NodeID: "node-b"}
+	f := &startFlags{
+		databases: []qrdbconfig.DatabaseConfig{{
+			Name: "orders", Backend: "memory",
+			SQL: &qrdbconfig.DatabaseSQLConfig{Concurrency: string(database.ConcurrencyPessimistic)},
+		}},
+		sqlDatabase: "shop",
+		enablePgSQL: true,
+		smType:      "memory",
+	}
+	require.NoError(t, provisionDatabases(context.Background(), f, failingProvisioner{err: held}, electedLeader{}))
 }
 
 // failingProvisioner fails every lookup, standing in for a catalog read

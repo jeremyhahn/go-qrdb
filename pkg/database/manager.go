@@ -325,6 +325,10 @@ func (m *Manager) CreateWithCredentials(ctx context.Context, cfg DatabaseConfig,
 // dropped tombstone to absent, which is live for the empty incarnation; a
 // marker holding a live incarnation -- the name created through the API on
 // some node -- refuses the provisioning with *AlreadyExistsError.
+//
+// In raft mode (SetLocalNode) the database is held by the node whose
+// provisioning recorded it; on every other node Provision answers
+// *placement.NotAReplicaError naming that owner, and opens nothing.
 func (m *Manager) Provision(ctx context.Context, cfg DatabaseConfig) (*Database, error) {
 	// A provisioned database is created on every node independently, so a
 	// raft one would need a shard ID every node agrees on without a claim,
@@ -493,7 +497,7 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	// dropping. The record is created only where none exists, so of two
 	// nodes creating one name, one is refused here.
 	meta := metaFromConfig(cfg, false, incarnation)
-	meta.OwnerNode = m.ownerFor(cfg, shared)
+	meta.OwnerNode = m.ownerFor(cfg)
 	if err := cat.Create(ctx, meta); err != nil {
 		// A write that may have committed is settled first: rolling back
 		// around a record it left would orphan the name. A record that

@@ -21,6 +21,7 @@ import (
 	"log/slog"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
@@ -75,11 +76,22 @@ func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisio
 	// attempt's: a cut-off attempt would leave a proposal in flight whose
 	// retry races it.
 	for _, cfg := range configuredDatabases(f) {
+		held := false
 		if err := server.WhileSystemShardSettling(ctx, node, "provision database "+cfg.Name, func(context.Context) error {
 			_, err := dbs.Provision(ctx, cfg)
+			if heldElsewhere(err) {
+				held = true
+				return nil
+			}
 			return err
 		}); err != nil {
 			return err
+		}
+		// In raft mode the node that first provisioned the database holds
+		// it; this node forwards to it and applies none of its settings.
+		if held {
+			slog.Info("configured database is held by another node; not opening it here", "database", cfg.Name)
+			continue
 		}
 		// The file declares the database's SQL settings: a database that
 		// already existed (Provision is idempotent) takes them too, the
@@ -97,6 +109,9 @@ func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisio
 		return nil
 	}
 	_, err := dbs.GetOwned(f.sqlDatabase, tenantid.System)
+	if heldElsewhere(err) {
+		return nil
+	}
 	if err == nil {
 		return server.WhileSystemShardSettling(ctx, node, "update protocol of SQL database "+f.sqlDatabase, func(context.Context) error {
 			return dbs.UpdateProtocolForTenant(ctx, f.sqlDatabase, sqlDatabaseConfig(f).Protocol)
@@ -108,6 +123,9 @@ func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisio
 	case errors.As(err, &nfe):
 		return server.WhileSystemShardSettling(ctx, node, "provision SQL database "+f.sqlDatabase, func(context.Context) error {
 			_, err := dbs.Provision(ctx, sqlDatabaseConfig(f))
+			if heldElsewhere(err) {
+				return nil
+			}
 			return err
 		})
 	case errors.As(err, &dde):
@@ -123,6 +141,14 @@ func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisio
 	default:
 		return err
 	}
+}
+
+// heldElsewhere reports whether err is the refusal of a database another
+// node holds (*placement.NotAReplicaError): in raft mode a provisioned local
+// database is held by the one node that recorded it, and the others forward.
+func heldElsewhere(err error) bool {
+	var nar *placement.NotAReplicaError
+	return errors.As(err, &nar)
 }
 
 // configuredDatabases returns the database configurations the daemon's

@@ -15,6 +15,7 @@
 package database
 
 import (
+	"context"
 	"errors"
 	"os"
 	"testing"
@@ -117,32 +118,56 @@ func TestManager_GetOwned_OwnerOpensItsOwnRecord(t *testing.T) {
 	assert.Equal(t, ownerNodeA, db.Info().OwnerNode)
 }
 
-func TestManager_Provision_RecordsNoOwnerAndOpensOnEveryNode(t *testing.T) {
-	a, b, cat, _ := ownedPair(t)
+// Two nodes over one catalog provision the same local database: the first
+// records itself as its one owner, and the second is refused with the owner
+// named and opens nothing, so the nodes never hold diverging copies.
+func TestManager_Provision_FirstNodeOwnsAndTheOtherForwards(t *testing.T) {
+	a, b, cat, dirB := ownedPair(t)
 	ctx := tenantContext("tenant-a")
 	cfg := fileConfig("defaults")
 	cfg.TenantID = "tenant-a"
-	_, err := a.Provision(ctx, cfg)
+	db, err := a.Provision(ctx, cfg)
 	require.NoError(t, err)
+	assert.Equal(t, ownerNodeA, db.Info().OwnerNode)
 
 	meta, err := cat.Get(ctx, "tenant-a", "defaults")
 	require.NoError(t, err)
-	assert.Empty(t, meta.OwnerNode)
-	db, err := b.Provision(ctx, cfg)
+	assert.Equal(t, ownerNodeA, meta.OwnerNode)
+
+	_, err = b.Provision(ctx, cfg)
+	var refusal *placement.NotAReplicaError
+	require.ErrorAs(t, err, &refusal)
+	assert.Equal(t, ownerNodeB, refusal.NodeID)
+	require.Len(t, refusal.Replicas, 1)
+	assert.Equal(t, ownerNodeA, refusal.Replicas[0].NodeID)
+	requireEmptyDir(t, dirB)
+
+	// The owner's own later boot provisions it again, idempotently.
+	again, err := a.Provision(ctx, cfg)
+	require.NoError(t, err)
+	assert.Same(t, db, again)
+}
+
+// A standalone node has no identity and records no owner, provisioned or not.
+func TestManager_Provision_StandaloneRecordsNoOwner(t *testing.T) {
+	mgr := NewManager(nil, t.TempDir())
+	mgr.SetCatalog(newHookCatalog(t))
+	defer func() { _ = mgr.Close() }()
+	cfg := fileConfig("defaults")
+	db, err := mgr.Provision(context.Background(), cfg)
 	require.NoError(t, err)
 	assert.Empty(t, db.Info().OwnerNode)
 }
 
-func TestManager_OwnerFor_RaftAndProvisionedHaveNoOwner(t *testing.T) {
+func TestManager_OwnerFor_RaftPlacedHaveNoOwner(t *testing.T) {
 	mgr := NewManager(nil, t.TempDir())
 	mgr.SetLocalNode(ownerNodeA)
 	defer func() { _ = mgr.Close() }()
 
-	assert.Empty(t, mgr.ownerFor(DatabaseConfig{Backend: BackendRaft}, false))
-	assert.Empty(t, mgr.ownerFor(fileConfig("x"), true))
-	assert.Empty(t, mgr.ownerFor(DatabaseConfig{Backend: BackendPebble, Raft: validRaftConfig(0)}, false))
-	assert.Equal(t, ownerNodeA, mgr.ownerFor(fileConfig("x"), false))
-	assert.Equal(t, ownerNodeA, mgr.ownerFor(DatabaseConfig{Backend: BackendPebble}, false))
+	assert.Empty(t, mgr.ownerFor(DatabaseConfig{Backend: BackendRaft}))
+	assert.Empty(t, mgr.ownerFor(DatabaseConfig{Backend: BackendPebble, Raft: validRaftConfig(0)}))
+	assert.Equal(t, ownerNodeA, mgr.ownerFor(fileConfig("x")))
+	assert.Equal(t, ownerNodeA, mgr.ownerFor(DatabaseConfig{Backend: BackendPebble}))
 }
 
 func TestManager_OwnerRefusal_RecordWithoutOwnerOpensAnywhere(t *testing.T) {

@@ -46,10 +46,14 @@ func (m *Manager) LocalNode() string {
 // ownerFor returns the node a database created here from cfg is recorded as
 // held by: this one, for a database that is not raft-placed. A raft-placed
 // database -- backend raft, or any backend with a Raft config, whose shard
-// stores in it -- has none, since its placement names its replicas; neither
-// has a provisioned one, which every node creates and holds for itself.
-func (m *Manager) ownerFor(cfg DatabaseConfig, provisioned bool) string {
-	if provisioned || cfg.Backend == BackendRaft || cfg.Raft != nil {
+// stores in it -- has none, since its placement names its replicas. A
+// provisioned database is no exception: the catalog is shared, so the first
+// node to provision it records itself as the owner and every other node
+// provisioning the same name finds that record held elsewhere
+// (*placement.NotAReplicaError), rather than each node holding its own
+// diverging copy.
+func (m *Manager) ownerFor(cfg DatabaseConfig) string {
+	if cfg.Backend == BackendRaft || cfg.Raft != nil {
 		return ""
 	}
 	return m.LocalNode()
