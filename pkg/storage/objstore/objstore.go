@@ -122,7 +122,9 @@ type Engine struct {
 	// (ensureFormatMarkerFor); freshClaim when, in addition, this open
 	// wrote the owner marker (claimOwner). ownerWritten is set whenever
 	// this open wrote the owner marker, onto an empty namespace or onto
-	// one that already held data. A failed create gives the claim back
+	// one that already held data, and also when that PUT failed, since a
+	// failed PUT may have committed (New then gives the claim back before
+	// returning the error). A failed create gives the claim back
 	// (ReleaseClaim): a freshly claimed namespace is released whole, and
 	// otherwise only the owner marker this open wrote is removed.
 	emptyAtOpen  bool
@@ -314,6 +316,10 @@ func New(provider string, settings map[string]string, opts ...Option) (*Engine, 
 		}()
 	}
 	if err := e.claimNamespace(o.owner); err != nil {
+		if e.ownerWritten {
+			// The owner-marker PUT failed but may have committed.
+			return nil, e.undoClaim(err)
+		}
 		return nil, err
 	}
 	// An interrupted batch commit from a previous process is completed here;
@@ -910,12 +916,14 @@ func (e *Engine) claimOwner(owner string) error {
 	if !notFound(err) {
 		return err
 	}
-	if err := e.store.Put(ownerMarkerName, strings.NewReader(owner)); err != nil {
-		return err
-	}
+	// A failed Put may still have committed the marker (a provider that
+	// stores the object before it fails, a remote PUT whose response is
+	// lost), so the claim is recorded either way: New then rolls it back
+	// through the owner-checked release, which is a no-op when nothing landed.
+	err = e.store.Put(ownerMarkerName, strings.NewReader(owner))
 	e.ownerWritten = true
 	e.freshClaim = e.emptyAtOpen
-	return nil
+	return err
 }
 
 // ReleaseClaim gives back the claim this open made, for a create that fails
