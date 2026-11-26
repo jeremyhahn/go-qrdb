@@ -149,15 +149,244 @@ type Service interface {
 	UpdatePool(ctx context.Context, name string, req UpdatePoolRequest) (*Pool, error)
 	DeletePool(ctx context.Context, name string) error
 	ListAssignments(ctx context.Context, pool, pageToken string, pageSize int) (*AssignmentPage, error)
-	// MoveTenant and GetMove return *MoveNotImplementedError; no transport
-	// exposes them.
-	MoveTenant(ctx context.Context, tenantID, toPool string) (*Move, error)
+	// MoveTenant admits a move through the wired MoveAdmission and
+	// Catalog.AdmitMove (*MoveNotImplementedError with none wired); GetMove
+	// reads the journal; CancelMove sends a move not yet cut over to
+	// aborting. Every transport exposes the three.
+	MoveTenant(ctx context.Context, req MoveTenantRequest) (*Move, error)
 	GetMove(ctx context.Context, tenantID string) (*Move, error)
+	CancelMove(ctx context.Context, tenantID string) (*Move, error)
 }
 ```
 
 `PoolView` is a `Pool` plus `UsedBytes`, `TenantCount` and per-node health
 counts. `PoolDetail` is a `PoolView` plus one `NodeReportRow` per node.
+
+The node-local step of the tenant move
+([../decisions/volume-pool-tenant-moves.md](../decisions/volume-pool-tenant-moves.md))
+is built in `move_copy.go`; these functions are called by
+`seal.BarrierRegistry.RunMoveCopyStep`, which `seal.MoveStepRunner` calls on
+each node:
+
+- `CopyTree(ctx, src, dst) (*Manifest, error)`: the node-step copy of a
+  closed directory tree, fsyncing files and directories, source kept;
+- `BuildManifest(ctx, root) (*Manifest, error)`: the node-step manifest of a
+  tree, recomputed from disk;
+- `VerifyCopy(ctx, dst, want) error`: the node-step check that the
+  destination's manifest equals the one built while copying;
+- `Manifest{Entries}`: the node-step manifest, sorted by path;
+- `ManifestEntry{Path, Dir, Mode, Size, SHA256}`: one node-step manifest
+  entry, root-relative.
+
+The catalog half of a move's admit step, called by `MoveTenant`
+(`server.WireTenantMoves` wires it on every node):
+
+- `Catalog.AdmitMove(ctx, MoveAdmitRequest) (*Move, error)`: one transaction
+  reserving the tenant's `Assignment.ReservedBytes` on `ToPool` and writing
+  the journal in state `admitted`, after the Q3 and Q10 checks and the Q9
+  rule (`*MoveToUnencryptedPoolError` for a Lockable-to-non-Lockable move
+  unless the request carries `AllowEncryptionDrop`, ruling 1234; an admitted
+  drop sets the journal's `EncryptionDropped`);
+- `MoveAdmitRequest{TenantID, ToPool, ReplicaNodes, AllowEncryptionDrop}`:
+  the admit input; the caller supplies every replica node; `MoveTenant` sets
+  `AllowEncryptionDrop` only after the drop was audited, so `AdmitMove`
+  re-checks the rule in its transaction and a pool change after
+  `MoveTenant`'s read refuses rather than drops encryption unaudited;
+- `MoveKey(tenant)` / `MoveKeyPrefix`: the journal key
+  `__sys:volumepool/moves/{tenant}`;
+- `MoveStateAdmitted`: the state `AdmitMove` writes, no step granted;
+- `MoveStateCopying` / `MoveStateCopied` / `MoveStateAborting` /
+  `MoveStateCutover`: a node step granted or between steps; no node pending
+  (ready for cut over); a node's step failed its attempts or the move was
+  cancelled; cut over, past the commit point (the move only goes forward);
+- `DefaultMoveStepAttempts` (3): attempts of one node's step before the move
+  aborts (Q6 A);
+- `Move.ReservedBytes`, `Move.AdmittedAt`: the bytes reserved on the
+  destination, the admit time;
+- `Move.StepNode` / `Move.StepAttempts` / `Move.UpdatedAt`: the node holding
+  the step (at most one, Q1 B), its failed attempts, the last transition;
+- `Move.NodesRetired` / `Move.SourceReservedBytes` / `Move.TenantRecorded`:
+  the nodes whose source copy is retired, the source bytes the last retire
+  releases, whether the tenant record names the destination;
+- `Catalog.GrantMoveStep` / `CompleteMoveStep` / `FailMoveStep`: the
+  journal's step transitions, each one compare-and-swap on the journal
+  (`*MoveJournalConflictError` after the bounded retries);
+- `Catalog.WaitMoveStep`: a copy step whose node is sealed or whose
+  destination pool is unavailable (`*NodeSealedError`,
+  `*PoolUnavailableError`) waits: the journal's `Error` names the reason
+  ("move copy step waiting: node sealed"), no attempt is counted, the move
+  never aborts on it and an unchanged reason writes nothing; a recorded
+  cancel still aborts, as in `FailMoveStep`;
+- `Catalog.WaitSettleStep`: a settling step whose replica's self-managed
+  tenant reopened sealed (`*TenantSealedError`) waits the same way: the
+  step stays settling on its node, so the leader grants no other node a
+  step, `Error` names the reason ("move copy step waiting: tenant sealed"),
+  no attempt is counted and an unchanged reason writes nothing; a cancel
+  recorded on a copying move aborts it with the node kept in `NodesCopied`,
+  as in `FailSettleStep`; a node holding no settling step is refused;
+- `Catalog.CutOverMove`: one transaction pointing the assignment at the
+  destination pool and setting the journal `cutover` (the commit point);
+- `Catalog.MarkMoveTenantRecorded`: records on the journal that the tenant
+  record names the destination, which retire waits for;
+- `Catalog.GrantRetireStep` / `CompleteRetireStep` / `FailRetireStep`: the
+  retire step on each copied node (Q7 A); the last retire releases the
+  source reservation and deletes the journal;
+- `Catalog.CancelMove`: sends a move not yet cut over to `aborting` (Q8 A);
+  refused past cut over;
+- `Catalog.GrantAbortStep` / `CompleteAbortStep` / `FailAbortStep`: the
+  abort step, copied nodes first, then pending nodes; the last abort
+  releases the destination reservation and deletes the journal;
+- `MoveStep{TenantID, NodeID, FromPool, ToPool, Attempt, Phase, Copied}` /
+  `MoveStepPhaseCopy` / `MoveStepPhaseAbort` / `MoveStepPhaseRetire` /
+  `MoveStepRunner{RunMoveStep}`: one node's step, its phase, whether that
+  node holds a copy, and the seam that runs it on that node
+  (`seal.MoveStepRunner`);
+- `MoveReconciler` / `NewMoveReconciler(cat, runner, opts...)` /
+  `WithMoveStepAttempts` / `WithMoveReconcilerLogger` /
+  `WithMoveTransitionRecorder` / `ReconcileOnce(ctx)` /
+  `RunLocalSteps(ctx, node)`: the leader pass (grants and cuts over) and
+  the node pass (runs and settles this node's own step), scheduled by
+  `server.TenantMoveWorker`: `RunLocalSteps` every tick on every node,
+  `ReconcileOnce` on the system shard's leader
+  (`server.DefaultTenantMoveInterval`, 2 s);
+- `LockableProvider{OpensLockable() bool}`: optional provider interface; a
+  provider without it counts as Lockable as a source and not Lockable as a
+  destination (`dir` returns false);
+- `MoveTenantRequest{TenantID, ToPool, AllowUnencryptedDestination}`: the
+  operator's move request; `AllowUnencryptedDestination` is the explicit,
+  audited flag that lets a move leave a Lockable pool for one that is not
+  (decision Q9, ruling 1234);
+- `MoveAdmission{AdmitTenantMove}`: the tenant layer's half of admit (kind,
+  entitlement), returning the replica node IDs;
+- `MoveStartFacts{FromPool, EncryptionDropped}`: what `MoveTenant` read
+  before admit under the flag (`moveDropsEncryption`): the tenant's pool and
+  whether the move drops encryption; zero without the flag;
+- `MoveStartAuditor{BeginMoveStart(ctx, MoveTenantRequest, MoveStartFacts)
+  (settle func(*Move, error), err error)}`: audits a move's start before
+  admit (an error refuses it), records a drop fail-closed first, and settles
+  once with `AdmitMove`'s answer; a drop with no auditor wired is refused
+  with `*MoveEncryptionDropUnauditedError`;
+- `Catalog.SetMoveAdmission` / `Catalog.SetMoveStartAuditor`: the
+  post-construction seams `MoveTenant` uses; nil unwires;
+- `MoveCutoverRecorder{RecordTenantPoolMoved}`: makes the tenant record name
+  the destination pool after cut over;
+- `Catalog.SetMoveCutoverRecorder`: the post-construction seam the
+  reconciler uses after cut over; nil unwires (a copied move then waits).
+
+Both composers (cmd/qrdbd and `sdk/go/node`) wire the move through
+`server.WireTenantMoves(TenantMoveConfig)`:
+
+- `TenantInfraConfig.VolumeNodeID`: this node's move node ID (its system
+  replica ID, the `NodeReport` node ID), set on the barrier registry before
+  `RestoreVolumeTenants` so a moving tenant resolves from the journal;
+- `server.MoveStoreCloser`: closes and reopens a tenant's raft replicas, or
+  its IsolationVolume Host, and its barrier around a step; a reopened raft
+  replica counts as caught up once a ReadIndex on its shard completes. A
+  probe the leader cannot yet serve (`quicraft.ErrReadIndexNotReady`) or
+  that ran out its own 500 ms timeout is "not yet"; a gone shard
+  (`quicraft.ErrShardNotFound`), a closed host (`quicraft.ErrClosed`) or any
+  other error fails the reopen at once. Each replica's wait is bounded by
+  `TenantMoveConfig.CatchUpTimeout` (`WithMoveCatchUpTimeout`, default
+  `DefaultMoveCatchUpTimeout`, 2 min), past which the reopen fails with
+  `ErrMoveCatchUpTimeout`;
+- the replica-node source: an IsolationRaft tenant's placements, each
+  replica's raft address mapped to its system-shard replica ID; a tenant
+  with no placement moves on this node only. The same source admits the
+  move and, through `volume.WithMoveNodeSource`, lets the reconciler resync
+  the journal's node set (`Catalog.SyncMoveNodes`) before each copy grant
+  and before cut over;
+- `service.NewVolumeMoveTransitionAudit`: one best-effort
+  `volume_pool.move_<transition>` event per journal transition, with
+  `node_id` and `phase` attributes.
+
+A reopen that fails at runtime (a catch-up timeout, a cancelled context, a
+failed barrier reopen or shard attach) does not strand the tenant until the
+next boot. `MoveStoreCloser` records the tenant as pending a reopen
+(`PendingReopen`) and releases the move hold, so the tenant stays unserved
+because its barrier or stores are closed, not because of the hold. Every
+`TenantMoveWorker.Tick`, on every node, calls `RetryReopen` once for each
+pending tenant: a tenant a move step holds is left to that step, the barrier
+is reopened only if no earlier attempt reopened it, only shards and the Host
+not already started are attached, each replica waits for catch-up with the
+same poll. A self-managed tenant whose barrier reopens sealed is not
+reopened: `OpenTenantStores` answers `*volume.TenantSealedError` and the
+tenant stays pending (logged at Debug by the retry, one per tick), its
+closed stores still recorded; the move step's settle does not finish, so
+`MoveReconciler` keeps the step settling on that node through
+`Catalog.WaitSettleStep` instead of granting the next replica its step, and
+the first retry after the administrator's unseal attaches the stores and
+awaits their catch-up, after which the next settle releases the step. Steps
+that settle nothing (a failed copy's reopen, a failed copy-back, an
+uncopied abort) treat the sealed reopen as done. A fresh close of the tenant
+supersedes its pending reopen.
+
+The list of a tenant's local replicas comes from durable placement as well
+as from the started shards (`WithMoveLocalReplicas`, wired by
+`newMoveStores` from `localMoveReplicas`: every database whose
+`Placement.Replicas[].RaftAddr` is this node's system-shard raft address).
+A step resumed by a fresh process (the journal has `StepSettling` for this
+node, and the new `MoveStoreCloser` never closed the tenant) reopens and
+catches up every replica placement puts on this node before
+`settleAndRelease` releases the step, so a restart cannot hand the next node
+its step while this replica is still behind; a placement lookup error leaves
+the tenant pending, for `RetryReopen`. A copy step closes the started shards
+and also records a placed replica the shard reconciler has not started yet,
+so the reopen starts it and waits for its catch-up. An `Attach` that fails
+because the shard reconciler started the shard meanwhile counts as started.
+An IsolationVolume tenant has one replica and no placement, so it has no
+quorum to lose: its Host path is unchanged.
+
+A step whose settle fails is not retried for ever. `settleAndRelease`
+records each failure with `Catalog.FailSettleStep` (the sanitized error
+class and an attempt count) and the step stays settling. For a copy step
+the `WithMoveStepAttempts`-th failure (3 by default), or a cancel recorded
+while it settled, sends the move to `aborting` with the node copied, and the
+abort steps restore the source on it. The node stays copied because a shard
+may have attached from the destination and acknowledged raft entries before
+the settle failed. Its copy-back (`MoveStepRunner.copyBack`) never removes
+the source first: it copies the destination's tree into a staging directory
+beside the tenant's directory in the source pool (`.qrdb-copyback.<path>`)
+and verifies it there, and only then removes the source and renames the staging
+directory into its place. A destination that cannot be read back fails the
+copy or the verify; that removes only the staging directory, so the source
+stays byte for byte intact and the stores reopen from the destination, which
+the journal still names. A rerun after a crash first removes a leftover
+staging directory and treats a source already missing as removed. When the
+tenant's directory is itself a mount point, it cannot be removed or renamed
+onto (EBUSY, EXDEV across the mount): the removal empties it and leaves it,
+and the copy-back keeps the directory and swaps its contents in place. It
+copies the verified staging tree into `.qrdb-copyback` inside the mounted
+directory, verifies it there, moves each child up with a durable rename,
+syncs the directory and removes both staging directories; a rerun after a
+crash part way through empties the directory again and redoes the swap. An
+abort or retire step cannot back out further: its failures are counted and it is
+retried.
+
+A move's node set is not fixed at admission. Before granting a copy step
+and before cut over, `ReconcileOnce` re-reads the tenant's replicas through
+`volume.MoveNodeSource`: `Catalog.SyncMoveNodes` adds a replica that joined
+as pending (a `copied` move goes back to `copying`) and drops a pending
+replica that left and holds no step. A pass that changed the set does not
+cut over; one whose lookup failed grants and cuts over nothing. The
+rebalancer refuses a MOVE or scale-up of a moving tenant
+(`*volume.TenantMovingReplicaError`) at its read, and the placement write
+fences the rest. `placement.NewStore(kv, placement.WithReplicaAddFence(
+volume.MoveKey, refusal))` makes `Put`, `CompareAndSwapPlacement` and
+`ClaimPlacement` that add a replica (a `(ReplicaID, NodeID, RaftAddr)` not in
+the current entry) or create a placement write through
+`PutAllIfAllUnchanged` with two guards: the placement key equals the value
+read, and `__sys:volumepool/moves/<tenant>` is absent. The journal and the
+placement are raw keys on the same system shard, so the compare and the write
+are one transaction: a journal admitted between the rebalancer's fence read
+and its write refuses the write, and the refusal is the journal's
+`*volume.TenantMovingReplicaError` (from, to and state decoded from the
+journal; an undecodable journal still refuses). A KV without the guarded
+batch fails closed with `AtomicWriteUnsupportedError`. Promotions, removals
+and `SetDropping` add no replica and are not fenced. `CutOverMove` needs no
+placement compare: it writes only the journal and the assignment, and the
+fence guarantees that no replica was added outside the journal's node set
+while the journal existed, so the set it cut over is the tenant's set. A
+resync therefore covers only replicas added before admission.
 
 ### Composition options
 
@@ -217,6 +446,14 @@ func (b *StorageBarrier) OnSealing(fn func(context.Context) error)
 | `config.VolumePoolConfig` | `Name`, `Path`, `Provider` (default `dir`) and `Options map[string]string` |
 | `seal.BarrierRegistry.LocalTenantDataRoot` | resolves through the assignment and the opened `volume.Volume` |
 | `seal.BarrierRegistry.RequireInsideLocalPool` | checks against the pool's opened `Volume.Root()` |
+| `seal.BarrierRegistry.RunMoveCopyStep(ctx, nodeID, tenantID, toPool) (*volume.Manifest, error)` | the move's node step on this node's pools: resolve both directories, copy, verify, remove a partial destination through `RemoveDataRoot`; the move step runner's copy step calls it |
+| `tenant.TenantService.AdmitTenantMove(ctx, volume.MoveTenantRequest) ([]string, error)` | implements `volume.MoveAdmission`: the tenant exists, is `volume` or `raft` (not the system tenant), is entitled to `ToPool`; returns its replica nodes |
+| `tenant.TenantService.RecordTenantPoolMoved(ctx, tenantID, fromPool, toPool) error` | implements `volume.MoveCutoverRecorder`: makes the tenant record name `toPool`; idempotent; a tenant naming another pool is `*volume.MoveConflictError`, a missing tenant `ErrTenantNotFound`; `server.WireTenantMoves` sets it as the catalog's cut-over recorder |
+| `tenant.MoveReplicaNodeSource` / `tenant.MoveReplicaNodeWiring` | the optional source of a tenant's replica node IDs and its setter; with none set `AdmitTenantMove` returns `*volume.MoveNotImplementedError` |
+| `service.NewVolumeMoveAudit(logger, policy) volume.MoveStartAuditor` | audits a move's start as `volume_pool.move_start` (`to_pool`, `allow_unencrypted_destination`, `encryption_dropped`, `from_pool` on the outcome); gated by the failure policy before admit, best-effort outcome after. A move that drops encryption (Q9, ruling 1234) is first recorded as `volume_pool.move_encryption_drop` (`from_pool`, `to_pool`, `encryption: dropped`, `allow_unencrypted_destination`) fail-closed whatever the policy: a failed write refuses the start |
+| `seal.ErrMoveStepInvalid` | `RunMoveCopyStep` called without a node ID or destination pool |
+| `seal.ErrMoveSamePool` | the destination pool is the tenant's current pool |
+| `seal.ErrMoveTenantOpen` | the tenant still has a barrier on this node; the step copies a closed directory |
 | `placement.ReplicaFilter` | `func(tenantID string, shardID uint64, raftAddr string) error`; `WithReplicaFilter` composes several |
 
 ## Invariants
@@ -278,7 +515,10 @@ func (b *StorageBarrier) OnSealing(fn func(context.Context) error)
    none: it publishes no report, and its pools show `no report` for it. A
    clustered node always reports.
 10. **A pool with assignments cannot be deleted**
-    (`*volume.PoolInUseError` naming the tenants, first page).
+    (`*volume.PoolInUseError` naming the tenants, first page), nor can a
+    pool a move journal names as source or destination (`*volume.PoolInUseError`
+    naming the moving tenants; a journal that does not decode refuses with
+    `*volume.CorruptRecordError`).
 
 ## Error semantics
 
@@ -299,6 +539,16 @@ Every error is typed. Each classification below is the row added to
 | `*tenant.PersistedDataRootError` | a record carries a path | the existing `FailedPrecondition` row |
 | `*seal.VolumeUnlockError{Pool, Err}` | a tracked `Lockable` volume's `Unlock` failed after unseal | not on the wire directly: surfaces as `PoolUnavailableError`/`pool_unavailable` through the pool's resolution |
 | `*seal.VolumeLockError{Pool, Err}` | a tracked `Lockable` volume's `Lock` failed while sealing | not on the wire: `Internal`-class, logged and audited; the barrier still seals |
+| `*volume.MoveStepError{NodeID, Phase, Path, Err}` | the node-local move copy (`Phase` `copy`) or verify (`Phase` `verify`) failed; `Path` is root-relative | `Unavailable` (503) when the cause is `PoolUnavailableError` or `NodeSealedError`, else `Internal` (500) |
+| `*volume.ManifestMismatchError{Path, Reason}` | the destination's manifest differs (`missing`, `extra`, `type`, `mode`, `size`, `digest`); wrapped in a `MoveStepError` | `Internal` (500) |
+| `*volume.MoveConflictError{TenantID, NodeID, Reason}` | a move admit is refused (a move already runs, the destination is the current pool, the destination is not ready on `NodeID`, the tenant is not a `volume` or `raft` tenant, or it has no replica node), a step transition is refused (no step to grant, or `NodeID` does not hold the step), cut over is refused (not copied, a node pending or holding a step, the assignment no longer naming the source pool), a retire or abort step is refused, `CancelMove` is refused past cut over, `RecordTenantPoolMoved` finds the tenant on neither pool, or tenant delete / a quota change is refused while a move runs | `FailedPrecondition` (409) |
+| `*volume.MoveToUnencryptedPoolError{TenantID, FromPool, ToPool}` | a move from a Lockable pool to one that is not, without the `allow_unencrypted_destination` flag (Q9, ruling 1234); the message names `--allow-unencrypted-destination` | `FailedPrecondition` (409) |
+| `*volume.MoveEncryptionDropUnauditedError{TenantID, FromPool, ToPool}` | a move under the flag that drops encryption while no `MoveStartAuditor` is wired ("dropping encryption needs an audit sink") | `FailedPrecondition` (409) |
+| `*volume.MoveJournalConflictError{TenantID}` | a move-journal step transition lost every compare-and-swap attempt; nothing written, retrying is safe | `Aborted` (409) |
+| `*volume.InvalidMoveRequestError{Reason}` | `AdmitMove` got an empty tenant or pool, no replica nodes, or an empty or duplicate node ID; `MoveTenant` an empty tenant or pool; `GetMove` an empty tenant | `InvalidArgument` (400) |
+| `*volume.MoveNotFoundError{TenantID}` | `GetMove` or `CancelMove` found no journal for the tenant | `NotFound` (404) |
+| `*volume.NodeSealedError{Op}` | the node barrier is sealed and a write the node would propose on its own behalf is refused | `Unavailable` (503) |
+| `*volume.MoveNotImplementedError` | `MoveTenant` in a composition that wired no `MoveAdmission`, or a tenant service with no replica-node source (a composition without the move wiring; `qrdbd` and the embedded node both call `server.WireTenantMoves`) | `Unimplemented`, the existing row |
 
 **Fail-closed paths.** An unreadable catalog or assignment fails the create, the
 move and the resolution. Nothing falls back to a default path or a fresh pick.
@@ -360,6 +610,7 @@ All in the replicated system namespace, hidden from user list and scan:
 | `__sys:volumepool/pools/{pool}` | `Pool` (JSON) | `CreatePool`, `UpdatePool`, reservation CAS |
 | `__sys:volumepool/assign/{tenant}` | `Assignment` (JSON) | create (put-if-absent), delete |
 | `__sys:volumepool/nodes/{node}` | `NodeReport` (JSON), lease-bound | `volume.Reporter`, refreshed every `DefaultReportInterval` *(5 s)*; lease TTL `DefaultLeaseTTL` *(15 s)* |
+| `__sys:volumepool/moves/{tenant}` | `Move` (JSON) | `Catalog.AdmitMove`, the step transitions, `CutOverMove`, `CancelMove`, and the final retire or abort (delete) |
 
 A tenant whose records predate this layout is refused, listed with its
 refusal, and deleted and re-created.
@@ -370,15 +621,121 @@ refusal, and deleted and re-created.
   the pool record, and a put-if-absent (or delete) on the assignment. A lost CAS is
   re-read and retried a bounded number of times, then reported as
   `*volume.ReservationConflictError` (`Aborted`).
+- A move admit is one transaction: a compare on the destination pool
+  record, the tenant's assignment and an absent journal, then a put of the
+  destination pool record and the journal. `Release` and
+  `AdjustReservation` also compare the journal absent, so neither races an
+  admit.
+- Cut over is one transaction: a compare on the tenant's assignment and the
+  journal, then a put of both.
+- The last retire (on the source pool) and the last abort (on the
+  destination pool) are each one transaction: a compare on that pool record
+  and the journal, then a put of the pool record and a delete of the
+  journal.
 - Health reports are owned by their node. No other writer touches them.
 
 ## Test strategy
+
+A raft-tenant move is covered by the three-node E2E (`TestVolumePool_CLI_MoveTenant_ThreeNode_ReplicaRestart`, `TestVolumePool_CLI_MoveTenant_ThreeNode_CancelAfterAckedWrite`, `TestVolumePool_CLI_MoveTenant_ThreeNode_RestartWhileSettling` in `test/integration/volume_move_cli_test.go`): a replica restart during the move, a cancel after an acknowledged write, and a restart of the replica whose copy step is settling (get-move shows state `copying` with `stepNode` already in `nodesCopied`; a settle missed by the poll is retried on a fresh tenant), on every transport. After a completed move each test checks, on every node, that `<default pool>/<tenant>` is gone and `<second pool>/<tenant>` exists; after a cancel the reverse; and in both cases that no copy-back staging directory (`.qrdb-copyback.<tenant>` in the source pool, `.qrdb-copyback` inside a tenant directory) is left. The `.qrdb-` pool-root prefix (`volume.ReservedPathPrefix`) belongs to the node: `ValidateAssignmentPath` refuses an assignment path and `tenant.ValidateTenantIDShape` a tenant id that begins with it, so the staging directory a copy-back removes before it stages can only be that tenant's own earlier attempt, never another tenant's directory (an old `<path>.copyback` staging name could be tenant `<path>.copyback`'s). The move shutdown E2E (`volume_move_shutdown_cli_test.go`) runs in the `volume_pools` integration target.
 
 **Unit, per package, in memory:**
 
 - `pkg/volume`: registry, `dir` provider (including statfs, writability and
   symlink/relative-path rejection), `DeriveVolumeKey` (determinism, and that
   node/pool each change the derived key), `VolumeKey.Wipe`;
+- `pkg/volume` (`move_copy.go`): `CopyTree` round trip against
+  `BuildManifest` of both trees, its refusals (path rules, overlap, symlink,
+  named pipe, cancelled context), every `VerifyCopy` mismatch reason, and no
+  absolute path in any message;
+- `pkg/volume` (`catalog_move_test.go`): `AdmitMove` success (journal equal
+  to the result, nodes pending sorted, destination reserved, source and
+  assignment unchanged); each invalid request; no assignment; unknown
+  destination; same pool; a second admit (journal and reservation
+  unchanged); a replica node with no report, a stale report, the pool
+  unmapped or locked (`NodeID` set); capacity; bounded retries; Q9 refused without
+  the flag with a Lockable test provider (`*MoveToUnencryptedPoolError` for
+  luks2 to dir with no journal, reservation or assignment change, for a
+  provider without `OpensLockable` as source and as destination, and through
+  `MoveTenant` with the settle; plain to Lockable admitted); Q9 under ruling
+  1234 (`TestCatalog_MoveTenant_Q9WithoutFlagRefused`,
+  `TestCatalog_MoveTenant_Q9FlagAuditsTheDrop`: the drop audited before the
+  admit and the journal's `EncryptionDropped`,
+  `TestCatalog_MoveTenant_Q9DropWithoutAuditorRefused`,
+  `TestCatalog_MoveTenant_Q9FlagOnPlainMoveNoDrop`,
+  `TestCatalog_AdmitMove_Q9AllowedDropIsJournalled`); Q10 after admit (`Release`, `AdjustReservation` refused with
+  reservations unchanged, `DeletePool` of either pool names the tenant); a
+  corrupt journal fails `Release`, `AdjustReservation`, `DeletePool` and
+  `AdmitMove` closed; `MoveTenant` with no admission wired (not
+  implemented), invalid requests (admission never called), an admission
+  refusal and an auditor refusal (no journal, no reservation), success
+  (journal from the admission's nodes, settle with the move, `GetMove`
+  equal), a second move settled with `*MoveConflictError`, no auditor
+  wired; `GetMove` invalid, not found and corrupt; `SetMoveAdmission(nil)`
+  unwires;
+- `pkg/volume` (`move_journal_test.go`): a grant picks the first pending node
+  and a second grant writes nothing; completing n1 keeps copying, n2 sets
+  copied; complete or fail by a node without the step refused; failures
+  below the limit keep the step and count, the third sets aborting with the
+  node still pending; success clears the count; grant on copied or aborting
+  refused; no journal, a corrupt journal, empty IDs; CAS exhaustion is
+  `*MoveJournalConflictError`;
+- `pkg/volume` (`move_reconciler_test.go`): two passes take a two-node move
+  to copied (n1 then n2, attempt 1 each) and a copied move is not run again;
+  a node failing every attempt aborts after 3 runs, 2 with
+  `WithMoveStepAttempts(2)`; a failure then a success completes on attempt
+  2; a corrupt journal does not stop another tenant's step; a catalog error
+  is returned; nil dependencies refused; a cancelled context returns
+  `context.Canceled`;
+- `pkg/volume` (`move_journal_test.go`, cut over to delete):
+  `TestCatalog_CutOverMove` and `_Refusals`, `_MarkMoveTenantRecorded`,
+  `_RetireSteps`, `_RetireStep_SourceFloorZero`, `_NeedsTenantRecorded` and
+  `_FailureStaysCutover`, `_CancelMove` and `_CancelMove_InFlightStepRefused`,
+  `_AbortSteps`, `_AbortStep_Refusals` and `_FailureKeepsTheNode`,
+  `_PhaseSteps_StoreFailures`;
+- `pkg/volume` (`move_reconciler_test.go`, the dispatch):
+  `TestMoveReconciler_FullMoveCutsOverAndRetires`, `_CopiedWaitsForRecorder`,
+  `_RecorderErrorRetried`, `_RetireFailureRetried`, `_CancelThenAbort`,
+  `_AbortFailureRetried`, `_StepPhases`, `_PhaseCatalogErrorReturned`;
+- a settle that waits for its tenant's unseal: `pkg/volume`
+  `TestCatalog_WaitSettleStep`, `TestMoveReconciler_SealedSettleHoldsTheStep`
+  (the step stays settling on its node, uncounted, no other node granted,
+  then completes) and `_CancelDuringSealedSettleAborts`; `pkg/server`
+  `TestMoveStoreCloser_SealedReopenStaysPendingUntilUnseal` and
+  `_SelfManagedTenantAwaitsUnseal` (pending while sealed, the retry after
+  the unseal attaches and awaits catch-up); `pkg/seal`
+  `TestMoveStepRunner_SealedReopenSettlesOnlyAfterUnseal`;
+- `pkg/volume` (a copy step that waits): `TestCatalog_WaitMoveStep` (no
+  attempt counted, no write while the reason is unchanged, a cancel still
+  aborts), `TestMoveReconciler_SealedNodeStepWaits`,
+  `_UnavailableDestinationStepWaits` (past the attempt bound the move stays
+  copying with the node pending, then completes after the unseal) and
+  `_CancelWhileSealedAborts`; `pkg/seal`
+  `TestMoveStepRunner_SealedStepWaitsThenRuns` (a sealed node's step
+  closes nothing and runs after the unseal);
+- `pkg/volume` (`catalog_move_race_test.go`, admission against reservation
+  under the CAS): `TestCatalog_AdmitMove_RacesReserveOverCapacity`,
+  `_RacesReserveWithinCapacity`, `TestCatalog_Reserve_RacesAdmitOverCapacity`
+  and `TestCatalog_AdmitMove_TwoTenantsRaceForTheLastCapacity` (a racing
+  admit and reserve never over-reserve a pool); `pkg/seal`
+  `TestMoveStepRunner_BootAfterAbortDeletionOpensFromSource` (the third
+  abort crash point: a boot after the destination was deleted, before or
+  after the journal is removed, opens the tenant from the source);
+- `pkg/tenant` (`volume_move_test.go`): `AdmitTenantMove` not found, a
+  prefix tenant refused, a destination not entitled, no source, a source
+  error, no replica node, a volume and a raft tenant admitted;
+  `TestRecordTenantPoolMoved`: the record names the destination and a
+  repeat is a no-op, another pool refused, a missing tenant;
+- `pkg/api/errclass` (`volume_move_test.go`): `TestClassify_VolumeMoveErrors`,
+  each move error's class, and `MoveStepError` by its cause (a wrapped
+  `PoolUnavailableError` or `NodeSealedError` `Unavailable`, anything else
+  `Internal`, also under `fmt.Errorf("%w")`);
+- `pkg/service` (`volume_move_audit_test.go`): the start recorded with
+  `to_pool`, `allow_unencrypted_destination` and `encryption_dropped`, the
+  outcome with `from_pool`, a failure outcome, the gate following the
+  policy, a nil logger giving no auditor; the drop record
+  `volume_pool.move_encryption_drop` before the start
+  (`TestVolumeMoveAudit_EncryptionDropRecord`) and fail-closed under a
+  fail-open policy (`TestVolumeMoveAudit_EncryptionDropFailsClosedUnderFailOpen`);
 - `pkg/seal`: `VolumeLifecycle` ordering, proven with a fake `Lockable` --
   unlock after unseal and before a later-registered `OnUnsealed` observer
   (standing in for `BarrierRegistry`'s tenant restore); lock before the root
@@ -392,8 +749,33 @@ refusal, and deleted and re-created.
   concurrent creates, entitlement and
   reservation ordering;
 - `pkg/placement`: the pool filter;
-- `pkg/seal` (`BarrierRegistry`): resolution and the inside-root guard, once
-  the catalog/assignment resolution replaces the objstore-pool path.
+- `pkg/seal` (`move_step_test.go`): `RunMoveCopyStep` over two real `dir`
+  pools copies a nested tree (subdirectory, empty file, file over 1 MiB, a
+  0600 file) to `<destination root>/<Assignment.Path>` with a manifest equal
+  to `BuildManifest` of both trees, the source and the assignment unchanged;
+  a leftover partial destination is removed and the copy redone; refusals
+  (empty tenant, empty node or pool, no pools configured, no assignment, same
+  pool, a pool not open on this node, a tenant with a registered barrier, a
+  symbolic link in the source); a verify failure (a file truncated between
+  copy and verify) removes the destination and keeps the source, and with a
+  failing remover the error still carries the `*volume.MoveStepError` and the
+  remover's error; a cancelled context; no message names a pool path.
+- `pkg/seal` (`move_runner_test.go`, the copy-back):
+  `TestMoveStepRunner_CopyBackFromUnreadableDestinationKeepsSource` (a
+  copy-back whose verify fails leaves the source unchanged and no staging
+  directory) and `TestMoveStepRunner_CopyBackRerunAfterSourceRemoved` (a
+  crash between the source's removal and the rename: the rerun removes the
+  stale staging directory and rebuilds the source from the destination) and
+  `TestMoveStepRunner_CopyBackOntoMountPointSource` (a source directory that
+  is a mount point is kept and its contents swapped, including a rerun after
+  a swap that failed part way; a rerun after success leaves it unchanged);
+- `pkg/seal` (`move_settle_failure_test.go`, the real catalog, reconciler and
+  step runner over a destination that never reopens):
+  `TestMoveSettle_PermanentDestinationReopenFailureThenCancel` and
+  `TestMoveSettle_PermanentDestinationReopenFailureAbortsPastAttempts`: the
+  settle failure is counted, the move goes through `aborting` with the node
+  copied, and ends with the stores on the intact source, the destination
+  removed and the reservation released.
 
 Fault seams:
 
@@ -460,8 +842,9 @@ Metrics:
   unlike `NodeReport` (invariant 9).
 - `qrdb_volume_pool_locked{pool}` (0/1, per node; always 0 for a non-`Lockable` volume) *(not yet implemented)*
 
-Audit: every catalog change, assignment change and move transition (**Phase
-2** for moves) is an audit record naming the operator identity; every
+Audit: every catalog change, assignment change and move transition is an
+audit record naming the operator identity (a move's start is
+`volume_pool.move_start` through `service.NewVolumeMoveAudit`; every later transition is `volume_pool.move_<transition>` through `service.NewVolumeMoveTransitionAudit`); every
 `Lockable` unlock and lock attempt is an audit record naming the pool and,
 on failure, the error, under actions `volume_unlock` / `volume_lock`
 (`pkg/seal.VolumeLifecycle`, subject `seal`, since these run inside the

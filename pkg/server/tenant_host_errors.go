@@ -37,6 +37,12 @@ var ErrTenantDataRootUnset = errors.New("server: tenant data root is unset")
 // source barrier and fail against the already-keyed at-rest stores.
 var ErrTenantMigrationInProgress = errors.New("server: tenant encryption migration in progress")
 
+// ErrTenantMoveInProgress is returned by Services while a volume-pool move
+// step holds the tenant's stores (closing, copying or reopening them). It is
+// RETRYABLE: once the step reopens the stores, a retried call resolves the
+// tenant on whichever pool now serves it.
+var ErrTenantMoveInProgress = errors.New("server: tenant volume move in progress")
+
 // ErrHomeOpGateInvalid is returned when the registry's record of a tenant's
 // in-flight home-store operations is not a gate it created. No operation is
 // admitted and no drain is reported complete against a count that cannot be

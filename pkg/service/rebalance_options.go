@@ -71,6 +71,21 @@ func WithRebalanceBarrierLookup(lookup RebalanceBarrierLookup) RebalanceServiceO
 	return func(r *RebalanceService) { r.barrierLookup = lookup }
 }
 
+// MoveFence refuses a change to a tenant's replica set while the tenant has
+// a volume pool move journalled (answering *volume.TenantMovingReplicaError)
+// and answers nil otherwise. The rebalancer's MOVE and scale-up consult it
+// before any placement write or membership change. Composition builds it
+// over the same volume.Service as the placement scheduler's filter
+// (volume.RefuseReplicaChangeIfMoving); nil skips the check (no volume
+// pools composed).
+type MoveFence func(ctx context.Context, tenantID string) error
+
+// WithRebalanceMoveFence sets the fence a MOVE consults before it adds the
+// destination or removes the source replica.
+func WithRebalanceMoveFence(fence MoveFence) RebalanceServiceOption {
+	return func(r *RebalanceService) { r.moveFence = fence }
+}
+
 // WithRebalanceSelfNodeID sets the local Raft node ID. DistributeTenantKey
 // skips any replica whose NodeID matches selfNodeID so the leader never ships
 // the key to itself.

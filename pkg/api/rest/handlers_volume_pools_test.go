@@ -15,6 +15,7 @@
 package rest
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -334,5 +335,108 @@ func TestHandleVolumePoolByName_ListTenantsErrors(t *testing.T) {
 	srv.handleVolumePoolByName(rr, volumePoolRequest(http.MethodGet, "/v1/volume-pools/gone/tenants", "gone", ""))
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("missing pool: status = %d, want 404", rr.Code)
+	}
+}
+
+// TestHandleVolumePoolMoves drives the three move verbs: start answers
+// 202 with the journal, get and cancel answer it, Q9's refusal answers 409
+// and a tenant with no move answers 404, through the shared mapper.
+func TestHandleVolumePoolMoves(t *testing.T) {
+	move := &volume.Move{TenantID: "t1", FromPool: "a", ToPool: "b", State: "copying", StepNode: "n1"}
+	var gotReq volume.MoveTenantRequest
+	svc := &volumetest.Service{
+		T: t,
+		MoveTenantFn: func(_ context.Context, req volume.MoveTenantRequest) (*volume.Move, error) {
+			gotReq = req
+			if req.ToPool == "plain" {
+				if !req.AllowUnencryptedDestination {
+					return nil, &volume.MoveToUnencryptedPoolError{TenantID: req.TenantID, FromPool: "a", ToPool: req.ToPool}
+				}
+				dropped := *move
+				dropped.ToPool = req.ToPool
+				dropped.EncryptionDropped = true
+				return &dropped, nil
+			}
+			return move, nil
+		},
+		GetMoveFn: func(context.Context, string) (*volume.Move, error) { return move, nil },
+	}
+	srv := newVolumePoolTestServer(svc)
+
+	req := volumePoolRequest(http.MethodPost, "/v1/volume-pools/b/tenants/t1/move", "b", "")
+	req.SetPathValue("tenant", "t1")
+	rr := httptest.NewRecorder()
+	srv.handleVolumePoolMoveTenant(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("move: status = %d, want 202 (%s)", rr.Code, rr.Body.String())
+	}
+	var got volume.Move
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil || got.ToPool != "b" || got.StepNode != "n1" || got.State != "copying" {
+		t.Fatalf("move body = %+v, %v", got, err)
+	}
+	if gotReq.TenantID != "t1" || gotReq.ToPool != "b" || gotReq.AllowUnencryptedDestination {
+		t.Fatalf("service request = %+v, want tenant t1 to pool b, no flag", gotReq)
+	}
+	if bytes.Contains(rr.Body.Bytes(), []byte("encryptionDropped")) {
+		t.Fatalf("move body %s answers encryptionDropped for a move that drops nothing", rr.Body.String())
+	}
+
+	// Ruling 1234: the optional body carries the operator's flag, and the
+	// drop is answered.
+	req = volumePoolRequest(http.MethodPost, "/v1/volume-pools/plain/tenants/t1/move", "plain", `{"allowUnencryptedDestination": true}`)
+	req.SetPathValue("tenant", "t1")
+	rr = httptest.NewRecorder()
+	srv.handleVolumePoolMoveTenant(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("flagged move: status = %d, want 202 (%s)", rr.Code, rr.Body.String())
+	}
+	got = volume.Move{}
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil || !got.EncryptionDropped || !gotReq.AllowUnencryptedDestination {
+		t.Fatalf("flagged move body = %+v, %v; service request = %+v", got, err, gotReq)
+	}
+
+	// A malformed body is a 400, and nothing reaches the service.
+	gotReq = volume.MoveTenantRequest{}
+	req = volumePoolRequest(http.MethodPost, "/v1/volume-pools/plain/tenants/t1/move", "plain", `{"allowUnencryptedDestination":`)
+	req.SetPathValue("tenant", "t1")
+	rr = httptest.NewRecorder()
+	srv.handleVolumePoolMoveTenant(rr, req)
+	if rr.Code != http.StatusBadRequest || gotReq.TenantID != "" {
+		t.Fatalf("malformed body: status = %d, service request = %+v, want 400 and no call", rr.Code, gotReq)
+	}
+
+	req = volumePoolRequest(http.MethodPost, "/v1/volume-pools/plain/tenants/t1/move", "plain", "")
+	req.SetPathValue("tenant", "t1")
+	rr = httptest.NewRecorder()
+	srv.handleVolumePoolMoveTenant(rr, req)
+	if rr.Code != http.StatusConflict && rr.Code != http.StatusPreconditionFailed {
+		t.Fatalf("Q9 refusal: status = %d, want the FailedPrecondition class", rr.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/tenants/t1/volume-move", nil)
+	req.SetPathValue("tenant", "t1")
+	rr = httptest.NewRecorder()
+	srv.handleVolumeMove(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("get-move: status = %d", rr.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/v1/tenants/none/volume-move", nil)
+	req.SetPathValue("tenant", "none")
+	rr = httptest.NewRecorder()
+	srv.handleVolumeMove(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("cancel of no move: status = %d, want 404", rr.Code)
+	}
+
+	rr = httptest.NewRecorder()
+	srv.handleVolumeMove(rr, httptest.NewRequest(http.MethodGet, "/v1/tenants//volume-move", nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("missing tenant: status = %d, want 400", rr.Code)
+	}
+	rr = httptest.NewRecorder()
+	srv.handleVolumePoolMoveTenant(rr, volumePoolRequest(http.MethodPost, "/v1/volume-pools/b/tenants//move", "b", ""))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("move without tenant: status = %d, want 400", rr.Code)
 	}
 }

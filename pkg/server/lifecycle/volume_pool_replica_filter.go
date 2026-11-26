@@ -22,6 +22,7 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
@@ -96,6 +97,10 @@ func newVolumePoolHealthFilter(allocator volume.Allocator, volumeSvc volume.Serv
 			return err
 		}
 
+		if err := volume.RefuseReplicaChangeIfMoving(ctx, volumeSvc, tenantID); err != nil {
+			return err
+		}
+
 		nodeID, err := resolveNodeID(ctx, raftAddr, raftAddrToNodeID, members)
 		if err != nil {
 			return err
@@ -115,6 +120,30 @@ func newVolumePoolHealthFilter(allocator volume.Allocator, volumeSvc volume.Serv
 			return &PoolNotHealthyOnNodeError{TenantID: tenantID, Pool: assignment.Pool, NodeID: nodeID, State: row.State}
 		}
 		return &PoolNotHealthyOnNodeError{TenantID: tenantID, Pool: assignment.Pool, NodeID: nodeID}
+	}
+}
+
+// moveFenceSource is the slice of the barrier registry the move fence reads:
+// the replicated catalog's volume.Service, when one is attached.
+type moveFenceSource interface {
+	VolumeService() (volume.Service, bool)
+}
+
+// newMoveFence builds the service.MoveFence the rebalancer's MOVE and
+// scale-up consult, over the same volume.Service the scheduler filter reads:
+// a tenant with a move journal in any state answers
+// *volume.TenantMovingReplicaError. nil (no fence) when no catalog is
+// attached, since then no tenant can be moving.
+func newMoveFence(src moveFenceSource) service.MoveFence {
+	if src == nil {
+		return nil
+	}
+	volumeSvc, ok := src.VolumeService()
+	if !ok || volumeSvc == nil {
+		return nil
+	}
+	return func(ctx context.Context, tenantID string) error {
+		return volume.RefuseReplicaChangeIfMoving(ctx, volumeSvc, tenantID)
 	}
 }
 

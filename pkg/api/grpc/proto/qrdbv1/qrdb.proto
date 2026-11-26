@@ -1351,6 +1351,24 @@ service QRDBService {
         option (qrdb.v1.permission) = "volume_pools:read";
     }
 
+    // VolumePoolMoveTenant starts moving a volume tenant from its pool to
+    // to_pool, a pool it is entitled to. Answers the admitted move.
+    rpc VolumePoolMoveTenant(VolumePoolMoveTenantRequest) returns (VolumePoolMove) {
+        option (qrdb.v1.permission) = "volume_pools:move";
+    }
+
+    // VolumePoolGetMove answers a tenant's move in progress. NotFound
+    // when the tenant has no move.
+    rpc VolumePoolGetMove(VolumePoolGetMoveRequest) returns (VolumePoolMove) {
+        option (qrdb.v1.permission) = "volume_pools:read";
+    }
+
+    // VolumePoolCancelMove cancels a tenant's move before cut over; the
+    // move aborts back to the source pool. Answers the aborting move.
+    rpc VolumePoolCancelMove(VolumePoolCancelMoveRequest) returns (VolumePoolMove) {
+        option (qrdb.v1.permission) = "volume_pools:move";
+    }
+
     // -----------------------------------------------------------------------
     // Credential operations
     // -----------------------------------------------------------------------
@@ -5357,6 +5375,53 @@ message VolumePoolTenant {
 message VolumePoolListTenantsResponse {
     repeated VolumePoolTenant tenants = 1;
     string next_page_token            = 2;
+}
+
+// VolumePoolMoveTenantRequest starts moving tenant to to_pool.
+message VolumePoolMoveTenantRequest {
+    string tenant  = 1;
+    string to_pool = 2;
+    // allow_unencrypted_destination is the operator's explicit flag to
+    // move a tenant from an encrypted (Lockable) pool to an unencrypted one,
+    // dropping its at-rest encryption; the drop is audited fail-closed
+    // (decision Q9, ruling 1234).
+    bool   allow_unencrypted_destination = 3;
+}
+
+// VolumePoolGetMoveRequest names the tenant whose move to answer.
+message VolumePoolGetMoveRequest {
+    string tenant = 1;
+}
+
+// VolumePoolCancelMoveRequest names the tenant whose move to cancel.
+message VolumePoolCancelMoveRequest {
+    string tenant = 1;
+}
+
+// VolumePoolMove is a tenant's move journal: where it goes, its state,
+// and the per-node steps (copied, pending, retired, and the node granted
+// the current step).
+message VolumePoolMove {
+    string   tenant_id             = 1;
+    string   from_pool             = 2;
+    string   to_pool               = 3;
+    string   state                 = 4;
+    repeated string nodes_copied   = 5;
+    repeated string nodes_pending  = 6;
+    repeated string nodes_retired  = 7;
+    string   step_node             = 8;
+    int32    step_attempts         = 9;
+    string   error                 = 10;
+    int64    reserved_bytes        = 11;
+    int64    source_reserved_bytes = 12;
+    bool     tenant_recorded       = 13;
+    // admitted_at and updated_at are RFC 3339 (UTC); updated_at is empty
+    // until the journal first changes.
+    string   admitted_at           = 14;
+    string   updated_at            = 15;
+    // encryption_dropped reports a move admitted under
+    // allow_unencrypted_destination that drops the tenant's encryption.
+    bool     encryption_dropped    = 16;
 }
 
 // TenantUpdateRequest applies a partial update to an existing tenant.

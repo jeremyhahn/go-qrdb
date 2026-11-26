@@ -203,6 +203,14 @@ func newTestVolumeFixture(t *testing.T) (catalog *volume.Catalog, open *volume.O
 // path, not pre-create it.
 func newTestVolumeFixtureAt(t *testing.T, poolRoot string) (catalog *volume.Catalog, open *volume.OpenVolumes) {
 	t.Helper()
+	catalog, open, _ = newTestVolumeFixtureKV(t, poolRoot)
+	return catalog, open
+}
+
+// newTestVolumeFixtureKV is newTestVolumeFixtureAt that also returns the
+// catalog's KV, for a test that writes a record the catalog then reads.
+func newTestVolumeFixtureKV(t *testing.T, poolRoot string) (catalog *volume.Catalog, open *volume.OpenVolumes, kv *sealTestFakeKV) {
+	t.Helper()
 	ctx := context.Background()
 
 	if err := os.MkdirAll(poolRoot, 0o700); err != nil {
@@ -226,7 +234,7 @@ func newTestVolumeFixtureAt(t *testing.T, poolRoot string) (catalog *volume.Cata
 		t.Fatalf("open.Add: %v", err)
 	}
 
-	kv := newSealTestFakeKV()
+	kv = newSealTestFakeKV()
 	tx := newSealTestFakeTx(kv)
 	catalog, err = volume.NewCatalog(kv, tx, registry)
 	if err != nil {
@@ -235,7 +243,7 @@ func newTestVolumeFixtureAt(t *testing.T, poolRoot string) (catalog *volume.Cata
 	if _, err := catalog.CreatePool(ctx, volume.CreatePoolRequest{Name: "default", Provider: "dir"}); err != nil {
 		t.Fatalf("catalog.CreatePool: %v", err)
 	}
-	return catalog, open
+	return catalog, open, kv
 }
 
 // aliasVolume reports reportedRoot from Root() while delegating everything
