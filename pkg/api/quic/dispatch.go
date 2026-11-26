@@ -442,6 +442,9 @@ func (s *Server) buildHandlers() {
 	s.handle("volumepool.Update", permission.VolumePoolUpdate, s.handleVolumePoolUpdate)
 	s.handle("volumepool.Delete", permission.VolumePoolDelete, s.handleVolumePoolDelete)
 	s.handle("volumepool.ListTenants", permission.VolumePoolRead, s.handleVolumePoolListTenants)
+	s.handle("volumepool.MoveTenant", permission.VolumePoolMove, s.handleVolumePoolMoveTenant)
+	s.handle("volumepool.GetMove", permission.VolumePoolRead, s.handleVolumePoolGetMove)
+	s.handle("volumepool.CancelMove", permission.VolumePoolMove, s.handleVolumePoolCancelMove)
 
 	// Credential management
 	credOn := s.credentialSvc != nil

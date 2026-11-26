@@ -174,12 +174,13 @@ import exactly as `sm_type: mvcc` does. They are:
   session ID, even an adversarially-chosen one.
 
 Because every record is lease-bound, staging needs an engine that keeps
-leases. The plain KV engine a standalone node composes for the `file` and
-`objstore` backends keeps none, so it refuses a staging command as an
-unsupported capability and writes nothing (`pkg/engine/kv_import_stage.go`),
-the same answer the MVCC engine and the `pebble` state machine give when
-built without a lessor. A record staged without a lease could never be
-reclaimed.
+leases. A standalone node composes the MVCC engine for every local backend
+and attaches its lessor when one is configured (`NewLocalEngine` in
+`pkg/server/lifecycle/local.go`). An engine built without a lessor — the MVCC
+engine, the `pebble` state machine, or the plain KV engine
+(`pkg/engine/kv_import_stage.go`) — refuses a staging command with a "lease
+service not configured" refusal and writes nothing. A record staged without a
+lease could never be reclaimed.
 
 ### Why not the ordinary MVCC keyspace
 

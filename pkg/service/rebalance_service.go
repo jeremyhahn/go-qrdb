@@ -284,6 +284,7 @@ const hotspotThreshold = 1.5
 type RebalanceService struct {
 	host           AdminHost
 	placementStore *placement.Store
+	moveFence      MoveFence
 	selfNodeID     string
 	raftHost       RaftHost
 	logger         *slog.Logger
@@ -810,6 +811,14 @@ func (s *RebalanceService) moveTenantGroupShard(ctx context.Context, move Rebala
 		}
 	}
 
+	// Step -0.5: a tenant mid volume pool move keeps its replica set: the
+	// move copies the replicas its journal records, so an added
+	// destination would stay on the source pool past cut over and a
+	// removed source would leave a copy step that never completes.
+	if err := s.checkMoveFence(ctx, p.TenantID); err != nil {
+		return &RebalanceMoveError{ShardID: move.ShardID, TenantID: p.TenantID, Step: "volume-move", Err: err}
+	}
+
 	// Step 0: route to the dedicated group's current Raft leader. When the
 	// source is ALSO the local node, resolveMoveLeader additionally
 	// transfers leadership away before reporting itself as not-the-leader
@@ -888,7 +897,13 @@ func (s *RebalanceService) moveTenantGroupShard(ctx context.Context, move Rebala
 		return &RebalanceMoveError{ShardID: move.ShardID, TenantID: p.TenantID, Step: step, Err: err}
 	}
 
-	// Step 5: evict the source.
+	// Step 5: evict the source. A move admitted since Step -0.5 recorded
+	// the source among its nodes; removing it would strand that step, so
+	// the fence is read again and the destination stays as an extra
+	// replica (the move resyncs its node set and copies it too).
+	if err := s.checkMoveFence(ctx, p.TenantID); err != nil {
+		return &RebalanceMoveError{ShardID: move.ShardID, TenantID: p.TenantID, Step: "volume-move", Err: err}
+	}
 	if _, placementFailed, err := removeReplicaFromGroup(ctx, s.raftHost, s.placementStore, updated, srcReplica.ReplicaID); err != nil {
 		step := "remove-node"
 		if placementFailed {
@@ -898,6 +913,15 @@ func (s *RebalanceService) moveTenantGroupShard(ctx context.Context, move Rebala
 	}
 
 	return nil
+}
+
+// checkMoveFence answers the composed MoveFence's refusal for tenantID, nil
+// when no fence is composed or the tenant is not moving.
+func (s *RebalanceService) checkMoveFence(ctx context.Context, tenantID string) error {
+	if s.moveFence == nil {
+		return nil
+	}
+	return s.moveFence(ctx, tenantID)
 }
 
 // resolveMoveLeader determines whether the local node can safely execute

@@ -1446,7 +1446,7 @@ lose it for data it already stores. An unset floor may become either value,
 whatever its policy, so tightening moves no record and is accepted at any
 time.
 
-**What the policy decides today.** Under a `strict` floor the vector service
+**What the policy decides.** Under a `strict` floor the vector service
 refuses a namespace create from a caller acting as the system tenant
 (`service.WithClusterIsolationPolicyReader`). Nothing else reads the policy:
 authorization does not consult the effective policy.

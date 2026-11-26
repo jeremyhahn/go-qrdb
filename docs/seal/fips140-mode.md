@@ -285,7 +285,7 @@ only thing authenticating membership announcements.
 
 ### SHA-1 — PKCS#12 export refused under strict enforcement
 
-`pkg/cert.encodePKCS12` produces a `.p12` archive via
+`cert.EncodePKCS12` (`pkg/cert/pkcs12.go`) produces a `.p12` archive via
 `software.sslmate.com/src/go-pkcs12`. The archive's own protection is approved
 — the `Modern2023` encoder is PBKDF2-HMAC-SHA256 with AES-256-CBC — but
 PKCS#12 also carries a `localKeyId` attribute holding the SHA-1 fingerprint of
@@ -295,7 +295,7 @@ how every consumer of the format matches a key to its certificate.
 This is the exemption case: an external format mandates the primitive, and the
 primitive is an interoperability identifier rather than a protection mechanism,
 so it is not a compliance violation. It is nonetheless unavailable under strict
-enforcement, because `crypto/sha1` panics there. `encodePKCS12` refuses up
+enforcement, because `crypto/sha1` panics there. `EncodePKCS12` refuses up
 front with a `*PKCS12FIPSUnavailableError` wrapped in the `*CertExportError`
 callers already match on.
 

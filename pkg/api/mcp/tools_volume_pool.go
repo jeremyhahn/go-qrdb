@@ -37,6 +37,13 @@ func volumePoolTools(svc volume.Service) []serverTool {
 		{Tool: toolVolumePoolUpdate(), Perm: permission.VolumePoolUpdate, Handler: handleVolumePoolUpdate(svc)},
 		{Tool: toolVolumePoolDelete(), Perm: permission.VolumePoolDelete, Handler: handleVolumePoolDelete(svc)},
 		{Tool: toolVolumePoolListTenants(), Perm: permission.VolumePoolRead, Handler: handleVolumePoolListTenants(svc)},
+		{Tool: toolVolumePoolMoveTenant(), Perm: permission.VolumePoolMove, Handler: handleVolumePoolMoveTenant(svc)},
+		{Tool: toolVolumePoolGetMove(), Perm: permission.VolumePoolRead, Handler: handleVolumePoolMoveLookup("qrdb_volume_pool_get_move", func(ctx context.Context, tenant string) (*volume.Move, error) {
+			return svc.GetMove(ctx, tenant)
+		})},
+		{Tool: toolVolumePoolCancelMove(), Perm: permission.VolumePoolMove, Handler: handleVolumePoolMoveLookup("qrdb_volume_pool_cancel_move", func(ctx context.Context, tenant string) (*volume.Move, error) {
+			return svc.CancelMove(ctx, tenant)
+		})},
 	}
 }
 
@@ -236,4 +243,73 @@ func handleVolumePoolListTenants(svc volume.Service) mcpserver.ToolHandlerFunc {
 		}
 		return mcp.NewToolResultText(string(data)), nil
 	}
+}
+
+func toolVolumePoolMoveTenant() mcp.Tool {
+	return mcp.NewTool("qrdb_volume_pool_move_tenant",
+		mcp.WithDescription("Start moving a tenant's volume to another pool it is entitled to. Answers the admitted move journal; the move runs in the background."),
+		mcp.WithString("tenant", mcp.Required(), mcp.Description("The tenant id.")),
+		mcp.WithString("to_pool", mcp.Required(), mcp.Description("The destination pool name.")),
+		mcp.WithBoolean("allow_unencrypted_destination",
+			mcp.Description("Allow a move from an encrypted (Lockable) pool to an unencrypted one: drops the tenant's at-rest encryption and is audited (volume_pool.move_encryption_drop). Default false: such a move is refused."),
+		),
+	)
+}
+
+func handleVolumePoolMoveTenant(svc volume.Service) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		tenant := mcp.ParseString(req, "tenant", "")
+		if tenant == "" {
+			return mcp.NewToolResultError("tenant is required"), nil
+		}
+		toPool := mcp.ParseString(req, "to_pool", "")
+		if toPool == "" {
+			return mcp.NewToolResultError("to_pool is required"), nil
+		}
+		m, err := svc.MoveTenant(ctx, volume.MoveTenantRequest{
+			TenantID:                    tenant,
+			ToPool:                      toPool,
+			AllowUnencryptedDestination: mcp.ParseBoolean(req, "allow_unencrypted_destination", false),
+		})
+		return volumePoolMoveResult("qrdb_volume_pool_move_tenant", m, err)
+	}
+}
+
+func toolVolumePoolGetMove() mcp.Tool {
+	return mcp.NewTool("qrdb_volume_pool_get_move",
+		mcp.WithDescription("Show a tenant's volume move in progress: state, nodes copied, pending and retired, and the current step."),
+		mcp.WithString("tenant", mcp.Required(), mcp.Description("The tenant id.")),
+	)
+}
+
+func toolVolumePoolCancelMove() mcp.Tool {
+	return mcp.NewTool("qrdb_volume_pool_cancel_move",
+		mcp.WithDescription("Cancel a tenant's volume move before cut over; the move rolls back to the source pool."),
+		mcp.WithString("tenant", mcp.Required(), mcp.Description("The tenant id.")),
+	)
+}
+
+// handleVolumePoolMoveLookup serves the two move verbs keyed by tenant
+// alone (get-move, cancel-move).
+func handleVolumePoolMoveLookup(tool string, fn func(context.Context, string) (*volume.Move, error)) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		tenant := mcp.ParseString(req, "tenant", "")
+		if tenant == "" {
+			return mcp.NewToolResultError("tenant is required"), nil
+		}
+		m, err := fn(ctx, tenant)
+		return volumePoolMoveResult(tool, m, err)
+	}
+}
+
+// volumePoolMoveResult renders a move journal as the tool's JSON text.
+func volumePoolMoveResult(tool string, m *volume.Move, err error) (*mcp.CallToolResult, error) {
+	if err != nil {
+		return nil, &ToolError{Tool: tool, Err: err}
+	}
+	data, jsonErr := json.Marshal(m)
+	if jsonErr != nil {
+		return nil, &ToolError{Tool: tool, Err: jsonErr}
+	}
+	return mcp.NewToolResultText(string(data)), nil
 }

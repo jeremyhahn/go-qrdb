@@ -46,6 +46,18 @@ func TestVolumePoolRPCs_NoServiceIsUnimplemented(t *testing.T) {
 			_, err := s.VolumePoolListTenants(ctx, &pb.VolumePoolListTenantsRequest{Pool: "p"})
 			return err
 		},
+		"move": func() error {
+			_, err := s.VolumePoolMoveTenant(ctx, &pb.VolumePoolMoveTenantRequest{Tenant: "t", ToPool: "p"})
+			return err
+		},
+		"get-move": func() error {
+			_, err := s.VolumePoolGetMove(ctx, &pb.VolumePoolGetMoveRequest{Tenant: "t"})
+			return err
+		},
+		"cancel-move": func() error {
+			_, err := s.VolumePoolCancelMove(ctx, &pb.VolumePoolCancelMoveRequest{Tenant: "t"})
+			return err
+		},
 	}
 	for name, call := range calls {
 		t.Run(name, func(t *testing.T) { requireCode(t, call(), codes.Unimplemented) })
@@ -232,6 +244,85 @@ func TestVolumePoolListTenants_Paginates(t *testing.T) {
 
 	_, err = s.VolumePoolListTenants(context.Background(), &pb.VolumePoolListTenantsRequest{Pool: "gone"})
 	requireCode(t, err, codes.NotFound)
+}
+
+// TestVolumePoolMoves_WireShapeAndRefusals drives the three move RPCs:
+// the move journal reaches the wire field for field, an encrypted-to-
+// unencrypted move is refused FailedPrecondition (owner Q9), and a
+// tenant with no move answers NotFound.
+func TestVolumePoolMoves_WireShapeAndRefusals(t *testing.T) {
+	move := &volume.Move{
+		TenantID: "t1", FromPool: "a", ToPool: "b", State: "copying",
+		NodesCopied: []string{"n1"}, NodesPending: []string{"n2"}, StepNode: "n2", StepAttempts: 1,
+		ReservedBytes: 64, AdmittedAt: volumePoolTestTime,
+	}
+	s := &qrdbServiceServer{volumeSvc: &volumetest.Service{
+		T: t,
+		MoveTenantFn: func(_ context.Context, req volume.MoveTenantRequest) (*volume.Move, error) {
+			if req.ToPool == "plain" {
+				if !req.AllowUnencryptedDestination {
+					return nil, &volume.MoveToUnencryptedPoolError{TenantID: req.TenantID, FromPool: "a", ToPool: req.ToPool}
+				}
+				dropped := *move
+				dropped.ToPool = req.ToPool
+				dropped.EncryptionDropped = true
+				return &dropped, nil
+			}
+			if req.TenantID != "t1" || req.ToPool != "b" || req.AllowUnencryptedDestination {
+				t.Fatalf("MoveTenant(%+v)", req)
+			}
+			return move, nil
+		},
+		GetMoveFn: func(_ context.Context, tenant string) (*volume.Move, error) {
+			if tenant != "t1" {
+				return nil, &volume.MoveNotFoundError{TenantID: tenant}
+			}
+			return move, nil
+		},
+		CancelMoveFn: func(_ context.Context, tenant string) (*volume.Move, error) {
+			if tenant != "t1" {
+				return nil, &volume.MoveNotFoundError{TenantID: tenant}
+			}
+			aborting := *move
+			aborting.State = "aborting"
+			return &aborting, nil
+		},
+	}}
+	ctx := context.Background()
+	got, err := s.VolumePoolMoveTenant(ctx, &pb.VolumePoolMoveTenantRequest{Tenant: "t1", ToPool: "b"})
+	if err != nil {
+		t.Fatalf("VolumePoolMoveTenant: %v", err)
+	}
+	if got.GetTenantId() != "t1" || got.GetFromPool() != "a" || got.GetToPool() != "b" || got.GetState() != "copying" ||
+		len(got.GetNodesCopied()) != 1 || got.GetNodesPending()[0] != "n2" || got.GetStepNode() != "n2" ||
+		got.GetStepAttempts() != 1 || got.GetReservedBytes() != 64 ||
+		got.GetAdmittedAt() != volumePoolTestTime.UTC().Format(time.RFC3339Nano) || got.GetUpdatedAt() != "" || got.GetEncryptionDropped() {
+		t.Fatalf("move = %+v", got)
+	}
+	_, err = s.VolumePoolMoveTenant(ctx, &pb.VolumePoolMoveTenantRequest{Tenant: "t1", ToPool: "plain"})
+	requireCode(t, err, codes.FailedPrecondition)
+	// Ruling 1234: the operator's flag reaches the service and the drop is
+	// answered.
+	got, err = s.VolumePoolMoveTenant(ctx, &pb.VolumePoolMoveTenantRequest{Tenant: "t1", ToPool: "plain", AllowUnencryptedDestination: true})
+	if err != nil || !got.GetEncryptionDropped() {
+		t.Fatalf("flagged VolumePoolMoveTenant = %+v, %v, want EncryptionDropped", got, err)
+	}
+
+	if got, err = s.VolumePoolGetMove(ctx, &pb.VolumePoolGetMoveRequest{Tenant: "t1"}); err != nil || got.GetState() != "copying" {
+		t.Fatalf("VolumePoolGetMove = %+v, %v", got, err)
+	}
+	_, err = s.VolumePoolGetMove(ctx, &pb.VolumePoolGetMoveRequest{Tenant: "none"})
+	requireCode(t, err, codes.NotFound)
+
+	if got, err = s.VolumePoolCancelMove(ctx, &pb.VolumePoolCancelMoveRequest{Tenant: "t1"}); err != nil || got.GetState() != "aborting" {
+		t.Fatalf("VolumePoolCancelMove = %+v, %v", got, err)
+	}
+	_, err = s.VolumePoolCancelMove(ctx, &pb.VolumePoolCancelMoveRequest{Tenant: "none"})
+	requireCode(t, err, codes.NotFound)
+
+	if VolumePoolMoveToProto(nil) != nil {
+		t.Fatal("VolumePoolMoveToProto(nil) != nil")
+	}
 }
 
 func TestVolumePoolExportedConverters(t *testing.T) {

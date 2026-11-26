@@ -1,6 +1,6 @@
 # TypeScript SDK — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-11-25
 > Conflicts with this document are defects. Fix them here first.
 
 ## Capability Matrix

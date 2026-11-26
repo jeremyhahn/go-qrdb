@@ -132,6 +132,22 @@ func startMultiProtocolCluster(t *testing.T, spareCount int) (nodes [3]*multiPro
 	return startMultiProtocolClusterWithConfig(t, spareCount, nil)
 }
 
+// startMultiProtocolClusterWithNodeConfig is startMultiProtocolCluster with
+// a per-node config: nodeYAML(i), when non-nil, returns extra daemon YAML
+// for genesis node i (0-based), appended to the shared seal and peer-URL
+// config in that node's own --config file -- so each node can carry its own
+// volume pool directories. Every returned node keeps bin, startArgs, proc
+// and configPath, so multiProtoNode.restart can restart it.
+func startMultiProtocolClusterWithNodeConfig(t *testing.T, spareCount int, nodeYAML func(i int) string) (nodes [3]*multiProtoNode, spares []adminClusterSpareReplica) {
+	t.Helper()
+	if nodeYAML == nil {
+		return startMultiProtocolClusterWithConfig(t, spareCount, nil)
+	}
+	return startMultiProtocolClusterWithConfig(t, spareCount, func(i int) multiProtoClusterNodeConfig {
+		return multiProtoClusterNodeConfig{yaml: nodeYAML(i)}
+	})
+}
+
 // multiProtoClusterNodeConfig is one genesis node's addition to
 // startMultiProtocolClusterWithConfig's cluster: YAML appended to its config
 // file after the peer admin URLs, and a writer its log is copied to.
@@ -171,6 +187,8 @@ func startMultiProtocolClusterWithConfig(t *testing.T, spareCount int, nodeConfi
 		}
 		return nodeConfig(i)
 	}
+	cfgPaths := make([]string, n)
+	nodeArgs := make([][]string, n)
 	// Node certificates carry the SPIFFE node ID a follower signs its
 	// on-behalf caller assertion with when it forwards a membership change
 	// to shard 1's leader; without it there is no assertion and the leader
@@ -184,7 +202,7 @@ func startMultiProtocolClusterWithConfig(t *testing.T, spareCount int, nodeConfi
 	for i := range n {
 		dataDirs[i] = t.TempDir()
 		config := configFor(i)
-		cfgPath := writeMultiProtocolSealConfig(t, peerAdminURLsYAML(peerAdminURLs)+config.yaml)
+		cfgPaths[i] = writeMultiProtocolSealConfig(t, peerAdminURLsYAML(peerAdminURLs)+config.yaml)
 
 		// Unix socket paths are limited to ~108 bytes by the kernel and
 		// t.TempDir() can exceed that -- see startMultiProtocolNode's
@@ -198,7 +216,7 @@ func startMultiProtocolClusterWithConfig(t *testing.T, spareCount int, nodeConfi
 
 		args := []string{
 			"start",
-			"--config", cfgPath,
+			"--config", cfgPaths[i],
 			"--listen", fmt.Sprintf("0.0.0.0:%d", raftPorts[i]),
 			"--raft-address", raftAddrs[i],
 			"--data-dir", dataDirs[i],
@@ -218,6 +236,7 @@ func startMultiProtocolClusterWithConfig(t *testing.T, spareCount int, nodeConfi
 			"--enable-unix", "--unix-socket-path", unixSockets[i],
 		}
 		args = append(args, nodeTLS[i]...)
+		nodeArgs[i] = args
 
 		var tee []io.Writer
 		if config.log != nil {
@@ -307,7 +326,12 @@ func startMultiProtocolClusterWithConfig(t *testing.T, spareCount int, nodeConfi
 			mcpPort:    mcpPorts[idx],
 			quicPort:   quicPorts[idx],
 			passphrase: adminClusterPassphrase,
+			bin:        bin,
+			startArgs:  nodeArgs[idx],
 			proc:       cmds[idx],
+			configPath: cfgPaths[idx],
+
+			clusterRestPorts: adminPorts,
 		}
 	}
 
@@ -319,6 +343,18 @@ func startMultiProtocolClusterWithConfig(t *testing.T, spareCount int, nodeConfi
 		}
 	}
 
+	// Each node knows its peers, so a stalled restart can dump every
+	// cluster node's goroutines (dumpClusterStacks), not only its own.
+	for i, n := range nodes {
+		if n == nil {
+			continue
+		}
+		for j, peer := range nodes {
+			if j != i && peer != nil {
+				n.clusterPeers = append(n.clusterPeers, peer)
+			}
+		}
+	}
 	return nodes, spares
 }
 

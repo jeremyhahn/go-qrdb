@@ -41,6 +41,11 @@ func NewDirProvider() Provider {
 // Name implements Provider.
 func (p *dirProvider) Name() string { return dirProviderName }
 
+// OpensLockable implements LockableProvider: a "dir" volume is never Lockable.
+func (p *dirProvider) OpensLockable() bool { return false }
+
+var _ LockableProvider = (*dirProvider)(nil)
+
 // Open implements Provider. It checks that spec.Path is an absolute,
 // canonical, non-symlinked path, that it exists, is a directory, and is
 // writable, then returns a Volume reporting statfs numbers for it.
@@ -85,7 +90,7 @@ func (e *notADirectoryError) Error() string { return "path exists but is not a d
 // bits, which is the only check that is correct under every permission
 // model (POSIX mode bits, ACLs, a read-only bind mount).
 func probeWritable(dir string) error {
-	f, err := os.CreateTemp(dir, ".qrdb-volume-probe-*")
+	f, err := os.CreateTemp(dir, ReservedPathPrefix+"volume-probe-*")
 	if err != nil {
 		return err
 	}

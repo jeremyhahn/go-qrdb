@@ -251,6 +251,9 @@ const (
 	QRDBService_VolumePoolUpdate_FullMethodName                   = "/qrdb.v1.QRDBService/VolumePoolUpdate"
 	QRDBService_VolumePoolDelete_FullMethodName                   = "/qrdb.v1.QRDBService/VolumePoolDelete"
 	QRDBService_VolumePoolListTenants_FullMethodName              = "/qrdb.v1.QRDBService/VolumePoolListTenants"
+	QRDBService_VolumePoolMoveTenant_FullMethodName               = "/qrdb.v1.QRDBService/VolumePoolMoveTenant"
+	QRDBService_VolumePoolGetMove_FullMethodName                  = "/qrdb.v1.QRDBService/VolumePoolGetMove"
+	QRDBService_VolumePoolCancelMove_FullMethodName               = "/qrdb.v1.QRDBService/VolumePoolCancelMove"
 	QRDBService_CredentialSubmit_FullMethodName                   = "/qrdb.v1.QRDBService/CredentialSubmit"
 	QRDBService_CredentialStrategy_FullMethodName                 = "/qrdb.v1.QRDBService/CredentialStrategy"
 	QRDBService_CredentialDelete_FullMethodName                   = "/qrdb.v1.QRDBService/CredentialDelete"
@@ -900,6 +903,15 @@ type QRDBServiceClient interface {
 	// VolumePoolListTenants lists the tenants assigned to a pool, with each
 	// one's reservation and measured use. Paginated.
 	VolumePoolListTenants(ctx context.Context, in *VolumePoolListTenantsRequest, opts ...grpc.CallOption) (*VolumePoolListTenantsResponse, error)
+	// VolumePoolMoveTenant starts moving a volume tenant from its pool to
+	// to_pool, a pool it is entitled to. Answers the admitted move.
+	VolumePoolMoveTenant(ctx context.Context, in *VolumePoolMoveTenantRequest, opts ...grpc.CallOption) (*VolumePoolMove, error)
+	// VolumePoolGetMove answers a tenant's move in progress. NotFound
+	// when the tenant has no move.
+	VolumePoolGetMove(ctx context.Context, in *VolumePoolGetMoveRequest, opts ...grpc.CallOption) (*VolumePoolMove, error)
+	// VolumePoolCancelMove cancels a tenant's move before cut over; the
+	// move aborts back to the source pool. Answers the aborting move.
+	VolumePoolCancelMove(ctx context.Context, in *VolumePoolCancelMoveRequest, opts ...grpc.CallOption) (*VolumePoolMove, error)
 	// CredentialSubmit submits a named credential value via the active strategy.
 	CredentialSubmit(ctx context.Context, in *CredentialSubmitRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// CredentialStrategy returns the active credential management strategy.
@@ -3236,6 +3248,36 @@ func (c *qRDBServiceClient) VolumePoolListTenants(ctx context.Context, in *Volum
 	return out, nil
 }
 
+func (c *qRDBServiceClient) VolumePoolMoveTenant(ctx context.Context, in *VolumePoolMoveTenantRequest, opts ...grpc.CallOption) (*VolumePoolMove, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VolumePoolMove)
+	err := c.cc.Invoke(ctx, QRDBService_VolumePoolMoveTenant_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VolumePoolGetMove(ctx context.Context, in *VolumePoolGetMoveRequest, opts ...grpc.CallOption) (*VolumePoolMove, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VolumePoolMove)
+	err := c.cc.Invoke(ctx, QRDBService_VolumePoolGetMove_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VolumePoolCancelMove(ctx context.Context, in *VolumePoolCancelMoveRequest, opts ...grpc.CallOption) (*VolumePoolMove, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VolumePoolMove)
+	err := c.cc.Invoke(ctx, QRDBService_VolumePoolCancelMove_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *qRDBServiceClient) CredentialSubmit(ctx context.Context, in *CredentialSubmitRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(emptypb.Empty)
@@ -4387,6 +4429,15 @@ type QRDBServiceServer interface {
 	// VolumePoolListTenants lists the tenants assigned to a pool, with each
 	// one's reservation and measured use. Paginated.
 	VolumePoolListTenants(context.Context, *VolumePoolListTenantsRequest) (*VolumePoolListTenantsResponse, error)
+	// VolumePoolMoveTenant starts moving a volume tenant from its pool to
+	// to_pool, a pool it is entitled to. Answers the admitted move.
+	VolumePoolMoveTenant(context.Context, *VolumePoolMoveTenantRequest) (*VolumePoolMove, error)
+	// VolumePoolGetMove answers a tenant's move in progress. NotFound
+	// when the tenant has no move.
+	VolumePoolGetMove(context.Context, *VolumePoolGetMoveRequest) (*VolumePoolMove, error)
+	// VolumePoolCancelMove cancels a tenant's move before cut over; the
+	// move aborts back to the source pool. Answers the aborting move.
+	VolumePoolCancelMove(context.Context, *VolumePoolCancelMoveRequest) (*VolumePoolMove, error)
 	// CredentialSubmit submits a named credential value via the active strategy.
 	CredentialSubmit(context.Context, *CredentialSubmitRequest) (*emptypb.Empty, error)
 	// CredentialStrategy returns the active credential management strategy.
@@ -5194,6 +5245,15 @@ func (UnimplementedQRDBServiceServer) VolumePoolDelete(context.Context, *VolumeP
 }
 func (UnimplementedQRDBServiceServer) VolumePoolListTenants(context.Context, *VolumePoolListTenantsRequest) (*VolumePoolListTenantsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method VolumePoolListTenants not implemented")
+}
+func (UnimplementedQRDBServiceServer) VolumePoolMoveTenant(context.Context, *VolumePoolMoveTenantRequest) (*VolumePoolMove, error) {
+	return nil, status.Error(codes.Unimplemented, "method VolumePoolMoveTenant not implemented")
+}
+func (UnimplementedQRDBServiceServer) VolumePoolGetMove(context.Context, *VolumePoolGetMoveRequest) (*VolumePoolMove, error) {
+	return nil, status.Error(codes.Unimplemented, "method VolumePoolGetMove not implemented")
+}
+func (UnimplementedQRDBServiceServer) VolumePoolCancelMove(context.Context, *VolumePoolCancelMoveRequest) (*VolumePoolMove, error) {
+	return nil, status.Error(codes.Unimplemented, "method VolumePoolCancelMove not implemented")
 }
 func (UnimplementedQRDBServiceServer) CredentialSubmit(context.Context, *CredentialSubmitRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method CredentialSubmit not implemented")
@@ -9283,6 +9343,60 @@ func _QRDBService_VolumePoolListTenants_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _QRDBService_VolumePoolMoveTenant_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VolumePoolMoveTenantRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VolumePoolMoveTenant(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VolumePoolMoveTenant_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VolumePoolMoveTenant(ctx, req.(*VolumePoolMoveTenantRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VolumePoolGetMove_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VolumePoolGetMoveRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VolumePoolGetMove(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VolumePoolGetMove_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VolumePoolGetMove(ctx, req.(*VolumePoolGetMoveRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VolumePoolCancelMove_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VolumePoolCancelMoveRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VolumePoolCancelMove(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VolumePoolCancelMove_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VolumePoolCancelMove(ctx, req.(*VolumePoolCancelMoveRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _QRDBService_CredentialSubmit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CredentialSubmitRequest)
 	if err := dec(in); err != nil {
@@ -11161,6 +11275,18 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "VolumePoolListTenants",
 			Handler:    _QRDBService_VolumePoolListTenants_Handler,
+		},
+		{
+			MethodName: "VolumePoolMoveTenant",
+			Handler:    _QRDBService_VolumePoolMoveTenant_Handler,
+		},
+		{
+			MethodName: "VolumePoolGetMove",
+			Handler:    _QRDBService_VolumePoolGetMove_Handler,
+		},
+		{
+			MethodName: "VolumePoolCancelMove",
+			Handler:    _QRDBService_VolumePoolCancelMove_Handler,
 		},
 		{
 			MethodName: "CredentialSubmit",

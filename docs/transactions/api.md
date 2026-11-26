@@ -63,7 +63,7 @@ op `type`: `put` · `delete` · `get` · `range`. A `get` reads `key`; a `range`
 reads `[key, range_end)`. A `get` that carries a `range_end` is refused whole
 as an invalid argument (`TransactionGetRangeEndError`) and nothing is read. A read in a transaction branch is answered inside
 the transaction, after the compares and the writes staged before it in the
-same branch, and needs an MVCC state machine (`--state-machine mvcc`) and the
+same branch, and needs an MVCC state machine (`raft.sm_type: mvcc`) and the
 cluster feature `transaction-reads`; before that feature is active the
 transaction is refused whole (`feature.NotActiveError`: REST 503,
 gRPC/Unix/QUIC/MCP `UNAVAILABLE`), and nothing is applied. An unrecognised

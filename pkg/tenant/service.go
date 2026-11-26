@@ -599,6 +599,9 @@ type TenantService struct {
 	// barrierFanOut lists the nodes a client fans a barrier init out to;
 	// see SetBarrierNodeSource.
 	barrierFanOut
+	// moveReplicaNodes lists a tenant's replica nodes for AdmitTenantMove;
+	// see volume_move.go.
+	moveReplicaNodes
 	// runtimeCloser stops what this node runs for a tenant before
 	// ReconcileDeletedTenants removes its directories; see ResidueWiring.
 	runtimeCloser atomic.Pointer[runtimeCloserBox]
@@ -1716,6 +1719,18 @@ func (s *TenantService) deleteTenant(ctx context.Context, tenantID string, mint 
 	if err := s.refuseIfDatabasesRemain(ctx, tenantID); err != nil {
 		return err
 	}
+	// A tenant whose volume move is running is refused (decision Q10),
+	// before any tombstone or teardown: the move worker still owns its data
+	// and barrier. The refusal is a conditional transition in the
+	// replicated volume catalog, not a read: fenceMoves marks the
+	// assignment retiring in the same transaction that proves no journal
+	// exists, and AdmitMove refuses a retiring assignment, so a move cannot
+	// be admitted between this check and the teardown. The mark is never
+	// lifted: a delete that fails later is re-issued, and moves stay
+	// refused meanwhile.
+	if err := s.fenceMoves(ctx, tenantID); err != nil {
+		return err
+	}
 
 	// 2 and 3. The fence. Nothing here destroys anything, so a failure
 	//          leaves the tenant intact and the error says only that.
@@ -1729,6 +1744,25 @@ func (s *TenantService) deleteTenant(ctx context.Context, tenantID string, mint 
 
 	// 4 and 5.
 	return s.finishTeardown(ctx, tenantID)
+}
+
+// moveFencer is the part of the volume catalog deleteTenant fences moves
+// with. The catalog (*volume.Catalog) implements it; an allocator that does
+// not has no move journal, so no tenant of it can be moving.
+type moveFencer interface {
+	FenceForDelete(ctx context.Context, tenantID string) error
+}
+
+// fenceMoves marks tenantID's assignment retiring so no move is admitted
+// over its teardown; a running move refuses it with *volume.MoveConflictError
+// before any tombstone is written. A store failure fails closed: the delete
+// is refused rather than tearing down data a move may own.
+func (s *TenantService) fenceMoves(ctx context.Context, tenantID string) error {
+	fencer, ok := s.volumeAllocator.(moveFencer)
+	if !ok || fencer == nil {
+		return nil
+	}
+	return fencer.FenceForDelete(ctx, tenantID)
 }
 
 // fence runs DeleteTenant's steps 2 and 3: retire the id, then remove the
