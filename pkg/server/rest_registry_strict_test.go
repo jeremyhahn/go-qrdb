@@ -189,26 +189,72 @@ func TestRestRegistry_ResolvedHandleWriteRefusedAfterStrictTightening(t *testing
 // Grant, has the grant refused with *rest.StrictTenantSharedStoreError and
 // writes no lease-owner record into the shared store. It runs for a
 // standalone (barrier) tenant and a raft tenant resolving the shared store.
-func TestRestRegistry_ResolvedLeaseGrantRefusedAfterStrictTightening(t *testing.T) {
-	for _, mode := range []struct {
-		name   string
-		shared func(t *testing.T) *DatabaseServices
-	}{
-		{"standalone", func(t *testing.T) *DatabaseServices {
-			_, svcs := newLockDataPlane(t, "system")
-			return svcs
-		}},
-		{"raft", func(t *testing.T) *DatabaseServices {
-			f, reg, src := newRaftFactory(t)
-			dataRoot, _ := registerVolumeTenant(t, reg, "rs")
-			src.add("rs", "sys", 1000, dataRoot)
-			svcs, err := f.Services(context.Background(), "rs", "sys")
+// strictSharedStoreModes composes the shared node-keyed service set two
+// ways: over a local engine (standalone) and over a quicraft-hosted shard
+// (raft), so the shared-store refusals are exercised on both proposal paths.
+var strictSharedStoreModes = []struct {
+	name   string
+	shared func(t *testing.T) *DatabaseServices
+}{
+	{"standalone", func(t *testing.T) *DatabaseServices {
+		_, svcs := newLockDataPlane(t, "system")
+		return svcs
+	}},
+	{"raft", func(t *testing.T) *DatabaseServices {
+		f, reg, src := newRaftFactory(t)
+		dataRoot, _ := registerVolumeTenant(t, reg, "rs")
+		src.add("rs", "sys", 1000, dataRoot)
+		svcs, err := f.Services(context.Background(), "rs", "sys")
+		if err != nil {
+			t.Fatalf("raft Services: %v", err)
+		}
+		return svcs
+	}},
+}
+
+// TestRestRegistry_PrefixResolvedHandleRecheckedAfterStrictTightening pins
+// that the exemption from the write-time recheck is decided on the tenant's
+// current record, not the one read at resolution: a KV handle resolved while
+// the tenant was prefix, after UpdateTenant moves it to barrier and the
+// policy is tightened to strict, has its next Put refused.
+func TestRestRegistry_PrefixResolvedHandleRecheckedAfterStrictTightening(t *testing.T) {
+	for _, mode := range strictSharedStoreModes {
+		t.Run(mode.name, func(t *testing.T) {
+			ctx := context.Background()
+			raw := mode.shared(t)
+			rr, _ := newStrictSharedRegistry(t, tenant.TenantIsolationPolicyInherit, tenant.ClusterIsolationPolicyOperatorAccess, nil)
+			floor := rr.tenantSvc.(*floorTenantSvc)
+			floor.info.IsolationType = tenant.IsolationPrefix
+			rr.tenantSvc = &epochTenantSvc{floorTenantSvc: floor, system: raw.KV}
+			rr.dbReg.Register("system", raw)
+			kv, err := rr.KVService("bt", "system")
 			if err != nil {
-				t.Fatalf("raft Services: %v", err)
+				t.Fatalf("KVService(prefix): %v", err)
 			}
-			return svcs
-		}},
-	} {
+			if err := kv.Put(ctx, "prefix", []byte("yes")); err != nil {
+				t.Fatalf("Put while prefix: %v", err)
+			}
+
+			floor.info.IsolationType = tenant.IsolationBarrier
+			if err := kv.Put(ctx, "barrier", []byte("yes")); err != nil {
+				t.Fatalf("Put after the move to barrier: %v", err)
+			}
+
+			floor.floor = tenant.ClusterIsolationPolicyStrict
+			err = kv.Put(ctx, "strict", []byte("no"))
+			var strictErr *rest.StrictTenantSharedStoreError
+			if !errors.As(err, &strictErr) {
+				t.Fatalf("Put after prefix->barrier->strict: err = %v, want *rest.StrictTenantSharedStoreError", err)
+			}
+			if _, err := raw.KV.Get(ctx, "bt/system/strict"); err == nil {
+				t.Fatal("the refused write reached the shared node-keyed store")
+			}
+		})
+	}
+}
+
+func TestRestRegistry_ResolvedLeaseGrantRefusedAfterStrictTightening(t *testing.T) {
+	for _, mode := range strictSharedStoreModes {
 		t.Run(mode.name, func(t *testing.T) {
 			ctx := context.Background()
 			raw := mode.shared(t)

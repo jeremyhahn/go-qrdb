@@ -412,6 +412,7 @@ func TestMoveTenantGroupShard_LeaderRouting_ForwardsWhenNotLeader(t *testing.T) 
 // rebalanced.
 func TestMoveTenantGroupShard_RejectsDroppingPlacement(t *testing.T) {
 	p := newTestPlacement("acme", "db1", 10)
+	p.DatabaseID = "dbid-7f3a"
 	p.Dropping = true
 	store := newTestPlacementStore(t, p)
 
@@ -433,9 +434,20 @@ func TestMoveTenantGroupShard_RejectsDroppingPlacement(t *testing.T) {
 	if mve.Step != "dropping" {
 		t.Errorf("Step = %q, want \"dropping\"", mve.Step)
 	}
-	var de *database.DroppingError
-	if !errors.As(err, &de) {
-		t.Fatalf("wrapped error = %v, want *database.DroppingError", errors.Unwrap(err))
+	de, ok := errors.AsType[*DroppingMoveError](err)
+	if !ok {
+		t.Fatalf("wrapped error = %v, want *DroppingMoveError", errors.Unwrap(err))
+	}
+	if de.ShardID != 10 || de.DatabaseID != p.DatabaseID || de.TenantID != "acme" {
+		t.Fatalf("DroppingMoveError = %+v, want shard 10, database id %q, tenant acme", de, p.DatabaseID)
+	}
+	// The refusal is platform-facing: neither its text nor the
+	// ExecuteRebalance Failures entry built from it names the database.
+	if strings.Contains(err.Error(), "db1") {
+		t.Fatalf("move refusal %q names the database", err)
+	}
+	if f := newRebalanceMoveFailure(move, err); strings.Contains(f.Error, "db1") || f.Step != "dropping" {
+		t.Fatalf("Failures entry = %+v: names the database or lost the step", f)
 	}
 	if len(host.observerCalls) != 0 || len(host.removeCalls) != 0 {
 		t.Error("no AddObserver/RemoveFollowerNode calls expected against a dropping database")

@@ -46,6 +46,13 @@ func (s *isolationTenantServicer) GetTenant(_ context.Context, tenantID string) 
 	}, nil
 }
 
+// IsolationEpochs reports no epoch recorded, as a cluster where no
+// isolation policy has been written yet reads them: every shared-store
+// write carries the epoch guard, a prefix tenant's included.
+func (s *isolationTenantServicer) IsolationEpochs(context.Context, string) (map[string][]byte, error) {
+	return map[string][]byte{}, nil
+}
+
 func TestRESTServiceRegistry_FailsClosedWhenIsolationBackendUnwired(t *testing.T) {
 	cases := []struct {
 		name      string

@@ -154,6 +154,29 @@ func (e *ServingSetMoveError) Error() string {
 		" (database id " + strconv.Quote(e.DatabaseID) + ") is confined to it"
 }
 
+// DroppingMoveError is the rebalancer's refusal to move a replica of a
+// database that is being dropped. Like ServingSetMoveError it is
+// platform-facing (ExecuteRebalance copies its text into Failures), so it
+// names the shard and the opaque, never-reused database id, never the
+// database name. A caller recognises the dropping case with
+// errors.AsType[*DroppingMoveError].
+type DroppingMoveError struct {
+	// TenantID owns the database.
+	TenantID string
+
+	// DatabaseID is the database's opaque, never-reused id.
+	DatabaseID string
+
+	// ShardID is the database's Raft shard.
+	ShardID uint64
+}
+
+// Error returns a description carrying no database name.
+func (e *DroppingMoveError) Error() string {
+	return "rebalance: shard " + strconv.FormatUint(e.ShardID, 10) + " (database id " +
+		strconv.Quote(e.DatabaseID) + ") of tenant " + strconv.Quote(e.TenantID) + " is being dropped"
+}
+
 // RebalanceExecutionResult contains the outcome of an executed rebalance.
 type RebalanceExecutionResult struct {
 	// MovesCompleted is the number of moves that completed successfully.
@@ -770,7 +793,7 @@ func (s *RebalanceService) moveTenantGroupShard(ctx context.Context, move Rebala
 			ShardID:  move.ShardID,
 			TenantID: p.TenantID,
 			Step:     "dropping",
-			Err:      &database.DroppingError{Name: p.Database, TenantID: p.TenantID},
+			Err:      &DroppingMoveError{TenantID: p.TenantID, DatabaseID: p.DatabaseID, ShardID: move.ShardID},
 		}
 	}
 

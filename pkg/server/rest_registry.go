@@ -450,7 +450,11 @@ func (r *restServiceRegistry) refuseStrictSharedStore(tenantID, db string, isola
 // before a tightening cannot keep writing to the node-keyed log. A record or
 // floor that cannot be read fails the write closed. It is nil -- no recheck
 // -- where resolve never refuses: no tenant record (no tenant service, the
-// system-tenant fallback), a prefix tenant, the system tenant.
+// system-tenant fallback) or the system tenant. A tenant that was prefix at
+// resolution still gets the recheck: the exemption is decided on the
+// record read at write time, because UpdateTenant can move the tenant to
+// barrier and a tightening can then make it strict while this handle is
+// in hand.
 //
 // The recheck is decided at propose time. A write already past it when the
 // tightening commits is refused at apply time by the isolation epoch guard
@@ -459,7 +463,7 @@ func (r *restServiceRegistry) refuseStrictSharedStore(tenantID, db string, isola
 // mixed-version group) has only this recheck, and vector writes, which are
 // node-local and not proposals, carry no guard.
 func (r *restServiceRegistry) strictWriteCheck(tenantID, db string, info *tenant.TenantInfo) func(context.Context) error {
-	if r.tenantSvc == nil || info == nil || tenantID == r.systemTenant || info.EffectiveIsolationType() == tenant.IsolationPrefix {
+	if r.tenantSvc == nil || info == nil || tenantID == r.systemTenant {
 		return nil
 	}
 	return func(context.Context) error {
