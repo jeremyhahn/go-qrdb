@@ -524,12 +524,14 @@ balanced longest-first by the per-feature job times of main run 65165, with
 setup assumed to be about 60 s of each leg (counted once per shard) and
 `barrier-seal` taken at its first-attempt 300 s rather than the 585 s its
 rerun recorded. `rate-limit`, added after that run, is counted at the 24 s its
-test took in a lane, in shard 5, then the shard with the least expected time:
+test took in a lane, in shard 5, then the shard with the least expected time. `sqlite-vfs`, added
+after that run, is in shard 2, then tied with shard 4 for the least expected
+time; it is not yet timed, so shard 2's expected time leaves it out:
 
 | Shard | Features | Expected (s) | Limit |
 |---|---|---|---|
 | 1 | audit databases distributed-locks multi-tenancy time-series | 552 | 120 min |
-| 2 | backup-restore capabilities ceremony clustering firstboot tenant-dek | 551 | 120 min |
+| 2 | backup-restore capabilities ceremony clustering firstboot sqlite-vfs tenant-dek | 551 | 120 min |
 | 3 | barrier-seal certificate-authority guarded-swap key-wrapping rag trust-anchors watch | 563 | 120 min |
 | 4 | api-server auth-factors replica-forwarding run-modes secondary-indexes storage-engines volume-pools | 551 | 120 min |
 | 5 | cluster-verification collections embeddings identity-rbac key-value rate-limit shamir-custody vectors | 574 | 120 min |

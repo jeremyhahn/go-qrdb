@@ -2760,7 +2760,7 @@ jobs:
           - shard: 1
             features: audit databases distributed-locks multi-tenancy time-series
           - shard: 2
-            features: backup-restore capabilities ceremony clustering firstboot tenant-dek
+            features: backup-restore capabilities ceremony clustering firstboot sqlite-vfs tenant-dek
           - shard: 3
             features: barrier-seal certificate-authority guarded-swap key-wrapping rag trust-anchors watch
           - shard: 4
