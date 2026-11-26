@@ -147,6 +147,72 @@ func (t *Transport) ListPoolTenants(ctx context.Context, req *transport.ListVolu
 	return out, nil
 }
 
+// MoveTenant starts moving a tenant to another pool via the Unix
+// gRPC-over-UDS VolumePoolMoveTenant RPC.
+func (t *Transport) MoveTenant(ctx context.Context, req *transport.MoveVolumePoolTenantRequest) (*transport.VolumePoolMove, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "MoveTenant", Err: &transport.NilRequestError{}}
+	}
+	resp, err := t.client.VolumePoolMoveTenant(ctx, &pb.VolumePoolMoveTenantRequest{Tenant: req.TenantID, ToPool: req.ToPool, AllowUnencryptedDestination: req.AllowUnencryptedDestination})
+	if err != nil {
+		return nil, mapGRPCError("MoveTenant", err)
+	}
+	return volumePoolMoveFromProto(resp), nil
+}
+
+// GetMove answers a tenant's move in progress via the Unix gRPC-over-UDS
+// VolumePoolGetMove RPC.
+func (t *Transport) GetMove(ctx context.Context, tenantID string) (*transport.VolumePoolMove, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	resp, err := t.client.VolumePoolGetMove(ctx, &pb.VolumePoolGetMoveRequest{Tenant: tenantID})
+	if err != nil {
+		return nil, mapGRPCError("GetMove", err)
+	}
+	return volumePoolMoveFromProto(resp), nil
+}
+
+// CancelMove cancels a tenant's move before cut over via the Unix
+// gRPC-over-UDS VolumePoolCancelMove RPC.
+func (t *Transport) CancelMove(ctx context.Context, tenantID string) (*transport.VolumePoolMove, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	resp, err := t.client.VolumePoolCancelMove(ctx, &pb.VolumePoolCancelMoveRequest{Tenant: tenantID})
+	if err != nil {
+		return nil, mapGRPCError("CancelMove", err)
+	}
+	return volumePoolMoveFromProto(resp), nil
+}
+
+// volumePoolMoveFromProto converts the wire move journal; its times are
+// RFC 3339 strings.
+func volumePoolMoveFromProto(m *pb.VolumePoolMove) *transport.VolumePoolMove {
+	out := &transport.VolumePoolMove{
+		TenantID:            m.GetTenantId(),
+		FromPool:            m.GetFromPool(),
+		ToPool:              m.GetToPool(),
+		State:               m.GetState(),
+		NodesCopied:         m.GetNodesCopied(),
+		NodesPending:        m.GetNodesPending(),
+		NodesRetired:        m.GetNodesRetired(),
+		StepNode:            m.GetStepNode(),
+		StepAttempts:        int(m.GetStepAttempts()),
+		Error:               m.GetError(),
+		ReservedBytes:       m.GetReservedBytes(),
+		SourceReservedBytes: m.GetSourceReservedBytes(),
+		TenantRecorded:      m.GetTenantRecorded(),
+		EncryptionDropped:   m.GetEncryptionDropped(),
+	}
+	out.AdmittedAt, _ = time.Parse(time.RFC3339Nano, m.GetAdmittedAt())
+	out.UpdatedAt, _ = time.Parse(time.RFC3339Nano, m.GetUpdatedAt())
+	return out
+}
+
 // ---------------------------------------------------------------------------
 // Proto conversion helpers
 // ---------------------------------------------------------------------------

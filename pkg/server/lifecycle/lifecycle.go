@@ -25,6 +25,7 @@ package lifecycle
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -75,6 +76,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -913,7 +915,14 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// APIs through a host-backed ShardSnapshotProvider. Both are functional only
 	// on a clustered Raft host; on the single-node LocalBackend, Rebalance has
 	// no peers to balance and Backup reports BackupUnsupportedError per shard.
-	n.Rebalance = service.NewRebalanceService(infra.Host)
+	// Every replica-set change of a tenant mid volume pool move is refused:
+	// the scheduler's filter (below), the rebalancer's MOVE and scale-up
+	// read the same move journal through one fence.
+	var moveFence service.MoveFence
+	if infra.BarrierRegistry != nil {
+		moveFence = newMoveFence(infra.BarrierRegistry)
+	}
+	n.Rebalance = service.NewRebalanceService(infra.Host, service.WithRebalanceMoveFence(moveFence))
 	var backupOpts []service.BackupServiceOption
 	if infra.BackupSink != nil {
 		backupOpts = append(backupOpts, service.WithBackupSink(infra.BackupSink))
@@ -1069,7 +1078,14 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	if feed, ferr := placement.NewStore(newPlacementKV(n.KV, n.Index, n.Watch)); ferr == nil {
 		n.PlacementChanges = feed
 	}
-	if store, perr := placement.NewStore(authStore); perr == nil {
+	// The replica-add fence (go-qrdb#925): every placement write that adds
+	// a replica to a tenant, or creates its placement, compares the tenant's
+	// volume pool move journal ABSENT in the same guarded batch. The journal
+	// (volume.MoveKey) is written raw on this same system shard by the
+	// volume catalog's transaction, so a scale-up or rebalance that passed
+	// its early MoveFence read before MoveTenant admitted the move either
+	// commits first (and the move's resync reads it) or is refused here.
+	if store, perr := placement.NewStore(authStore, placement.WithReplicaAddFence(volume.MoveKey, moveJournalReplicaRefusal)); perr == nil {
 		n.PlacementStore = store
 		var schedOpts []placement.SchedulerOption
 		// A host whose groups gate features never has a group placed on a
@@ -1106,6 +1122,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 				service.WithPlacementStore(store),
 				service.WithPlacementScheduler(scheduler),
 				service.WithDatabaseLogger(log),
+				service.WithMoveFence(moveFence),
 			}
 		}
 	}
@@ -2398,6 +2415,20 @@ func resolveReplicaID(id uint64) uint64 {
 		return 1
 	}
 	return id
+}
+
+// moveJournalReplicaRefusal is the placement store's replica-add fence
+// refusal: the stored move journal names the tenant's move, answered as the
+// same *volume.TenantMovingReplicaError the early MoveFence reads give. A
+// journal that does not decode still refuses (the fence fails closed), with
+// the tenant's id only.
+func moveJournalReplicaRefusal(tenantID string, journal []byte) error {
+	refusal := &volume.TenantMovingReplicaError{TenantID: tenantID}
+	var m volume.Move
+	if err := json.Unmarshal(journal, &m); err == nil {
+		refusal.FromPool, refusal.ToPool, refusal.State = m.FromPool, m.ToPool, m.State
+	}
+	return refusal
 }
 
 // buildTenantServiceOpts returns the TenantServiceOptions derived from the

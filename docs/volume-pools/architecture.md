@@ -261,14 +261,111 @@ resolved on both sides, applied per pool.
 
 ## Moving a tenant between pools
 
-Not implemented. No transport exposes a move, and `volume.Catalog.MoveTenant`
-returns `*volume.MoveNotImplementedError`, classified `Unimplemented`.
+Built and wired on every node. `volume.Catalog.MoveTenant` admits a move
+through the tenant layer (`tenant.TenantService.AdmitTenantMove`: the tenant
+exists, is a `volume` or `raft` tenant, is entitled to the destination pool,
+and its replica nodes) and then `AdmitMove`, and audits the start
+(`volume_pool.move_start`) before anything is admitted;
+`volume.Catalog.GetMove` reads the journal and `volume.Catalog.CancelMove`
+cancels it. `server.WireTenantMoves` sets every seam and starts the
+`TenantMoveWorker` in qrdbd and in the embedded node. The three verbs are on
+`volume.Service` and every transport (gRPC, Unix, QUIC, REST, MCP, embedded),
+both SDKs and the CLI: start (`volume_pools:move`), inspect
+(`volume_pools:read`) and cancel (`volume_pools:move`); see
+[api.md](api.md) and [cli.md](cli.md). Each refusal takes its status from
+the shared errclass row of its error.
 
-The proposed design, awaiting the owner's ruling, is
+The design, decided by ruling 1115 for Q1-Q8 and Q10 and by the owner for Q9
+(ruling 1234, superseding owner queue 287: a move off a Lockable pool onto
+one that is not runs only with the explicit, audited
+`allow_unencrypted_destination` flag), is
 [../decisions/volume-pool-tenant-moves.md](../decisions/volume-pool-tenant-moves.md):
 a rolling, per-node copy behind a move journal, cut over by one assignment
-write, with its open questions, options and recommendations. Until it is
-ruled and built, nothing in it is part of this contract.
+write. Only the parts built and described here are part of this contract.
+
+The node step runs on a node's own pools through
+`seal.BarrierRegistry.RunMoveCopyStep`: it resolves the tenant's source
+directory and its destination directory on the destination pool, copies the
+closed tree, verifies the copy against its SHA-256 manifest, and on a failure
+removes the partial destination through the inside-pool guard, never the
+source. The node-side `seal.MoveStepRunner` calls it for the node's granted
+copy step. The copy step leaves the destination closed: the runner opens it,
+and lets it serve writes, only after `CompleteMoveStep` has recorded the
+node copied in the journal, so a crash or a failed journal write before that
+rolls back to a source that holds every acknowledged write. A self-managed
+tenant's barrier comes back sealed after its step, as after a restart: the
+step completes with the tenant's stores closed, and they attach on its
+administrator's unseal. A node that is sealed, or whose destination pool is
+locked or not open, cannot run its copy step: the step waits for the unseal
+without counting an attempt, the node stays pending, and the journal's error
+names the reason ("move copy step waiting: node sealed" or "... pool
+unavailable") until the same step runs.
+
+The catalog admits a move through `volume.Catalog.AdmitMove`: one
+transaction reserves the tenant's bytes on the destination pool and writes
+the journal `__sys:volumepool/moves/{tenant}` in state `admitted`, with every
+replica node pending, after checking that the destination is ready on every
+replica node (Q3) and that no move already runs (Q10). A move off a Lockable
+pool onto one that is not (Q9, ruling 1234) is refused with
+`*volume.MoveToUnencryptedPoolError` unless the request carries the
+operator's `allow_unencrypted_destination` flag. Under the flag,
+`volume.Catalog.MoveTenant` reads whether the move drops encryption and
+records the drop fail-closed as the audit record
+`volume_pool.move_encryption_drop` before anything is admitted; with no
+audit sink wired the drop is refused with
+`*volume.MoveEncryptionDropUnauditedError`. `AdmitMove` re-applies the rule
+in its transaction and admits a drop only with `AllowEncryptionDrop`, which
+`MoveTenant` sets only after the audit, so a pool change in between refuses
+rather than drops encryption unaudited. The journal of an admitted drop
+carries `encryptionDropped`. The source reservation and the assignment stay, so the tenant counts
+on both pools while it moves. While a journal exists, tenant delete, a quota
+change, a second move and deleting either pool are refused. So is a new
+replica of the tenant: the volume-pool placement filter refuses the replica
+with `*volume.TenantMovingReplicaError`, and the rebalancer refuses a MOVE
+or scale-up of a moving tenant, until the journal is gone. Those reads are
+early refusals; the durable fence is the placement write itself. The node's
+placement store is built with `placement.WithReplicaAddFence(volume.MoveKey,
+...)`, so every placement write that adds a replica or creates a placement
+(`Put`, `CompareAndSwapPlacement`, `ClaimPlacement`) carries the guard "the
+tenant's move journal key is absent" in the same guarded transaction as the
+placement compare. Both keys live on the system shard, so a journal admitted
+after the rebalancer's read refuses the write with the same
+`*volume.TenantMovingReplicaError`, and a store whose KV has no guarded batch
+fails closed. Writes that add no replica (a promotion, a removal, the
+dropping flag) are not fenced, so an abort and a cut over still proceed. The journal's node
+set still follows the tenant's replicas: before it grants a copy step and
+before it cuts over, the reconciler re-reads them (`Catalog.SyncMoveNodes`),
+adds a replica that joined since admission as pending (a `copied` move goes
+back to `copying`), and drops a pending replica that left. A pass that
+changed the set does not cut over, and one whose replica lookup failed
+neither grants nor cuts over. `MoveTenant` is the only caller of
+`AdmitMove`.
+
+The move reconciler (`volume.MoveReconciler.ReconcileOnce`) advances the
+journal one node step at a time through the `volume.MoveStepRunner` seam;
+each `volume.MoveStep` carries its phase (`copy`, `abort` or `retire`). The
+journal goes `copying` while a node holds a copy step or between steps, then
+`copied` when no node is pending, or `aborting` after 3 failed attempts of
+one node's copy step. A copy step whose settle fails (its reopened replica
+does not catch up within `TenantMoveConfig.CatchUpTimeout`, or its shard is
+gone) stays settling and counts the failure (`Catalog.FailSettleStep`); the
+third failure, or a cancel recorded meanwhile, sends the move to `aborting`
+with that node copied. A `copied` move is cut over by `Catalog.CutOverMove`:
+one transaction points the assignment at the destination pool (same path,
+the move's reserved bytes) and sets the journal `cutover`, the commit point
+after which the move only goes forward. The wired `volume.MoveCutoverRecorder`
+(`tenant.TenantService.RecordTenantPoolMoved`) then makes the tenant record
+name the destination pool; with no recorder wired a copied move waits. Each
+copied node then retires its source copy (Q7 A), retried without bound, and
+the last retire releases the source reservation and deletes the journal in
+one transaction. `Catalog.CancelMove` (Q8 A) sends a move not yet cut over
+to `aborting` and refuses one past it. Abort steps remove the destination
+copy on copied nodes first, then on pending nodes, retried without bound;
+the last releases the destination reservation and deletes the journal,
+leaving the assignment untouched. In a running node the system shard's
+leader runs `ReconcileOnce` (grants and cut over) and every node runs
+`RunLocalSteps` for its own granted step, both on the `TenantMoveWorker`
+tick.
 
 ## Trust boundaries
 

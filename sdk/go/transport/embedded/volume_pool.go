@@ -175,6 +175,81 @@ func (t *Transport) ListPoolTenants(ctx context.Context, req *transport.ListVolu
 	return out, nil
 }
 
+// MoveTenant starts moving a tenant to another pool by delegating to the
+// volume.Service.
+func (t *Transport) MoveTenant(ctx context.Context, req *transport.MoveVolumePoolTenantRequest) (*transport.VolumePoolMove, error) {
+	return t.volumeMoveCall(ctx, "MoveTenant", func(ctx context.Context) (*volume.Move, error) {
+		if req == nil {
+			return nil, &transport.RequestError{Method: "MoveTenant", Err: &transport.NilRequestError{}}
+		}
+		return t.volumeSvc.MoveTenant(ctx, volume.MoveTenantRequest{TenantID: req.TenantID, ToPool: req.ToPool, AllowUnencryptedDestination: req.AllowUnencryptedDestination})
+	})
+}
+
+// GetMove answers a tenant's move in progress by delegating to the
+// volume.Service.
+func (t *Transport) GetMove(ctx context.Context, tenantID string) (*transport.VolumePoolMove, error) {
+	return t.volumeMoveCall(ctx, "GetMove", func(ctx context.Context) (*volume.Move, error) {
+		return t.volumeSvc.GetMove(ctx, tenantID)
+	})
+}
+
+// CancelMove cancels a tenant's move before cut over by delegating to the
+// volume.Service.
+func (t *Transport) CancelMove(ctx context.Context, tenantID string) (*transport.VolumePoolMove, error) {
+	return t.volumeMoveCall(ctx, "CancelMove", func(ctx context.Context) (*volume.Move, error) {
+		return t.volumeSvc.CancelMove(ctx, tenantID)
+	})
+}
+
+// volumeMoveCall admits and authorizes method, then runs call against the
+// volume.Service and converts its move journal.
+func (t *Transport) volumeMoveCall(ctx context.Context, method string, call func(context.Context) (*volume.Move, error)) (*transport.VolumePoolMove, error) {
+	ctx, err := t.admit(ctx, method)
+	if err != nil {
+		return nil, err
+	}
+	if err := t.authorize(ctx, method); err != nil {
+		return nil, err
+	}
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.volumeSvc == nil {
+		return nil, &NilServiceError{Service: "volume.Service"}
+	}
+	m, err := call(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return volumePoolMoveFromCatalog(m), nil
+}
+
+// volumePoolMoveFromCatalog converts a move journal to the SDK type.
+func volumePoolMoveFromCatalog(m *volume.Move) *transport.VolumePoolMove {
+	if m == nil {
+		return nil
+	}
+	return &transport.VolumePoolMove{
+		TenantID:            m.TenantID,
+		FromPool:            m.FromPool,
+		ToPool:              m.ToPool,
+		State:               m.State,
+		NodesCopied:         m.NodesCopied,
+		NodesPending:        m.NodesPending,
+		NodesRetired:        m.NodesRetired,
+		StepNode:            m.StepNode,
+		StepAttempts:        m.StepAttempts,
+		Error:               m.Error,
+		ReservedBytes:       m.ReservedBytes,
+		SourceReservedBytes: m.SourceReservedBytes,
+		TenantRecorded:      m.TenantRecorded,
+		EncryptionDropped:   m.EncryptionDropped,
+		AdmittedAt:          m.AdmittedAt,
+		UpdatedAt:           m.UpdatedAt,
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Catalog conversion helpers
 // ---------------------------------------------------------------------------

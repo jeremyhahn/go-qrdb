@@ -237,3 +237,68 @@ func TestHandleVolumePoolListTenants_Success(t *testing.T) {
 		t.Fatalf("resp = %+v", &resp)
 	}
 }
+
+// TestHandleVolumePoolMoves drives the three move verbs: the journal
+// reaches the wire, Q9's refusal answers FailedPrecondition and a tenant
+// with no move answers NotFound, through the shared status mapper.
+func TestHandleVolumePoolMoves(t *testing.T) {
+	move := &volume.Move{TenantID: "t1", FromPool: "a", ToPool: "b", State: "copying", StepNode: "n1"}
+	svc := &volumetest.Service{
+		T: t,
+		MoveTenantFn: func(_ context.Context, req volume.MoveTenantRequest) (*volume.Move, error) {
+			if req.ToPool == "plain" {
+				if !req.AllowUnencryptedDestination {
+					return nil, &volume.MoveToUnencryptedPoolError{TenantID: req.TenantID, FromPool: "a", ToPool: req.ToPool}
+				}
+				dropped := *move
+				dropped.ToPool = req.ToPool
+				dropped.EncryptionDropped = true
+				return &dropped, nil
+			}
+			if req.AllowUnencryptedDestination {
+				t.Fatalf("MoveTenant(%+v): flag set without being sent", req)
+			}
+			return move, nil
+		},
+		GetMoveFn: func(context.Context, string) (*volume.Move, error) { return move, nil },
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithVolumeService(svc))
+	ctx := context.Background()
+	out, err := srv.handleVolumePoolMoveTenant(ctx, mustMarshal(t, &pb.VolumePoolMoveTenantRequest{Tenant: "t1", ToPool: "b"}))
+	if err != nil {
+		t.Fatalf("MoveTenant: %v", err)
+	}
+	var resp pb.VolumePoolMove
+	if err := proto.Unmarshal(out, &resp); err != nil || resp.GetToPool() != "b" || resp.GetStepNode() != "n1" {
+		t.Fatalf("move = %+v, %v", &resp, err)
+	}
+	if _, err := srv.handleVolumePoolGetMove(ctx, mustMarshal(t, &pb.VolumePoolGetMoveRequest{Tenant: "t1"})); err != nil {
+		t.Fatalf("GetMove: %v", err)
+	}
+	_, err = srv.handleVolumePoolMoveTenant(ctx, mustMarshal(t, &pb.VolumePoolMoveTenantRequest{Tenant: "t1", ToPool: "plain"}))
+	if got := ServiceErrorStatus(err); got != 9 {
+		t.Fatalf("Q9 refusal status = %d, want FailedPrecondition (9)", got)
+	}
+	// Ruling 1234: the operator's flag reaches the service and the drop is
+	// answered.
+	out, err = srv.handleVolumePoolMoveTenant(ctx, mustMarshal(t, &pb.VolumePoolMoveTenantRequest{Tenant: "t1", ToPool: "plain", AllowUnencryptedDestination: true}))
+	if err != nil {
+		t.Fatalf("flagged MoveTenant: %v", err)
+	}
+	var dropped pb.VolumePoolMove
+	if err := proto.Unmarshal(out, &dropped); err != nil || !dropped.GetEncryptionDropped() {
+		t.Fatalf("flagged move = %+v, %v, want EncryptionDropped", &dropped, err)
+	}
+	_, err = srv.handleVolumePoolCancelMove(ctx, mustMarshal(t, &pb.VolumePoolCancelMoveRequest{Tenant: "none"}))
+	if got := ServiceErrorStatus(err); got != 6 {
+		t.Fatalf("cancel of no move status = %d, want NotFound (6)", got)
+	}
+	for name, h := range map[string]func(context.Context, []byte) ([]byte, error){
+		"move": srv.handleVolumePoolMoveTenant, "get-move": srv.handleVolumePoolGetMove, "cancel-move": srv.handleVolumePoolCancelMove,
+	} {
+		var ue *UnmarshalError
+		if _, err := h(ctx, badProto); !errors.As(err, &ue) {
+			t.Fatalf("%s: err = %v, want *UnmarshalError", name, err)
+		}
+	}
+}
