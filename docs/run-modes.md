@@ -162,15 +162,41 @@ backend serves these families. The normative contract is
 ## Changing the mode of an existing data directory
 
 The mode is read at start; changing it is a restart. The two modes keep their
-data in different subdirectories of the data directory, and nothing checks
-which mode wrote the files already there:
+data in different subdirectories of the data directory:
 
 - Standalone (`lifecycle.NewLocalStorage`, `pkg/server/lifecycle/local.go:59`)
   opens `pebble/` (pebble backend), `file/` (file backend) or `objstore/`
   (objstore backend with the `local` provider and no `path` setting); the
   memory backend opens nothing.
-- Raft (`buildHostConfig`, `cmd/qrdbd/start.go:4007`) opens `wal/` and
+- Raft (`buildHostConfig`, `cmd/qrdbd/start.go:4012`) opens `wal/` and
   `nodehost/`.
 
-A node restarted in the other mode therefore starts without the keys written
-in the previous mode, and reports no error about them.
+No migration exists between the two layouts, so a data directory keeps the
+mode of its first start. The run-mode guard (`lifecycle.ClaimRunMode`,
+`pkg/server/lifecycle/run_mode.go:46`) runs before anything is opened in the
+data directory (`cmd/qrdbd/start.go:1404`; the SDK node constructors and the
+qrdb embedded binding call it the same way in both modes):
+
+- A start in the other mode is refused. The daemon prints a
+  `RunModeMismatchError` naming the data directory, the recorded mode and the
+  configured mode. A marker that cannot be read, or that records neither
+  `standalone` nor `raft`, is refused with a `RunModeMarkerError` naming the
+  marker path.
+- An unknown `mode` (for example `--mode rafft`) is refused with a
+  `RunModeInvalidError` before the data directory is created, read or
+  written, so no marker records it and a corrected start claims the
+  directory as usual.
+- Two first starts on the same fresh directory claim it under an exclusive
+  lock on `<data_dir>/.qrdb-run-mode.lock`: one records its mode, and the
+  other then reads that marker and is refused if its mode differs.
+
+The remedy for a refused start is to start in the recorded mode, or to give
+the node a fresh data directory for the other mode; there is no in-place
+conversion.
+
+A data directory without a marker is treated as fresh, whatever it
+contains: the first start records its mode. This includes a directory holding
+data written by an earlier build that wrote no marker. If such a directory is
+started in the other mode than the one that wrote its data, that start claims
+it and the node starts without the keys written earlier, which remain in the
+other mode's subdirectories.
