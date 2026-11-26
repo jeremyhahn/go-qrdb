@@ -272,183 +272,73 @@ func withSQLiteAdmission(svcs *DatabaseServices, tenantID string, adm *sqliteAdm
 // transaction service writes.
 func withSQLiteKeyGuard(svcs *DatabaseServices) *DatabaseServices {
 	out := *svcs
-	if _, guarded := svcs.KV.(sqliteKeyGuardKV); svcs.KV != nil && !guarded {
-		out.KV = sqliteKeyGuardKV{KVServicer: svcs.KV}
-	}
-	if _, guarded := svcs.Batch.(sqliteKeyGuardBatch); svcs.Batch != nil && !guarded {
-		out.Batch = sqliteKeyGuardBatch{BatchServicer: svcs.Batch}
-	}
+	out.KV = sqlitevfs.GuardKV(svcs.KV)
+	out.Batch = sqlitevfs.GuardBatch(svcs.Batch)
 	return &out
-}
-
-// sqliteKeyOwned refuses key when it belongs to a SQLite database.
-func sqliteKeyOwned(key []byte) error {
-	if _, ok := sqlitevfs.DatabaseOfKey(key); ok {
-		return &service.SQLiteKeyError{Key: string(key)}
-	}
-	return nil
-}
-
-// sqliteKeyGuardKV is a KVServicer that refuses writes to SQLite keys.
-type sqliteKeyGuardKV struct {
-	service.KVServicer
-}
-
-func (k sqliteKeyGuardKV) Put(ctx context.Context, key string, value []byte) error {
-	if err := sqliteKeyOwned([]byte(key)); err != nil {
-		return err
-	}
-	return k.KVServicer.Put(ctx, key, value)
-}
-
-func (k sqliteKeyGuardKV) PutWithMode(ctx context.Context, key string, value []byte, mode writemode.Mode) error {
-	if err := sqliteKeyOwned([]byte(key)); err != nil {
-		return err
-	}
-	return k.KVServicer.PutWithMode(ctx, key, value, mode)
-}
-
-func (k sqliteKeyGuardKV) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
-	if err := sqliteKeyOwned([]byte(key)); err != nil {
-		return false, err
-	}
-	return k.KVServicer.PutIfAbsent(ctx, key, value)
-}
-
-func (k sqliteKeyGuardKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
-	if err := sqliteKeyOwned([]byte(key)); err != nil {
-		return false, err
-	}
-	return k.KVServicer.CompareAndSwap(ctx, key, expected, next)
-}
-
-func (k sqliteKeyGuardKV) Delete(ctx context.Context, key string) error {
-	if err := sqliteKeyOwned([]byte(key)); err != nil {
-		return err
-	}
-	return k.KVServicer.Delete(ctx, key)
-}
-
-func (k sqliteKeyGuardKV) DeleteWithMode(ctx context.Context, key string, mode writemode.Mode) error {
-	if err := sqliteKeyOwned([]byte(key)); err != nil {
-		return err
-	}
-	return k.KVServicer.DeleteWithMode(ctx, key, mode)
-}
-
-func (k sqliteKeyGuardKV) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
-	if err := sqliteKeyOwned([]byte(key)); err != nil {
-		return false, err
-	}
-	return k.KVServicer.CompareAndDelete(ctx, key, expected)
-}
-
-// sqliteKeyGuardBatch is a BatchServicer that refuses batches writing SQLite
-// keys.
-type sqliteKeyGuardBatch struct {
-	service.BatchServicer
-}
-
-func sqliteBatchOwned(ops []service.Op) error {
-	for _, op := range ops {
-		if op.Type != service.OpPut && op.Type != service.OpDelete {
-			continue
-		}
-		if err := sqliteKeyOwned(op.Key); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // The MVCC service's own writes refuse SQLite keys; the SQLite VFS writes
 // them through the transaction service and MovePrefix instead.
 
 func (s *sqliteRestoreMVCC) Put(ctx context.Context, key string, value []byte) error {
-	if err := sqliteKeyOwned([]byte(key)); err != nil {
+	if err := sqlitevfs.RefuseKey([]byte(key)); err != nil {
 		return err
 	}
 	return s.MVCCKVServicer.Put(ctx, key, value)
 }
 
 func (s *sqliteRestoreMVCC) PutWithMode(ctx context.Context, key string, value []byte, mode writemode.Mode) error {
-	if err := sqliteKeyOwned([]byte(key)); err != nil {
+	if err := sqlitevfs.RefuseKey([]byte(key)); err != nil {
 		return err
 	}
 	return s.MVCCKVServicer.PutWithMode(ctx, key, value, mode)
 }
 
 func (s *sqliteRestoreMVCC) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
-	if err := sqliteKeyOwned([]byte(key)); err != nil {
+	if err := sqlitevfs.RefuseKey([]byte(key)); err != nil {
 		return false, err
 	}
 	return s.MVCCKVServicer.PutIfAbsent(ctx, key, value)
 }
 
 func (s *sqliteRestoreMVCC) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
-	if err := sqliteKeyOwned([]byte(key)); err != nil {
+	if err := sqlitevfs.RefuseKey([]byte(key)); err != nil {
 		return false, err
 	}
 	return s.MVCCKVServicer.CompareAndSwap(ctx, key, expected, next)
 }
 
 func (s *sqliteRestoreMVCC) Delete(ctx context.Context, key string) error {
-	if err := sqliteKeyOwned([]byte(key)); err != nil {
+	if err := sqlitevfs.RefuseKey([]byte(key)); err != nil {
 		return err
 	}
 	return s.MVCCKVServicer.Delete(ctx, key)
 }
 
 func (s *sqliteRestoreMVCC) DeleteWithMode(ctx context.Context, key string, mode writemode.Mode) error {
-	if err := sqliteKeyOwned([]byte(key)); err != nil {
+	if err := sqlitevfs.RefuseKey([]byte(key)); err != nil {
 		return err
 	}
 	return s.MVCCKVServicer.DeleteWithMode(ctx, key, mode)
 }
 
 func (s *sqliteRestoreMVCC) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
-	if err := sqliteKeyOwned([]byte(key)); err != nil {
+	if err := sqlitevfs.RefuseKey([]byte(key)); err != nil {
 		return false, err
 	}
 	return s.MVCCKVServicer.CompareAndDelete(ctx, key, expected)
 }
 
 func (s *sqliteRestoreMVCC) PutWithLease(ctx context.Context, key string, value []byte, leaseID int64) (*service.KeyValue, error) {
-	if err := sqliteKeyOwned([]byte(key)); err != nil {
+	if err := sqlitevfs.RefuseKey([]byte(key)); err != nil {
 		return nil, err
 	}
 	return s.MVCCKVServicer.PutWithLease(ctx, key, value, leaseID)
 }
 
 func (s *sqliteRestoreMVCC) PutWithLeaseAndMode(ctx context.Context, key string, value []byte, leaseID int64, mode writemode.Mode) (*service.KeyValue, error) {
-	if err := sqliteKeyOwned([]byte(key)); err != nil {
+	if err := sqlitevfs.RefuseKey([]byte(key)); err != nil {
 		return nil, err
 	}
 	return s.MVCCKVServicer.PutWithLeaseAndMode(ctx, key, value, leaseID, mode)
-}
-
-func (b sqliteKeyGuardBatch) Execute(ctx context.Context, ops []service.Op) (*service.BatchResponse, error) {
-	if err := sqliteBatchOwned(ops); err != nil {
-		return nil, err
-	}
-	return b.BatchServicer.Execute(ctx, ops)
-}
-
-func (b sqliteKeyGuardBatch) ExecuteWithMode(ctx context.Context, ops []service.Op, mode writemode.Mode) (*service.BatchResponse, error) {
-	if err := sqliteBatchOwned(ops); err != nil {
-		return nil, err
-	}
-	return b.BatchServicer.ExecuteWithMode(ctx, ops, mode)
-}
-
-// ImportCommit refuses every imported row whose key belongs to a SQLite
-// database. Import proposes its rows directly (it never reaches Execute),
-// so without this a tenant could import sqlite/<db>/meta or a page with no
-// entitlement or count accounting and then build on it through a
-// transaction (row Q5). The guard rides the request context, so it is
-// checked on whichever node runs the commit, standalone or raft.
-func (b sqliteKeyGuardBatch) ImportCommit(ctx context.Context, sessionID string) (*service.ImportResult, error) {
-	return b.BatchServicer.ImportCommit(service.WithImportRowGuard(ctx, func(key string) error {
-		return sqliteKeyOwned([]byte(key))
-	}), sessionID)
 }

@@ -451,6 +451,12 @@ func New(kvSvc service.KVServicer, adminSvc service.AdminServicer, opts ...Optio
 	t.mvccSvc = service.NewHardConfinedMVCC(t.mvccSvc)
 	t.txSvc = service.NewHardConfinedTransaction(t.txSvc)
 	t.batchSvc = service.NewHardConfinedBatch(t.batchSvc)
+	// The default database's KV and batch services are not the server
+	// registry's, which the network transports reach through
+	// withSQLiteKeyGuard, so they refuse SQLite keys here: only the gated
+	// transaction service and the prefix move write a SQLite database.
+	t.kvSvc = sqlitevfs.GuardKV(t.kvSvc)
+	t.batchSvc = sqlitevfs.GuardBatch(t.batchSvc)
 	t.watchSvc = service.NewHardConfinedWatch(t.watchSvc)
 	if t.countWatch {
 		t.watchSvc = service.NewCountedWatch(t.watchSvc)
@@ -1743,7 +1749,8 @@ func (t *Transport) ImportCommit(ctx context.Context, sessionID string) (*transp
 		return nil, &NilServiceError{Service: "BatchServicer"}
 	}
 
-	result, err := t.batchSvc.ImportCommit(service.WithImportRowGuard(ctx, sqliteImportRowGuard), sessionID)
+	// t.batchSvc is sqlitevfs.GuardBatch's: it refuses imported SQLite rows.
+	result, err := t.batchSvc.ImportCommit(ctx, sessionID)
 	if err != nil {
 		return nil, translateError(err)
 	}
@@ -1761,19 +1768,6 @@ func (t *Transport) ImportCommit(ctx context.Context, sessionID string) (*transp
 		Failed:    result.Failed,
 		Errors:    errs,
 	}, nil
-}
-
-// sqliteImportRowGuard refuses an imported row whose key lies in a SQLite
-// VFS database (sqlite/<db>/...). The network transports install the same
-// guard through the server's per-database registry; the embedded default
-// database calls the batch service directly, so ImportCommit installs it
-// here. A plain import would otherwise overwrite pages or metadata the VFS
-// owns.
-func sqliteImportRowGuard(key string) error {
-	if _, ok := sqlitevfs.DatabaseOfKey([]byte(key)); ok {
-		return &service.SQLiteKeyError{Key: key}
-	}
-	return nil
 }
 
 // ImportAbort discards a chunked import session without applying
