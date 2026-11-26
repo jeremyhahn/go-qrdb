@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -115,7 +116,9 @@ func restoreCrashBarrier(path string) (*seal.StorageBarrier, error) {
 // TestObjstoreLSM_KillMidCompaction kills a process running the objstore
 // engine (lifecycle.NewLocalStorage with database.BackendObjstore) while a
 // manual compaction over its bucket SSTables is in progress, then reopens the
-// same data directory and bucket: every acknowledged key reads back, a
+// same data directory and bucket with a cold cache (the local object cache
+// directory removed, so reads fetch SSTables from the bucket): every
+// acknowledged key reads back, a
 // further write survives a Close and reopen, and the bucket's LSM format
 // marker is still version 3. It runs with the barrier off and on.
 func TestObjstoreLSM_KillMidCompaction(t *testing.T) {
@@ -211,6 +214,21 @@ func killObjstoreLSMMidCompaction(t *testing.T, encrypted bool) {
 	}
 	if !compacting || len(acked) == 0 {
 		t.Fatalf("child was killed before a compaction began (compacting %v, %d acknowledged keys)", compacting, len(acked))
+	}
+
+	// Reopen with a cold cache: drop the local object cache the child filled
+	// (objstore.CachedRemote under <dataDir>/objstore-lsm-cache) and keep the
+	// Pebble dir (WAL, MANIFEST) and the bucket, so every acknowledged key
+	// below reads its SSTables back from the bucket.
+	cacheDir := filepath.Join(dataDir, "objstore-lsm-cache")
+	if entries, err := os.ReadDir(cacheDir); err != nil || len(entries) == 0 {
+		t.Fatalf("the child left no local object cache to remove (%d entries, %v)", len(entries), err)
+	}
+	if err := os.RemoveAll(cacheDir); err != nil {
+		t.Fatalf("remove the local object cache: %v", err)
+	}
+	if _, err := os.Stat(cacheDir); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("local object cache still present after removal: %v", err)
 	}
 
 	cfg := crashStorageConfig(bucket)
