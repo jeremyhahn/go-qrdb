@@ -177,7 +177,7 @@ which source it used.
 **Every job that can print a forge credential masks it first.** The runner
 injects the credentials into every job, and the `docker-build`, `lint`,
 `lint-gates`, `image`, `coverage`, `coverage-merge`, `test-clusterproof`, `coverage-fts`,
-`test-tags`, `test-sdk`, `test-typescript`, `preflight`,
+`test-tags`, `test-sdk`, `test-typescript`, `preflight`, `integration-cluster`,
 `integration-features`, `integration-standalone`, `fips` and `soak` jobs, each of which runs a make
 target, a script, npm or curl, open with "Mask the forge credentials", which
 registers each credential value with the runner's log masker before any other
@@ -264,7 +264,7 @@ naming the variable, never its value.
 saves and uploads each family's artifact and pushes only under `CI_PUBLISH`
 with `secrets.GITHUB_TOKEN`; no other job logs in, pushes, pulls or carries
 the token; every consumer (`digestConsumersWant`: `coverage`,
-`coverage-merge`, `coverage-fts`, `fips`, `image`, `integration-features`,
+`coverage-merge`, `coverage-fts`, `fips`, `image`, `integration-cluster`, `integration-features`,
 `lint`, `lint-gates`, `soak`, `test-clusterproof`, `test-sdk`, `test-tags`)
 needs `docker-build`, downloads each image artifact it uses to
 `$RUNNER_TEMP/<artifact>`, loads it with the matching `*_image` and `*_id`
@@ -311,8 +311,8 @@ the `fips` legs, which take the toolchain image; `image`, in the code tier
 (the build-tag assertion, the builds and, in the full tier, the linux/arm64
 release cross-build, security and the trivy image scan), which takes the
 toolchain image and, in the full tier, the integration image; the
-`integration-features` shards, which take the integration image; and the
-soak. The ci-template runs the stages but lint-gates in one image job; this
+`integration-features` shards and, in the code tier, `integration-cluster`,
+which take the integration image; and the soak. The ci-template runs the stages but lint-gates in one image job; this
 repository splits it because together the stages outlast one job's limit,
 and each job has a limit sized to its own stages (architecture.md, "CI
 tiers"). Every job that loads an image first frees the runner's disk ("Free
@@ -529,10 +529,17 @@ test took in a lane, in shard 5, then the shard with the least expected time:
 | Shard | Features | Expected (s) | Limit |
 |---|---|---|---|
 | 1 | audit databases distributed-locks multi-tenancy time-series | 552 | 120 min |
-| 2 | backup-restore capabilities ceremony clustering firstboot tenant-dek | 551 | 120 min |
+| 2 | backup-restore capabilities ceremony firstboot tenant-dek | 551 | 120 min |
 | 3 | barrier-seal certificate-authority guarded-swap key-wrapping rag trust-anchors watch | 563 | 120 min |
 | 4 | api-server auth-factors replica-forwarding run-modes secondary-indexes storage-engines volume-pools | 551 | 120 min |
-| 5 | cluster-verification collections embeddings identity-rbac key-value rate-limit shamir-custody vectors | 574 | 120 min |
+| 5 | collections embeddings identity-rbac key-value rate-limit shamir-custody vectors | 574 | 120 min |
+
+`clustering` and `cluster-verification`, the multi-node suites, left shards 2
+and 5 for `integration-cluster` (#1749), one code-tier leg with the shards'
+steps, its own 120-minute limit and the `-cluster` compose project, so every
+pull request forms a Raft cluster before it merges. The Expected column above
+is the balance as measured, with those two suites still in it; rebalance from
+the next full-tier run's PASS lines.
 | 6 | coordination credentials etcd-compatibility leases row-locking sql transactions trust-bootstrap | 562 | 120 min |
 
 That run's 40 feature legs held 5654 slot-seconds (1.57 slot-hours; 5369, or
@@ -575,8 +582,8 @@ as `integration-test-<feature>` does. On a host, `make integration-test-<feature
 and `make integration-down-<feature>` still run a feature without Docker;
 `integration_job_names_test.go` holds those two goals to one set of names.
 
-The union of the shard lists is `make -s print-integration-features`, each
-feature in exactly one shard. The handbook's rule is to write matrices
+The union of the shard lists and `integration-cluster`'s `IT_FEATURES` is
+`make -s print-integration-features`, each feature in exactly one leg. The handbook's rule is to write matrices
 literally (devops.md §1, "Write matrices literally"), so a reviewer reads the
 shards in the diff, and ci.yml spells the lists out and `test/buildgates/feature_jobs_gate_test.go` fails on a feature
 no shard runs, a feature two shards (or one shard twice) run, and a listed

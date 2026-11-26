@@ -2802,13 +2802,13 @@ jobs:
           - shard: 1
             features: audit databases distributed-locks multi-tenancy time-series
           - shard: 2
-            features: backup-restore capabilities ceremony clustering firstboot tenant-dek
+            features: backup-restore capabilities ceremony firstboot tenant-dek
           - shard: 3
             features: barrier-seal certificate-authority guarded-swap key-wrapping rag trust-anchors watch
           - shard: 4
             features: api-server auth-factors replica-forwarding run-modes secondary-indexes storage-engines volume-pools
           - shard: 5
-            features: cluster-verification collections embeddings identity-rbac key-value rate-limit shamir-custody vectors
+            features: collections embeddings identity-rbac key-value rate-limit shamir-custody vectors
           - shard: 6
             features: coordination credentials etcd-compatibility leases row-locking sql transactions trust-bootstrap
     steps:
@@ -2893,6 +2893,114 @@ jobs:
       # integration-test downs its own stack; this covers a cancelled shard.
       # docker-down-it also sweeps the stale volumes of runs whose runner died.
       - name: Tear down (shard ${{ matrix.shard }})
+        if: always()
+        run: make docker-down-it IT_PROJECT="$IT_PROJECT"
+
+      - name: Prune old CI images
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: scripts/ci-image.sh prune 24
+
+  # #1749 (Tenant order (d)): the multi-node suites, three self-spawned
+  # nodes that form a Raft cluster (clustering) and prove it holds
+  # (cluster-verification), run on every pull request, in the code tier, so
+  # no change merges without a cluster formed on its head. They run here and
+  # in no shard of integration-features, so each still runs once per run;
+  # feature_jobs_gate_test.go holds this job to the shards' step layout,
+  # image hand-off, teardown and project-name rules.
+  integration-cluster:
+    name: Integration (cluster)
+    runs-on: ${{ fromJSON(needs.preflight.outputs.runner_docker) }}   # v1.48 (ruling 1024)
+    if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
+    needs: [docker-build, test-typescript, preflight]
+    timeout-minutes: 120
+    env:
+      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}   # #1593: the LAN CI registry
+      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-cluster
+      IT_FEATURES: clustering cluster-verification
+      # CUSTOMIZE (go-qrdb): IT_IMAGE is not set here; the load step writes
+      # it to GITHUB_ENV, as in integration-features.
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Mask the forge credentials
+        run: |
+          for v in GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+            val=${!v:-}
+            [ -n "$val" ] || continue
+            echo "::add-mask::$val"
+            case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
+          done
+
+      # Ruling 887: the LAN addresses this runner's environment names, masked
+      # before any step that builds can print one.
+      - name: Mask the LAN addresses
+        # v1.53: a registry a later step takes from `vars` is masked here.
+        # CUSTOMIZE: one VARS_<NAME> line per vars.<NAME> ending in _REGISTRY
+        # that this job reads (testdata/ci-mask-lan-tests.py M1 to M3). None
+        # here: CI_REGISTRY comes from secrets.CI_IMAGE_REGISTRY, which the
+        # runner masks, and the buildgates refuse any vars.CI_IMAGE_REGISTRY.
+        run: scripts/ci-mask-lan.sh
+
+      - name: Free the runner's disk
+        if: runner.environment == 'github-hosted'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          docker image prune -af >/dev/null
+          df -h /
+
+      # #1593: the LAN CI registry first, the artifact when the pull fails.
+      - name: Pull the integration image from the LAN CI registry
+        id: pull_it
+        if: ${{ needs.docker-build.outputs.registry_it_tag != '' && env.CI_REGISTRY != '' }}
+        env:
+          TAG: ${{ needs.docker-build.outputs.registry_it_tag }}
+          IMAGE: ${{ needs.docker-build.outputs.it_image }}
+          ID: ${{ needs.docker-build.outputs.it_id }}
+        run: |
+          . scripts/image-registry.sh
+          REF="$CI_REGISTRY/go-qrdb/it-image:$TAG"
+          if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
+             timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&
+             [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
+             docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
+            echo "pulled=true" >> "$GITHUB_OUTPUT"
+          else
+            ci_registry_outage "$CI_REGISTRY" "$?"
+            echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
+          fi
+          docker rmi "$REF" >/dev/null 2>&1 || true
+
+      - name: Download the integration image
+        id: download_it
+        if: ${{ steps.pull_it.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: it-image
+          path: ${{ runner.temp }}/it-image
+
+      - name: Download the integration image (retry)
+        if: ${{ steps.pull_it.outputs.pulled != 'true' && steps.download_it.outcome == 'failure' }}
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: it-image
+          path: ${{ runner.temp }}/it-image
+
+      - name: Load the integration image
+        env:
+          IMAGE: ${{ needs.docker-build.outputs.it_image }}
+          ID: ${{ needs.docker-build.outputs.it_id }}
+          PULLED: ${{ steps.pull_it.outputs.pulled }}
+        run: |
+          [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
+          echo "IT_IMAGE=$ID" >> "$GITHUB_ENV"
+
+      - name: Integration tests (cluster)
+        run: make integration-test-features IT_FEATURES="$IT_FEATURES" IT_FEATURES_IN=image IT_PROJECT="$IT_PROJECT" IT_PREBUILT=1
+
+      # integration-test downs its own stack; this covers a cancelled run.
+      # docker-down-it also sweeps the stale volumes of runs whose runner died.
+      - name: Tear down (cluster)
         if: always()
         run: make docker-down-it IT_PROJECT="$IT_PROJECT"
 
@@ -3726,7 +3834,7 @@ jobs:
     # (RESULT_*: ${{ needs.<job>.result }}), tagged to match its tier: pr,
     # code (every event but a docs-only PR, DS-3160), full or nightly. A matrix
     # job is ONE entry: needs.<job>.result is the aggregate over its legs.
-    needs: [preflight, row, docker-build, lint, lint-gates, image, coverage, coverage-merge, test-clusterproof, coverage-fts, test-tags, test-sdk, test-typescript, integration-standalone, integration-features, fips, soak, clusterproof-soak, signatures]
+    needs: [preflight, row, docker-build, lint, lint-gates, image, coverage, coverage-merge, test-clusterproof, coverage-fts, test-tags, test-sdk, test-typescript, integration-cluster, integration-standalone, integration-features, fips, soak, clusterproof-soak, signatures]
     steps:
       - name: Fail closed on any non-success
         env:
@@ -3745,6 +3853,7 @@ jobs:
           RESULT_TEST_TAGS: ${{ needs.test-tags.result }}
           RESULT_TEST_SDK: ${{ needs.test-sdk.result }}
           RESULT_TEST_TYPESCRIPT: ${{ needs.test-typescript.result }}
+          RESULT_INTEGRATION_CLUSTER: ${{ needs.integration-cluster.result }}
           RESULT_INTEGRATION_STANDALONE: ${{ needs.integration-standalone.result }}
           RESULT_INTEGRATION_FEATURES: ${{ needs.integration-features.result }}
           RESULT_FIPS: ${{ needs.fips.result }}
@@ -3842,6 +3951,7 @@ jobs:
           check test-tags "$RESULT_TEST_TAGS" code
           check test-sdk "$RESULT_TEST_SDK" code
           check test-typescript "$RESULT_TEST_TYPESCRIPT" code
+          check integration-cluster "$RESULT_INTEGRATION_CLUSTER" code
           check integration-standalone "$RESULT_INTEGRATION_STANDALONE" full
           check integration-features "$RESULT_INTEGRATION_FEATURES" full
           check fips "$RESULT_FIPS" full

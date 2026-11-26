@@ -74,6 +74,15 @@ const (
 	// featureJob is ci.yml's sharded per-feature integration job.
 	featureJob = "integration-features"
 
+	// featureClusterJob is ci.yml's one-leg code-tier job for the multi-node
+	// suites (#1749): a pull request must form a Raft cluster before it
+	// merges, so these features run there and in no shard of featureJob.
+	featureClusterJob = "integration-cluster"
+
+	// featureClusterProjectSuffix ends featureClusterJob's compose project,
+	// so it shares no stack with a shard of the same run.
+	featureClusterProjectSuffix = "-cluster"
+
 	// featureJobLimit is each shard's timeout-minutes ceiling. Hosted
 	// runners have 4 vCPUs (DS-7377), and every CI estimate is planned at a 4x
 	// slowdown over the measured self-hosted time: the longest shard measured
@@ -142,25 +151,29 @@ const (
 
 // featureWorkflow is the slice of ci.yml this gate reads.
 type featureWorkflow struct {
-	On   yaml.Node `yaml:"on"`
-	Jobs map[string]struct {
-		If             string            `yaml:"if"`
-		Needs          []string          `yaml:"needs"`
-		TimeoutMinutes *string           `yaml:"timeout-minutes"`
-		Env            map[string]string `yaml:"env"`
-		Strategy       struct {
-			FailFast *bool     `yaml:"fail-fast"`
-			Matrix   yaml.Node `yaml:"matrix"`
-		} `yaml:"strategy"`
-		Steps []struct {
-			Name string            `yaml:"name"`
-			If   string            `yaml:"if"`
-			Uses string            `yaml:"uses"`
-			Run  string            `yaml:"run"`
-			With map[string]string `yaml:"with"`
-			Env  map[string]string `yaml:"env"`
-		} `yaml:"steps"`
-	} `yaml:"jobs"`
+	On   yaml.Node                 `yaml:"on"`
+	Jobs map[string]featureJobSpec `yaml:"jobs"`
+}
+
+// featureJobSpec is the part of a ci.yml job the feature gate reads: the
+// sharded integration-features job and the one-leg integration-cluster job.
+type featureJobSpec struct {
+	If             string            `yaml:"if"`
+	Needs          []string          `yaml:"needs"`
+	TimeoutMinutes *string           `yaml:"timeout-minutes"`
+	Env            map[string]string `yaml:"env"`
+	Strategy       struct {
+		FailFast *bool     `yaml:"fail-fast"`
+		Matrix   yaml.Node `yaml:"matrix"`
+	} `yaml:"strategy"`
+	Steps []struct {
+		Name string            `yaml:"name"`
+		If   string            `yaml:"if"`
+		Uses string            `yaml:"uses"`
+		Run  string            `yaml:"run"`
+		With map[string]string `yaml:"with"`
+		Env  map[string]string `yaml:"env"`
+	} `yaml:"steps"`
 }
 
 // featureLimitInRange reports whether a shard's timeout-minutes is a literal
@@ -176,8 +189,9 @@ func featureLimitInRange(tm string) bool {
 const featureShardFix = "add it to the " + featureListKey + ": of the shard with the least expected time " +
 	"(docs/release/engineering.md, \"Per-feature integration jobs\")"
 
-// featureJobProblems checks ci.yml's integration-features job against want,
-// the features that must each run in exactly one shard.
+// featureJobProblems checks ci.yml's integration-features and
+// integration-cluster jobs against want, the features that must each run in
+// exactly one leg across the shards and the cluster job.
 func featureJobProblems(body []byte, want []string) []string {
 	var wf featureWorkflow
 	if err := yaml.Unmarshal(body, &wf); err != nil {
@@ -197,33 +211,101 @@ func featureJobProblems(body []byte, want []string) []string {
 	if strings.TrimSpace(withoutDraftSkip(job.If)) != fullTierIf {
 		problems = append(problems, featureJob+"'s if: is "+strconv.Quote(withoutDraftSkip(job.If))+"; want the full-tier condition")
 	}
-	switch tm := job.TimeoutMinutes; {
-	case tm == nil:
-		problems = append(problems, featureJob+" has no timeout-minutes: a shard would get the runner's default, not its own limit")
-	case !featureLimitInRange(*tm):
-		problems = append(problems, featureJob+"'s timeout-minutes is "+*tm+
-			"; want 1.."+strconv.Itoa(featureJobLimit)+": the shard ceiling, derived in featureJobLimit's comment")
-	}
 	if ff := job.Strategy.FailFast; ff == nil || *ff {
 		problems = append(problems, featureJob+" does not set fail-fast: false: one red shard would cancel the rest")
 	}
-	problems = append(problems, featureShardProblems(job.Strategy.Matrix, want)...)
+	shardProblems, legOf, listed := featureShardProblems(job.Strategy.Matrix, want)
+	problems = append(problems, shardProblems...)
 	if v := job.Env["IT_FEATURES"]; v != featureListEnv {
 		problems = append(problems, featureJob+"'s IT_FEATURES is "+strconv.Quote(v)+
 			"; want "+strconv.Quote(featureListEnv)+", the list featureStep runs")
 	}
+	problems = append(problems, featureLegProblems(featureJob, job, "${{ matrix."+featureShardKey+" }}")...)
 
+	// #1749: the multi-node suites run on every pull request, in one
+	// code-tier leg of their own, and still once per run.
+	cluster, ok := wf.Jobs[featureClusterJob]
+	if !ok {
+		problems = append(problems, "ci.yml has no "+featureClusterJob+
+			" job: no pull request forms a Raft cluster before it merges")
+	} else {
+		problems = append(problems, featureClusterProblems(cluster, want, legOf)...)
+	}
+	// A matrix this gate cannot read lists no shard; the problem says so
+	// once, not once per feature.
+	if listed {
+		for _, f := range want {
+			if _, ok := legOf[f]; !ok {
+				problems = append(problems, featureJob+" runs no shard for "+f+
+					", which `make -s print-integration-features` prints; fix: "+featureShardFix)
+			}
+		}
+	}
+	return problems
+}
+
+// featureClusterProblems checks the one-leg integration-cluster job: the
+// code tier, a literal feature list whose every name is a mapped feature that
+// no shard of integration-features also runs, and the shard's step layout,
+// image hand-off, teardown and project-name rules. It records each feature it
+// runs in legOf.
+func featureClusterProblems(job featureJobSpec, want []string, legOf map[string]string) []string {
+	var problems []string
+	if got := strings.TrimSpace(withoutDraftSkip(job.If)); got != codeTierIf {
+		problems = append(problems, featureClusterJob+"'s if: is "+strconv.Quote(got)+
+			"; want the code-tier condition "+strconv.Quote(codeTierIf)+": the cluster suites gate every pull request")
+	}
+	if job.Strategy.Matrix.Kind != 0 {
+		problems = append(problems, featureClusterJob+" has a matrix; want one leg, so each cluster suite runs once per run")
+	}
+	list := job.Env["IT_FEATURES"]
+	if strings.Contains(list, "${{") || len(strings.Fields(list)) == 0 {
+		problems = append(problems, featureClusterJob+"'s IT_FEATURES is "+strconv.Quote(list)+
+			"; want a literal list of the cluster features it runs")
+	}
+	for _, f := range strings.Fields(list) {
+		if prev, dup := legOf[f]; dup {
+			if prev == featureClusterJob {
+				problems = append(problems, featureClusterJob+" lists "+f+" twice; fix: delete one")
+			} else {
+				problems = append(problems, featureJob+" runs "+f+" in shard "+prev+" and again in "+featureClusterJob+
+					"; fix: delete it from shard "+prev)
+			}
+			continue
+		}
+		legOf[f] = featureClusterJob
+		if !slices.Contains(want, f) {
+			problems = append(problems, featureClusterJob+" lists "+strconv.Quote(f)+
+				", which `make -s print-integration-features` does not print; fix: delete it from "+featureClusterJob)
+		}
+	}
+	return append(problems, featureLegProblems(featureClusterJob, job, featureClusterProjectSuffix)...)
+}
+
+// featureLegProblems checks what every integration leg shares: the time
+// limit, the steps (mask, disk, pull, download, load, tests, teardown,
+// prune), the one image docker-build built, and a compose project that
+// carries the run, the attempt and legPart, so no other leg or run shares it.
+func featureLegProblems(name string, job featureJobSpec, legPart string) []string {
+	var problems []string
+	switch tm := job.TimeoutMinutes; {
+	case tm == nil:
+		problems = append(problems, name+" has no timeout-minutes: a leg would get the runner's default, not its own limit")
+	case !featureLimitInRange(*tm):
+		problems = append(problems, name+"'s timeout-minutes is "+*tm+
+			"; want 1.."+strconv.Itoa(featureJobLimit)+": the shard ceiling, derived in featureJobLimit's comment")
+	}
 	var runs, conds []string
 	var downloaded bool
 	for _, s := range job.Steps {
 		// The credential mask (ci-template v1.21.1) and the disk cleanup lead
-		// the shard; the mask's shape is ci_logs_test.go's to check. Only a run
+		// the leg; the mask's shape is ci_logs_test.go's to check. Only a run
 		// step before any other that runs no make target is taken for one, so
 		// the name cannot carry a narrowed run past this gate.
 		if len(runs) == 0 && (s.Name == maskStepName || s.Name == freeDiskStepName) && !strings.Contains(s.Run, "make ") {
 			continue
 		}
-		// The LAN mask (ci-template v1.53) leads the shard in its exact shape
+		// The LAN mask (ci-template v1.53) leads the leg in its exact shape
 		// alone, so its name cannot carry a narrowed run past this gate.
 		if len(runs) == 0 && s.Name == lanMaskStepName && strings.TrimSpace(s.Run) == lanMaskRun {
 			continue
@@ -247,65 +329,67 @@ func featureJobProblems(body []byte, want []string) []string {
 		}
 	}
 	if !downloaded {
-		problems = append(problems, featureJob+" downloads no it-image artifact before its first step: "+
+		problems = append(problems, name+" downloads no it-image artifact before its first step: "+
 			"the load would find no image to load")
 	}
 	if !slices.Equal(runs, []string{featureLoad, featureStep, featureTeardown}) {
-		problems = append(problems, featureJob+" runs "+strconv.Quote(strings.Join(runs, "; "))+
+		problems = append(problems, name+" runs "+strconv.Quote(strings.Join(runs, "; "))+
 			"; want exactly `"+featureLoad+"`, `"+featureStep+"`, then `"+featureTeardown+"`")
 	} else if !slices.Equal(conds, []string{"", "", "always()"}) {
-		problems = append(problems, featureJob+"'s steps run under if: "+strconv.Quote(strings.Join(conds, ", "))+
+		problems = append(problems, name+"'s steps run under if: "+strconv.Quote(strings.Join(conds, ", "))+
 			"; want the load and the tests unconditional and the teardown under always(), "+
-			"so a failed or cancelled shard still removes its stack")
+			"so a failed or cancelled leg still removes its stack")
 	}
 	for _, s := range job.Steps {
 		if strings.TrimSpace(s.Run) != featureLoad {
 			continue
 		}
 		if s.Env["IMAGE"] != featureLoadImage || s.Env["ID"] != featureLoadID {
-			problems = append(problems, featureJob+"'s load step sets IMAGE "+strconv.Quote(s.Env["IMAGE"])+" and ID "+
+			problems = append(problems, name+"'s load step sets IMAGE "+strconv.Quote(s.Env["IMAGE"])+" and ID "+
 				strconv.Quote(s.Env["ID"])+"; want "+featureLoadImage+" and "+featureLoadID+
-				": every shard runs the one image docker-build built, checked by its ID")
+				": every leg runs the one image docker-build built, checked by its ID")
 		}
 	}
-	// The project the steps pass must be this shard's alone: shards of one run,
+	// The project the steps pass must be this leg's alone: legs of one run,
 	// and runs sharing a daemon, would otherwise share a stack.
 	v := job.Env["IT_PROJECT"]
 	if !strings.HasPrefix(v, featureProjectPrefix) {
-		problems = append(problems, featureJob+"'s IT_PROJECT is "+strconv.Quote(v)+
+		problems = append(problems, name+"'s IT_PROJECT is "+strconv.Quote(v)+
 			"; want it under "+strconv.Quote(featureProjectPrefix))
 	}
-	for _, part := range []string{"${{ github.run_id }}", "${{ github.run_attempt }}", "${{ matrix." + featureShardKey + " }}"} {
+	for _, part := range []string{"${{ github.run_id }}", "${{ github.run_attempt }}", legPart} {
 		if !strings.Contains(v, part) {
-			problems = append(problems, featureJob+"'s IT_PROJECT is "+strconv.Quote(v)+
-				"; want it to carry "+part+", so no other shard or run shares it")
+			problems = append(problems, name+"'s IT_PROJECT is "+strconv.Quote(v)+
+				"; want it to carry "+part+", so no other leg or run shares it")
 		}
 	}
-	// The image is the opposite: one image for every shard of the run (#813).
+	// The image is the opposite: one image for every leg of the run (#813).
 	// The load step sets IT_IMAGE through GITHUB_ENV; a job-level value would
 	// name an image before any is loaded and, being defined, would override
 	// the Makefile's content-hash default.
 	if img, set := job.Env["IT_IMAGE"]; set {
-		problems = append(problems, featureJob+" sets IT_IMAGE "+strconv.Quote(img)+
-			" at job level; want it set by the load step alone, which knows the image this shard loaded")
+		problems = append(problems, name+" sets IT_IMAGE "+strconv.Quote(img)+
+			" at job level; want it set by the load step alone, which knows the image this leg loaded")
 	}
 	if !slices.Contains(job.Needs, "docker-build") {
-		problems = append(problems, featureJob+" does not need docker-build: its IT_IMAGE output would be empty")
+		problems = append(problems, name+" does not need docker-build: its IT_IMAGE output would be empty")
 	}
 	return problems
 }
 
 // featureShardProblems checks that the matrix is an include list of shards,
-// each a name and a feature list, and that the lists together name every
-// feature in want exactly once and nothing else; each problem prints its fix.
-func featureShardProblems(m yaml.Node, want []string) []string {
+// each a name and a feature list, and that no list names a feature twice or
+// one not in want; each problem prints its fix. It returns the shard of each
+// listed feature, and whether it found a shard list at all, for
+// featureJobProblems to check every feature in want runs in one leg.
+func featureShardProblems(m yaml.Node, want []string) ([]string, map[string]string, bool) {
+	shardOf := map[string]string{}
 	if m.Kind != yaml.MappingNode {
 		return []string{featureJob + " has no matrix mapping; want an include: list of " +
-			featureShardKey + " and " + featureListKey + " entries"}
+			featureShardKey + " and " + featureListKey + " entries"}, shardOf, false
 	}
 	var problems []string
 	var shards []string
-	shardOf := map[string]string{}
 	found := false
 	for i := 0; i+1 < len(m.Content); i += 2 {
 		key, val := m.Content[i].Value, m.Content[i+1]
@@ -347,15 +431,9 @@ func featureShardProblems(m yaml.Node, want []string) []string {
 		}
 	}
 	if !found {
-		return append(problems, featureJob+"'s matrix has no include: list of shards")
+		return append(problems, featureJob+"'s matrix has no include: list of shards"), shardOf, false
 	}
-	for _, f := range want {
-		if _, ok := shardOf[f]; !ok {
-			problems = append(problems, featureJob+" runs no shard for "+f+
-				", which `make -s print-integration-features` prints; fix: "+featureShardFix)
-		}
-	}
-	return problems
+	return problems, shardOf, true
 }
 
 // featureShardEntry reads one include entry: exactly a literal shard name and
@@ -589,9 +667,40 @@ jobs:
       - name: Tear down (shard ${{ matrix.shard }})
         if: always()
         run: make docker-down-it IT_PROJECT="$IT_PROJECT"
+  integration-cluster:
+    name: Integration (cluster)
+    if: needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != ''
+    needs: [docker-build, preflight]
+    timeout-minutes: 120
+    env:
+      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-cluster
+      IT_FEATURES: clustering
+    steps:
+      - uses: actions/checkout@0000000000000000000000000000000000000000 # v6
+      - name: Mask the forge credentials
+        run: echo "::add-mask::$GIT_CONFIG_VALUE_0"
+      - name: Mask the LAN addresses
+        run: scripts/ci-mask-lan.sh
+      - name: Download the integration image (cluster)
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: it-image
+          path: ${{ runner.temp }}/it-image
+      - name: Load the integration image (cluster)
+        env:
+          IMAGE: ${{ needs.docker-build.outputs.it_image }}
+          ID: ${{ needs.docker-build.outputs.it_id }}
+        run: |
+          [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
+          echo "IT_IMAGE=$ID" >> "$GITHUB_ENV"
+      - name: Integration tests (cluster)
+        run: make integration-test-features IT_FEATURES="$IT_FEATURES" IT_FEATURES_IN=image IT_PROJECT="$IT_PROJECT" IT_PREBUILT=1
+      - name: Tear down (cluster)
+        if: always()
+        run: make docker-down-it IT_PROJECT="$IT_PROJECT"
 `
 
-var featureFixtureWant = []string{"audit", "key-value", "sql"}
+var featureFixtureWant = []string{"audit", "clustering", "key-value", "sql"}
 
 func TestIntegrationFeatureCoverage_JobProblemsValidFixture(t *testing.T) {
 	if p := featureJobProblems([]byte(featureJobFixture), featureFixtureWant); len(p) != 0 {
@@ -611,6 +720,11 @@ func TestIntegrationFeatureCoverage_ShardProblemsPrintTheFix(t *testing.T) {
 		{"duplicate", "features: key-value", "features: key-value sql", []string{"runs sql in shard 1 and again in shard 2", "fix: delete it from shard 2"}},
 		{"duplicate in one shard", "features: audit sql", "features: audit sql audit", []string{"runs audit in shard 1 and again in shard 1"}},
 		{"unknown", "features: key-value", "features: key-value rate-limit", []string{`lists "rate-limit"`, "fix: delete it from shard 2"}},
+		{"in a shard and the cluster job", "features: key-value", "features: key-value clustering",
+			[]string{"runs clustering in shard 2 and again in integration-cluster", "fix: delete it from shard 2"}},
+		{"missing from the cluster job", "IT_FEATURES: clustering", "IT_FEATURES: sql", []string{"runs no shard for clustering"}},
+		{"unknown in the cluster job", "IT_FEATURES: clustering", "IT_FEATURES: clustering soak",
+			[]string{`integration-cluster lists "soak"`, "fix: delete it from integration-cluster"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -692,7 +806,20 @@ func TestIntegrationFeatureCoverage_JobProblemsCanFail(t *testing.T) {
 		{name: "no names", old: "      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}\n", new: ""},
 		{name: "no push trigger", old: "  push:\n    branches: [main]\n", new: ""},
 		{name: "no pull_request trigger", old: "  pull_request:\n    types: [opened, synchronize, reopened]\n", new: ""},
-		{name: "want grew", want: []string{"audit", "key-value", "sql", "watch"}},
+		{name: "want grew", want: []string{"audit", "clustering", "key-value", "sql", "watch"}},
+		// #1749: the one-leg cluster job.
+		{name: "cluster job missing", old: "  integration-cluster:\n", new: "  integration-other:\n"},
+		{name: "a feature in a shard and the cluster job", old: "features: key-value", new: "features: key-value clustering"},
+		{name: "a feature twice in the cluster job", old: "IT_FEATURES: clustering", new: "IT_FEATURES: clustering clustering"},
+		{name: "an empty cluster list", old: "      IT_FEATURES: clustering\n", new: ""},
+		{name: "a cluster list that is an expression", old: "IT_FEATURES: clustering", new: "IT_FEATURES: ${{ vars.CLUSTER }}"},
+		{name: "cluster job in the full tier", old: "    name: Integration (cluster)\n    if: ", new: "    name: Integration (cluster)\n    if: (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && "},
+		{name: "cluster job sharded", old: "      IT_FEATURES: clustering\n    steps:", new: "      IT_FEATURES: clustering\n    strategy:\n      matrix:\n        include:\n          - shard: c\n    steps:"},
+		{name: "cluster project shared with a shard", old: "github.run_attempt }}-cluster", new: "github.run_attempt }}"},
+		{name: "cluster job without a limit", old: "    timeout-minutes: 120\n    env:\n      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-cluster", new: "    env:\n      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-cluster"},
+		{name: "cluster job with no teardown", old: "      - name: Tear down (cluster)\n        if: always()\n", new: "      - name: Tear down (cluster)\n"},
+		{name: "cluster job with a fixed list", old: "      - name: Integration tests (cluster)\n        run: make integration-test-features IT_FEATURES=\"$IT_FEATURES\"", new: "      - name: Integration tests (cluster)\n        run: make integration-test-features IT_FEATURES=\"clustering\""},
+		{name: "cluster job without the image", old: "          name: it-image\n          path: ${{ runner.temp }}/it-image\n      - name: Load the integration image (cluster)", new: "          name: toolchain-image\n          path: ${{ runner.temp }}/it-image\n      - name: Load the integration image (cluster)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
