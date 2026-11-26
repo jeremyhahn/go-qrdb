@@ -65,9 +65,8 @@ func (b *vectorBatch) UpsertVector(namespace string, vec *VectorValue) error {
 	// before the new ones are set, as PebbleVectorStorage.UpsertVector does.
 	// The batch is the reader: it merges the DB with this batch's earlier
 	// ops, so a record staged under the same key is replaced too.
-	deleteStoredIndexEntries(b.batch, b.batch, namespace, vec.ID, vec.Version)
-	if vec.Version > 1 {
-		deleteStoredIndexEntries(b.batch, b.batch, namespace, vec.ID, vec.Version-1)
+	if err := deleteReplacedIndexEntries(b.batch, b.batch, namespace, vec); err != nil {
+		return err
 	}
 
 	// Write primary vector key, after the read above of the record it

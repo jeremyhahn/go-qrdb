@@ -1379,6 +1379,15 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 		return nil, &VectorServiceClosedError{}
 	}
 
+	v.writeMu.Lock()
+	defer v.writeMu.Unlock()
+	return v.upsertVectorLocked(ctx, scoped, req)
+}
+
+// upsertVectorLocked is UpsertVector's body: the caller holds v.mu read
+// and v.writeMu and has validated req, so a read-modify-write such as
+// UpdateMetadata runs its read and this write as one step.
+func (v *vectorService) upsertVectorLocked(ctx context.Context, scoped string, req *UpsertVectorRequest) (*UpsertVectorResponse, error) {
 	nsInfo, err := v.storage.GetNamespaceInfo(ctx, scoped)
 	if err != nil {
 		if v.metrics != nil {
@@ -1403,11 +1412,10 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 	if v.raftNode != nil {
 		cmd := statemachine.NewUpsertCommand(scoped, req.ID, req.Vector, req.Metadata, v.nodeID)
 		var applied sm.Result
-		// The proposal and its index insert are one step under writeMu, so
-		// a concurrent delete of the ID cannot land between them.
-		v.writeMu.Lock()
+		// The proposal and its index insert are one step under writeMu
+		// (held by the caller), so a concurrent delete of the ID cannot
+		// land between them.
 		if err := v.proposeToRaftResult(ctx, cmd, &applied); err != nil {
-			v.writeMu.Unlock()
 			if v.metrics != nil {
 				v.metrics.operationErrors.With("upsert_vector", "raft_error").Inc()
 			}
@@ -1429,7 +1437,6 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 				}).Warn("failed to insert vector into local HNSW index")
 			}
 		}
-		v.writeMu.Unlock()
 
 		if v.metrics != nil {
 			v.metrics.vectorsUpserted.Inc()
@@ -1460,13 +1467,12 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 	}
 
 	// The existence read, the write and the index insert are one step under
-	// writeMu, so of two upserts of a missing ID exactly one reports created
-	// and a concurrent delete of the ID cannot land between write and index.
-	v.writeMu.Lock()
+	// writeMu (held by the caller), so of two upserts of a missing ID exactly
+	// one reports created and a concurrent delete of the ID cannot land
+	// between write and index.
 	created := v.vectorIsNew(ctx, scoped, req.ID)
 	err = v.storage.UpsertVector(ctx, scoped, vecValue)
 	if err != nil {
-		v.writeMu.Unlock()
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("upsert_vector", "storage_error").Inc()
 		}
@@ -1486,7 +1492,6 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 			}).Warn("failed to insert vector into HNSW index")
 		}
 	}
-	v.writeMu.Unlock()
 
 	if v.metrics != nil {
 		v.metrics.vectorsUpserted.Inc()
@@ -3300,17 +3305,21 @@ func (v *vectorService) UpdateMetadata(ctx context.Context, req *UpdateVectorMet
 
 	scoped := scopedFromContext(ctx, req.Namespace)
 
-	var existingVector *vector.VectorValue
-	err := v.admit(func() error {
-		var err error
-		existingVector, err = v.storage.GetVector(ctx, scoped, req.ID)
-		if err != nil {
-			return vectorStorageError("find vector", req.Namespace, req.ID, err)
-		}
-		return nil
-	})
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	if v.closed {
+		return nil, &VectorServiceClosedError{}
+	}
+
+	// The read of the stored vector and the write of its new metadata are
+	// one step under writeMu, so a concurrent upsert or metadata update of
+	// the ID cannot land between them and be overwritten.
+	v.writeMu.Lock()
+	defer v.writeMu.Unlock()
+
+	existingVector, err := v.storage.GetVector(ctx, scoped, req.ID)
 	if err != nil {
-		return nil, err
+		return nil, vectorStorageError("find vector", req.Namespace, req.ID, err)
 	}
 
 	var newMetadata map[string]interface{}
@@ -3339,7 +3348,10 @@ func (v *vectorService) UpdateMetadata(ctx context.Context, req *UpdateVectorMet
 		ShardID:   req.ShardID,
 	}
 
-	resp, err := v.UpsertVector(ctx, upsertReq)
+	if err := v.validateUpsertVectorRequest(upsertReq); err != nil {
+		return nil, err
+	}
+	resp, err := v.upsertVectorLocked(ctx, scoped, upsertReq)
 	if err != nil {
 		return nil, err
 	}

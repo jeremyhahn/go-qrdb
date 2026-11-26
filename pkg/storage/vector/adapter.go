@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"log/slog"
 	"maps"
 	"sync"
@@ -329,9 +330,9 @@ func (s *PebbleVectorStorage) UpsertVector(ctx context.Context, namespace string
 	// writes Version 1) would otherwise leave a changed field's old value
 	// indexed. Pebble applies batch operations in order, so an unchanged
 	// field is deleted and then set again.
-	deleteStoredIndexEntries(s.db, batch, namespace, vec.ID, vec.Version)
-	if vec.Version > 1 {
-		deleteStoredIndexEntries(s.db, batch, namespace, vec.ID, vec.Version-1)
+	if err := deleteReplacedIndexEntries(s.db, batch, namespace, vec); err != nil {
+		s.metrics.errors.Inc()
+		return err
 	}
 
 	// Create metadata indexes
@@ -371,20 +372,46 @@ func (s *PebbleVectorStorage) UpsertVector(ctx context.Context, namespace string
 // key and reverse index key of the vector stored in db under namespace, id
 // and version. Nothing is deleted when no such vector is stored or it does
 // not decode.
-func deleteStoredIndexEntries(r pebble.Reader, batch *pebble.Batch, namespace string, id, version uint64) {
+func deleteStoredIndexEntries(r pebble.Reader, batch *pebble.Batch, namespace string, id, version uint64) error {
+	if storedRecordReaderHook != nil {
+		r = storedRecordReaderHook(r)
+	}
 	value, closer, err := r.Get(schema.EncodeVectorKey(namespace, id, version))
+	if errors.Is(err, pebble.ErrNotFound) {
+		return nil
+	}
 	if err != nil {
-		return
+		return fmt.Errorf("read the record version %d of vector %d replaces: %w", version, id, err)
 	}
 	stored, decodeErr := schema.DecodeVectorValue(value)
 	_ = closer.Close() //nolint:gosec // G104: the value is decoded; a close error leaves nothing to undo
 	if decodeErr != nil {
-		return
+		return fmt.Errorf("decode the record version %d of vector %d replaces: %w", version, id, decodeErr)
 	}
 	for field, fieldValue := range stored.Metadata {
 		_ = batch.Delete(schema.EncodeMetadataKey(namespace, field, fieldValue, id, version), pebble.NoSync) //nolint:gosec // G104: batch operation, checked on commit
 		_ = batch.Delete(schema.EncodeReverseKey(namespace, id, field, version), pebble.NoSync)              //nolint:gosec // G104: batch operation, checked on commit
 	}
+	return nil
+}
+
+// storedRecordReaderHook, when set by a test, wraps the reader
+// deleteStoredIndexEntries reads the replaced record through, so a test
+// can fault it.
+var storedRecordReaderHook func(pebble.Reader) pebble.Reader
+
+// deleteReplacedIndexEntries deletes the index entries of the records a
+// write of vec replaces: the same version and, past version 1, the one
+// before it. A record that cannot be read or decoded fails the write, so
+// its stale index entries are never left behind a committed upsert.
+func deleteReplacedIndexEntries(r pebble.Reader, batch *pebble.Batch, namespace string, vec *VectorValue) error {
+	if err := deleteStoredIndexEntries(r, batch, namespace, vec.ID, vec.Version); err != nil {
+		return err
+	}
+	if vec.Version > 1 {
+		return deleteStoredIndexEntries(r, batch, namespace, vec.ID, vec.Version-1)
+	}
+	return nil
 }
 
 // GetVector retrieves a vector by ID.
