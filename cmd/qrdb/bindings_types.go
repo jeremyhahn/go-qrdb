@@ -94,6 +94,12 @@ type SealStatus struct {
 	// each owner's step and own report. Nil when none is in progress, on a
 	// sealed node, or from a server that does not report it.
 	ClusterMigration *transport.ClusterMigration `json:"clusterMigration"`
+	// ClusterHeld is true when the node refused status with 503 SEALED: its
+	// own barrier is unsealed, but a cluster seal holds it (or it is cut off
+	// from the seal records), so only the cluster unseal is admitted. The
+	// REST client sees that refusal as an error; the desktop binding turns it
+	// into this flag.
+	ClusterHeld bool `json:"clusterHeld,omitempty"`
 }
 
 // BootstrapResult contains the share-free result of a barrier

@@ -24,6 +24,20 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 )
 
+func TestRunModeMismatchError_MessageNamesBothModesAndRemedy(t *testing.T) {
+	var err error = &RunModeMismatchError{DataDir: "/d", Recorded: "standalone", Configured: "raft"}
+	msg := err.Error()
+	for _, want := range []string{"/d", "initialized in mode: standalone", "configured for mode: raft", "start with mode: standalone", "fresh data directory"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("message %q lacks %q", msg, want)
+		}
+	}
+	var mm *RunModeMismatchError
+	if !errors.As(err, &mm) || mm.Recorded != "standalone" {
+		t.Fatalf("errors.As failed: %v", err)
+	}
+}
+
 func TestLegacyDataDirError_Message(t *testing.T) {
 	e := &LegacyDataDirError{DataDir: "/var/lib/qrdb", Err: seal.ErrLegacyDataDir}
 	msg := e.Error()

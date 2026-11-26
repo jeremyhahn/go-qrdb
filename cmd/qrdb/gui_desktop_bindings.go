@@ -62,6 +62,7 @@ type guiBindings struct {
 	lock        *LockBinding
 	credential  *CredentialBinding
 	audit       *AuditBinding
+	volumePool  *VolumePoolBinding
 	vlog        *VlogBinding
 	daemon      *DaemonBinding
 }
@@ -112,6 +113,7 @@ func createGUIBindings(log *sdk.ConcreteLogger, logFile string) *guiBindings {
 		lock:        NewLockBinding(log, conn),
 		credential:  NewCredentialBinding(log, conn),
 		audit:       NewAuditBinding(log, conn),
+		volumePool:  NewVolumePoolBinding(log, conn),
 		vlog:        NewVlogBinding(log, conn),
 		daemon:      NewDaemonBinding(log, logFile),
 	}
@@ -153,6 +155,7 @@ func (b *guiBindings) bindList() []interface{} {
 		b.lock,
 		b.credential,
 		b.audit,
+		b.volumePool,
 		b.vlog,
 		b.daemon,
 	}

@@ -5,7 +5,7 @@
 > file is a standard's text, copied unmodified. A Markdown copy carries a
 > REFERENCE banner and `Last verified:` stamp under its title, naming its
 > source and revision; the text below the banner is the publisher's. A `.txt`
-> copy carries none.
+> copy carries none, and neither does `c2sp-tlog-checkpoint.md`.
 
 The industry standards go-qrdb implements, one entry per document. Where a
 standard exists the code implements it precisely and designs nothing in its
@@ -54,9 +54,9 @@ has no copy in this directory, for the reason given under the table.
 | [grpc-http2-protocol.md](grpc-http2-protocol.md) | gRPC over HTTP2 | grpc/grpc commit `5563edae1431e2955c38b1f1ba1ccf7f2c4cebd2` | `pkg/api/grpcweb` (gRPC-Web framing over the gRPC server's own handler, served by `pkg/api/rest`) | https://github.com/grpc/grpc/blob/5563edae1431e2955c38b1f1ba1ccf7f2c4cebd2/doc/PROTOCOL-HTTP2.md |
 | [grpc-web-protocol.md](grpc-web-protocol.md) | gRPC Web | grpc/grpc commit `5563edae1431e2955c38b1f1ba1ccf7f2c4cebd2` | `pkg/api/grpcweb` (gRPC-Web framing over the gRPC server's own handler, served by `pkg/api/rest`) | https://github.com/grpc/grpc/blob/5563edae1431e2955c38b1f1ba1ccf7f2c4cebd2/doc/PROTOCOL-WEB.md |
 | link only | MySQL Client/Server Protocol | as implemented by go-mysql-server | `pkg/sql/mysql` (via dolthub go-mysql-server and vitess) | https://dev.mysql.com/doc/dev/mysql-server/latest/PAGE_PROTOCOL.html |
-| link only | PostgreSQL Frontend/Backend Protocol | protocol 3.0 | `pkg/sql/pgsql` (via jackc/pgx) | https://www.postgresql.org/docs/current/protocol.html |
-| link only | etcd v3 API | etcd API v3.7 (`go.etcd.io/etcd/api/v3` v3.7.2) | `pkg/api/etcd` | https://etcd.io/docs/v3.7/learning/api/ |
-| link only | Model Context Protocol specification | as implemented by `mark3labs/mcp-go` v1.3.0 | `pkg/api/mcp`, `sdk/go/transport/mcp` | https://modelcontextprotocol.io/specification |
+| link only | PostgreSQL Frontend/Backend Protocol | protocol 3.0 | `pkg/sql/pgsql` (via jeroenrinzema/psql-wire v0.20.0; jackc/pgx `pgtype` for values) | https://www.postgresql.org/docs/current/protocol.html |
+| link only | etcd v3 API | etcd API v3.7 (`go.etcd.io/etcd/api/v3` v3.7.3) | `pkg/api/etcd` | https://etcd.io/docs/v3.7/learning/api/ |
+| link only | Model Context Protocol specification | as implemented by `mark3labs/mcp-go` v1.5.0 | `pkg/api/mcp`, `sdk/go/transport/mcp` | https://modelcontextprotocol.io/specification |
 | link only | In Search of an Understandable Consensus Algorithm (Raft) | extended version, 2014 | go-quicraft (consensus; consumed, not implemented, here) | https://raft.github.io/raft.pdf |
 
 ## Why some rows are link only

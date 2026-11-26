@@ -577,6 +577,33 @@ func UserConcurrentUpdateFromMetadata(md map[string]string) *UserConcurrentUpdat
 	return &UserConcurrentUpdateError{ID: id}
 }
 
+// commandConflictError reports that the server refused a write because it
+// conflicts with stored state, a unique secondary index the value would
+// violate. The server's *service.CommandConflictError reaches a client as the
+// wireconflict.Reason structured refusal and is rebuilt as this type. The
+// type stays unexported (#1735): through As it is a *dberrors.QRDBError with
+// Code ErrConflict, the code the embedded store returns for the same refusal,
+// and that is the only public face of the refusal.
+type commandConflictError struct {
+	// message is the server's refusal message.
+	message string
+}
+
+// Error implements error.
+func (e *commandConflictError) Error() string {
+	return "transport: write conflict: " + e.message
+}
+
+// As presents the refusal as a *dberrors.QRDBError with Code ErrConflict.
+func (e *commandConflictError) As(target any) bool {
+	qe, ok := target.(**dberrors.QRDBError)
+	if !ok {
+		return false
+	}
+	*qe = &dberrors.QRDBError{Code: dberrors.ErrConflict, Op: "kv.write", Err: e}
+	return true
+}
+
 // UserExistsError is returned when a username already exists within
 // the tenant.
 type UserExistsError struct {

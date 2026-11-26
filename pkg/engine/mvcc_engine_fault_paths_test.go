@@ -144,6 +144,198 @@ func TestMVCCEngine_UniqueConflictIsAnAppErrorOnEveryWritePath(t *testing.T) {
 	}
 }
 
+// TestMVCCEngine_BatchMovesUniqueValueBetweenKeys: one transaction or batch
+// that overwrites user:2 (holding b@example.com) with another value and then
+// gives b@example.com to user:3 is applied, as ordered apply admits it; the
+// reverse order, which claims the value before user:2 releases it, is a
+// conflict application error that changes nothing.
+// flaggedUniqueEncoders encode an op set as a transaction and as a batch that
+// carry protocol.CmdFlagOrderedUnique, the commands proposed once the cluster
+// feature ordered-unique-check is enabled.
+func flaggedUniqueEncoders() map[string]func(ops [][]byte) []byte {
+	return map[string]func(ops [][]byte) []byte{
+		"transaction": func(ops [][]byte) []byte {
+			return mustEncode(protocol.EncodeTransactionFlags(nil, ops, nil, protocol.CmdFlagOrderedUnique))
+		},
+		"batch": func(ops [][]byte) []byte {
+			return mustEncode(protocol.EncodeBatchFlags(ops, protocol.CmdFlagOrderedUnique))
+		},
+	}
+}
+
+// TestMVCCEngine_LegacyCommandKeepsUnorderedUniqueCheck pins the replay
+// contract: a transaction or batch without the ordered-unique flag (every
+// command an older binary proposed) keeps the delete-only unique check, so
+// moving a unique value from one key to another by overwrite is refused and
+// writes nothing, exactly as it was when the entry was first applied. The
+// same ops carrying the flag commit.
+func TestMVCCEngine_LegacyCommandKeepsUnorderedUniqueCheck(t *testing.T) {
+	legacy := map[string]func(ops [][]byte) []byte{
+		"transaction": func(ops [][]byte) []byte { return mustEncode(protocol.EncodeTransaction(nil, ops, nil)) },
+		"batch":       func(ops [][]byte) []byte { return mustEncode(protocol.EncodeBatch(ops)) },
+	}
+	flagged := flaggedUniqueEncoders()
+	moveOps := func(t *testing.T) [][]byte {
+		return [][]byte{
+			mvccOpsCmd(t, protocol.OpMVCCPut, "user:2", faultDocC),
+			mvccOpsCmd(t, protocol.OpMVCCPut, "user:3", faultDocB),
+		}
+	}
+	for name, encode := range legacy {
+		t.Run(name+" legacy refused", func(t *testing.T) {
+			eng := newIndexedFaultEngine(t, newMemoryBacked(t), true)
+			before := eng.Store().CurrentRevision()
+			results := applyMVCCEntries(t, eng, []sm.Entry{{Index: 10, Cmd: encode(moveOps(t))}})
+			_, kind, ok := protocol.DecodeAppErrorKind(results[0].Data)
+			if !ok || kind != protocol.AppErrorConflict {
+				t.Fatalf("result data = %q, want a conflict application error", results[0].Data)
+			}
+			if after := eng.Store().CurrentRevision(); after != before {
+				t.Fatalf("revision %d -> %d: a refused write must change nothing", before, after)
+			}
+			got, err := eng.Store().Get([]byte("user:2"))
+			if err != nil || string(got.Value) != faultDocB {
+				t.Fatalf("user:2 = %v, %v; want %s", got, err, faultDocB)
+			}
+			if got, err := eng.Store().Get([]byte("user:3")); err == nil && got != nil {
+				t.Fatalf("user:3 = %q, want absent", got.Value)
+			}
+		})
+		t.Run(name+" flagged commits", func(t *testing.T) {
+			eng := newIndexedFaultEngine(t, newMemoryBacked(t), true)
+			results := applyMVCCEntries(t, eng, []sm.Entry{{Index: 10, Cmd: flagged[name](moveOps(t))}})
+			if _, kind, ok := protocol.DecodeAppErrorKind(results[0].Data); ok {
+				t.Fatalf("result data = %q (kind %v), want the move applied", results[0].Data, kind)
+			}
+			got, err := eng.Store().Get([]byte("user:3"))
+			if err != nil || string(got.Value) != faultDocB {
+				t.Fatalf("user:3 = %v, %v; want %s", got, err, faultDocB)
+			}
+		})
+	}
+}
+
+// TestMVCCEngine_LegacyNonJSONOverwriteReplay pins the replay of an existing,
+// unflagged log: a plain non-JSON overwrite of user:1 keeps its unique entry,
+// so a later unflagged transaction or batch claiming user:1's old value is
+// refused as the committing binary refused it. A command proposed with
+// ordered-unique-check that overwrites user:1 with non-JSON bytes itself
+// releases the value for a later write of the same set.
+func TestMVCCEngine_LegacyNonJSONOverwriteReplay(t *testing.T) {
+	legacy := map[string]func(ops [][]byte) []byte{
+		"transaction": func(ops [][]byte) []byte { return mustEncode(protocol.EncodeTransaction(nil, ops, nil)) },
+		"batch":       func(ops [][]byte) []byte { return mustEncode(protocol.EncodeBatch(ops)) },
+	}
+	flagged := flaggedUniqueEncoders()
+	for name, encode := range legacy {
+		t.Run(name+" legacy refused", func(t *testing.T) {
+			eng := newIndexedFaultEngine(t, newMemoryBacked(t), true)
+			overwrite := mustEncode(protocol.EncodeMVCCPut([]byte("user:1"), []byte("not-json"), 0))
+			claim := encode([][]byte{mvccOpsCmd(t, protocol.OpMVCCPut, "user:3", faultDocA)})
+			results := applyMVCCEntries(t, eng, []sm.Entry{{Index: 10, Cmd: overwrite}, {Index: 11, Cmd: claim}})
+			if got, err := eng.Store().Get([]byte("user:1")); err != nil || string(got.Value) != "not-json" {
+				t.Fatalf("user:1 = %v, %v; want the non-JSON overwrite", got, err)
+			}
+			_, kind, ok := protocol.DecodeAppErrorKind(results[1].Data)
+			if !ok || kind != protocol.AppErrorConflict {
+				t.Fatalf("result data = %q, want a conflict application error", results[1].Data)
+			}
+			if got, err := eng.Store().Get([]byte("user:3")); err == nil && got != nil {
+				t.Fatalf("user:3 = %q, want absent", got.Value)
+			}
+		})
+		t.Run(name+" flagged commits", func(t *testing.T) {
+			eng := newIndexedFaultEngine(t, newMemoryBacked(t), true)
+			ops := [][]byte{
+				mvccOpsCmd(t, protocol.OpMVCCPut, "user:1", "not-json"),
+				mvccOpsCmd(t, protocol.OpMVCCPut, "user:3", faultDocA),
+			}
+			results := applyMVCCEntries(t, eng, []sm.Entry{{Index: 10, Cmd: flagged[name](ops)}})
+			if _, kind, ok := protocol.DecodeAppErrorKind(results[0].Data); ok {
+				t.Fatalf("result data = %q (kind %v), want the set applied", results[0].Data, kind)
+			}
+			got, err := eng.Store().Get([]byte("user:3"))
+			if err != nil || string(got.Value) != faultDocA {
+				t.Fatalf("user:3 = %v, %v; want %s", got, err, faultDocA)
+			}
+		})
+	}
+}
+
+// TestMVCCEngine_OrderedTransactionAfterLegacyNonJSONOverwrite: after a legacy
+// plain non-JSON overwrite keeps user:1's stale faultDocA entry, a flagged set
+// that moves user:1 to faultDocC and gives faultDocA to user:3 is refused as
+// a conflict: the value user:1 holds carries no email, so apply could not
+// retract the stale entry and the earlier write must not release it.
+func TestMVCCEngine_OrderedTransactionAfterLegacyNonJSONOverwrite(t *testing.T) {
+	for name, encode := range flaggedUniqueEncoders() {
+		t.Run(name, func(t *testing.T) {
+			eng := newIndexedFaultEngine(t, newMemoryBacked(t), true)
+			overwrite := mustEncode(protocol.EncodeMVCCPut([]byte("user:1"), []byte("not-json"), 0))
+			set := encode([][]byte{
+				mvccOpsCmd(t, protocol.OpMVCCPut, "user:1", faultDocC),
+				mvccOpsCmd(t, protocol.OpMVCCPut, "user:3", faultDocA),
+			})
+			results := applyMVCCEntries(t, eng, []sm.Entry{{Index: 10, Cmd: overwrite}, {Index: 11, Cmd: set}})
+			_, kind, ok := protocol.DecodeAppErrorKind(results[1].Data)
+			if !ok || kind != protocol.AppErrorConflict {
+				t.Fatalf("result data = %q, want a conflict application error", results[1].Data)
+			}
+			if got, err := eng.Store().Get([]byte("user:1")); err != nil || string(got.Value) != "not-json" {
+				t.Fatalf("user:1 = %v, %v; want the non-JSON overwrite", got, err)
+			}
+			if got, err := eng.Store().Get([]byte("user:3")); err == nil && got != nil {
+				t.Fatalf("user:3 = %q, want absent", got.Value)
+			}
+		})
+	}
+}
+
+func TestMVCCEngine_BatchMovesUniqueValueBetweenKeys(t *testing.T) {
+	encoders := flaggedUniqueEncoders()
+	for name, encode := range encoders {
+		t.Run(name+" release then claim", func(t *testing.T) {
+			eng := newIndexedFaultEngine(t, newMemoryBacked(t), true)
+			ops := [][]byte{
+				mvccOpsCmd(t, protocol.OpMVCCPut, "user:2", faultDocC),
+				mvccOpsCmd(t, protocol.OpMVCCPut, "user:3", faultDocB),
+			}
+			results := applyMVCCEntries(t, eng, []sm.Entry{{Index: 10, Cmd: encode(ops)}})
+			if _, kind, ok := protocol.DecodeAppErrorKind(results[0].Data); ok {
+				t.Fatalf("result data = %q (kind %v), want the move applied", results[0].Data, kind)
+			}
+			got, err := eng.Store().Get([]byte("user:3"))
+			if err != nil || string(got.Value) != faultDocB {
+				t.Fatalf("user:3 = %v, %v; want %s", got, err, faultDocB)
+			}
+			res, err := eng.Lookup(context.Background(), service.IndexQueryRequest{IndexName: "by_email", Value: []byte("b@example.com")})
+			if err != nil {
+				t.Fatalf("lookup b@example.com: %v", err)
+			}
+			keys, ok := res.([][]byte)
+			if !ok || len(keys) != 1 || string(keys[0]) != "user:3" {
+				t.Fatalf("lookup b@example.com = %#v, want only user:3", res)
+			}
+		})
+		t.Run(name+" claim before release", func(t *testing.T) {
+			eng := newIndexedFaultEngine(t, newMemoryBacked(t), true)
+			before := eng.Store().CurrentRevision()
+			ops := [][]byte{
+				mvccOpsCmd(t, protocol.OpMVCCPut, "user:3", faultDocB),
+				mvccOpsCmd(t, protocol.OpMVCCPut, "user:2", faultDocC),
+			}
+			results := applyMVCCEntries(t, eng, []sm.Entry{{Index: 10, Cmd: encode(ops)}})
+			_, kind, ok := protocol.DecodeAppErrorKind(results[0].Data)
+			if !ok || kind != protocol.AppErrorConflict {
+				t.Fatalf("result data = %q, want a conflict application error", results[0].Data)
+			}
+			if after := eng.Store().CurrentRevision(); after != before {
+				t.Fatalf("revision %d -> %d: a refused write must change nothing", before, after)
+			}
+		})
+	}
+}
+
 // A storage fault while staging a write is fatal on every write path: the
 // error reaches the caller of Update, typed as the injected fault, rather than
 // being folded into a result. Run with and without a secondary index, so the

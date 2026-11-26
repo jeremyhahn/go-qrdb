@@ -105,7 +105,7 @@ check that does not.
 ## Catalog surfaces
 
 - **`pg_catalog`** — `pg_type`, `pg_class`, `pg_namespace`, `pg_description`,
-  `pg_indexes`, served from `pkg/sql/pgcatalog`, reachable qualified and bare,
+  `pg_indexes`, `pg_attribute`, served from `pkg/sql/pgcatalog`, reachable qualified and bare,
   read-only, tenant-scoped, **PostgreSQL clients only**.
 - **`information_schema.constraint_column_usage`** — added through
   go-mysql-server's `NewInformationSchemaTablesToAdd` hook by

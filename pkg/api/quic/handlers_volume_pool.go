@@ -171,3 +171,65 @@ func (s *Server) handleVolumePoolListTenants(ctx context.Context, payload []byte
 	}
 	return out, nil
 }
+
+// handleVolumePoolMoveTenant starts moving a tenant to another pool.
+func (s *Server) handleVolumePoolMoveTenant(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.volumeSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "volume"}
+	}
+	var req pb.VolumePoolMoveTenantRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+	m, err := s.volumeSvc.MoveTenant(ctx, volume.MoveTenantRequest{
+		TenantID:                    req.GetTenant(),
+		ToPool:                      req.GetToPool(),
+		AllowUnencryptedDestination: req.GetAllowUnencryptedDestination(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return marshalVolumePoolMove(m)
+}
+
+// handleVolumePoolGetMove answers a tenant's move in progress.
+func (s *Server) handleVolumePoolGetMove(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.volumeSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "volume"}
+	}
+	var req pb.VolumePoolGetMoveRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+	m, err := s.volumeSvc.GetMove(ctx, req.GetTenant())
+	if err != nil {
+		return nil, err
+	}
+	return marshalVolumePoolMove(m)
+}
+
+// handleVolumePoolCancelMove cancels a tenant's move before cut over.
+func (s *Server) handleVolumePoolCancelMove(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.volumeSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "volume"}
+	}
+	var req pb.VolumePoolCancelMoveRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+	m, err := s.volumeSvc.CancelMove(ctx, req.GetTenant())
+	if err != nil {
+		return nil, err
+	}
+	return marshalVolumePoolMove(m)
+}
+
+// marshalVolumePoolMove encodes a move journal as the qrdbv1 message gRPC
+// and Unix answer.
+func marshalVolumePoolMove(m *volume.Move) ([]byte, error) {
+	out, err := proto.Marshal(grpcapi.VolumePoolMoveToProto(m))
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return out, nil
+}

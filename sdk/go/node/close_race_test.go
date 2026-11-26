@@ -132,6 +132,7 @@ var constructorWorkerFrames = []string{
 	"clienttrust.(*Pool).Run",
 	"volume.(*Reporter).refreshLoop",
 	"server.(*TenantShardReconciler).Run",
+	"server.(*TenantMoveWorker).Run",
 	"clusterseal.(*Monitor).Run",
 }
 

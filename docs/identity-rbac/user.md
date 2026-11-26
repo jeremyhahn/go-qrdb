@@ -66,11 +66,11 @@ in [../12-configuration.md](../12-configuration.md#unix).
 ## What needs no identity
 
 Two verbs need no certificate, token or role at all, on every transport:
-`qrdb admin health` and invitation redemption (`qrdb enroll`). Health no
-longer needs the `admin:health` permission; a role that still lists it
-grants nothing more by it. A client with no credential connects, and is
+`qrdb admin health` and invitation redemption (`qrdb enroll`). Health needs
+no `admin:health` permission; a role that lists it grants nothing more by
+it. A client with no credential connects, and is
 refused with an `unauthenticated` error at its first command that needs an
-identity — `qrdb kv get`, for example. `admin:health` survives only as the
+identity — `qrdb kv get`, for example. `admin:health` is only the
 name of Health's per-address rate-limit bucket (see
 [../rate-limit/user.md](../rate-limit/user.md)).
 
@@ -338,7 +338,9 @@ account in `acme` and give it `acme`'s Admin role; an `acme` administrator
 acts only in `acme`. This holds on REST, gRPC, the unix socket, QUIC, MCP and
 the embedded SDK.
 
-An Admin of the system tenant manages every tenant's users and roles.
+An Admin of the system tenant manages the system tenant's users and roles,
+and no other tenant's: the user and role permissions are self-scoped, and the
+system tenant gets no exception for them.
 
 ```bash
 qrdb users update "$ACME_USER" --role-binding "$ACME_ROLE:acme"

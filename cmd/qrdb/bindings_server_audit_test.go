@@ -25,7 +25,9 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
@@ -185,5 +187,36 @@ func TestEmbeddedServerBinding_AuditTrailStaysInTheDataDir(t *testing.T) {
 				t.Fatalf("the file the link points at was written: %v, %v", info, err)
 			}
 		})
+	}
+}
+
+// TestEmbeddedServerBinding_RunModeRefusedBeforeAudit pins the claim order: a
+// raft start on a standalone-marked data directory is refused before the
+// audit trail is opened, so the refusal neither prunes a rotated trail file
+// nor creates the active one (#658).
+func TestEmbeddedServerBinding_RunModeRefusedBeforeAudit(t *testing.T) {
+	esb := newAuditEmbedded(t)
+	dataDir := t.TempDir()
+	if err := lifecycle.ClaimRunMode(dataDir, capabilities.ModeStandalone); err != nil {
+		t.Fatal(err)
+	}
+	rotated := filepath.Join(dataDir, "audit-events-2000-01-01-001.ndjson")
+	if err := os.WriteFile(rotated, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := esb.StartEmbedded(&EmbeddedConfig{StorageBackend: "memory", RaftEnabled: true, DataDir: dataDir, Audit: &EmbeddedAuditConfig{Enabled: true}})
+	var mm *lifecycle.RunModeMismatchError
+	if !errors.As(err, &mm) {
+		_ = esb.StopEmbedded()
+		t.Fatalf("raft start on a standalone directory = %v (%T), want *lifecycle.RunModeMismatchError", err, err)
+	}
+	if esb.IsEmbedded() || esb.auditTrail != nil {
+		t.Fatal("a refused start left the server or its trail behind")
+	}
+	if _, err := os.Stat(rotated); err != nil {
+		t.Fatalf("the rotated trail file is gone after the refusal: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, audit.DefaultTrailFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the refusal created the active trail file: %v", err)
 	}
 }

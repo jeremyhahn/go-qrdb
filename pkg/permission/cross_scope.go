@@ -138,6 +138,11 @@ const (
 	// VolumePoolDelete grants access to remove a pool from the catalog.
 	// Refused while any tenant is assigned to it.
 	VolumePoolDelete Permission = "volume_pools:delete"
+
+	// VolumePoolMove grants access to start and cancel a move of a
+	// volume tenant from its pool to another pool it is entitled to.
+	// Inspecting a move needs only VolumePoolRead.
+	VolumePoolMove Permission = "volume_pools:move"
 )
 
 // ---------------------------------------------------------------------------
@@ -195,6 +200,7 @@ func crossScopePermissions() []Permission {
 		VolumePoolRead,
 		VolumePoolUpdate,
 		VolumePoolDelete,
+		VolumePoolMove,
 		RegistrationConfigRead,
 		RegistrationConfigUpdate,
 	}

@@ -17,6 +17,7 @@ package errclass
 import (
 	"errors"
 
+	"github.com/jeremyhahn/go-qrdb/internal/wireconflict"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
@@ -38,6 +39,7 @@ var refusals = []refusalEncoder{
 	factorConditionRefusal,
 	soRoleRefusal,
 	userConcurrentUpdateRefusal,
+	commandConflictRefusal,
 	lockRefusal,
 	barrierRefusal,
 	adminCredentialRequiresCARefusal,
@@ -123,6 +125,20 @@ func userConcurrentUpdateRefusal(err error) (string, map[string]string, bool) {
 	}
 	if e, ok := errors.AsType[*user.ConcurrentUpdateError](err); ok {
 		return transport.ReasonUserConcurrentUpdate, e.Metadata(), true
+	}
+	return "", nil, false
+}
+
+// commandConflictRefusal encodes a *service.CommandConflictError, a write the
+// state machine refused because it conflicts with stored state (a unique
+// secondary index), through the internal wireconflict codec, so the client
+// types the refusal ErrConflict as the embedded store does.
+func commandConflictRefusal(err error) (string, map[string]string, bool) {
+	if Classify(err) != AlreadyExists {
+		return "", nil, false
+	}
+	if e, ok := errors.AsType[*service.CommandConflictError](err); ok {
+		return wireconflict.Reason, wireconflict.Metadata(e.Message), true
 	}
 	return "", nil, false
 }

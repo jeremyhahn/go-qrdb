@@ -87,7 +87,7 @@ transaction and two reads, not 25 transactions.
 
 | mutation | test that must fail |
 |---|---|
-| remove the guard from the transaction | `TestGuardedSwap_NoRetryPredicateAdmitsExactlyOneWinner`, `TestGuardedSwap_ConcurrentCreatorsAdmitExactlyOneCreate` |
+| remove the guard from the transaction | `TestGuardedSwap_NoRetryPredicateAdmitsExactlyOneWinner` |
 | remove the progress precondition | `TestGuardedSwap_RefusedWithoutMovementIsAStall` |
 | default a negative `MaxAttempts` | `TestGuardedSwap_RejectsAnUnusableRequest/negative_MaxAttempts` |
 | drop `Revision` in a transport | `TestEmbeddedTx_PropagatesTheRevision` |

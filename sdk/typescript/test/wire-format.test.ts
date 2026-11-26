@@ -90,6 +90,7 @@ const healthWire = {
 
 /** Exact wire JSON for GET /status */
 const statusWire = {
+    version: '1.2.3-test',
     node_id: 'node-abc-123',
     raft_address: '127.0.0.1:63001',
     is_leader: true,
@@ -193,6 +194,7 @@ describe('Wire-format contract: admin endpoints', () => {
         const client = await makeConnectedClient(statusWire);
         const status: StatusResponse = await client.admin.status();
 
+        expect(status.version).toBe('1.2.3-test');
         expect(status.nodeId).toBe('node-abc-123');
         expect(status.raftAddress).toBe('127.0.0.1:63001');
         expect(status.isLeader).toBe(true);
@@ -380,9 +382,9 @@ describe('Wire-format contract: connect() reads nodeId from status', () => {
         vi.unstubAllGlobals();
     });
 
-    it('connection.getVersion() returns nodeId as server version after connect', async () => {
-        // The connect() method reads /health then /status and stores status.nodeId.
-        // Before the fix, it stored undefined because the field was node_id on wire.
+    it('connection.getVersion() returns the status build version as server version after connect', async () => {
+        // The connect() method reads /health then /status and stores status.version,
+        // the server's build version (not its node id).
         let callCount = 0;
         vi.stubGlobal(
             'fetch',
@@ -407,7 +409,6 @@ describe('Wire-format contract: connect() reads nodeId from status', () => {
         await client.connection.connect('https://localhost:63002');
 
         const version = client.connection.getVersion();
-        // Before the fix: version.server was '' (undefined coerced to empty string).
-        expect(version['server']).toBe('node-abc-123');
+        expect(version['server']).toBe('1.2.3-test');
     });
 });

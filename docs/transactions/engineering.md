@@ -163,6 +163,19 @@ branch; reserved and vector-index keys are filtered as on a plain read, and a
 branch that only reads does not advance the revision. The other state machines
 refuse `OpMVCCRange` at apply: reads in a transaction are MVCC-only.
 
+Once the cluster feature `ordered-unique-check`
+(`featuregate.OrderedUniqueCheck`) is enabled for the group, a transaction or
+batch is proposed with a one-byte flag trailer after its last op,
+`protocol.CmdFlagOrderedUnique` (`EncodeTransactionFlags`,
+`EncodeBatchFlags`), and apply checks unique indexes over its writes in op
+order: an overwrite or delete releases the values its key held for the ops
+after it. Until then the command is encoded without the trailer, byte for byte
+as an older binary encodes it, and apply keeps the legacy check in which only a
+deleted key frees its values. An older binary ignores the trailer, so the
+trailer is never proposed before every replica implements it; a host that gates
+nothing (standalone, embedded) proposes it at once. A trailer longer than one
+byte is refused as an invalid command.
+
 The result travels in `sm.Result.Data` as
 `protocol.EncodeTransactionResult(succeeded, reads)`: the one-byte succeeded
 flag alone when the executed branch read nothing — the shape every transaction
@@ -316,7 +329,8 @@ Typed errors throughout; `fmt.Errorf` is not used.
 |---|---|---|
 | Compare does not hold | `Succeeded: false`, `FailureOps` applied, no error | n/a — this is a result |
 | Unmapped op type on a typed transport (gRPC, Unix, QUIC) | invalid-argument | yes |
-| Unknown op type, compare target or compare result on REST | falls back to put, version and equal; nothing is refused — see [api.md](api.md) | no |
+| Unknown op type on REST or MCP | refused before proposal (`UnknownOpTypeError`; REST 400, MCP tool error), nothing written — see [api.md](api.md) | **yes** |
+| Unknown compare target or compare result on REST | falls back to version and equal — see [api.md](api.md) | no |
 | Empty key in a compare or an op | refused before proposal (`service.InvalidKeyError` inside `EncodeRequestError`, invalid-argument); a state machine that receives one anyway refuses it as an application result and keeps applying | **yes** |
 | Create- or mod-revision compare on any `sm_type` but `mvcc` | refused, nothing evaluated or written | **yes** |
 | Lease-bearing op on a `pkg/statemachine` `sm_type` (`memory`, `standard`, `concurrent`, `fast`, `disk`, `highperf`) | the key is bound to the lease in the same commit; a lease the state machine does not hold refuses the whole transaction or batch with lease-not-found, nothing written | **yes** |

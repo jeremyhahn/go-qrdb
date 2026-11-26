@@ -17,6 +17,7 @@ package unix
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -235,6 +236,87 @@ func TestUnixRT_VolumePool_DeleteAndListTenants(t *testing.T) {
 	}
 	_, err = tr.ListPoolTenants(ctx, &transport.ListVolumePoolTenantsRequest{Pool: "broken"})
 	requireUnixRequestError(t, err, "ListPoolTenants")
+}
+
+func TestUnixRT_VolumePool_MoveVerbs(t *testing.T) {
+	move := func(id, state string) *volume.Move {
+		return &volume.Move{TenantID: id, FromPool: "default", ToPool: "fast", State: state,
+			NodesPending: []string{"n1"}, StepNode: "n1", StepAttempts: 1, ReservedBytes: 64}
+	}
+	svc := &volumetest.Service{T: t,
+		MoveTenantFn: func(_ context.Context, req volume.MoveTenantRequest) (*volume.Move, error) {
+			if req.TenantID != "acme" || req.ToPool != "fast" {
+				t.Errorf("MoveTenant(%+v)", req)
+			}
+			m := move(req.TenantID, "copying")
+			// The fake drops encryption exactly when the flag arrives, so
+			// the flag's wire leg and encryptionDropped's decode both show.
+			m.EncryptionDropped = req.AllowUnencryptedDestination
+			return m, nil
+		},
+		GetMoveFn: func(_ context.Context, id string) (*volume.Move, error) {
+			if id != "acme" {
+				return nil, &volume.MoveNotFoundError{TenantID: id}
+			}
+			return move(id, "copying"), nil
+		},
+		CancelMoveFn: func(_ context.Context, id string) (*volume.Move, error) {
+			if id != "acme" {
+				return nil, &volume.MoveNotFoundError{TenantID: id}
+			}
+			return move(id, "aborting"), nil
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithVolumeService(svc))
+	defer cleanup()
+	ctx := context.Background()
+
+	want := func(method string, got *transport.VolumePoolMove, state string) {
+		t.Helper()
+		if got.TenantID != "acme" || got.FromPool != "default" || got.ToPool != "fast" || got.State != state ||
+			got.StepNode != "n1" || got.StepAttempts != 1 || got.ReservedBytes != 64 ||
+			len(got.NodesPending) != 1 || got.NodesPending[0] != "n1" {
+			t.Fatalf("%s = %+v", method, got)
+		}
+	}
+	m, err := tr.MoveTenant(ctx, &transport.MoveVolumePoolTenantRequest{TenantID: "acme", ToPool: "fast"})
+	if err != nil {
+		t.Fatalf("MoveTenant: %v", err)
+	}
+	want("MoveTenant", m, "copying")
+	if m.EncryptionDropped {
+		t.Fatalf("MoveTenant without the flag decoded encryptionDropped: %+v", m)
+	}
+	m, err = tr.MoveTenant(ctx, &transport.MoveVolumePoolTenantRequest{
+		TenantID: "acme", ToPool: "fast", AllowUnencryptedDestination: true,
+	})
+	if err != nil {
+		t.Fatalf("MoveTenant with the flag: %v", err)
+	}
+	want("MoveTenant with the flag", m, "copying")
+	if !m.EncryptionDropped {
+		t.Fatalf("MoveTenant with the flag: encryptionDropped not decoded: %+v", m)
+	}
+	if m, err = tr.GetMove(ctx, "acme"); err != nil {
+		t.Fatalf("GetMove: %v", err)
+	}
+	want("GetMove", m, "copying")
+	if m, err = tr.CancelMove(ctx, "acme"); err != nil {
+		t.Fatalf("CancelMove: %v", err)
+	}
+	want("CancelMove", m, "aborting")
+
+	_, err = tr.MoveTenant(ctx, nil)
+	requireUnixRequestError(t, err, "MoveTenant")
+	// No move for the tenant: the server answers NotFound naming it.
+	for method, call := range map[string]func(context.Context, string) (*transport.VolumePoolMove, error){
+		"GetMove": tr.GetMove, "CancelMove": tr.CancelMove,
+	} {
+		got, err := call(ctx, "nobody")
+		if err == nil || got != nil || !strings.Contains(err.Error(), "nobody") {
+			t.Fatalf("%s(nobody) = %+v, %v; want a not-found error naming the tenant", method, got, err)
+		}
+	}
 }
 
 func TestUnixRT_VolumePool_UnconfiguredAndClosed(t *testing.T) {

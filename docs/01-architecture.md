@@ -113,9 +113,10 @@ In **local (non-Raft) mode**, a `LocalBackend` (`pkg/backend/local.go`)
 wraps an engine directly without a state machine, bypassing Raft consensus
 entirely.
 
-Users choose a **store engine** (`kv` or `mvcc`) and a **storage backend**
-independently. Every backend defaults to the MVCC engine
-(`pkg/server/lifecycle.NewLocalEngine`); `kv` is an explicit opt-in.
+The daemon and the SDK node compose the MVCC engine over every storage
+backend (`pkg/server/lifecycle.NewLocalEngine`). Only the `qrdb` desktop
+binary's local server takes a store engine setting (`storeEngine`, default
+`mvcc`), where `kv` is an explicit opt-in (`cmd/qrdb/bindings_server.go`).
 
 The `raft.sm_type` configuration field selects the Raft state machine for
 distributed mode: `pebble` (the default), `mvcc`, `memory`, `standard`,

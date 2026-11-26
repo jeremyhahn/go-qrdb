@@ -35,51 +35,51 @@ func NewTimeSeriesBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *Tim
 }
 
 // Write returns a FeatureDisabledError.
-func (b *TimeSeriesBinding) Write(_ *transport.TSDataPoint) error {
+func (b *TimeSeriesBinding) Write(_ string, _ *transport.TSDataPoint) error {
 	return &FeatureDisabledError{Feature: "time-series"}
 }
 
 // WriteBatch returns a FeatureDisabledError.
-func (b *TimeSeriesBinding) WriteBatch(_ []transport.TSDataPoint) error {
+func (b *TimeSeriesBinding) WriteBatch(_ string, _ []transport.TSDataPoint) error {
 	return &FeatureDisabledError{Feature: "time-series"}
 }
 
 // Query returns a FeatureDisabledError.
-func (b *TimeSeriesBinding) Query(_ *transport.TSQueryRequest) (*transport.TSQueryResponse, error) {
+func (b *TimeSeriesBinding) Query(_ string, _ *transport.TSQueryRequest) (*transport.TSQueryResponse, error) {
 	return nil, &FeatureDisabledError{Feature: "time-series"}
 }
 
 // Aggregate returns a FeatureDisabledError.
-func (b *TimeSeriesBinding) Aggregate(_ *transport.TSAggregateRequest) (*transport.TSAggregateResponse, error) {
+func (b *TimeSeriesBinding) Aggregate(_ string, _ *transport.TSAggregateRequest) (*transport.TSAggregateResponse, error) {
 	return nil, &FeatureDisabledError{Feature: "time-series"}
 }
 
 // WritePoint returns a FeatureDisabledError.
-func (b *TimeSeriesBinding) WritePoint(_ *transport.TSDataPoint) error {
+func (b *TimeSeriesBinding) WritePoint(_ string, _ *transport.TSDataPoint) error {
 	return &FeatureDisabledError{Feature: "time-series"}
 }
 
 // RichQuery returns a FeatureDisabledError.
-func (b *TimeSeriesBinding) RichQuery(_ *transport.TSRichQueryRequest) (*transport.TSRichQueryResponse, error) {
+func (b *TimeSeriesBinding) RichQuery(_ string, _ *transport.TSRichQueryRequest) (*transport.TSRichQueryResponse, error) {
 	return nil, &FeatureDisabledError{Feature: "time-series"}
 }
 
 // DeleteSeries returns a FeatureDisabledError.
-func (b *TimeSeriesBinding) DeleteSeries(_ *transport.TSDeleteRequest) (*transport.TSDeleteResponse, error) {
+func (b *TimeSeriesBinding) DeleteSeries(_ string, _ *transport.TSDeleteRequest) (*transport.TSDeleteResponse, error) {
 	return nil, &FeatureDisabledError{Feature: "time-series"}
 }
 
 // GetRetention returns a FeatureDisabledError.
-func (b *TimeSeriesBinding) GetRetention(_ *transport.TSGetRetentionRequest) (*transport.TSGetRetentionResponse, error) {
+func (b *TimeSeriesBinding) GetRetention(_ string, _ *transport.TSGetRetentionRequest) (*transport.TSGetRetentionResponse, error) {
 	return nil, &FeatureDisabledError{Feature: "time-series"}
 }
 
 // SetRetention returns a FeatureDisabledError.
-func (b *TimeSeriesBinding) SetRetention(_ *transport.TSSetRetentionRequest) error {
+func (b *TimeSeriesBinding) SetRetention(_ string, _ *transport.TSSetRetentionRequest) error {
 	return &FeatureDisabledError{Feature: "time-series"}
 }
 
 // ListMetrics returns a FeatureDisabledError.
-func (b *TimeSeriesBinding) ListMetrics(_ *transport.TSListMetricsRequest) (*transport.TSListMetricsResponse, error) {
+func (b *TimeSeriesBinding) ListMetrics(_ string, _ *transport.TSListMetricsRequest) (*transport.TSListMetricsResponse, error) {
 	return nil, &FeatureDisabledError{Feature: "time-series"}
 }

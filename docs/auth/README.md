@@ -122,7 +122,7 @@ resolver.
 - Loads the user's assigned roles through the `role.RoleServicer`
 - Collects all permissions across the assigned roles (built-in roles use concrete `resource:action` grants; whole-segment wildcards like `resource:*` also match)
 - Allows the request only when the requested `resource:action` is present, and denies otherwise (`PermissionDeniedError`). There is no superadmin role that skips the check — an unknown role simply grants nothing
-- **SO deny-list (FIPS 140-3 AS10.03)**: an identity holding the `so` role is denied cryptographic operations regardless of any grant, and this runs before permissions are resolved. It covers the `keys:*` crypto verbs (`sign`, `encrypt`, `decrypt`, `verify`, `wrap`, `unwrap`, `derive`), hardware-token key use (`piv:use`), and any resource whose action names a cryptographic primitive (`attest`, `quote`, `mac`, `kdf`, ...) -- including permissions contributed by a higher layer. Barrier lifecycle (`seal:unseal`, `seal:seal`) and issuance (`ceremony:sign_csr`, `certs:issue`) are the SO's own duties and are not denied
+- **SO deny-list (FIPS 140-3 AS10.03)**: an identity holding the `so` role is denied cryptographic operations regardless of any grant, and this runs before permissions are resolved. It covers the `keys:*` crypto verbs (`sign`, `encrypt`, `decrypt`, `verify`, `wrap`, `unwrap`, `derive`), hardware-token key use (`piv:use`), `dek:rewrap`, `vlog:sign_head`, and any resource whose action names a cryptographic primitive (`attest`, `quote`, `mac`, `kdf`, ...) -- including permissions contributed by a higher layer. Barrier lifecycle (`seal:unseal`, `seal:seal`) and issuance (`ceremony:sign_csr`, `certs:issue`) are the SO's own duties and are not denied
 - **Permission cache**: a `sync.Map` caches resolved permissions per user with a configurable TTL (default 30 seconds) to avoid repeated store lookups on every request
 
 ## Auth Middleware
@@ -178,7 +178,7 @@ Admin bootstrap is owned by [`pkg/firstboot`](../../pkg/firstboot/firstboot.go).
 3. **Admin user**: Create user `admin` in the system tenant with the role grant `Admin@system`, plus `Owner@system` under the standard posture; under strict separation of duties `Admin@system` is its only grant. The system-tenant rule in `pkg/auth/rbac` promotes the `Admin@system` grant to cross-tenant authority.
 4. **Admin client certificate**: Issue an mTLS client certificate (the `CertSigner` signs the admin's CSR when `AdminCSRPEM` is supplied; otherwise the `CertProvider` generates the key pair) and bind its SPKI thumbprint to the admin, so the CLI can authenticate immediately after first start.
 
-Every step is idempotent and Raft-replicated; follower nodes observe the leader's writes and skip duplication on their own runs.
+Every step is idempotent. In raft mode the writes are replicated, and follower nodes observe the leader's writes and skip duplication on their own runs.
 
 The function returns a `firstboot.Result` describing which artifacts were created in *this* run (the `*Created` flags reflect this run only, not the overall presence of the resource — useful for distinguishing a true first boot from a follower replay).
 

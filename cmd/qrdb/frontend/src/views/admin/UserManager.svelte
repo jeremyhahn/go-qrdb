@@ -225,6 +225,7 @@
           placeholder="Certificate thumbprint"
           data-testid="user-thumbprint-input"
           bind:value={searchThumbprint}
+          oninput={() => (thumbprintNotFound = false)}
         />
       </label>
       <button

@@ -19,11 +19,15 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
+	"time"
 
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/raftharness"
 )
@@ -177,5 +181,153 @@ func TestReplicaHost_UnknownGroupRefused(t *testing.T) {
 	}
 	if err := adder.AddFollowerNode(ctx, unknownShard, 2, c.Addrs[1]); err == nil {
 		t.Fatal("AddFollowerNode on a group the host does not run succeeded")
+	}
+}
+
+// gateGroups is a featuregate.MembershipSource holding fixed memberships.
+type gateGroups map[uint64]featuregate.GroupMembership
+
+func (g gateGroups) GroupMembership(shardID uint64) (featuregate.GroupMembership, error) {
+	m, ok := g[shardID]
+	if !ok {
+		return featuregate.GroupMembership{}, errors.New("shard not ready")
+	}
+	return m, nil
+}
+
+// gateAdverts is a cluster.MembershipStore holding fixed live advertisements.
+type gateAdverts []cluster.Member
+
+func (gateAdverts) PutMember(context.Context, uint64, []byte, time.Duration) error { return nil }
+func (gateAdverts) DeleteMember(context.Context, uint64) error                     { return nil }
+func (gateAdverts) WatchMembers(context.Context) (<-chan cluster.MemberEvent, error) {
+	return nil, errors.New("no watch")
+}
+func (a gateAdverts) ListMembers(context.Context) ([]cluster.Member, error) { return a, nil }
+
+// gateNoActivations is a system store with no activated feature.
+type gateNoActivations struct{}
+
+func (gateNoActivations) PutIfAbsent(context.Context, string, []byte) (bool, error) {
+	return false, nil
+}
+func (gateNoActivations) ListAll(context.Context, string) ([]string, error)   { return nil, nil }
+func (gateNoActivations) ListStale(context.Context, string) ([]string, error) { return nil, nil }
+func (gateNoActivations) Delete(context.Context, string) error                { return nil }
+
+// TestReplicaHost_GateRefusesAnUnsupportingNode pins the admission branch of
+// a gated host: the dedicated group's replicas advertise every feature, so a
+// replica on a node that advertises none is refused by the feature gate, and
+// neither add path proposes anything.
+func TestReplicaHost_GateRefusesAnUnsupportingNode(t *testing.T) {
+	c, adder := newAdderCluster(t)
+	gate, err := featuregate.New(featuregate.Config{
+		Self:          featuregate.Self{ReplicaID: 1},
+		SystemShardID: 1,
+		Members: gateGroups{
+			1:                   {ConfigChangeID: 1, Replicas: map[uint64]string{1: "n1:1", 2: "n2:1", 3: "n3:1"}},
+			dedicatedAdderShard: {ConfigChangeID: 1, Replicas: map[uint64]string{1: "n1:1", 2: "n2:1"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("featuregate.New: %v", err)
+	}
+	t.Cleanup(func() { _ = gate.Close() })
+	if err := gate.Start(context.Background(), gateNoActivations{}, gateAdverts{
+		{NodeID: 2, Address: "n2:1", Features: featuregate.SupportedNames()},
+		{NodeID: 3, Address: "n3:1"},
+	}); err != nil {
+		t.Fatalf("gate.Start: %v", err)
+	}
+	adder.gate = gate
+	if err := adder.AdmitReplica(dedicatedAdderShard, "n2:1"); err != nil {
+		t.Fatalf("AdmitReplica(n2) = %v, want admitted: it advertises every feature", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), raftharness.Bound)
+	defer cancel()
+	for name, add := range map[string]func() error{
+		"AdmitReplica":    func() error { return adder.AdmitReplica(dedicatedAdderShard, "n3:1") },
+		"AddFollowerNode": func() error { return adder.AddFollowerNode(ctx, dedicatedAdderShard, 3, "n3:1") },
+		"AddObserver":     func() error { return adder.AddObserver(ctx, dedicatedAdderShard, 3, "n3:1") },
+	} {
+		var refused *featuregate.UnsupportedReplicaError
+		if err := add(); !errors.As(err, &refused) || refused.Address != "n3:1" || refused.ShardID != dedicatedAdderShard {
+			t.Fatalf("%s = %v, want *featuregate.UnsupportedReplicaError for n3:1", name, err)
+		}
+	}
+	m, err := c.Hosts[0].ShardMembership(dedicatedAdderShard)
+	if err != nil {
+		t.Fatalf("ShardMembership: %v", err)
+	}
+	if len(m.Nodes)+len(m.Observers) != 1 {
+		t.Fatalf("a refused add must propose nothing: nodes %v, observers %v", m.Nodes, m.Observers)
+	}
+}
+
+// stalledShard is a dedicated shard founded with check-quorum off.
+const stalledShard = uint64(1001)
+
+// newStalledGroup founds a one-replica shard with check-quorum off on a
+// transport-less host and adds replica 2, a voter that never starts, so the
+// leader keeps leading a group that can commit nothing further: every later
+// config change is accepted and then waits on its context. A transport-less
+// host binds no member identity, so an add reads nothing from the group and
+// reaches its proposal. The harness cluster lends its state machine.
+func newStalledGroup(t *testing.T) *replicaHost {
+	t.Helper()
+	c := raftharness.NewCluster(t, 1)
+	root := t.TempDir()
+	host, err := quicraft.NewHost(quicraftconfig.HostConfig{
+		WALDir:        filepath.Join(root, "wal"),
+		NodeHostDir:   filepath.Join(root, "nodehost"),
+		RaftAddress:   "127.0.0.1:63997",
+		ListenAddress: "127.0.0.1:63997",
+		DeploymentID:  1,
+	}, quicraft.WithoutTransport(), quicraft.WithoutEncryption())
+	if err != nil {
+		t.Fatalf("NewHost(transport-less): %v", err)
+	}
+	t.Cleanup(func() { _ = host.Close() })
+	if err := host.StartShard(map[uint64]string{1: "127.0.0.1:63997"}, false, c.CreateFn(), quicraftconfig.Config{
+		ShardID: stalledShard, ReplicaID: 1, CheckQuorum: quicraftconfig.BoolPtr(false),
+	}); err != nil {
+		t.Fatalf("StartShard(stalled): %v", err)
+	}
+	c.WaitReadable(t, stalledShard, host)
+	adder := &replicaHost{host: host}
+	ctx, cancel := context.WithTimeout(context.Background(), raftharness.Bound)
+	defer cancel()
+	if err := adder.AddFollowerNode(ctx, stalledShard, 2, "127.0.0.1:2"); err != nil {
+		t.Fatalf("AddFollowerNode(2): %v", err)
+	}
+	return adder
+}
+
+// TestReplicaHost_ContextEndsAnUncommittedChange pins the wait of every
+// membership change: a change the group cannot commit ends with its
+// context's error once the context's deadline passes.
+func TestReplicaHost_ContextEndsAnUncommittedChange(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(a *replicaHost, ctx context.Context) error
+	}{
+		{name: "RemoveFollowerNode", change: func(a *replicaHost, ctx context.Context) error {
+			return a.RemoveFollowerNode(ctx, stalledShard, 2)
+		}},
+		{name: "AddFollowerNode", change: func(a *replicaHost, ctx context.Context) error {
+			return a.AddFollowerNode(ctx, stalledShard, 3, "127.0.0.1:3")
+		}},
+		{name: "AddObserver", change: func(a *replicaHost, ctx context.Context) error {
+			return a.AddObserver(ctx, stalledShard, 3, "127.0.0.1:3")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			adder := newStalledGroup(t)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if err := tc.change(adder, ctx); !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("%s on a group that cannot commit = %v, want %v", tc.name, err, context.DeadlineExceeded)
+			}
+		})
 	}
 }
