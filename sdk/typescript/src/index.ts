@@ -25,6 +25,7 @@ export { deepSnakeToCamel, deepCamelToSnake, snakeToCamelKey, camelToSnakeKey } 
 
 // Transport implementations
 export { RestClient } from './rest.js';
+export { parsePrometheusText } from './metrics.js';
 export { WailsClient } from './wails.js';
 
 // Client interfaces
@@ -117,11 +118,15 @@ export {
     RoleNotFoundError,
     RoleExistsError,
     CertNotFoundError,
+    CertExportError,
+    CertKeyMismatchError,
     FeatureDisabledError,
     DesktopOnlyError,
     NotImplementedError,
     ShamirSplitMissingError,
     ShamirSplitMismatchError,
+    ConnectionChangedError,
+    UnsupportedOptionError,
 } from './errors.js';
 
 // Request/response types
@@ -139,6 +144,8 @@ export type {
     OKResponse,
     ErrorResponse,
     MintJoinTokenResponse,
+    MetricFamily,
+    MetricSample,
 
     // KV
     KVListResponse,
@@ -176,6 +183,7 @@ export type {
     BatchRequest,
     BatchResponse,
     ImportOptions,
+    ImportContentOptions,
     ImportResult,
     ImportError,
 
@@ -271,6 +279,7 @@ export type {
     // User management
     User,
     CreateUserRequest,
+    RoleBinding,
     UpdateUserRequest,
     AddCertBindingRequest,
     CertBinding,
@@ -319,6 +328,7 @@ export type {
 
     // Collection management
     CollectionInfo,
+    CollectionIndexDefinition,
     CreateCollectionRequest,
     ListCollectionsResponse,
 
@@ -334,6 +344,7 @@ export type {
     DatabaseInfo,
     CreateDatabaseRequest,
     DatabaseProtocolConfig,
+    DatabaseCreateProtocolConfig,
     DatabaseSQLConfig,
     CompactionMode,
     DatabaseCompactionConfig,
@@ -407,6 +418,7 @@ export type {
     // Tenant management
     TenantIsolationType,
     TenantInfo,
+    TenantStatus,
     CreateTenantRequest,
     CreateTenantResponse,
     GetTenantResponse,

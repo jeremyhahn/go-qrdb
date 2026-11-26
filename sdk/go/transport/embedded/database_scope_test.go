@@ -154,7 +154,7 @@ func TestCloneShared_CoversEveryField(t *testing.T) {
 		"indexSvc", "tsSvc", "vectorSvc", "userSvc", "roleSvc", "groupSvc", "certProv", "certEnroll", "invitations", "onboarding",
 		"dbSvc", "barrierSvc", "pinBackend", "holderActLimiter",
 		"dekSvc", "policySvc", "ceremonySvc", "ceremonyCA", "credentialSvc", "backupSvc", "rebalanceSvc", "embeddingSvc",
-		"ragSvc", "collectionSvc", "logSvc", "logDatabase", "sealStoreSvc", "tenantSvc", "volumeSvc", "lockSvc",
+		"ragSvc", "collectionSvc", "logSvc", "logDatabase", "registryDefault", "sealStoreSvc", "tenantSvc", "volumeSvc", "lockSvc",
 		"authFactorSvc", "auditLogger", "replicatedAudit", "encMigrator", "registry", "rbacAuthz", "authMW", "binder", "userAuthFactorSvc",
 		"loginResolver", "sessionIssuer", "identityHydrator", "loginSessions", "poolManager", "poolStateStore",
 		"nowFunc", "standalone", "sealProbe", "awaitingAdminCredentialProbe", "sealStreams", "forwarding"} {

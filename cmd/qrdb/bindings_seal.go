@@ -265,7 +265,8 @@ func (b *SealBinding) EnableEncryption(req *transport.BarrierEnableEncryptionReq
 // A node the cluster seal holds or cuts off refuses the call with
 // *transport.BarrierSealedError, and that refusal is the answer: its own
 // barrier is initialized, and it serves nothing until the cluster releases
-// it.
+// it. ClusterHeld marks that answer, so the GUI offers the cluster unseal
+// rather than a local unseal of a barrier that is not sealed.
 func (b *SealBinding) Status() (*SealStatus, error) {
 	b.logger.Debug("Status called")
 	cl, err := b.conn.loadClient()
@@ -276,7 +277,7 @@ func (b *SealBinding) Status() (*SealStatus, error) {
 	resp, err := cl.Barrier().BarrierStatus(context.Background())
 	if transport.IsBarrierSealed(err) {
 		b.logger.Debug("Status completed: the cluster seal holds the node, so it is initialized and serves nothing")
-		return &SealStatus{Sealed: true, Initialized: true}, nil
+		return &SealStatus{Sealed: true, Initialized: true, ClusterHeld: true}, nil
 	}
 	if err != nil {
 		b.logger.Error("Status failed", "error", err)

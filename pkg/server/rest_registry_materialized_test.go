@@ -135,7 +135,7 @@ func TestRESTServiceRegistry_MaterializedDatabaseServedFromItsOwnHost(t *testing
 	fake := factory.last(t)
 
 	shared := newFilledRegistry()
-	r := NewRESTServiceRegistry(shared, nil, "system", withDatabaseManager(dbMgr)).(*restServiceRegistry)
+	r := NewRESTServiceRegistry(shared, nil, "system", WithRegistryDatabaseManager(dbMgr)).(*restServiceRegistry)
 
 	svcs, err := r.resolve(tenantID, name)
 	if err != nil {
@@ -232,7 +232,7 @@ func TestRESTServiceRegistry_MaterializedLookupErrorNeverFallsToShared(t *testin
 	dbMgr.SetCatalog(flaky)
 
 	shared := newFilledRegistry()
-	r := NewRESTServiceRegistry(shared, nil, "system", withDatabaseManager(dbMgr)).(*restServiceRegistry)
+	r := NewRESTServiceRegistry(shared, nil, "system", WithRegistryDatabaseManager(dbMgr)).(*restServiceRegistry)
 
 	flaky.allow.Store(1)
 	value := []byte("materialized-value")
@@ -308,7 +308,7 @@ func TestRESTServiceRegistry_MaterializedHandleResolvedBeforeDropIsFenced(t *tes
 	if _, err := dbMgr.Create(database.DatabaseConfig{TenantID: tenantID, Name: name, Backend: database.BackendMemory}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	r := NewRESTServiceRegistry(newFilledRegistry(), nil, tenantid.System, withDatabaseManager(dbMgr)).(*restServiceRegistry)
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, tenantid.System, WithRegistryDatabaseManager(dbMgr)).(*restServiceRegistry)
 	svcs, err := r.resolve(tenantID, name)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
@@ -337,7 +337,7 @@ func TestRESTServiceRegistry_VolumeTenantMaterializedDatabaseServedFromItsOwnHos
 	}
 	fake := factory.last(t)
 	shared := newFilledRegistry()
-	r := NewRESTServiceRegistry(shared, nil, tenantid.System, withDatabaseManager(dbMgr),
+	r := NewRESTServiceRegistry(shared, nil, tenantid.System, WithRegistryDatabaseManager(dbMgr),
 		WithTenantServicer(&isolationTenantServicer{isolation: tenant.IsolationVolume})).(*restServiceRegistry)
 
 	svcs, err := r.resolve(tenantID, name)
@@ -382,7 +382,7 @@ func TestRESTServiceRegistry_VolumeTenantMaterializedDropIsFenced(t *testing.T) 
 	// The drop resolves the fence target of a volume tenant with no tenant
 	// host wired: only the materialized store can take the fence.
 	reclaim.SetStoreResolver(&storeResolver{databases: dbMgr, systemTenant: tenantid.System, tenantSvc: volume})
-	r := NewRESTServiceRegistry(newFilledRegistry(), nil, tenantid.System, withDatabaseManager(dbMgr),
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, tenantid.System, WithRegistryDatabaseManager(dbMgr),
 		WithTenantServicer(volume)).(*restServiceRegistry)
 	svcs, err := r.resolve(tenantID, name)
 	if err != nil {
@@ -431,7 +431,7 @@ func TestRESTServiceRegistry_MaterializedDropFailsClosedOnALookupFault(t *testin
 	if _, err := dbMgr.Create(database.DatabaseConfig{TenantID: tenantID, Name: name, Backend: database.BackendMemory}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	r := NewRESTServiceRegistry(newFilledRegistry(), nil, tenantid.System, withDatabaseManager(dbMgr)).(*restServiceRegistry)
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, tenantid.System, WithRegistryDatabaseManager(dbMgr)).(*restServiceRegistry)
 	svcs, err := r.resolve(tenantID, name)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
@@ -468,7 +468,7 @@ func TestRESTServiceRegistry_MaterializedHandleFromBeforeDropRefusedAfterRecreat
 	if _, err := dbMgr.Create(cfg); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	r := NewRESTServiceRegistry(newFilledRegistry(), nil, tenantid.System, withDatabaseManager(dbMgr)).(*restServiceRegistry)
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, tenantid.System, WithRegistryDatabaseManager(dbMgr)).(*restServiceRegistry)
 	stale, err := r.resolve(tenantID, name)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
@@ -509,7 +509,7 @@ func TestRESTServiceRegistry_MaterializedScheduledCompactionRuns(t *testing.T) {
 	if _, err := dbMgr.Create(database.DatabaseConfig{TenantID: tenantID, Name: name, Backend: database.BackendMemory}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	r := NewRESTServiceRegistry(newFilledRegistry(), nil, tenantid.System, withDatabaseManager(dbMgr)).(*restServiceRegistry)
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, tenantid.System, WithRegistryDatabaseManager(dbMgr)).(*restServiceRegistry)
 	svcs, err := r.resolve(tenantID, name)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
@@ -580,7 +580,7 @@ func TestRESTServiceRegistry_MaterializedDatabaseServesItsOwnVectors(t *testing.
 		t.Fatalf("Create: %v", err)
 	}
 	fake := factory.last(t)
-	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system", withDatabaseManager(dbMgr)).(*restServiceRegistry)
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system", WithRegistryDatabaseManager(dbMgr)).(*restServiceRegistry)
 	svcs, err := r.resolve(tenantID, name)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
@@ -627,7 +627,7 @@ func TestRESTServiceRegistry_MaterializedSystemTenantDatabaseServedFromItsOwnHos
 	// The node's shared set is registered under the system database.
 	shared := NewDatabaseServiceRegistry("system")
 	shared.Register("system", newFilledServices("system"))
-	r := NewRESTServiceRegistry(shared, nil, "system", withDatabaseManager(dbMgr)).(*restServiceRegistry)
+	r := NewRESTServiceRegistry(shared, nil, "system", WithRegistryDatabaseManager(dbMgr)).(*restServiceRegistry)
 
 	svcs, err := r.resolve("system", name)
 	if err != nil {

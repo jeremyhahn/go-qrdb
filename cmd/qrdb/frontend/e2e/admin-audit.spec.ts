@@ -115,7 +115,7 @@ test.describe("Admin - Audit Log", () => {
     const main = page.locator("main");
     await expect(main.getByText("admin").first()).toBeVisible({ timeout: LOAD_TIMEOUT });
 
-    await page.locator("table tbody tr").first().click();
+    await page.locator("table tbody tr").first().locator("td").first().click();
 
     await expect(page.getByRole("heading", { name: "Audit Event", exact: true })).toBeVisible();
     await expect(page.getByText("Request ID")).toBeVisible();

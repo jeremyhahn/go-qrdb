@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // DeviceStrategy is a fake of a hardware sealing strategy (TPM 2.0, PKCS#11, a
@@ -92,6 +93,7 @@ func (d *DeviceStrategy) SealRootKey(ctx context.Context, rootKey []byte, creds 
 	if err != nil {
 		return nil, err
 	}
+	defer secure.Wipe(pin)
 	// #nosec G407 -- the nonce argument MUST be nil: this AEAD is cipher.NewGCMWithRandomNonce, which samples a fresh nonce inside the FIPS module on every Seal and prepends it.
 	ct := d.aead.Seal(nil, nil, rootKey, pin)
 	return &seal.SealedRootKey{Strategy: d.id, Version: 1, Ciphertext: ct}, nil
@@ -111,6 +113,7 @@ func (d *DeviceStrategy) UnsealRootKey(ctx context.Context, sealed *seal.SealedR
 	if err != nil {
 		return nil, err
 	}
+	defer secure.Wipe(pin)
 	rootKey, err := d.aead.Open(nil, nil, sealed.Ciphertext, pin)
 	if err != nil {
 		return nil, fmt.Errorf("sealtest device: unwrap root key: %w: %w", seal.ErrDecryptionFailed, err)

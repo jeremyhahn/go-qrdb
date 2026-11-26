@@ -47,8 +47,7 @@ func leaseRegistry(t *testing.T, lessor *sharedLessor) *restServiceRegistry {
 	dbReg := NewDatabaseServiceRegistry("default")
 	dbReg.Register("default", &DatabaseServices{Name: "default", MVCC: lessor, Lease: lessor})
 	reg, ok := NewRESTServiceRegistry(dbReg, nil, tenantid.System,
-		WithDatabaseCatalog(newManagerCatalog(mgr)),
-		withDatabaseManager(mgr),
+		WithRegistryDatabaseManager(mgr),
 	).(*restServiceRegistry)
 	if !ok {
 		t.Fatal("NewRESTServiceRegistry did not return *restServiceRegistry")

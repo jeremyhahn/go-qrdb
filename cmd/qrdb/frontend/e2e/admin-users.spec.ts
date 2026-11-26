@@ -196,6 +196,33 @@ test.describe("Admin - User Management", () => {
     });
   });
 
+  test.describe("Create user without a default tenant", () => {
+    // A fresh daemon lists only the System tenant; there is no "default".
+    test.use({
+      mockState: {
+        ...secondLaunchEmbeddedState,
+        tenants: [{ id: "system", name: "System" }],
+      },
+    });
+
+    test("tenant defaults to the first tenant the server lists", async ({
+      page,
+    }) => {
+      await navigateToUsers(page);
+      await page.getByRole("button", { name: "Create User" }).click();
+
+      const tenantSelect = page.locator("select#user-detail-tenant");
+      await expect(tenantSelect).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await expect(tenantSelect).toHaveValue("system");
+
+      await page.getByPlaceholder("Enter username").fill("dana");
+      await page.getByRole("button", { name: "Create" }).click();
+      await expect(page.getByText("dana", { exact: true })).toBeVisible({
+        timeout: LOAD_TIMEOUT,
+      });
+    });
+  });
+
   test.describe("Edit user", () => {
     test("clicking a user row opens the edit form", async ({ page }) => {
       await navigateToUsers(page);
@@ -891,9 +918,7 @@ webTest.describe("Admin - User Management (web mode / auth-disabled regression)"
       ).toBeVisible({ timeout: LOAD_TIMEOUT });
 
       const usersSidebar = page.locator("aside").getByText("Users");
-      if (!(await usersSidebar.isVisible())) {
-        return; // Not in web-admin mode — skip.
-      }
+      await expect(usersSidebar).toBeVisible({ timeout: LOAD_TIMEOUT });
 
       await usersSidebar.click();
       await expect(

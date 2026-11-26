@@ -144,26 +144,26 @@ func TestLockBinding_RoundTrip(t *testing.T) {
 	svc := newMockLockService()
 	b := newTestLockBinding(t, svc)
 
-	info, err := b.Acquire(&transport.LockAcquireRequest{Key: "jobs/a", HolderID: "h1", TTL: 30})
+	info, err := b.Acquire("", &transport.LockAcquireRequest{Key: "jobs/a", HolderID: "h1", TTL: 30})
 	if err != nil || info.FencingToken != 1 || info.HolderID != "h1" {
 		t.Fatalf("Acquire = %+v, %v; want token 1 held by h1", info, err)
 	}
-	ext, err := b.Extend(&transport.LockExtendRequest{Key: "jobs/a", FencingToken: info.FencingToken})
+	ext, err := b.Extend("", &transport.LockExtendRequest{Key: "jobs/a", FencingToken: info.FencingToken})
 	if err != nil || ext.Key != "jobs/a" {
 		t.Fatalf("Extend = %+v, %v", ext, err)
 	}
-	st, err := b.Status("jobs/a")
+	st, err := b.Status("", "jobs/a")
 	if err != nil || st == nil || st.HolderID != "h1" {
 		t.Fatalf("Status = %+v, %v; want held by h1", st, err)
 	}
-	list, err := b.List("jobs/")
+	list, err := b.List("", "jobs/")
 	if err != nil || len(list.Locks) != 1 {
 		t.Fatalf("List = %+v, %v; want one lock", list, err)
 	}
-	if err := b.Release(&transport.LockReleaseRequest{Key: "jobs/a", FencingToken: info.FencingToken}); err != nil {
+	if err := b.Release("", &transport.LockReleaseRequest{Key: "jobs/a", FencingToken: info.FencingToken}); err != nil {
 		t.Fatalf("Release: %v", err)
 	}
-	tl, err := b.TryLock(&transport.LockAcquireRequest{Key: "jobs/b", HolderID: "h2", TTL: 30})
+	tl, err := b.TryLock("", &transport.LockAcquireRequest{Key: "jobs/b", HolderID: "h2", TTL: 30})
 	if err != nil || tl.HolderID != "h2" {
 		t.Fatalf("TryLock = %+v, %v; want held by h2", tl, err)
 	}
@@ -176,7 +176,7 @@ func TestLockBinding_AcquireServiceError(t *testing.T) {
 		return nil, sentinel
 	}
 	b := newTestLockBinding(t, svc)
-	if _, err := b.Acquire(&transport.LockAcquireRequest{Key: "k", TTL: 1}); !errors.Is(err, sentinel) {
+	if _, err := b.Acquire("", &transport.LockAcquireRequest{Key: "k", TTL: 1}); !errors.Is(err, sentinel) {
 		t.Fatalf("Acquire error = %v; want the service error", err)
 	}
 }
@@ -185,12 +185,12 @@ func TestLockBinding_AcquireServiceError(t *testing.T) {
 // call's error, keyed by method name.
 func lockBindingCalls(b *LockBinding) map[string]error {
 	errs := map[string]error{}
-	_, errs["Acquire"] = b.Acquire(&transport.LockAcquireRequest{Key: "k", TTL: 1})
-	_, errs["TryLock"] = b.TryLock(&transport.LockAcquireRequest{Key: "k", TTL: 1})
-	errs["Release"] = b.Release(&transport.LockReleaseRequest{Key: "k", FencingToken: 1})
-	_, errs["Extend"] = b.Extend(&transport.LockExtendRequest{Key: "k", FencingToken: 1})
-	_, errs["Status"] = b.Status("k")
-	_, errs["List"] = b.List("")
+	_, errs["Acquire"] = b.Acquire("", &transport.LockAcquireRequest{Key: "k", TTL: 1})
+	_, errs["TryLock"] = b.TryLock("", &transport.LockAcquireRequest{Key: "k", TTL: 1})
+	errs["Release"] = b.Release("", &transport.LockReleaseRequest{Key: "k", FencingToken: 1})
+	_, errs["Extend"] = b.Extend("", &transport.LockExtendRequest{Key: "k", FencingToken: 1})
+	_, errs["Status"] = b.Status("", "k")
+	_, errs["List"] = b.List("", "")
 	return errs
 }
 

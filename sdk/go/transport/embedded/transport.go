@@ -133,7 +133,10 @@ type Transport struct {
 	// service is node-wide and takes the database in each request, so
 	// WithDatabase sets this rather than wrapping the service; empty means
 	// the default database.
-	logDatabase     string
+	logDatabase string
+	// registryDefault, set by WithRegistryDefaultDatabase, serves the
+	// default database's data plane through registry as well.
+	registryDefault bool
 	sealStoreSvc    *seal.SealStore
 	tenantSvc       tenant.TenantServicer
 	volumeSvc       volume.Service
@@ -455,6 +458,12 @@ func New(kvSvc service.KVServicer, adminSvc service.AdminServicer, opts ...Optio
 		t.watchSvc = service.NewCountedWatch(t.watchSvc)
 	}
 	t.watchSvc = t.admitWatch(t.watchSvc)
+	if t.registryDefault {
+		if t.registry == nil {
+			return nil, &NilServiceError{Service: "service registry (WithRegistryDefaultDatabase needs WithServiceRegistry)"}
+		}
+		t.scopeDataPlane(t, transport.DefaultDatabaseScope)
+	}
 	return t, nil
 }
 

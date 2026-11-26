@@ -96,7 +96,7 @@ test.describe("Lock Manager", () => {
     await acquireLock(page, "resource-d", "60");
     await expect(page.getByText(/Lock "resource-d" acquired/)).toBeVisible({ timeout: 5_000 });
 
-    await page.locator("table tbody tr").first().click();
+    await page.locator("table tbody tr").first().locator("td").first().click();
 
     const detailCard = page.locator(".card", { hasText: "Lock Detail" });
     await expect(detailCard.getByText("Fencing Token", { exact: false })).toBeVisible();
@@ -110,7 +110,7 @@ test.describe("Lock Manager", () => {
     await acquireLock(page, "resource-e", "60");
     await expect(page.getByText(/Lock "resource-e" acquired/)).toBeVisible({ timeout: 5_000 });
 
-    await page.locator("table tbody tr").first().click();
+    await page.locator("table tbody tr").first().locator("td").first().click();
     await page.getByRole("button", { name: "Extend" }).click();
 
     await expect(page.getByText(/Lock "resource-e" extended/)).toBeVisible({ timeout: 5_000 });
@@ -122,7 +122,7 @@ test.describe("Lock Manager", () => {
     await acquireLock(page, "resource-f", "60");
     await expect(page.getByText(/Lock "resource-f" acquired/)).toBeVisible({ timeout: 5_000 });
 
-    await page.locator("table tbody tr").first().click();
+    await page.locator("table tbody tr").first().locator("td").first().click();
     await page.getByRole("button", { name: "Release" }).click();
 
     await expect(page.getByText(/Lock "resource-f" released/)).toBeVisible({ timeout: 5_000 });

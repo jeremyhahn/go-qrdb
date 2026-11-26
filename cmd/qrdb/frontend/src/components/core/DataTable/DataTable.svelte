@@ -530,14 +530,14 @@
       <tbody>
         {#if loading}
           <!-- Loading skeleton -->
-          {#each Array(5) as _}
+          {#each Array(5) as _, ri (ri)}
             <tr>
               {#if selectable && selectionMode !== "none"}
                 <td class="w-10 px-3 py-2">
                   <div class="skeleton h-4 w-4 rounded"></div>
                 </td>
               {/if}
-              {#each columns as _col}
+              {#each columns as _col, ci (ci)}
                 <td class="px-3 py-2">
                   <div class="skeleton h-4 w-full rounded"></div>
                 </td>

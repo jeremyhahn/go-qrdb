@@ -20,6 +20,7 @@ import type {
     TopologyResponse,
     CapabilitiesResponse,
     MintJoinTokenResponse,
+    MetricFamily,
 
     // MVCC
     MVCCKeyValue,
@@ -36,6 +37,7 @@ import type {
     Op,
     BatchResponse,
     ImportOptions,
+    ImportContentOptions,
     ImportResult,
 
     // Watch
@@ -406,6 +408,13 @@ export interface AdminClient {
      * the server's default TTL.
      */
     mintJoinToken(nodeId: string, ttlSeconds?: number): Promise<MintJoinTokenResponse>;
+    /**
+     * Reports whether this connection can mint join tokens: true on every
+     * authenticated remote transport; on the desktop binding, true only
+     * when the active connection is an authenticated external (remote)
+     * one, never the unauthenticated embedded server.
+     */
+    joinTokenMintable(): Promise<boolean>;
 
     /**
      * Adds a new replica to the specified shard.
@@ -439,6 +448,13 @@ export interface AdminClient {
 
     /** Returns the compile-time feature set of the QRDB binary. */
     capabilities(): Promise<CapabilitiesResponse>;
+
+    /**
+     * Returns the node's Prometheus metrics, parsed from the text
+     * exposition format into metric families. Maps to GET /metrics. The
+     * desktop (Wails) binding rejects with NotImplementedError.
+     */
+    metrics(): Promise<MetricFamily[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -564,6 +580,20 @@ export interface BatchClient {
      * @returns Statistics about the import operation.
      */
     importFile(filePath: string, opts: ImportOptions): Promise<ImportResult>;
+
+    /**
+     * Imports a dataset the caller holds in memory (a browser File or bytes)
+     * over the server's chunked import session: begin, append in 1 MiB
+     * chunks numbered from 0, commit. Any failure aborts the session and
+     * rethrows the original error.
+     *
+     * REST only: the desktop transport imports from a path with importFile.
+     *
+     * @param data - The file content.
+     * @param opts - Import configuration; filename lets "auto" detect the format.
+     * @returns Statistics about the import operation.
+     */
+    importContent(data: Uint8Array | Blob, opts: ImportContentOptions): Promise<ImportResult>;
 
     /**
      * Returns the names of all compiled-in codec types.
@@ -1843,6 +1873,12 @@ export interface EmbeddedServerClient {
      * Throws when no saved config exists.
      */
     restoreEmbedded(): Promise<void>;
+
+    /**
+     * Returns the saved embedded configuration, the one restoreEmbedded
+     * starts. Rejects when no configuration is saved.
+     */
+    savedConfig(): Promise<EmbeddedConfig>;
 
     /** Removes the saved embedded configuration from disk. */
     clearSavedConfig(): Promise<void>;

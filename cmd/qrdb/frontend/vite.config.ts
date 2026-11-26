@@ -17,7 +17,10 @@ import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
 import { API_PREFIXES } from "./api-routes.ts";
-import { TLS_CERT_ENV, TLS_KEY_ENV } from "./playwright.tls.ts";
+import { PROXY_CLIENT_TLS_DIR_ENV, TLS_CERT_ENV, TLS_KEY_ENV } from "./playwright.tls.ts";
+import { readFileSync } from "node:fs";
+import { Agent } from "node:https";
+import { join } from "node:path";
 
 export default defineConfig({
   plugins: [svelte(), tailwindcss()],
@@ -82,13 +85,38 @@ function serverTLS(): { cert: string; key: string } | undefined {
 }
 
 /**
+ * clientCertAgent is the proxy's agent when PROXY_CLIENT_TLS_DIR_ENV is set:
+ * on every new connection it presents the client certificate found in that
+ * directory (client.crt, client.key), or none when they are absent, so a DOM
+ * spec can switch the UI's principal per test without restarting Vite. No
+ * keep-alive and no TLS session reuse: a connection never outlives the
+ * credential it was opened with.
+ */
+function clientCertAgent(dir: string): Agent {
+  const agent = new Agent({ keepAlive: false, maxCachedSessions: 0 });
+  const connect = agent.createConnection.bind(agent);
+  agent.createConnection = ((options: Record<string, unknown>, cb: unknown) => {
+    let cred: { cert: Buffer; key: Buffer } | Record<string, never> = {};
+    try {
+      cred = { cert: readFileSync(join(dir, "client.crt")), key: readFileSync(join(dir, "client.key")) };
+    } catch {
+      // No credential: an unauthenticated connection.
+    }
+    return (connect as (o: unknown, c: unknown) => unknown)({ ...options, ...cred }, cb);
+  }) as typeof agent.createConnection;
+  return agent;
+}
+
+/**
  * buildApiProxy maps every server-side API route prefix (api-routes.ts) to the given backend
  * target. `secure: false` accepts the daemon's self-signed TLS certificate.
  */
-function buildApiProxy(target: string): Record<string, { target: string; secure: boolean }> {
-  const proxy: Record<string, { target: string; secure: boolean }> = {};
+function buildApiProxy(target: string): Record<string, { target: string; secure: boolean; agent?: Agent }> {
+  const dir = process.env[PROXY_CLIENT_TLS_DIR_ENV];
+  const agent = dir ? clientCertAgent(dir) : undefined;
+  const proxy: Record<string, { target: string; secure: boolean; agent?: Agent }> = {};
   for (const p of API_PREFIXES) {
-    proxy[p] = { target, secure: false };
+    proxy[p] = agent ? { target, secure: false, agent } : { target, secure: false };
   }
   return proxy;
 }

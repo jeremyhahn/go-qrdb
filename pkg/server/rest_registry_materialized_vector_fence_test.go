@@ -114,7 +114,7 @@ func newMaterializedVectorFenceFixture(t *testing.T) *materializedVectorFenceFix
 	if factory.host == nil {
 		t.Fatal("the database was not materialized")
 	}
-	r := NewRESTServiceRegistry(newFilledRegistry(), nil, tenantid.System, withDatabaseManager(dbMgr)).(*restServiceRegistry)
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, tenantid.System, WithRegistryDatabaseManager(dbMgr)).(*restServiceRegistry)
 	svcs, err := r.resolve(vectorFenceTenant, vectorFenceDB)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)

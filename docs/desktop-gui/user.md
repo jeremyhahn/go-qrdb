@@ -80,12 +80,30 @@ data directory, set in the storage step.
 The application shows what the server can actually do — views are gated on the
 server's reported capabilities, so a server without vectors has no vector view.
 Your identity appears in the header, read from your client certificate.
+Every SDK operation the server offers has a place in the application (see the
+[UI coverage matrix](../gui/coverage-matrix.md)): the Data tab browses keys and
+their revisions, the Users view invites users and manages certificate bindings,
+**Redeem Invitation** in the connection manager accepts an invitation, and the
+admin area manages volume pools, tenant trust anchors and database holders.
+The Verifiable Logs tab creates logs, appends and reads entries, proves
+inclusion and consistency, signs heads, rotates the head-signing key and
+expires bodies.
 
 ## In a browser
 
 The same frontend runs against a remote `qrdbd` over its REST API. Nothing
 special is needed server-side beyond CORS being enabled, and your browser
 needs to present a client certificate as usual.
+
+## Upgrading an embedded store
+
+The embedded server now resolves every database the way `qrdbd` does, under
+your `(tenant, database)` namespace, so named databases other than the system
+database work over the embedded connection. Collections an earlier desktop
+build wrote into its embedded store carry no such namespace, and they are not
+listed after the upgrade; nothing moves or deletes them. Export them with the
+earlier desktop build and re-import them with this one -- see
+[Collections belong to your tenant](../collections/user.md#collections-belong-to-your-tenant).
 
 ## Building
 

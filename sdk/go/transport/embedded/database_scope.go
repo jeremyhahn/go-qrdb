@@ -35,6 +35,17 @@ func WithServiceRegistry(reg service.Registry) Option {
 	}
 }
 
+// WithRegistryDefaultDatabase serves the default ("system") database's data
+// plane through the service registry too, as every named database is, so
+// the default database sees only its own keyspace and cannot read, list or
+// delete another database's physical keys. It needs WithServiceRegistry;
+// New refuses it without one.
+func WithRegistryDefaultDatabase() Option {
+	return func(t *Transport) {
+		t.registryDefault = true
+	}
+}
+
 // databaseScope is the (registry, database) pair a scoped transport's
 // data-plane services resolve through on every call.
 type databaseScope struct {
@@ -102,8 +113,24 @@ func (t *Transport) WithDatabase(database string) (transport.Transport, error) {
 			Reason:   "the embedded transport has no service registry (embedded.WithServiceRegistry)",
 		}
 	}
-	scope := &databaseScope{registry: t.registry, database: db}
 	c := t.cloneShared()
+	t.scopeDataPlane(c, db)
+	if t.ragSvc != nil {
+		c.ragSvc = &scopedRAG{inner: t.ragSvc, database: db}
+	}
+	c.logDatabase = db
+	if t.forwarding != nil {
+		return &forwardingScope{Transport: c, database: db, fwd: t.forwarding}, nil
+	}
+	return c, nil
+}
+
+// scopeDataPlane points c's data-plane services at db's services in t's
+// registry, resolved per call for the caller's tenant. c may be t itself
+// (WithRegistryDefaultDatabase): each field is read from t before c's is
+// written.
+func (t *Transport) scopeDataPlane(c *Transport, db string) {
+	scope := &databaseScope{registry: t.registry, database: db}
 	c.kvSvc = scopedIfServed[service.KVServicer](t.kvSvc, &scopedKV{scope: scope})
 	c.mvccSvc = scopedIfServed[service.MVCCKVServicer](t.mvccSvc, &scopedMVCC{scope: scope})
 	c.txSvc = scopedIfServed[service.TransactionServicer](t.txSvc, &scopedTransaction{scope: scope})
@@ -127,14 +154,6 @@ func (t *Transport) WithDatabase(database string) (transport.Transport, error) {
 	c.vectorSvc = scopedIfServed[service.VectorServicer](t.vectorSvc, &scopedVector{scope: scope})
 	c.collectionSvc = scopedIfServed[service.CollectionServicer](t.collectionSvc, &scopedCollection{scope: scope})
 	c.lockSvc = scopedIfServed[service.LockServicer](t.lockSvc, &scopedLock{scope: scope})
-	if t.ragSvc != nil {
-		c.ragSvc = &scopedRAG{inner: t.ragSvc, database: db}
-	}
-	c.logDatabase = db
-	if t.forwarding != nil {
-		return &forwardingScope{Transport: c, database: db, fwd: t.forwarding}, nil
-	}
-	return c, nil
 }
 
 // scopedIfServed returns scoped when the receiver serves the family (served
@@ -195,6 +214,7 @@ func (t *Transport) cloneShared() *Transport {
 		collectionSvc:                t.collectionSvc,
 		logSvc:                       t.logSvc,
 		logDatabase:                  t.logDatabase,
+		registryDefault:              t.registryDefault,
 		sealStoreSvc:                 t.sealStoreSvc,
 		tenantSvc:                    t.tenantSvc,
 		volumeSvc:                    t.volumeSvc,

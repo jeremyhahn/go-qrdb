@@ -77,6 +77,7 @@ import type {
     BatchUpsertResponse,
     BootstrapResult,
     ImportOptions,
+    ImportContentOptions,
     ImportResult,
     CapabilitiesResponse,
     CeremonyInitializeRequest,
@@ -107,6 +108,7 @@ import type {
     UpdateDatabaseProtocolRequest,
     UpdateDatabaseSQLRequest,
     MintJoinTokenResponse,
+    MetricFamily,
     CreateNamespaceResponse,
     CreateRoleRequest,
     CreateGroupRequest,
@@ -228,6 +230,9 @@ import type {
     VolumePoolDetail,
     ListVolumePoolsResponse,
     ListVolumePoolTenantsResponse,
+    ListVolumePoolTenantsRequest,
+    CreateVolumePoolRequest,
+    UpdateVolumePoolRequest,
     TrustAnchorList,
     ConfigInitializedResponse,
     BackupRequest,
@@ -292,8 +297,10 @@ import {
     indexTypeToIpcWire,
     normalizeVectorEnumFields,
     normalizeVectorIDField,
+    searchResponseFromWire,
     vectorIDToWire,
 } from './transform.js';
+import type { WireSearchResponse } from './transform.js';
 
 // ---------------------------------------------------------------------------
 // SDK version constant
@@ -359,6 +366,26 @@ function wrapBindings(
 }
 
 /**
+ * Prepends the database scope to every call of a binding whose Go methods
+ * take the target database as their first argument (VectorBinding): the
+ * Go side resolves the connection's client through Client.DatabaseScoped,
+ * so the operation reaches that database and not the connection's default
+ * one. An empty name is the unscoped client.
+ */
+function withDatabaseArg(
+    b: Record<string, (...args: unknown[]) => Promise<unknown>>,
+    database: string,
+): Record<string, (...args: unknown[]) => Promise<unknown>> {
+    return new Proxy(b, {
+        get(target, prop: string) {
+            const fn = target[prop];
+            if (typeof fn !== 'function') return fn;
+            return (...args: unknown[]) => fn(database, ...args);
+        },
+    });
+}
+
+/**
  * Normalizes a binding rejection to an Error. The Wails runtime rejects a
  * Go method's error as its message string, not an Error, so callers that
  * test `instanceof Error` would otherwise lose the server's message.
@@ -414,6 +441,7 @@ interface WailsBindings {
         LockBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         CredentialBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         AuditBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
+        VolumePoolBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         VlogBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         ConnectionManagerBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
     };
@@ -457,20 +485,38 @@ interface WailsRuntime {
  */
 export class WailsClient implements Client {
 
-    /** Tracks whether the embedded server is currently running. */
-    private embeddedRunning = false;
+    /**
+     * Tracks whether the embedded server is currently running. Shared with
+     * every database-scoped client derived from this one: there is one
+     * embedded server per process.
+     */
+    private readonly embedded: { running: boolean };
+
+    /**
+     * The database this client targets; empty for the unscoped client
+     * (the connection's default, the `system` database). Named apart from
+     * the `database` getter, which returns the DatabaseClient.
+     */
+    private readonly activeDatabase: string;
+
+    constructor(database = '', embedded?: { running: boolean }) {
+        this.activeDatabase = database;
+        this.embedded = embedded ?? { running: false };
+    }
 
     /**
      * @inheritdoc
      *
-     * Desktop/embedded multi-database scoping is out of scope for this stage:
-     * the Wails bindings route per-database through their own mechanism rather
-     * than an HTTP header, so this is a no-op passthrough that returns the same
-     * client. It exists only to satisfy the {@link Client} interface on both
-     * transports.
+     * The scoped client shares this client's bindings and passes the
+     * database name to every binding that reads or writes the KV keyspace
+     * (KV, MVCC, lease, transaction, batch, watch and lock), which scope the
+     * Go SDK client with DatabaseScoped. `system` and the empty string name the connection's
+     * default database, as on the REST client.
      */
-    databaseScoped(_name: string): Client {
-        return this;
+    databaseScoped(name: string): Client {
+        const target = name === 'system' ? '' : name;
+        if (target === this.activeDatabase) return this;
+        return new WailsClient(target, this.embedded);
     }
 
     // -----------------------------------------------------------------------
@@ -507,24 +553,28 @@ export class WailsClient implements Client {
     /** @inheritdoc */
     get kv(): KVClient {
         const b = wrapBindings(getBindings().main.KVBinding);
+        // Every KV binding takes the scoped database first, as MVCC does, so
+        // browsing, saves and lookups reach the same database; "" is the
+        // connection's default database.
+        const database = this.activeDatabase;
         return {
             put: async (key: string, value: string): Promise<void> => {
-                await b.Put(key, value);
+                await b.Put(database, key, value);
             },
             get: async (key: string): Promise<string> => {
-                return b.Get(key) as Promise<string>;
+                return b.Get(database, key) as Promise<string>;
             },
             delete: async (key: string): Promise<void> => {
-                await b.Delete(key);
+                await b.Delete(database, key);
             },
             list: async (prefix: string): Promise<string[]> => {
-                return b.List(prefix) as Promise<string[]>;
+                return b.List(database, prefix) as Promise<string[]>;
             },
             exists: async (key: string): Promise<boolean> => {
-                return b.Exists(key) as Promise<boolean>;
+                return b.Exists(database, key) as Promise<boolean>;
             },
             scan: async (prefix: string): Promise<Record<string, string>> => {
-                return b.Scan(prefix) as Promise<Record<string, string>>;
+                return b.Scan(database, prefix) as Promise<Record<string, string>>;
             },
         };
     }
@@ -561,17 +611,16 @@ export class WailsClient implements Client {
                 const policy = (await b.SetNodeCompaction(compaction ?? null)) as DatabaseCompactionConfig | null;
                 return policy ?? undefined;
             },
-            mintJoinToken: async (_nodeId: string, _ttlSeconds?: number): Promise<MintJoinTokenResponse> => {
-                // Deliberately unimplemented: the desktop webview talks to
-                // the embedded transport, which carries no authorization of
-                // its own (every AdminServicer verb skips enforcement
-                // there; see docs/embedding.md, "Trust model"). Minting a
-                // cluster join token is ScopeCross and platform-only --
-                // exactly the kind of admin verb that must never be
-                // reachable through a less-trusted binding than the
-                // authenticated remote transports (REST, gRPC, QUIC, Unix,
-                // MCP) it IS implemented on.
-                throw new NotImplementedError('admin.mintJoinToken');
+            mintJoinToken: async (nodeId: string, ttlSeconds?: number): Promise<MintJoinTokenResponse> => {
+                // AdminBinding.MintJoinToken forwards to the active
+                // connection only when it is an authenticated external
+                // (remote) one; the Go binding refuses the embedded server,
+                // whose transport carries no authorization of its own
+                // (docs/embedding.md, "Trust model").
+                return fromSnake<MintJoinTokenResponse>(await b.MintJoinToken(nodeId, ttlSeconds ?? 0));
+            },
+            joinTokenMintable: async (): Promise<boolean> => {
+                return (await b.JoinTokenMintable()) === true;
             },
             addMember: async (
                 shardId: number,
@@ -592,6 +641,10 @@ export class WailsClient implements Client {
             capabilities: async (): Promise<CapabilitiesResponse> => {
                 return b.Capabilities() as Promise<CapabilitiesResponse>;
             },
+            metrics: async (): Promise<MetricFamily[]> => {
+                // The desktop binding exposes no Prometheus gatherer.
+                throw new NotImplementedError('admin.metrics');
+            },
         };
     }
 
@@ -602,6 +655,9 @@ export class WailsClient implements Client {
     /** @inheritdoc */
     get mvcc(): MVCCClient {
         const b = wrapBindings(getBindings().main.MVCCBinding);
+        // Every MVCC binding takes the scoped database first; "" is the
+        // connection's default database.
+        const database = this.activeDatabase;
         return {
             putWithLease: async (
                 key: string,
@@ -613,15 +669,15 @@ export class WailsClient implements Client {
                 // key/value fields, same as the REST wire. Decode to
                 // plaintext for consistency with kv.get/kv.scan (see
                 // decodeMVCCKV in transform.ts for the full explanation).
-                const kv = await b.PutWithLease(key, value, leaseId) as MVCCKeyValue;
+                const kv = await b.PutWithLease(database, key, value, leaseId) as MVCCKeyValue;
                 return decodeMVCCKV(kv);
             },
             getRevision: async (key: string): Promise<MVCCKeyValue> => {
-                const kv = await b.GetRevision(key) as MVCCKeyValue;
+                const kv = await b.GetRevision(database, key) as MVCCKeyValue;
                 return decodeMVCCKV(kv);
             },
             getAtRevision: async (key: string, revision: number): Promise<MVCCKeyValue> => {
-                const kv = await b.GetAtRevision(key, revision) as MVCCKeyValue;
+                const kv = await b.GetAtRevision(database, key, revision) as MVCCKeyValue;
                 return decodeMVCCKV(kv);
             },
             range: async (
@@ -629,14 +685,14 @@ export class WailsClient implements Client {
                 end: string,
                 opts: RangeOptions,
             ): Promise<RangeResponse> => {
-                const resp = await b.Range(start, end, toSnake(opts)) as RangeResponse;
+                const resp = await b.Range(database, start, end, toSnake(opts)) as RangeResponse;
                 return { ...resp, kvs: (resp.kvs ?? []).map(decodeMVCCKV) };
             },
             compact: async (revision: number): Promise<void> => {
-                await b.Compact(revision);
+                await b.Compact(database, revision);
             },
             currentRevision: async (): Promise<number> => {
-                return b.CurrentRevision() as Promise<number>;
+                return b.CurrentRevision(database) as Promise<number>;
             },
             restoreToRevision: async (
                 req: RestoreRevisionRequest,
@@ -661,7 +717,7 @@ export class WailsClient implements Client {
                 if (req.force !== undefined) {
                     wireReq.force = req.force;
                 }
-                const result = await b.RestoreToRevision(toSnake(wireReq)) as RestoreRevisionResult;
+                const result = await b.RestoreToRevision(database, toSnake(wireReq)) as RestoreRevisionResult;
                 // Response change/conflict "key" fields carry the same
                 // base64 []byte encoding as MVCCKeyValue; decode to
                 // plaintext for consistency.
@@ -677,6 +733,7 @@ export class WailsClient implements Client {
     /** @inheritdoc */
     get transaction(): TransactionClient {
         const b = wrapBindings(getBindings().main.TransactionBinding);
+        const database = this.activeDatabase;
         return {
             execute: async (req: TransactionRequest): Promise<TransactionResponse> => {
                 // TransactionBinding.Execute returns
@@ -684,7 +741,7 @@ export class WailsClient implements Client {
                 // op results carry base64-encoded MVCCKeyValue key/value
                 // over Wails IPC, same as the REST wire. Decode to
                 // plaintext for consistency.
-                const resp = await b.Execute(toSnake(req)) as TransactionResponse;
+                const resp = await b.Execute(database, toSnake(req)) as TransactionResponse;
                 return { ...resp, responses: decodeOpResponses(resp.responses) };
             },
         };
@@ -697,17 +754,22 @@ export class WailsClient implements Client {
     /** @inheritdoc */
     get batch(): BatchClient {
         const b = wrapBindings(getBindings().main.BatchBinding);
+        const database = this.activeDatabase;
         return {
             execute: async (ops: readonly Op[]): Promise<BatchResponse> => {
                 // BatchBinding.Execute returns *transport.BatchResponse
                 // unconverted, so Get/Range op results carry base64-encoded
                 // MVCCKeyValue key/value over Wails IPC, same as the REST
                 // wire. Decode to plaintext for consistency.
-                const resp = await b.Execute(toSnake(ops)) as BatchResponse;
+                const resp = await b.Execute(database, toSnake(ops)) as BatchResponse;
                 return { ...resp, responses: decodeOpResponses(resp.responses) };
             },
             importFile: async (filePath: string, opts: ImportOptions): Promise<ImportResult> => {
-                return b.ImportFile(filePath, toSnake(opts)) as Promise<ImportResult>;
+                return b.ImportFile(database, filePath, toSnake(opts)) as Promise<ImportResult>;
+            },
+            importContent: async (_data: Uint8Array | Blob, _opts: ImportContentOptions): Promise<ImportResult> => {
+                // The desktop app reads the file natively; importFile takes its path.
+                throw new NotImplementedError('batch.importContent');
             },
             availableCodecs: async (): Promise<readonly string[]> => {
                 return b.AvailableCodecs() as Promise<readonly string[]>;
@@ -751,8 +813,8 @@ export class WailsClient implements Client {
 
         // Invoke the Go binding to start the watch. It returns a watch ID.
         const watchId = isPrefix
-            ? await b.WatchPrefix(keyOrPrefix, toSnake(opts)) as number
-            : await b.Watch(keyOrPrefix, toSnake(opts)) as number;
+            ? await b.WatchPrefix(this.activeDatabase, keyOrPrefix, toSnake(opts)) as number
+            : await b.Watch(this.activeDatabase, keyOrPrefix, toSnake(opts)) as number;
 
         // Subscribe to the Wails runtime event bus for this watch ID.
         // Go emits events via wailsruntime.EventsEmit(ctx, eventName, data)
@@ -808,21 +870,24 @@ export class WailsClient implements Client {
     /** @inheritdoc */
     get lease(): LeaseClient {
         const b = wrapBindings(getBindings().main.LeaseBinding);
+        // Leases live in the scoped database, so a lease granted here binds
+        // the keys mvcc.putWithLease writes there; "" is the default.
+        const database = this.activeDatabase;
         return {
             grant: async (ttl: number): Promise<LeaseInfo> => {
-                return b.Grant(ttl) as Promise<LeaseInfo>;
+                return b.Grant(database, ttl) as Promise<LeaseInfo>;
             },
             revoke: async (leaseId: number): Promise<void> => {
-                await b.Revoke(leaseId);
+                await b.Revoke(database, leaseId);
             },
             keepAlive: async (leaseId: number): Promise<LeaseInfo> => {
-                return b.KeepAlive(leaseId) as Promise<LeaseInfo>;
+                return b.KeepAlive(database, leaseId) as Promise<LeaseInfo>;
             },
             timeToLive: async (leaseId: number): Promise<LeaseInfo> => {
-                return b.TimeToLive(leaseId) as Promise<LeaseInfo>;
+                return b.TimeToLive(database, leaseId) as Promise<LeaseInfo>;
             },
             list: async (): Promise<readonly LeaseInfo[]> => {
-                return b.List() as Promise<readonly LeaseInfo[]>;
+                return b.List(database) as Promise<readonly LeaseInfo[]>;
             },
         };
     }
@@ -834,25 +899,26 @@ export class WailsClient implements Client {
     /** @inheritdoc */
     get lock(): LockClient {
         const b = wrapBindings(getBindings().main.LockBinding);
+        const database = this.activeDatabase;
         return {
             acquire: async (req: LockAcquireRequest): Promise<LockInfo> => {
-                return b.Acquire(toSnake(req)) as Promise<LockInfo>;
+                return b.Acquire(database, toSnake(req)) as Promise<LockInfo>;
             },
             tryLock: async (req: LockAcquireRequest): Promise<LockInfo> => {
-                return b.TryLock(toSnake(req)) as Promise<LockInfo>;
+                return b.TryLock(database, toSnake(req)) as Promise<LockInfo>;
             },
             release: async (req: LockReleaseRequest): Promise<void> => {
-                await b.Release(toSnake(req));
+                await b.Release(database, toSnake(req));
             },
             extend: async (req: LockExtendRequest): Promise<LockInfo> => {
-                return b.Extend(toSnake(req)) as Promise<LockInfo>;
+                return b.Extend(database, toSnake(req)) as Promise<LockInfo>;
             },
             status: async (key: string): Promise<LockInfo | null> => {
-                const result = await b.Status(key);
+                const result = await b.Status(database, key);
                 return result as LockInfo | null;
             },
             list: async (prefix?: string): Promise<LockListResponse> => {
-                return b.List(prefix ?? '') as Promise<LockListResponse>;
+                return b.List(database, prefix ?? '') as Promise<LockListResponse>;
             },
         };
     }
@@ -864,25 +930,29 @@ export class WailsClient implements Client {
     /** @inheritdoc */
     get index(): IndexClient {
         const b = wrapBindings(getBindings().main.IndexBinding);
+        // Every index binding takes the scoped database first, as KV does, so
+        // an index created in a database workspace indexes (and constrains)
+        // that workspace's KV writes; "" is the connection's default database.
+        const database = this.activeDatabase;
         return {
             create: async (req: IndexCreateRequest): Promise<void> => {
-                await b.Create(toSnake(req));
+                await b.Create(database, toSnake(req));
             },
             drop: async (name: string): Promise<void> => {
-                await b.Drop(name);
+                await b.Drop(database, name);
             },
             query: async (indexName: string, value: string): Promise<IndexQueryResponse> => {
-                return b.Query(indexName, value) as Promise<IndexQueryResponse>;
+                return b.Query(database, indexName, value) as Promise<IndexQueryResponse>;
             },
             scan: async (
                 indexName: string,
                 start: string,
                 end: string,
             ): Promise<IndexScanResponse> => {
-                return b.Scan(indexName, start, end) as Promise<IndexScanResponse>;
+                return b.Scan(database, indexName, start, end) as Promise<IndexScanResponse>;
             },
             list: async (): Promise<IndexListResponse> => {
-                return b.List("") as Promise<IndexListResponse>;
+                return b.List(database) as Promise<IndexListResponse>;
             },
         };
     }
@@ -893,7 +963,10 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get timeSeries(): TimeSeriesClient | null {
-        const b = wrapBindings(getBindings().main.TimeSeriesBinding);
+        // Every TimeSeriesBinding method takes the database first, as the
+        // KV and vector bindings do, so a databaseScoped client's reads and
+        // writes reach its own database rather than the default one.
+        const b = withDatabaseArg(wrapBindings(getBindings().main.TimeSeriesBinding), this.activeDatabase);
         return {
             write: async (point: TSDataPoint): Promise<void> => {
                 await b.Write(toSnake(point));
@@ -934,7 +1007,7 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get vector(): VectorClient | null {
-        const b = wrapBindings(getBindings().main.VectorBinding);
+        const b = withDatabaseArg(wrapBindings(getBindings().main.VectorBinding), this.activeDatabase);
         return {
             createNamespace: async (
                 req: CreateNamespaceRequest,
@@ -975,25 +1048,44 @@ export class WailsClient implements Client {
                 return b.UpsertVector(toSnake({ ...req, id: vectorIDToWire(req.id) })) as Promise<UpsertVectorResponse>;
             },
             getVector: async (req: GetVectorRequest): Promise<VectorData> => {
-                const vec = await b.GetVector(toSnake({ ...req, id: vectorIDToWire(req.id) })) as VectorData;
+                // The Go request defaults both include flags to false, which
+                // omits the values and the metadata; a vector read is whole.
+                const vec = await b.GetVector({
+                    ...toSnake({ ...req, id: vectorIDToWire(req.id) }),
+                    include_vector: true,
+                    include_metadata: true,
+                }) as VectorData;
                 return normalizeVectorIDField(vec);
             },
             deleteVector: async (req: DeleteVectorRequest): Promise<void> => {
                 await b.DeleteVector(toSnake({ ...req, id: vectorIDToWire(req.id) }));
             },
             batchUpsert: async (req: BatchUpsertRequest): Promise<BatchUpsertResponse> => {
-                return b.BatchUpsert(toSnake({
+                // The binding answers the Go BatchUpsertResponse
+                // {ids, versions, timestamp, success, inserted_count}: the
+                // upserted count is inserted_count, the rest failed.
+                const resp = await b.BatchUpsert(toSnake({
                     ...req,
                     vectors: req.vectors.map((v) => ({ ...v, id: vectorIDToWire(v.id) })),
-                })) as Promise<BatchUpsertResponse>;
+                })) as { insertedCount?: number } | null;
+                const succeeded = resp?.insertedCount ?? 0;
+                return { succeeded, failed: Math.max(0, req.vectors.length - succeeded) };
             },
             batchDeleteVectors: async (
                 req: BatchDeleteVectorsRequest,
             ): Promise<BatchDeleteVectorsResponse> => {
-                return b.BatchDeleteVectors(toSnake({
+                // The binding answers the Go BatchDeleteVectorsResponse
+                // {deleted_count, failed_ids, timestamp, success}.
+                const resp = await b.BatchDeleteVectors(toSnake({
                     ...req,
                     ids: req.ids.map(vectorIDToWire),
-                })) as Promise<BatchDeleteVectorsResponse>;
+                })) as { deletedCount?: number; failedIds?: readonly (number | string)[] | null } | null;
+                const failedIds = resp?.failedIds ?? [];
+                return {
+                    deleted: resp?.deletedCount ?? 0,
+                    failed: failedIds.length,
+                    errors: failedIds.map((id) => ({ id: String(id), error: 'not deleted' })),
+                };
             },
             listVectors: async (req: ListVectorsRequest): Promise<ListVectorsResponse> => {
                 const resp = await b.ListVectors(toSnake(req)) as ListVectorsResponse;
@@ -1020,8 +1112,18 @@ export class WailsClient implements Client {
             hybridSearch: async (
                 req: HybridSearchRequest,
             ): Promise<HybridSearchResponse> => {
-                const resp = await b.HybridSearch(toSnake(req)) as HybridSearchResponse;
-                return { ...resp, results: (resp.results ?? []).map(normalizeVectorIDField) };
+                // The binding takes transport.HybridSearchRequest, which reads
+                // query_vector and metadata_filter, and answers query_duration.
+                const resp = await b.HybridSearch(toSnake({
+                    namespace: req.namespace,
+                    queryVector: req.vector,
+                    k: req.k,
+                    metadataFilter: req.metadataFilters,
+                    includeVectors: true,
+                    includeMetadata: true,
+                    consistency: req.consistency,
+                })) as WireSearchResponse | null;
+                return searchResponseFromWire(resp ?? {});
             },
             searchByID: async (req: SearchByIDRequest): Promise<SearchSimilarResponse> => {
                 const resp = await b.SearchByID(toSnake({
@@ -1433,21 +1535,24 @@ export class WailsClient implements Client {
         return {
             startEmbedded: async (config: EmbeddedConfig): Promise<void> => {
                 await b.StartEmbedded(config);
-                this.embeddedRunning = true;
+                this.embedded.running = true;
             },
             stopEmbedded: async (): Promise<void> => {
                 await b.StopEmbedded();
-                this.embeddedRunning = false;
+                this.embedded.running = false;
             },
             isEmbedded: (): boolean => {
-                return this.embeddedRunning;
+                return this.embedded.running;
             },
             hasSavedConfig: async (): Promise<boolean> => {
                 return b.HasSavedConfig() as Promise<boolean>;
             },
             restoreEmbedded: async (): Promise<void> => {
                 await b.RestoreEmbedded();
-                this.embeddedRunning = true;
+                this.embedded.running = true;
+            },
+            savedConfig: async (): Promise<EmbeddedConfig> => {
+                return (await b.SavedConfig()) as EmbeddedConfig;
             },
             clearSavedConfig: async (): Promise<void> => {
                 await b.ClearSavedConfig();
@@ -1549,31 +1654,41 @@ export class WailsClient implements Client {
     /**
      * @inheritdoc
      *
-     * Not yet implemented in desktop (Wails) mode: there is no
-     * main.VolumePoolBinding counterpart to the remote transports' volume
-     * pool management surface (REST, gRPC, QUIC, Unix, MCP). Every method
-     * throws NotImplementedError, matching admin.mintJoinToken's existing
-     * desktop-mode gap above.
+     * Served by main.VolumePoolBinding over the active connection's volume
+     * pool client. The Go request structs carry camelCase json tags, so
+     * request objects pass through unconverted; responses go through
+     * wrapBindings, which turns the tenant page's `next_page_token` into
+     * `nextPageToken`.
      */
     get volumePools(): VolumePoolClient {
+        const b = wrapBindings(getBindings().main.VolumePoolBinding);
         return {
             list: async (): Promise<ListVolumePoolsResponse> => {
-                throw new NotImplementedError('volumePools.list');
+                const pools = (await b.List()) as VolumePool[] | null;
+                return { pools: pools ?? [] };
             },
-            get: async (): Promise<VolumePoolDetail> => {
-                throw new NotImplementedError('volumePools.get');
+            get: async (pool: string): Promise<VolumePoolDetail> => {
+                return b.Get(pool) as Promise<VolumePoolDetail>;
             },
-            create: async (): Promise<VolumePool> => {
-                throw new NotImplementedError('volumePools.create');
+            create: async (req: CreateVolumePoolRequest): Promise<VolumePool> => {
+                return b.Create(req) as Promise<VolumePool>;
             },
-            update: async (): Promise<VolumePool> => {
-                throw new NotImplementedError('volumePools.update');
+            update: async (pool: string, req: UpdateVolumePoolRequest): Promise<VolumePool> => {
+                return b.Update(pool, { ...req, name: pool }) as Promise<VolumePool>;
             },
-            delete: async (): Promise<void> => {
-                throw new NotImplementedError('volumePools.delete');
+            delete: async (pool: string): Promise<void> => {
+                await b.Delete(pool);
             },
-            listTenants: async (): Promise<ListVolumePoolTenantsResponse> => {
-                throw new NotImplementedError('volumePools.listTenants');
+            listTenants: async (
+                pool: string,
+                req: ListVolumePoolTenantsRequest = {},
+            ): Promise<ListVolumePoolTenantsResponse> => {
+                const page = (await b.ListTenants(
+                    pool,
+                    req.pageSize ?? 0,
+                    req.pageToken ?? '',
+                )) as ListVolumePoolTenantsResponse | null;
+                return { tenants: page?.tenants ?? [], nextPageToken: page?.nextPageToken || undefined };
             },
             moveTenant: async (): Promise<VolumePoolMove> => {
                 throw new NotImplementedError('volumePools.moveTenant');
@@ -1719,7 +1834,9 @@ export class WailsClient implements Client {
 
     /** @inheritdoc */
     get vlog(): VlogClient {
-        const b = wrapBindings(getBindings().main.VlogBinding);
+        // Every VlogBinding method takes the database first, like the KV,
+        // time-series and vector bindings, so a log is scoped per database.
+        const b = withDatabaseArg(wrapBindings(getBindings().main.VlogBinding), this.activeDatabase);
         return {
             create: async (req: VlogCreateRequest) => b.Create(toSnake(req)) as Promise<VlogCreateResult>,
             list: async () => b.List() as Promise<VlogListResult>,

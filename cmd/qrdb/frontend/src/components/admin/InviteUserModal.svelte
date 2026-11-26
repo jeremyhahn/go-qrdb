@@ -116,6 +116,10 @@
           band; they redeem it themselves with <code>qrdb enroll</code> -- you never hold a
           credential for their account.
         </p>
+        <p class="text-sm">
+          Tenant <code data-testid="invite-tenant">{issued.tenantID}</code> -- the invitee
+          redeems the token in this tenant.
+        </p>
         <div class="form-control">
           <div class="label"><span class="label-text">One-time token</span></div>
           <div class="join w-full">

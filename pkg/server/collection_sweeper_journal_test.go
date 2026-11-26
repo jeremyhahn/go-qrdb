@@ -235,7 +235,7 @@ func TestJournaledCollectionService_MaterializedDatabaseUsesItsOwnHost(t *testin
 		t.Fatalf("Create: %v", err)
 	}
 	shared := newFilledRegistry()
-	reg := NewRESTServiceRegistry(shared, nil, tenantid.System, withDatabaseManager(dbMgr)).(*restServiceRegistry)
+	reg := NewRESTServiceRegistry(shared, nil, tenantid.System, WithRegistryDatabaseManager(dbMgr)).(*restServiceRegistry)
 
 	coll, err := reg.journaledCollectionService(tenantID, name)
 	if err != nil {

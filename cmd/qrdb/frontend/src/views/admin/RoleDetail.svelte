@@ -21,6 +21,7 @@
   import { showToast } from "$stores/toast.svelte.ts";
   import PermissionTreePicker from "../../components/admin/PermissionTreePicker.svelte";
   import TenantSelect from "../../components/admin/TenantSelect.svelte";
+  import { defaultTenantId, errorText } from "./tenantDefault.ts";
 
   let {
     client,
@@ -37,7 +38,7 @@
   // ---------------------------------------------------------------------------
 
   let name: string = $state("");
-  let tenantId: string = $state("default");
+  let tenantId: string = $state("");
   let selectedPermissions: string[] = $state([]);
   let databases: DatabaseInfo[] = $state([]);
   let selectedDatabaseScope: string[] = $state([]);
@@ -65,7 +66,9 @@
       const dbs = await client.database.list();
       databases = dbs;
 
-      if (roleId !== null) {
+      if (roleId === null) {
+        tenantId = await defaultTenantId(client);
+      } else {
         const role: Role = await client.roles.get(roleId);
         existingRole = role;
         name = role.name;
@@ -85,7 +88,7 @@
         selectedDatabaseScope = dbScope.size > 0 ? [...dbScope] : [];
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to load role data";
+      const msg = errorText(err, "Failed to load role data");
       showToast("error", msg);
     } finally {
       loading = false;
@@ -124,7 +127,7 @@
 
       onBack();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to save role";
+      const msg = errorText(err, "Failed to save role");
       showToast("error", msg);
     } finally {
       saving = false;
@@ -143,7 +146,7 @@
       showToast("success", `Role "${name}" deleted`);
       onBack();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to delete role";
+      const msg = errorText(err, "Failed to delete role");
       showToast("error", msg);
     } finally {
       deleting = false;

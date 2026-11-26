@@ -220,6 +220,9 @@ type Server struct {
 
 // serverOptions holds optional dependencies injected via ServerOption.
 type serverOptions struct {
+	// version is the build version the REST GET /status reports
+	// (WithVersion).
+	version string
 	// seamOptions are the composition seams (seam_options.go).
 	seamOptions
 
@@ -573,6 +576,14 @@ func WithLeaderForwarding(resolver rest.LeaderAdminResolver) ServerOption {
 //
 // The HTTP/3 socket is still bound by the server, on ln's host and port,
 // unless WithRESTPacketConn supplies it too.
+// WithVersion sets the build version the REST GET /status reports: the
+// value the server binary's --version flag prints.
+func WithVersion(version string) ServerOption {
+	return func(o *serverOptions) {
+		o.version = version
+	}
+}
+
 func WithRESTListener(ln net.Listener) ServerOption {
 	return func(o *serverOptions) {
 		o.restListener = ln
@@ -2267,6 +2278,7 @@ func (s *Server) startREST() error {
 		rest.WithMaxBodyBytes(int64(s.config.Transport.ResolvedMaxMessageBytes())),
 		rest.WithMaxConnsPerPeer(s.config.Transport.ResolvedMaxConnsPerPeer()),
 		rest.WithClientLimiter(s.clientLimit),
+		rest.WithVersion(s.opts.version),
 	)
 	if s.opts.restListener != nil {
 		ln, err := newLifetimeListener("rest", s.opts.restListener)
@@ -2551,8 +2563,7 @@ func (s *Server) restRegistryOptions() []RESTRegistryOption {
 		regOpts = append(regOpts, WithTenantServicer(s.opts.tenantSvc))
 	}
 	if s.opts.dbManager != nil {
-		regOpts = append(regOpts, WithDatabaseCatalog(newManagerCatalog(s.opts.dbManager)))
-		regOpts = append(regOpts, withDatabaseManager(s.opts.dbManager))
+		regOpts = append(regOpts, WithRegistryDatabaseManager(s.opts.dbManager))
 		regOpts = append(regOpts, withBindingServiceConfig(s.opts.bindingImportSession, s.opts.bindingIndex, s.opts.bindingTimeSeries))
 	}
 	if s.opts.tenantHosts != nil {
