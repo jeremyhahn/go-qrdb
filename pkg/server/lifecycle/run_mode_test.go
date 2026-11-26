@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
+	"github.com/jeremyhahn/go-qrdb/pkg/util/fsync"
 )
 
 func readRunModeMarker(t *testing.T, dir string) (string, bool) {
@@ -98,6 +99,38 @@ func TestClaimRunMode_MismatchRefused(t *testing.T) {
 				t.Fatalf("marker changed to %q", got)
 			}
 		})
+	}
+}
+
+// TestClaimRunMode_ExistingMarkerSyncsDir: a claim that finds a matching
+// marker syncs the data directory before accepting it, because the claim that
+// wrote the marker may have failed its directory sync after the rename (#1745).
+func TestClaimRunMode_ExistingMarkerSyncsDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := ClaimRunMode(dir, capabilities.ModeStandalone); err != nil {
+		t.Fatalf("first claim: %v", err)
+	}
+	sentinel := errors.New("dir sync refused")
+	var synced []string
+	restore := fsync.SetForTest(func(d string) error {
+		synced = append(synced, d)
+		return sentinel
+	})
+	t.Cleanup(restore)
+	err := ClaimRunMode(dir, capabilities.ModeStandalone)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("err = %v, want the injected sync error", err)
+	}
+	var me *RunModeMarkerError
+	if !errors.As(err, &me) || me.Path != dir {
+		t.Fatalf("err = %#v, want *RunModeMarkerError for %s", err, dir)
+	}
+	if len(synced) != 1 || synced[0] != dir {
+		t.Fatalf("synced %v, want [%s]", synced, dir)
+	}
+	restore()
+	if err := ClaimRunMode(dir, capabilities.ModeStandalone); err != nil {
+		t.Fatalf("claim after restored sync: %v", err)
 	}
 }
 
