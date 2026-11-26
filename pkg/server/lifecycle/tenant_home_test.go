@@ -810,6 +810,15 @@ func newMapKVServicer() *mapKVServicer {
 		m.data[key] = append([]byte(nil), value...)
 		return nil
 	}
+	m.putIfAbsentFn = func(_ context.Context, key string, value []byte) (bool, error) {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if _, ok := m.data[key]; ok {
+			return false, nil
+		}
+		m.data[key] = append([]byte(nil), value...)
+		return true, nil
+	}
 	m.getFn = func(_ context.Context, key string) ([]byte, error) {
 		m.mu.Lock()
 		defer m.mu.Unlock()

@@ -288,8 +288,36 @@ func TestBuildServices_StandaloneAuditSwitchKeepsTheChainContinuous(t *testing.T
 }
 
 // auditedTenants is a composed node's tenant service with replicated audit
-// entitled for every tenant.
+// entitled for every tenant. It forwards the wrapped service's isolation
+// epoch and tightening readers, which embedding the TenantServicer interface
+// alone would hide from the node's audit append guard.
 type auditedTenants struct{ tenant.TenantServicer }
+
+var (
+	_ tenant.IsolationEpochReader      = auditedTenants{}
+	_ tenant.IsolationTighteningReader = auditedTenants{}
+)
+
+// errNoIsolationReader is what auditedTenants answers when the wrapped
+// service does not report the isolation reader asked for: the guard then
+// fails closed, as it would on the wrapped service itself.
+var errNoIsolationReader = errors.New("auditedTenants: wrapped tenant service does not report this isolation reader")
+
+func (a auditedTenants) IsolationTightening(ctx context.Context, tenantID string) (bool, error) {
+	r, ok := a.TenantServicer.(tenant.IsolationTighteningReader)
+	if !ok {
+		return false, errNoIsolationReader
+	}
+	return r.IsolationTightening(ctx, tenantID)
+}
+
+func (a auditedTenants) IsolationEpochs(ctx context.Context, tenantID string) (map[string][]byte, error) {
+	r, ok := a.TenantServicer.(tenant.IsolationEpochReader)
+	if !ok {
+		return nil, errNoIsolationReader
+	}
+	return r.IsolationEpochs(ctx, tenantID)
+}
 
 func (auditedTenants) ReplicatedAuditEnabled(context.Context, string) (bool, error) {
 	return true, nil
