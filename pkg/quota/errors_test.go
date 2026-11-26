@@ -116,3 +116,63 @@ func TestErrNilCheckerMessageContainsQuota(t *testing.T) {
 		t.Errorf("ErrNilChecker.Error() = %q, want it to contain %q", got, "quota")
 	}
 }
+
+func TestExceededErrorMetadataRoundTrip(t *testing.T) {
+	cases := []struct {
+		name string
+		in   ExceededError
+	}{
+		{"zero", ExceededError{}},
+		{"at limit", ExceededError{TenantID: "t1", Resource: ResourceDatabases, Current: 10, Limit: 10}},
+		{"over limit", ExceededError{TenantID: "t2", Resource: ResourceDatabases + 1, Current: 1 << 40, Limit: 1 << 39}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ExceededFromMetadata(tc.in.Metadata())
+			if *got != tc.in {
+				t.Fatalf("round trip = %+v, want %+v", *got, tc.in)
+			}
+		})
+	}
+}
+
+func TestExceededFromMetadataMalformedFieldsDecodeAsZero(t *testing.T) {
+	got := ExceededFromMetadata(map[string]string{
+		metadataTenantID: "t1",
+		metadataResource: "not-a-number",
+		metadataCurrent:  "",
+	})
+	want := ExceededError{TenantID: "t1"}
+	if *got != want {
+		t.Fatalf("got %+v, want %+v", *got, want)
+	}
+	if nilMD := ExceededFromMetadata(nil); *nilMD != (ExceededError{}) {
+		t.Fatalf("nil metadata = %+v, want zero", *nilMD)
+	}
+}
+
+func TestEntitlementErrorMetadataRoundTrip(t *testing.T) {
+	cases := []struct {
+		name string
+		in   EntitlementError
+	}{
+		{"zero", EntitlementError{}},
+		{"mode denied", EntitlementError{TenantID: "t1", Mode: "shamir"}},
+		{"feature denied", EntitlementError{TenantID: "t2", Feature: "sqlite_vfs"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			md := tc.in.Metadata()
+			if md[metadataTenantID] != tc.in.TenantID || md[metadataMode] != tc.in.Mode || md[metadataFeature] != tc.in.Feature {
+				t.Fatalf("metadata = %v for %+v", md, tc.in)
+			}
+			got := EntitlementFromMetadata(md)
+			if *got != tc.in {
+				t.Fatalf("round trip = %+v, want %+v", *got, tc.in)
+			}
+		})
+	}
+	if nilMD := EntitlementFromMetadata(nil); *nilMD != (EntitlementError{}) {
+		t.Fatalf("nil metadata = %+v, want zero", *nilMD)
+	}
+}
