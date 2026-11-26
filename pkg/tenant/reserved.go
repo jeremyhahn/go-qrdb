@@ -22,6 +22,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
 // legacyDefaultTenantID is the legacy tenant id retired in Phase 0 of
@@ -138,6 +139,14 @@ func ValidateTenantIDShape(id string) error {
 		return &InvalidTenantIDError{
 			TenantID: id,
 			Reason:   "id must not be a relative path segment",
+		}
+	}
+	// A raft tenant's volume-pool directory is named by its id, and pool-root
+	// names with this prefix belong to the node (copy-back staging).
+	if strings.HasPrefix(id, volume.ReservedPathPrefix) {
+		return &InvalidTenantIDError{
+			TenantID: id,
+			Reason:   "id must not begin with " + volume.ReservedPathPrefix + ", reserved for node-local pool directories",
 		}
 	}
 	return nil

@@ -185,6 +185,17 @@ func (m Message) CompoundIndexes() []index.CompoundIndexDef {
 Registered automatically when the DAO is constructed. **Field order is
 significant** — the first field is the leading prefix field.
 
+A definition with `Unique: true` admits one key per value tuple. A KV-engine
+transaction carrying `CmdFlagOrderedUnique` (a guarded batch or a unit of work
+on `sdk.NewEmbeddedKVStore`) checks its unique compound indexes over all its
+writes in op order before it applies (`checkCompoundUniqueBatch`, reading the
+index through the batch with `CompoundIndex.GetCompoundInBatch`), and applies
+its puts with the same batch-visible check (`PutCompoundBatchOrdered`). Two
+writes of one transaction that share a tuple are refused with `ErrConflict` and
+write nothing; a tuple moved from one key to another in op order is admitted.
+An unflagged transaction keeps the committed-storage check, so an existing log
+replays unchanged (#1649; `TestEmbeddedKVStore_GuardedBatchUniqueCompoundTuple`).
+
 ## Invariants
 
 - **Index names are `{database}.{entityType}.{FieldName}`.** A bare field name
@@ -206,6 +217,27 @@ significant** — the first field is the leading prefix field.
   unique constraint enforceable.
 - **A unique index rejects the write, it does not overwrite.** Violating
   uniqueness fails the entity write.
+- **A transaction or batch is checked in op order.** A value released by an
+  earlier delete or overwrite of its holder may be taken by a later op of the
+  same set, and not by an earlier one, so the pre-check admits exactly what
+  ordered apply admits. An earlier write releases only the entries the key's
+  prior value carries (the entries apply removes), so an entry left stale by a
+  legacy plain non-JSON overwrite stays held and a set giving its value to
+  another key is refused as a conflict. This holds for a command proposed once the cluster
+  feature `ordered-unique-check` (`featuregate.OrderedUniqueCheck`) is enabled
+  for the group, at once on a standalone or embedded store: such a command
+  carries the `protocol.CmdFlagOrderedUnique` trailer byte. A command without
+  it, written by an older binary or proposed before the feature was enabled,
+  keeps the legacy check, in which only a key deleted in the set frees its
+  values (an overwrite does not), so a log replays to the state it committed.
+- **A key-scope change rebuilds only a flagged create.** A same-owner
+  re-create with a different key scope rebuilds the index at the new scope
+  only for a command carrying the rescope flag
+  (`protocol.IndexCreateOptions.Rescope`), proposed once the cluster feature
+  `index-rescope` (`featuregate.IndexRescope`) is enabled for the group, and at
+  once on a standalone or embedded store. A command without it, written by an
+  older binary or proposed before the feature was enabled, keeps the existing
+  index and its original scope, so every replica and every replay agrees.
 - **A sparse index simply omits entities missing the field** — it does not index
   them under a zero value, which would make "missing" and "empty" the same
   query.

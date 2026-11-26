@@ -129,6 +129,17 @@ type shellRegistrarBox struct {
 	registrar ShellRegistrar
 }
 
+// MoveHold reports whether a volume-pool tenant move holds a tenant's
+// stores closed. MoveStoreCloser implements it.
+type MoveHold interface {
+	HoldsTenant(tenantID string) bool
+}
+
+// moveHoldBox holds a MoveHold behind an atomic.Pointer.
+type moveHoldBox struct {
+	hold MoveHold
+}
+
 // TenantShardReconcilerOption configures TenantShardReconciler behavior.
 type TenantShardReconcilerOption func(*TenantShardReconciler)
 
@@ -244,6 +255,7 @@ type TenantShardReconciler struct {
 	selfNodeID      string
 	barriers        BarrierReadiness
 	shells          atomic.Pointer[shellRegistrarBox]
+	moveHold        atomic.Pointer[moveHoldBox]
 	sealRecords     clusterseal.Sealer
 	joinObserver    JoinObserver
 	promoter        Promoter
@@ -597,6 +609,12 @@ func (r *TenantShardReconciler) ensureStarted(ctx context.Context, p *placement.
 			slog.String("database", p.Database))
 		return false
 	}
+	if r.movesHeld(p.TenantID) {
+		r.logger.Debug("placement reconciler: tenant held by a volume-pool move, deferring shard start",
+			slog.String("tenant", p.TenantID),
+			slog.String("database", p.Database))
+		return false
+	}
 	if r.barriers != nil {
 		tb, err := r.barriers.GetTenant(p.TenantID)
 		if err != nil || tb == nil {
@@ -648,6 +666,24 @@ func (r *TenantShardReconciler) SetShellRegistrar(s ShellRegistrar) {
 		return
 	}
 	r.shells.Store(&shellRegistrarBox{registrar: s})
+}
+
+// SetMoveHold installs the volume-pool move hold. A tenant the hold reports
+// held is left alone: no shell registration, no shard attach, so a move's
+// close step cannot race a re-attach of the directory it is copying. Nil
+// clears it.
+func (r *TenantShardReconciler) SetMoveHold(h MoveHold) {
+	if h == nil {
+		r.moveHold.Store(nil)
+		return
+	}
+	r.moveHold.Store(&moveHoldBox{hold: h})
+}
+
+// movesHeld reports whether the move hold holds tenantID.
+func (r *TenantShardReconciler) movesHeld(tenantID string) bool {
+	h := r.moveHold.Load()
+	return h != nil && h.hold.HoldsTenant(tenantID)
 }
 
 // Run drives the reconciler lifecycle. It calls ReconcileOnce immediately

@@ -183,6 +183,65 @@ func (t *Transport) ListPoolTenants(ctx context.Context, req *transport.ListVolu
 	return out, nil
 }
 
+// MoveTenant starts moving a tenant to another pool via the QUIC
+// volumepool.MoveTenant handler.
+func (t *Transport) MoveTenant(ctx context.Context, req *transport.MoveVolumePoolTenantRequest) (*transport.VolumePoolMove, error) {
+	if req == nil {
+		return nil, &transport.RequestError{Method: "MoveTenant", Err: &transport.NilRequestError{}}
+	}
+	return t.volumeMoveCall(ctx, "MoveTenant", "volumepool.MoveTenant", &pb.VolumePoolMoveTenantRequest{Tenant: req.TenantID, ToPool: req.ToPool, AllowUnencryptedDestination: req.AllowUnencryptedDestination})
+}
+
+// GetMove answers a tenant's move in progress via the QUIC
+// volumepool.GetMove handler.
+func (t *Transport) GetMove(ctx context.Context, tenantID string) (*transport.VolumePoolMove, error) {
+	return t.volumeMoveCall(ctx, "GetMove", "volumepool.GetMove", &pb.VolumePoolGetMoveRequest{Tenant: tenantID})
+}
+
+// CancelMove cancels a tenant's move before cut over via the QUIC
+// volumepool.CancelMove handler.
+func (t *Transport) CancelMove(ctx context.Context, tenantID string) (*transport.VolumePoolMove, error) {
+	return t.volumeMoveCall(ctx, "CancelMove", "volumepool.CancelMove", &pb.VolumePoolCancelMoveRequest{Tenant: tenantID})
+}
+
+// volumeMoveCall sends one move request and decodes the journal answered.
+func (t *Transport) volumeMoveCall(ctx context.Context, method, quicMethod string, req proto.Message) (*transport.VolumePoolMove, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	payload, err := proto.Marshal(req)
+	if err != nil {
+		return nil, &transport.RequestError{Method: method, Err: err}
+	}
+	respBytes, err := t.call(ctx, quicMethod, payload)
+	if err != nil {
+		return nil, &transport.RequestError{Method: method, Err: err}
+	}
+	var m pb.VolumePoolMove
+	if err := proto.Unmarshal(respBytes, &m); err != nil {
+		return nil, &transport.RequestError{Method: method, Err: err}
+	}
+	out := &transport.VolumePoolMove{
+		TenantID:            m.GetTenantId(),
+		FromPool:            m.GetFromPool(),
+		ToPool:              m.GetToPool(),
+		State:               m.GetState(),
+		NodesCopied:         m.GetNodesCopied(),
+		NodesPending:        m.GetNodesPending(),
+		NodesRetired:        m.GetNodesRetired(),
+		StepNode:            m.GetStepNode(),
+		StepAttempts:        int(m.GetStepAttempts()),
+		Error:               m.GetError(),
+		ReservedBytes:       m.GetReservedBytes(),
+		SourceReservedBytes: m.GetSourceReservedBytes(),
+		TenantRecorded:      m.GetTenantRecorded(),
+		EncryptionDropped:   m.GetEncryptionDropped(),
+	}
+	out.AdmittedAt, _ = time.Parse(time.RFC3339Nano, m.GetAdmittedAt())
+	out.UpdatedAt, _ = time.Parse(time.RFC3339Nano, m.GetUpdatedAt())
+	return out, nil
+}
+
 // ---------------------------------------------------------------------------
 // Proto conversion helpers
 // ---------------------------------------------------------------------------

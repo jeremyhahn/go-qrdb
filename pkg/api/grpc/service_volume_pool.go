@@ -16,6 +16,7 @@ package grpc
 
 import (
 	"context"
+	"math"
 	"time"
 
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -131,6 +132,80 @@ func (s *qrdbServiceServer) VolumePoolListTenants(ctx context.Context, req *pb.V
 		resp.Tenants[i] = &pb.VolumePoolTenant{TenantId: a.TenantID, ReservedBytes: a.ReservedBytes}
 	}
 	return resp, nil
+}
+
+// VolumePoolMoveTenant starts moving a tenant to req.ToPool.
+func (s *qrdbServiceServer) VolumePoolMoveTenant(ctx context.Context, req *pb.VolumePoolMoveTenantRequest) (*pb.VolumePoolMove, error) {
+	if s.volumeSvc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "volume"})
+	}
+	m, err := s.volumeSvc.MoveTenant(ctx, volume.MoveTenantRequest{
+		TenantID:                    req.GetTenant(),
+		ToPool:                      req.GetToPool(),
+		AllowUnencryptedDestination: req.GetAllowUnencryptedDestination(),
+	})
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return VolumePoolMoveToProto(m), nil
+}
+
+// VolumePoolGetMove answers a tenant's move in progress.
+func (s *qrdbServiceServer) VolumePoolGetMove(ctx context.Context, req *pb.VolumePoolGetMoveRequest) (*pb.VolumePoolMove, error) {
+	if s.volumeSvc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "volume"})
+	}
+	m, err := s.volumeSvc.GetMove(ctx, req.GetTenant())
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return VolumePoolMoveToProto(m), nil
+}
+
+// VolumePoolCancelMove cancels a tenant's move before cut over.
+func (s *qrdbServiceServer) VolumePoolCancelMove(ctx context.Context, req *pb.VolumePoolCancelMoveRequest) (*pb.VolumePoolMove, error) {
+	if s.volumeSvc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "volume"})
+	}
+	m, err := s.volumeSvc.CancelMove(ctx, req.GetTenant())
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return VolumePoolMoveToProto(m), nil
+}
+
+// VolumePoolMoveToProto converts a move journal to its wire message.
+// The QUIC transport shares it. Times are RFC 3339 UTC; a zero
+// UpdatedAt is left empty.
+func VolumePoolMoveToProto(m *volume.Move) *pb.VolumePoolMove {
+	if m == nil {
+		return nil
+	}
+	out := &pb.VolumePoolMove{
+		TenantId:            m.TenantID,
+		FromPool:            m.FromPool,
+		ToPool:              m.ToPool,
+		State:               m.State,
+		NodesCopied:         m.NodesCopied,
+		NodesPending:        m.NodesPending,
+		NodesRetired:        m.NodesRetired,
+		StepNode:            m.StepNode,
+		Error:               m.Error,
+		ReservedBytes:       m.ReservedBytes,
+		SourceReservedBytes: m.SourceReservedBytes,
+		TenantRecorded:      m.TenantRecorded,
+		EncryptionDropped:   m.EncryptionDropped,
+	}
+	if m.StepAttempts > 0 && m.StepAttempts <= math.MaxInt32 {
+		out.StepAttempts = int32(m.StepAttempts)
+	}
+	if !m.AdmittedAt.IsZero() {
+		out.AdmittedAt = m.AdmittedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if !m.UpdatedAt.IsZero() {
+		out.UpdatedAt = m.UpdatedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------

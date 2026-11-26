@@ -38,4 +38,18 @@
 //
 //	err = client.KV().Put(ctx, "hello", []byte("world"))
 //	val, err := client.KV().Get(ctx, "hello")
+//
+// # Embedded DAO stores
+//
+// An application that owns its storage builds DAOs without a server:
+// NewEmbeddedKVStore runs the KV engine in process over a storage.Storage
+// (for example storage.NewPebbleStorage from sdk/go/storage), maintaining
+// secondary indexes atomically on every Put and Delete. One that holds the
+// service layer instead adapts it with sdk/go/server's NewServiceKVStore,
+// which lives there so a caller of this package alone links no server
+// package. Entities declare
+// compound indexes as CompoundIndexDef values through CompoundIndexRegisterer,
+// and IndexQueryRequest, IndexScanRequest, CompoundIndexQueryRequest and
+// CompoundIndexScanRequest name the index lookups, so an embedder such as
+// go-signal imports nothing under go-qrdb/pkg.
 package sdk

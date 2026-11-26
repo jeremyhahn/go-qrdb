@@ -24,6 +24,7 @@ import (
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 )
@@ -40,6 +41,8 @@ type indexRegistryHost struct {
 	reads   atomic.Int32
 	caps    []uint32
 	barrier *sync.WaitGroup
+	// rescopes records the Rescope flag of every create proposed.
+	rescopes []bool
 }
 
 func newIndexRegistryHost(names ...string) *indexRegistryHost {
@@ -62,6 +65,7 @@ func newIndexRegistryHost(names ...string) *indexRegistryHost {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		h.caps = append(h.caps, opts.MaxIndexes)
+		h.rescopes = append(h.rescopes, opts.Rescope)
 		exists := slices.Contains(h.names, name)
 		if index.CreateExceedsCap(exists, len(h.names), opts.MaxIndexes) {
 			return sm.Result{Data: protocol.EncodeLimitRefusal(protocol.LimitIndexes, opts.MaxIndexes)}, nil
@@ -86,6 +90,12 @@ func (h *indexRegistryHost) proposedCaps() []uint32 {
 	return slices.Clone(h.caps)
 }
 
+func (h *indexRegistryHost) proposedRescopes() []bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.rescopes)
+}
+
 func TestWithMaxIndexes_SetsTheCap(t *testing.T) {
 	svc := NewIndexService(newIndexRegistryHost(), 1, WithMaxIndexes(3)).(*IndexService)
 	if svc.maxIndexes != 3 {
@@ -108,6 +118,40 @@ func TestIndexService_CreateIndex_CarriesTheCapInTheCommand(t *testing.T) {
 	}
 	if got := host.proposedCaps(); !slices.Equal(got, []uint32{7}) {
 		t.Fatalf("proposed caps = %v, want [7]", got)
+	}
+}
+
+// The rescope flag is proposed only once featuregate.IndexRescope is enabled
+// for the shard on a gated host, and at once on an ungated one: an older
+// replica keeps the existing index for a scope-changing re-create.
+func TestIndexService_CreateIndex_RescopeFollowsTheFeatureGate(t *testing.T) {
+	for name, c := range map[string]struct {
+		host interface {
+			Host
+			proposedRescopes() []bool
+		}
+		want bool
+	}{
+		"gated off": {host: &capsGatedIndexHost{indexRegistryHost: newIndexRegistryHost()}, want: false},
+		"gated on":  {host: &capsGatedIndexHost{indexRegistryHost: newIndexRegistryHost(), active: true}, want: true},
+		"ungated":   {host: newIndexRegistryHost(), want: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			svc := NewIndexService(c.host, 1)
+			if err := svc.CreateIndex(context.Background(), "a", "f", IndexConfig{KeyPrefix: "member/"}); err != nil {
+				t.Fatalf("CreateIndex: %v", err)
+			}
+			if got := c.host.proposedRescopes(); !slices.Equal(got, []bool{c.want}) {
+				t.Fatalf("proposed Rescope = %v, want [%v]", got, c.want)
+			}
+		})
+	}
+	gated := &capsGatedIndexHost{indexRegistryHost: newIndexRegistryHost()}
+	if err := NewIndexService(gated, 1).CreateIndex(context.Background(), "a", "f", IndexConfig{}); err != nil {
+		t.Fatalf("CreateIndex: %v", err)
+	}
+	if !slices.Contains(gated.asked, featuregate.IndexRescope) {
+		t.Fatalf("asked %v, want %s", gated.asked, featuregate.IndexRescope)
 	}
 }
 

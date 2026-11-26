@@ -28,6 +28,7 @@ type IndexCreateParams struct {
 	Unique    bool   `json:"unique"`
 	Sparse    bool   `json:"sparse"`
 	Numeric   bool   `json:"numeric"`
+	KeyPrefix string `json:"key_prefix"`
 }
 
 // IndexBinding exposes secondary index management to the Wails frontend.
@@ -51,9 +52,10 @@ func (b *IndexBinding) Create(params IndexCreateParams) error {
 		return err
 	}
 	cfg := transport.IndexConfig{
-		Unique:  params.Unique,
-		Sparse:  params.Sparse,
-		Numeric: params.Numeric,
+		Unique:    params.Unique,
+		Sparse:    params.Sparse,
+		Numeric:   params.Numeric,
+		KeyPrefix: params.KeyPrefix,
 	}
 	if err := cl.Index().IndexCreate(context.Background(), params.Name, params.FieldName, cfg); err != nil {
 		b.logger.Error("Create failed", "name", params.Name, "error", err)

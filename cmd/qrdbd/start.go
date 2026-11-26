@@ -1396,6 +1396,11 @@ func runStart(f *startFlags) (err error) {
 	)
 	defer recordSecureMemoryWipe(&err)
 
+	// The data directory must belong to this run mode before anything opens or writes into it.
+	if err := lifecycle.ClaimRunMode(f.dataDir, f.mode); err != nil {
+		return err
+	}
+
 	// Resolve TLS: explicit files -> cached certs -> generate/bootstrap.
 	bundle, bootServers, err := resolveTLS(f, slog.Default())
 	if err != nil {
@@ -1914,6 +1919,9 @@ func runStart(f *startFlags) (err error) {
 			// shard -- so the KV/Transaction pair built directly over
 			// svcHost here is safe to use well before the shard is ready to
 			// serve a linearizable read.
+			// volumeCatalog outlives this block: the tenant-move worker,
+			// wired once the tenant service and runtimes exist, runs over it.
+			var volumeCatalog *volume.Catalog
 			if barrierRegistry != nil {
 				catalogKVSvc := lifecycle.NewVolumeCatalogKVServicer(service.NewKVService(svcHost, shard.ShardKV))
 				catalogTxSvc := service.NewTransactionService(svcHost, shard.ShardKV)
@@ -1922,6 +1930,7 @@ func runStart(f *startFlags) (err error) {
 					_ = shutdownNode(nodeCloser)
 					return catErr
 				}
+				volumeCatalog = catalog
 				barrierRegistry.Attach(seal.WithVolumeAllocator(catalog))
 				if volumePoolAttached != nil {
 					volumePoolAttached()
@@ -2538,6 +2547,7 @@ func runStart(f *startFlags) (err error) {
 				SnapshotEntries:      f.snapshotEntries,
 				CompactionOverhead:   f.compactionOverhead,
 				Lease:                f.leaseConfig,
+				VolumeNodeID:         nodeID,
 			})
 			if err != nil {
 				_ = shutdownNode(nodeCloser)
@@ -2616,6 +2626,39 @@ func runStart(f *startFlags) (err error) {
 					ti.Reconciler.SetShellRegistrar(shells)
 				}
 				go ti.Reconciler.Run(bootCtx)
+			}
+			// Tenant moves between volume pools: every node runs its own
+			// move steps, and the system shard's leader grants them and cuts
+			// each move over (docs/decisions/volume-pool-tenant-moves.md).
+			stopMoveWorker := func() {}
+			if moveTenants, ok := svcNode.Tenant.(server.TenantMoveService); ok && volumeCatalog != nil && barrierRegistry != nil {
+				var membership server.MoveMembership
+				if host != nil {
+					membership = host
+				}
+				moveWorker, mwErr := server.WireTenantMoves(server.TenantMoveConfig{
+					Catalog:     volumeCatalog,
+					BarrierReg:  barrierRegistry,
+					Tenants:     moveTenants,
+					Infra:       ti,
+					NodeID:      nodeID,
+					Membership:  membership,
+					ReplicaID:   f.replicaID,
+					Placements:  svcNode.PlacementStore,
+					StartAudit:  service.NewVolumeMoveAudit(complianceAudit, auditPolicy),
+					Transitions: service.NewVolumeMoveTransitionAudit(complianceAudit),
+					DataDirs:    dbManager,
+					Logger:      slog.Default(),
+				})
+				if mwErr != nil {
+					_ = shutdownNode(nodeCloser)
+					return mwErr
+				}
+				// Shutdown and migration call stopMoveWorker before they close
+				// a store, the server or the host, so no move step is still
+				// closing, copying or reopening tenant stores under them.
+				stopMoveWorker = moveWorker.Start(bootCtx)
+				defer stopMoveWorker()
 			}
 			// Wire the IsolationRaft factory into the already-built backup
 			// service as its ShardRestarter, enabling ONLINE restore (the
@@ -2812,6 +2855,7 @@ func runStart(f *startFlags) (err error) {
 				serverOpts = append(serverOpts, server.WithHost(host))
 				fwdOpt, fwdErr := replicaForwardingOption(bootCtx, f, standalone, placementChanges(svcNode), kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc)
 				if fwdErr != nil {
+					stopMoveWorker()
 					_ = shutdownNode(nodeCloser)
 					return fwdErr
 				}
@@ -3113,6 +3157,7 @@ func runStart(f *startFlags) (err error) {
 			// bound here otherwise.
 			handover, err := sockets.options(serverCfg)
 			if err != nil {
+				stopMoveWorker()
 				_ = shutdownNode(nodeCloser)
 				return err
 			}
@@ -3120,6 +3165,7 @@ func runStart(f *startFlags) (err error) {
 
 			srv := server.New(serverCfg, kvSvc, adminSvc, serverOpts...)
 			if err := srv.Start(); err != nil {
+				stopMoveWorker()
 				_ = shutdownNode(nodeCloser)
 				return err
 			}
@@ -3146,6 +3192,7 @@ func runStart(f *startFlags) (err error) {
 			} else if leaseSvc != nil && host != nil {
 				expiryOpts, err := service.LeaseExpiryOptions(svcHost, shard.ShardKV, f.leaseConfig)
 				if err != nil {
+					stopMoveWorker()
 					_ = shutdownNode(nodeCloser)
 					return err
 				}
@@ -3199,6 +3246,7 @@ func runStart(f *startFlags) (err error) {
 				membershipMgr, mErr := startDynamicMembership(bootCtx, f, kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc, rnode, nodeSeal)
 				if mErr != nil {
 					srv.Stop()
+					stopMoveWorker()
 					_ = shutdownNode(nodeCloser)
 					return mErr
 				}
@@ -3212,6 +3260,7 @@ func runStart(f *startFlags) (err error) {
 				publisher, aErr := startNodeAdvertiser(bootCtx, f, kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc, nodeSeal)
 				if aErr != nil {
 					srv.Stop()
+					stopMoveWorker()
 					_ = shutdownNode(nodeCloser)
 					return aErr
 				}
@@ -3224,6 +3273,9 @@ func runStart(f *startFlags) (err error) {
 			select {
 			case <-sigCtx.Done():
 				slog.Info("received signal, shutting down")
+				// Wait for an in-flight tenant move step before any store,
+				// server or host closes; the step resumes at the next start.
+				stopMoveWorker()
 
 				if memberRecord != nil {
 					if err := memberRecord.Close(); err != nil {
@@ -3279,6 +3331,10 @@ func runStart(f *startFlags) (err error) {
 				stopLeaseExpiry()
 				return shutdownNode(nodeCloser)
 			case req := <-migrateCh:
+				// The next boot iteration starts its own worker: stop this
+				// one, and wait for its step, before the migration stops
+				// svcNode and the stores under it.
+				stopMoveWorker()
 				if host == nil {
 					// Unreachable: the migrator is not wired in standalone.
 					slog.Error("system encryption migration is not supported in standalone mode")

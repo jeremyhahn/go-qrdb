@@ -110,9 +110,8 @@ is served, against a `Policy` registered for `permission.AdminHealth`
 caller's client address, since no principal exists yet. Every transport
 does this: REST `GET /health`, gRPC and unix-socket `Health`, QUIC
 `admin.Health` and MCP `qrdb_health`. With no `admin:health` Policy, Health
-is bounded only by the node's client-address limit above. `admin:health` is
-no longer a permission Health needs; a role that still lists it is
-unaffected.
+is bounded only by the node's client-address limit above. Health needs no
+grant of `admin:health`.
 
 **Picking a number.** `RatePerSecond` and `Burst` are your call, not a
 derived constant — there is no protocol fact to compute a request-frequency

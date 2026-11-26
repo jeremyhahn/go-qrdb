@@ -84,6 +84,7 @@ import type {
     UserClient,
     VectorClient,
     VolumePoolClient,
+    VolumePoolMove,
     WatchClient,
     WatchHandle,
 } from './interfaces.js';
@@ -2725,6 +2726,33 @@ export class RestClient implements Client {
                 return this.fetchJSON<ListVolumePoolTenantsResponse>(
                     `/v1/volume-pools/${encodeURIComponent(pool)}/tenants${query}`,
                 );
+            },
+            moveTenant: async (
+                tenant: string,
+                toPool: string,
+                options?: { allowUnencryptedDestination?: boolean },
+            ): Promise<VolumePoolMove> => {
+                this.ensureConnected();
+                return this.fetchJSON<VolumePoolMove>(
+                    `/v1/volume-pools/${encodeURIComponent(toPool)}/tenants/${encodeURIComponent(tenant)}/move`,
+                    {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            allowUnencryptedDestination: options?.allowUnencryptedDestination === true,
+                        }),
+                    },
+                );
+            },
+            getMove: async (tenant: string): Promise<VolumePoolMove> => {
+                this.ensureConnected();
+                return this.fetchJSON<VolumePoolMove>(`/v1/tenants/${encodeURIComponent(tenant)}/volume-move`);
+            },
+            cancelMove: async (tenant: string): Promise<VolumePoolMove> => {
+                this.ensureConnected();
+                return this.fetchJSON<VolumePoolMove>(`/v1/tenants/${encodeURIComponent(tenant)}/volume-move`, {
+                    method: 'DELETE',
+                });
             },
         };
     }

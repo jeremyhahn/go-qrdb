@@ -22,6 +22,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 )
 
 // VersionedTestEntity implements both Entity and Versioned interfaces.
@@ -357,7 +359,7 @@ func TestBytesCompare(t *testing.T) {
 
 // TestTransactionSaveAndGet validates Save and Get operations in a transaction.
 func TestTransactionSaveAndGet(t *testing.T) {
-	store := newMemoryKVStore()
+	store := kvstoretest.NewGuardedMemoryStore()
 	dao, err := NewTransactional[*TestEntity](
 		store,
 		"users",
@@ -406,7 +408,7 @@ func TestTransactionSaveAndGet(t *testing.T) {
 
 // TestTransactionDelete validates Delete operations in a transaction.
 func TestTransactionDelete(t *testing.T) {
-	store := newMemoryKVStore()
+	store := kvstoretest.NewGuardedMemoryStore()
 	dao, err := NewTransactional[*TestEntity](
 		store,
 		"users",
@@ -457,7 +459,7 @@ func TestTransactionDelete(t *testing.T) {
 
 // TestTransactionRollback validates Rollback operations.
 func TestTransactionRollback(t *testing.T) {
-	store := newMemoryKVStore()
+	store := kvstoretest.NewGuardedMemoryStore()
 	dao, err := NewTransactional[*TestEntity](
 		store,
 		"users",
@@ -518,7 +520,7 @@ func TestTransactionRollback(t *testing.T) {
 
 // TestTransactionClosedOperations validates operations on closed transactions.
 func TestTransactionClosedOperations(t *testing.T) {
-	store := newMemoryKVStore()
+	store := kvstoretest.NewGuardedMemoryStore()
 	dao, err := NewTransactional[*TestEntity](
 		store,
 		"users",
@@ -602,7 +604,7 @@ func TestTransactionClosedOperations(t *testing.T) {
 
 // TestTransactionNilEntity validates handling of nil entities.
 func TestTransactionNilEntity(t *testing.T) {
-	store := newMemoryKVStore()
+	store := kvstoretest.NewGuardedMemoryStore()
 	dao, err := NewTransactional[*TestEntity](
 		store,
 		"users",
@@ -645,7 +647,7 @@ func TestIsNil(t *testing.T) {
 
 // TestTransactionSaveWithCondition validates conditional save operations.
 func TestTransactionSaveWithCondition(t *testing.T) {
-	store := newMemoryKVStore()
+	store := kvstoretest.NewGuardedMemoryStore()
 	dao, err := NewTransactional[*VersionedTestEntity](
 		store,
 		"versioned",
@@ -745,7 +747,7 @@ func TestTransactionSaveWithCondition(t *testing.T) {
 }
 
 func TestTransactionConditionEvaluation(t *testing.T) {
-	store := newMemoryKVStore()
+	store := kvstoretest.NewGuardedMemoryStore()
 	dao, err := NewTransactional[*TestEntity](
 		store,
 		"cond_eval",
@@ -859,7 +861,7 @@ func TestTransactionConditionEvaluation(t *testing.T) {
 
 // TestMultiEntityTransaction validates multi-entity atomic commits.
 func TestMultiEntityTransaction(t *testing.T) {
-	store := newMemoryKVStore()
+	store := kvstoretest.NewGuardedMemoryStore()
 	dao, err := NewTransactional[*TestEntity](
 		store,
 		"users",
@@ -920,7 +922,7 @@ func TestMultiEntityTransaction(t *testing.T) {
 
 // TestTransactionReadYourOwnWrites validates read-your-own-writes semantics.
 func TestTransactionReadYourOwnWrites(t *testing.T) {
-	store := newMemoryKVStore()
+	store := kvstoretest.NewGuardedMemoryStore()
 	dao, err := NewTransactional[*TestEntity](
 		store,
 		"users",
@@ -993,7 +995,7 @@ func TestTransactionReadYourOwnWrites(t *testing.T) {
 
 // TestEmptyTransaction validates behavior of empty transactions.
 func TestEmptyTransaction(t *testing.T) {
-	store := newMemoryKVStore()
+	store := kvstoretest.NewGuardedMemoryStore()
 	dao, err := NewTransactional[*TestEntity](
 		store,
 		"users",

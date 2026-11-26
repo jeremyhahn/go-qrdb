@@ -319,7 +319,7 @@ func registerAdminGrants() {
 		RolesReconcileAll,
 		// Cross-scope volume pool management — only effective for system-tenant Admin.
 		VolumePoolCreate, VolumePoolList, VolumePoolRead,
-		VolumePoolUpdate, VolumePoolDelete,
+		VolumePoolUpdate, VolumePoolDelete, VolumePoolMove,
 		// Cross-scope registration policy — only effective for system-tenant Admin.
 		RegistrationConfigRead, RegistrationConfigUpdate,
 		// Cross-scope CA-operator revocation (deny-by-serial for a serial

@@ -484,3 +484,18 @@ func TestValidateAssignmentPath_Invalid(t *testing.T) {
 		}
 	}
 }
+
+// A path beginning with ReservedPathPrefix names a node-local pool-root
+// directory (copy-back staging), so no assignment may hold it; a path that
+// only carries the old staging suffix is an ordinary tenant directory.
+func TestValidateAssignmentPath_RefusesReservedPrefix(t *testing.T) {
+	for _, path := range []string{".qrdb-x", ".qrdb-copyback.acme"} {
+		var pathErr *InvalidAssignmentPathError
+		if err := ValidateAssignmentPath("acme", path); !errors.As(err, &pathErr) {
+			t.Fatalf("ValidateAssignmentPath(%q) = %v, want *InvalidAssignmentPathError", path, err)
+		}
+	}
+	if err := ValidateAssignmentPath("acme.copyback", "acme.copyback"); err != nil {
+		t.Fatalf("ValidateAssignmentPath(%q) = %v, want nil", "acme.copyback", err)
+	}
+}

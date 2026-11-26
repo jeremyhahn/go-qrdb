@@ -16,8 +16,10 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
@@ -52,6 +54,13 @@ type BarrierRegistry struct {
 	// brings back -- each with the error of its last re-unseal attempt.
 	// An explicit tenant seal removes a tenant (SealTenant).
 	nodeSealed map[string]error
+
+	// moveHeld holds the volume tenants (tenantID -> struct{}) a move step
+	// closed on this node and has not reopened yet (CloseVolumeTenant,
+	// ReopenVolumeTenant). A fresh registration of one is refused, so a
+	// placement-driven barrier shell cannot open the tenant's store while
+	// the move copies its directory.
+	moveHeld sync.Map
 	// unsealGate, when set, vetoes a tenant's re-unseal (WithTenantUnsealGate).
 	unsealGate func(tenantID string) bool
 
@@ -69,6 +78,27 @@ type BarrierRegistry struct {
 	// remover is the filesystem tenant directories are reclaimed through; nil
 	// means the operating system. See WithDirectoryRemover.
 	remover DirectoryRemover
+
+	// moveAfterCopy is a same-package test hook run between copy and verify
+	// in RunMoveCopyStep; nil in production.
+	moveAfterCopy func(dst string)
+
+	// moveOpenPools maps a tenant ID to the pool this node's MoveStepRunner
+	// reopened the tenant from before the journal records it (decision doc
+	// step 3: reopen, catch up, then the CAS). It is memory only: a crash
+	// drops it, so a node that crashes before its CAS opens from the
+	// journal's answer and redoes the step.
+	moveOpenPools sync.Map
+
+	// volumeRoots maps a tenant ID to the volumeRoot its volume-mode
+	// barrier was registered at (registerVolumeTenant): the data root and
+	// the barrier it belongs to, so a stale entry for a barrier since
+	// unregistered never answers for a new one (VolumeTenantDataRoot).
+	volumeRoots sync.Map
+
+	// volumeNodeID is this node's ID for the move journal's per-node view
+	// (volume.Catalog.ResolveForNode); empty resolves as the assignment.
+	volumeNodeID atomic.Value
 
 	// migrationRecoverer, when non-nil, reconciles an interrupted encryption
 	// migration recorded in a tenant's journal BEFORE the tenant barrier is
@@ -364,11 +394,79 @@ func (r *BarrierRegistry) RequireInsideLocalPool(ctx context.Context, tenantID s
 	if allocator == nil || resolver == nil {
 		return "", ErrPoolNotConfigured
 	}
-	assignment, err := allocator.Resolve(ctx, tenantID)
+	assignment, err := r.resolveOnThisNode(ctx, allocator, tenantID)
 	if err != nil {
 		return "", err
 	}
-	return placementRoot(ctx, resolver, tenantID, assignment.Pool, assignment.Path)
+	pool := assignment.Pool
+	if moved, ok := r.moveOpenPools.Load(tenantID); ok {
+		pool = moved.(string) //nolint:errcheck // type assertion on a value this map only ever holds
+	}
+	return placementRoot(ctx, resolver, tenantID, pool, assignment.Path)
+}
+
+// moveJournalView is the part of volume.Catalog that answers for one node
+// during a tenant move; an allocator without it resolves as the assignment.
+type moveJournalView interface {
+	ResolveForNode(ctx context.Context, tenantID, nodeID string) (*volume.Assignment, error)
+	GetMove(ctx context.Context, tenantID string) (*volume.Move, error)
+}
+
+// SetVolumeNodeID names this node for the move journal's per-node view: a
+// tenant this node already copied opens from the move's destination pool
+// until cut over or its abort step. Call it before RestoreVolumeTenants.
+func (r *BarrierRegistry) SetVolumeNodeID(nodeID string) {
+	r.volumeNodeID.Store(nodeID)
+}
+
+func (r *BarrierRegistry) localNodeID() string {
+	id, _ := r.volumeNodeID.Load().(string) //nolint:errcheck // comma-ok: unset is the empty ID
+	return id
+}
+
+// resolveOnThisNode is allocator.Resolve through the move journal's view
+// for this node when the allocator offers it.
+func (r *BarrierRegistry) resolveOnThisNode(ctx context.Context, allocator volume.Allocator, tenantID string) (*volume.Assignment, error) {
+	if view, ok := allocator.(moveJournalView); ok {
+		if node := r.localNodeID(); node != "" {
+			return view.ResolveForNode(ctx, tenantID, node)
+		}
+	}
+	return allocator.Resolve(ctx, tenantID)
+}
+
+// removeAbortedDestination removes, at boot, the destination directory a
+// copied node left when it crashed after its abort step's journal write
+// and before the removal (the journal no longer lists it in NodesCopied).
+// It never touches a node the journal still serves from the destination.
+func (r *BarrierRegistry) removeAbortedDestination(ctx context.Context, allocator volume.Allocator, resolver VolumeResolver, a volume.Assignment) error {
+	view, ok := allocator.(moveJournalView)
+	node := r.localNodeID()
+	if !ok || node == "" {
+		return nil
+	}
+	m, err := view.GetMove(ctx, a.TenantID)
+	var nf *volume.MoveNotFoundError
+	if errors.As(err, &nf) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if m.State != volume.MoveStateAborting || slices.Contains(m.NodesCopied, node) || m.StepNode == node {
+		return nil
+	}
+	if _, rerr := resolver.Root(ctx, m.ToPool); rerr != nil {
+		return nil // this node does not map ToPool: nothing of it is here
+	}
+	dir, err := r.PlacementDataRoot(ctx, a.TenantID, m.ToPool, a.Path)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Lstat(dir); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return r.RemoveDataRoot(ctx, dir)
 }
 
 // PlacementDataRoot returns this node's directory for tenantID at path on
@@ -922,6 +1020,10 @@ func (r *BarrierRegistry) RestoreVolumeTenants(ctx context.Context) error {
 	}
 	for _, a := range assignments {
 		tenantID := a.TenantID
+		if cerr := r.removeAbortedDestination(ctx, allocator, resolver, a); cerr != nil {
+			r.logger.Warn("registry: restore: failed to remove an aborted move's destination",
+				slog.String("tenant", tenantID), slog.Any("error", cerr))
+		}
 		if _, rerr := r.GetTenant(tenantID); rerr == nil {
 			continue // already registered (e.g. this node was the create leader)
 		}
@@ -1068,6 +1170,11 @@ func (r *BarrierRegistry) registerVolumeTenant(ctx context.Context, tenantID str
 	if r.system == nil || r.system.IsSealed() {
 		return "", nil, ErrSealed
 	}
+	// A move step holds the tenant closed: only its own reopen (a re-attach)
+	// may open the store again.
+	if _, held := r.moveHeld.Load(tenantID); held && !mustExist {
+		return "", nil, &TenantMoveHeldError{TenantID: tenantID}
+	}
 
 	dataRoot, err := r.RequireInsideLocalPool(ctx, tenantID)
 	if err != nil {
@@ -1112,6 +1219,7 @@ func (r *BarrierRegistry) registerVolumeTenant(ctx context.Context, tenantID str
 	if err != nil {
 		return "", nil, err
 	}
+	r.volumeRoots.Store(tenantID, volumeRoot{dataRoot: dataRoot, barrier: tb})
 	// Persist the posture so RestoreVolumeTenants can recover it on this or
 	// any other node after a restart; WHERE the tenant lives needs nothing
 	// persisted here -- the catalog's Assignment already is that record.
@@ -1129,6 +1237,34 @@ func (r *BarrierRegistry) registerVolumeTenant(ctx context.Context, tenantID str
 			slog.String("barrier_path", barrierPath))
 	}
 	return dataRoot, tb, nil
+}
+
+// volumeRoot is the data root a volume-mode tenant barrier was registered
+// at, with the barrier itself (BarrierRegistry.volumeRoots).
+type volumeRoot struct {
+	dataRoot string
+	barrier  *TenantBarrier
+}
+
+// VolumeTenantDataRoot returns the registered barrier of tenantID and the
+// data root registerVolumeTenant opened it at. ok is false when no barrier
+// is registered; a registered barrier whose root was not recorded (one not
+// registered through a volume pool) returns an empty root with ok true.
+func (r *BarrierRegistry) VolumeTenantDataRoot(tenantID string) (string, *TenantBarrier, bool) {
+	v, found := r.tenants.Load(tenantID)
+	if !found {
+		return "", nil, false
+	}
+	tb, _ := v.(*TenantBarrier)
+	if tb == nil {
+		return "", nil, false
+	}
+	if rv, ok := r.volumeRoots.Load(tenantID); ok {
+		if root, _ := rv.(volumeRoot); root.barrier == tb {
+			return root.dataRoot, tb, true
+		}
+	}
+	return "", tb, true
 }
 
 // RegisterTenantDefault creates and registers a tenant barrier with

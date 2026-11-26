@@ -128,6 +128,17 @@ func start3NodeMultiProtocolCluster(t *testing.T) (nodes [3]*multiProtoNode, spa
 // that stops one.
 func startMultiProtocolCluster(t *testing.T, spareCount int) (nodes [3]*multiProtoNode, spares []adminClusterSpareReplica) {
 	t.Helper()
+	return startMultiProtocolClusterWithNodeConfig(t, spareCount, nil)
+}
+
+// startMultiProtocolClusterWithNodeConfig is startMultiProtocolCluster with
+// a per-node config: nodeYAML(i), when non-nil, returns extra daemon YAML
+// for genesis node i (0-based), appended to the shared seal and peer-URL
+// config in that node's own --config file -- so each node can carry its own
+// volume pool directories. Every returned node keeps bin, startArgs, proc
+// and configPath, so multiProtoNode.restart can restart it.
+func startMultiProtocolClusterWithNodeConfig(t *testing.T, spareCount int, nodeYAML func(i int) string) (nodes [3]*multiProtoNode, spares []adminClusterSpareReplica) {
+	t.Helper()
 
 	n := 3 + spareCount
 	bin := buildBinary(t)
@@ -149,7 +160,20 @@ func startMultiProtocolCluster(t *testing.T, spareCount int) (nodes [3]*multiPro
 	// Every node shares one host on its own admin port, so REST's leader
 	// forwarding needs each peer's admin URL spelled out: its fallback --
 	// the leader's Raft host on THIS node's admin port -- names this node.
-	cfgPath := writeMultiProtocolSealConfig(t, peerAdminURLsYAML(peerAdminURLs))
+	sharedYAML := peerAdminURLsYAML(peerAdminURLs)
+	cfgPaths := make([]string, n)
+	for i := range n {
+		if nodeYAML == nil {
+			if i == 0 {
+				cfgPaths[0] = writeMultiProtocolSealConfig(t, sharedYAML)
+			} else {
+				cfgPaths[i] = cfgPaths[0]
+			}
+			continue
+		}
+		cfgPaths[i] = writeMultiProtocolSealConfig(t, sharedYAML+nodeYAML(i))
+	}
+	nodeArgs := make([][]string, n)
 	// Node certificates carry the SPIFFE node ID a follower signs its
 	// on-behalf caller assertion with when it forwards a membership change
 	// to shard 1's leader; without it there is no assertion and the leader
@@ -175,7 +199,7 @@ func startMultiProtocolCluster(t *testing.T, spareCount int) (nodes [3]*multiPro
 
 		args := []string{
 			"start",
-			"--config", cfgPath,
+			"--config", cfgPaths[i],
 			"--listen", fmt.Sprintf("0.0.0.0:%d", raftPorts[i]),
 			"--raft-address", raftAddrs[i],
 			"--data-dir", dataDirs[i],
@@ -195,6 +219,7 @@ func startMultiProtocolCluster(t *testing.T, spareCount int) (nodes [3]*multiPro
 			"--enable-unix", "--unix-socket-path", unixSockets[i],
 		}
 		args = append(args, nodeTLS[i]...)
+		nodeArgs[i] = args
 
 		cmds[i] = startNode(t, bin, args, fmt.Sprintf("[admincluster-node%d] ", i+1))
 	}
@@ -280,7 +305,12 @@ func startMultiProtocolCluster(t *testing.T, spareCount int) (nodes [3]*multiPro
 			mcpPort:    mcpPorts[idx],
 			quicPort:   quicPorts[idx],
 			passphrase: adminClusterPassphrase,
+			bin:        bin,
+			startArgs:  nodeArgs[idx],
 			proc:       cmds[idx],
+			configPath: cfgPaths[idx],
+
+			clusterRestPorts: adminPorts,
 		}
 	}
 
@@ -292,6 +322,18 @@ func startMultiProtocolCluster(t *testing.T, spareCount int) (nodes [3]*multiPro
 		}
 	}
 
+	// Each node knows its peers, so a stalled restart can dump every
+	// cluster node's goroutines (dumpClusterStacks), not only its own.
+	for i, n := range nodes {
+		if n == nil {
+			continue
+		}
+		for j, peer := range nodes {
+			if j != i && peer != nil {
+				n.clusterPeers = append(n.clusterPeers, peer)
+			}
+		}
+	}
 	return nodes, spares
 }
 

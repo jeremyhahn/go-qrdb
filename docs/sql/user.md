@@ -201,7 +201,7 @@ If you need bounded resource use well under `sql.wait_timeout`, do not request
 cursors. With MySQL Connector/J keep `useCursorFetch=false` (the default);
 with libmysqlclient do not set `STMT_ATTR_CURSOR_TYPE` to
 `CURSOR_TYPE_READ_ONLY`. go-sql-driver/mysql never requests one. Details:
-[upstream-gaps.md](upstream-gaps.md#5-server-side-cursors-race-on-connstatusflags-the-idle-bound-half-is-fixed-in-qrdb).
+[upstream-gaps.md](upstream-gaps.md#2-server-side-cursors-race-on-connstatusflags).
 
 ## Troubleshooting
 
@@ -299,8 +299,8 @@ transactions are optimistic unless you select pessimistic mode. Use
 [../row-locking/](../row-locking/)) for blocking behaviour.
 
 **Your PostgreSQL client cannot introspect the schema.** The `pg_catalog`
-subset covers `pg_type`, `pg_class`, `pg_namespace`, `pg_description` and
-`pg_indexes`. `pg_indexes` reports a primary key as `<table>_pkey`, which is
+subset covers `pg_type`, `pg_class`, `pg_namespace`, `pg_description`,
+`pg_indexes` and `pg_attribute`. `pg_indexes` reports a primary key as `<table>_pkey`, which is
 what clients compare against. Anything outside that subset is not served, and
 `pg_catalog` is never served to MySQL clients.
 

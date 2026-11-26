@@ -1867,10 +1867,31 @@ func TestRunStart_CACertMkdirAllError(t *testing.T) {
 		host:            testBindHost,
 	}
 
+	// The run-mode claim is the first write into the data directory.
 	err := runStart(f)
 	require.Error(t, err)
-	var writeErr *BootstrapWriteError
-	require.True(t, errors.As(err, &writeErr), "err = %v (%T)", err, err)
+	var markerErr *RunModeMarkerError
+	require.True(t, errors.As(err, &markerErr), "err = %v (%T)", err, err)
+}
+
+// TestRunStart_InvalidRunModeRefused pins that a misspelt --mode fails the
+// start with RunModeInvalidError and records no marker, so a corrected
+// restart still claims the directory.
+func TestRunStart_InvalidRunModeRefused(t *testing.T) {
+	dir := t.TempDir()
+	f := &startFlags{
+		discoveryMethod: "static",
+		dataDir:         dir,
+		smType:          "memory",
+		host:            testBindHost,
+		mode:            "rafft",
+	}
+	err := runStart(f)
+	var ie *RunModeInvalidError
+	require.True(t, errors.As(err, &ie), "err = %v (%T)", err, err)
+	assert.Equal(t, "rafft", ie.Mode)
+	_, statErr := os.Stat(filepath.Join(dir, ".qrdb-run-mode"))
+	require.ErrorIs(t, statErr, os.ErrNotExist)
 }
 
 // ---------------------------------------------------------------------------
@@ -1904,6 +1925,40 @@ func TestRunStart_CACertWriteFileError(t *testing.T) {
 	require.Error(t, err)
 	var writeErr *BootstrapWriteError
 	require.True(t, errors.As(err, &writeErr), "err = %v (%T)", err, err)
+}
+
+// TestRunStart_CACertWriteErrorAfterMarker reaches the CA persist with a
+// writable data directory in both run modes: the run-mode claim writes its
+// marker, then the CA write fails and surfaces as BootstrapWriteError, not
+// as RunModeMarkerError. The CA persists into the data directory itself,
+// which the marker write has created, so its directory creation cannot fail
+// here; the failure is the atomic rename onto a directory at ca-key.pem.
+func TestRunStart_CACertWriteErrorAfterMarker(t *testing.T) {
+	for _, mode := range []string{"standalone", "raft"} {
+		t.Run(mode, func(t *testing.T) {
+			dataDir := t.TempDir()
+			require.NoError(t, os.MkdirAll(filepath.Join(dataDir, "ca-key.pem"), 0o700))
+
+			f := &startFlags{
+				discoveryMethod: "static",
+				dataDir:         dataDir,
+				smType:          "memory",
+				host:            testBindHost,
+				mode:            mode,
+			}
+
+			err := runStart(f)
+			require.Error(t, err)
+			var writeErr *BootstrapWriteError
+			require.True(t, errors.As(err, &writeErr), "err = %v (%T)", err, err)
+			var markerErr *RunModeMarkerError
+			require.False(t, errors.As(err, &markerErr), "err = %v", err)
+
+			marker, readErr := os.ReadFile(filepath.Join(dataDir, ".qrdb-run-mode"))
+			require.NoError(t, readErr)
+			require.Equal(t, mode+"\n", string(marker))
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------

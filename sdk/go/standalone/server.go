@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
+	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -474,9 +475,21 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 
 	srv := &Server{logger: logger}
 
-	// The compliance trail is opened before anything else, so the barrier
-	// records from its first moment, and a trail that cannot be opened stops
-	// the start with nothing running. A start that fails later closes it.
+	// A data directory belongs to one run mode. Claim it as standalone
+	// before anything writes under it -- the trail, the seal store, the
+	// storage -- so a raft-marked directory is refused untouched and this
+	// server's own directory is marked (#658). A memory backend with no
+	// DataDir claims nothing.
+	if config.DataDir != "" {
+		if err := lifecycle.ClaimRunMode(config.DataDir, capabilities.ModeStandalone); err != nil {
+			return nil, err
+		}
+	}
+
+	// The compliance trail is opened before anything else that writes, so
+	// the barrier records from its first moment, and a trail that cannot be
+	// opened stops the start with nothing running. A start that fails later
+	// closes it.
 	trail, err := openAuditTrail(config)
 	if err != nil {
 		return nil, err

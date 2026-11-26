@@ -211,7 +211,9 @@ func run() int {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	if err := rootCmd.ExecuteContext(ctx); err != nil {
+	err = rootCmd.ExecuteContext(ctx)
+	closeCLIClient()
+	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
