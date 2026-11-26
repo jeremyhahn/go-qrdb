@@ -188,8 +188,13 @@ in the object-storage bucket under the prefix `lsm`:
 - With the seal enabled, the local files and every bucket object are
   encrypted under the seal barrier.
 - A store written by the earlier one-object-per-key `objstore` layout is
-  refused at open; move its data by backup and restore
-  ([../backup-restore/user.md](../backup-restore/user.md)).
+  refused at open. Backup and restore does not apply here: it is Raft mode
+  only ([../backup-restore/user.md](../backup-restore/user.md)), and these
+  stores are standalone. Move the data by a logical export with the previous
+  release: run that release over the old bucket and read the data out with
+  `qrdb kv range` (SQL data with SQL), then start this release on an empty
+  bucket and data directory and write the data back with `qrdb kv put` (SQL
+  data with SQL). See [../key-value/user.md](../key-value/user.md).
 
 Not built yet: a database created with `backend: objstore` is still refused
 when it opens (see [../databases/user.md](../databases/user.md)); lifting that
