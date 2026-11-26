@@ -348,33 +348,17 @@ func (p *nodeMigrationProvider) StoreDirs(ctx context.Context, scope service.Bar
 // migration before anything is minted or quiesced.
 func (p *nodeMigrationProvider) databaseStoreDirs(ctx context.Context) (pebbleDirs, fileDirs []string, err error) {
 	n := p.node
-	if n.dbManager == nil {
-		return nil, nil, nil
-	}
-	bindings, err := n.dbManager.RecordBindings(ctx)
-	if err != nil {
-		return nil, nil, &MigrationNotSupportedError{Reason: "the database catalog cannot be listed: " + err.Error()}
-	}
 	walDir := ""
 	if n.retainedStandalone.cfg != nil {
 		walDir = n.retainedStandalone.cfg.Storage.WALDir
 	}
-	for _, b := range bindings {
-		if b.Encryptor != database.EncryptorNode || b.DataRoot == "" {
-			continue
+	pebbleDirs, fileDirs, err = database.NodeEncryptedStoreDirs(ctx, n.dbManager, walDir)
+	if err != nil {
+		var unsupported *database.StoreMigrationUnsupportedError
+		if errors.As(err, &unsupported) {
+			return nil, nil, &MigrationNotSupportedError{Reason: unsupported.Error()}
 		}
-		switch b.Backend {
-		case database.BackendObjstore:
-			return nil, nil, &MigrationNotSupportedError{Reason: "database " + b.TenantID + "/" + b.Database + " is stored in objstore, which cannot encrypt at rest"}
-		case database.BackendPebble:
-			db := existingDirs(filepath.Join(b.DataRoot, "pebble"))
-			if walDir != "" && len(db) > 0 {
-				return nil, nil, &MigrationNotSupportedError{Reason: "database " + b.TenantID + "/" + b.Database + " keeps its write-ahead log under storage.wal_dir; encryption migration moves the store directory alone"}
-			}
-			pebbleDirs = append(pebbleDirs, db...)
-		case database.BackendFile:
-			fileDirs = append(fileDirs, existingDirs(filepath.Join(b.DataRoot, "file"))...)
-		}
+		return nil, nil, &MigrationNotSupportedError{Reason: "the database catalog cannot be listed: " + err.Error()}
 	}
 	return pebbleDirs, fileDirs, nil
 }
