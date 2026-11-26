@@ -18,7 +18,8 @@
 <!--
   DatabaseWorkspace renders the database workspace with a horizontal tab bar
   at the top and the active tool view below it. Every database exposes every
-  engine; the SQL tab is shown only when SQL protocol configuration is present.
+  engine; the SQL tab is shown only when SQL protocol configuration is present,
+  and the Verifiable Logs tab only when the server has a log service.
 
   Navigation is driven through navStore.selectDbTool.
 -->
@@ -28,6 +29,7 @@
   import type { DbTool } from "../../stores/navigation.svelte.ts";
   import { connManagerStore } from "../../stores/connection-manager.svelte.ts";
   import { revisionSupportFingerprint, type RevisionSupportScope } from "../../lib/revisionSupportCache.ts";
+  import { probeLogService } from "../../lib/logService.ts";
 
   // Tool view components
   import KVExplorer from "./KVExplorer.svelte";
@@ -115,8 +117,25 @@
     (database.protocol?.mysql ?? false) || (database.protocol?.postgresql ?? false),
   );
 
+  // Whether the server has a verifiable-log service for this database: null
+  // while the probe runs, false when it answers 501 Not Implemented or, on
+  // the desktop, the embedded NilServiceError. The Verifiable Logs tab and
+  // its view are offered only once the probe finds the service.
+  let logService = $state<boolean | null>(null);
+  $effect(() => {
+    const scoped = dbClient;
+    let current = true;
+    logService = null;
+    void probeLogService(scoped).then((present) => {
+      if (current) logService = present;
+    });
+    return () => {
+      current = false;
+    };
+  });
+
   const visibleTabs = $derived.by((): readonly TabDef[] => {
-    const base: TabDef[] = [...DB_TABS];
+    const base: TabDef[] = DB_TABS.filter((tab) => tab.id !== 'vlog' || logService === true);
     if (hasSql) base.push(SQL_TAB);
     base.push(SETTINGS_TAB);
     return base;
@@ -173,7 +192,13 @@
     {:else if activeTool === 'vector'}
       <VectorView client={dbClient} />
     {:else if activeTool === 'vlog'}
-      <VlogView client={dbClient} />
+      {#if logService === true}
+        <VlogView client={dbClient} />
+      {:else if logService === false}
+        <p class="text-sm text-base-content/60" data-testid="vlog-absent">
+          This server has no verifiable-log service.
+        </p>
+      {/if}
     {:else if activeTool === 'sql'}
       <SQLBrowserScoped {client} {database} />
     {:else if activeTool === 'db-settings'}

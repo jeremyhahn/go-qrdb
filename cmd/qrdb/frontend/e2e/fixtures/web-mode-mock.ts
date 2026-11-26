@@ -309,6 +309,9 @@ export async function injectWebRestMock(
     ["**/peers", { peers: [] }],
     ["**/v1/rebalance/report", {}],
     ["**/users/list**", { users: [], total: 0, hasMore: false }],
+    ["**/groups/list**", { groups: [], total: 0, hasMore: false }],
+    // The database workspace's log-service probe (DatabaseWorkspace).
+    ["**/vlog/logs**", { logs: [] }],
     ["**/v1/volume-pools/list**", { pools: [] }],
     ["**/certs/list**", { certs: [] }],
     ["**/v1/credentials", { names: [] }],

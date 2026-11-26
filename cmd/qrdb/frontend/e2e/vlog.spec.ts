@@ -20,6 +20,9 @@ import {
   injectError,
   clearError,
 } from "./fixtures/wails-mock.ts";
+import { webTest, injectWebRestMock, type WebMockState } from "./fixtures/web-mode-mock.ts";
+import { isApiPath } from "../api-routes.ts";
+import { test as plainTest } from "@playwright/test";
 
 const LOAD_TIMEOUT = 10_000;
 
@@ -153,4 +156,79 @@ test.describe("Verifiable Logs tab", () => {
     await expect(page.getByTestId("vlog-inclusion-proof")).not.toContainText("hashes");
     await clearError(page, "VlogBinding.ProveInclusion");
   });
+});
+
+/** Opens vlog-db and waits for its tab bar, with the Vectors tab in it. */
+async function openWorkspace(page: Page): Promise<void> {
+  await page.goto("/");
+  await page.locator("aside").getByText("vlog-db").click();
+  await expect(page.getByRole("tab", { name: "Vectors", exact: true })).toBeVisible({ timeout: LOAD_TIMEOUT });
+}
+
+const vlogTab = (page: Page) => page.getByRole("tab", { name: "Verifiable Logs", exact: true });
+
+// The desktop binding answers a call to an unwired service with the
+// embedded NilServiceError, which the Wails runtime rejects as its message.
+test.describe("Verifiable Logs tab on a desktop without a log service", () => {
+  test.use({ mockState: { ...vlogState, errors: { "VlogBinding.List": "embedded: vlog must not be nil" } } });
+
+  test("is not offered", async ({ page }) => {
+    await openWorkspace(page);
+    await expect(page.getByRole("tab", { name: "Leases", exact: true })).toBeVisible();
+    await expect(vlogTab(page)).toHaveCount(0);
+  });
+});
+
+// A failure that does not say the service is absent keeps the tab, so the
+// view can show the error.
+test.describe("Verifiable Logs tab when listing logs fails", () => {
+  test.use({ mockState: { ...vlogState, errors: { "VlogBinding.List": "permission denied" } } });
+
+  test("stays on offer", async ({ page }) => {
+    await openWorkspace(page);
+    await expect(vlogTab(page)).toBeVisible({ timeout: LOAD_TIMEOUT });
+  });
+});
+
+const webVlogState: WebMockState = {
+  sealStatus: { sealed: false, initialized: false, strategy: "none", hardware_backed: false },
+  databases: [{ name: "vlog-db", backend: "pebble", status: "open" }],
+};
+
+webTest.describe("Verifiable Logs tab over REST", () => {
+  webTest("is not offered when the server answers 501", async ({ page }) => {
+    await injectWebRestMock(page, webVlogState);
+    let probed = false;
+    await page.route("**/vlog/logs**", (route) => {
+      probed = true;
+      void route.fulfill({
+        status: 501,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "rest: service not implemented: vlog" }),
+      });
+    });
+    await openWorkspace(page);
+    await expect.poll(() => probed, { timeout: LOAD_TIMEOUT }).toBe(true);
+    await expect(vlogTab(page)).toHaveCount(0);
+  });
+
+  webTest("is offered when the server lists the database's logs", async ({ page }) => {
+    await injectWebRestMock(page, webVlogState);
+    await page.route("**/vlog/logs**", (route) => {
+      void route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ logs: ["audit"] }) });
+    });
+    await openWorkspace(page);
+    await expect(vlogTab(page)).toBeVisible({ timeout: LOAD_TIMEOUT });
+  });
+});
+
+// The dev proxy forwards, and the mocked tier's API guard covers, every
+// /vlog and /groups request the UI sends; neither swallows a lookalike path.
+plainTest("the API path matcher covers /vlog and /groups", () => {
+  for (const path of ["/vlog", "/vlog/logs", "/vlog/proof/inclusion", "/groups", "/groups/list", "/groups/members/add"]) {
+    expect(isApiPath(path), path).toBe(true);
+  }
+  for (const path of ["/vlogs", "/vlog-view.js", "/groupsx"]) {
+    expect(isApiPath(path), path).toBe(false);
+  }
 });

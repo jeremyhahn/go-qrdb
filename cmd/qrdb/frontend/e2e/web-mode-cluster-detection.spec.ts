@@ -104,6 +104,7 @@ test.describe("Web mode - cluster topology detection", () => {
       rebalance: "**/v1/rebalance/report",
       users: "**/users/list**",
       roles: "**/roles/list**",
+      groups: "**/groups/list**",
       "volume-pools": "**/v1/volume-pools/list",
       certificates: "**/certs/list**",
       credentials: "**/v1/credentials",
