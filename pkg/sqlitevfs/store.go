@@ -159,6 +159,40 @@ func encodedRequestBytes(reads []ReadCheck, puts map[string][]byte, deletes [][]
 	return n
 }
 
+// splitDeletes returns the head of deletes that fits one request in which
+// spent encoded bytes are already taken, and the rest.
+func (s *Store) splitDeletes(spent int, deletes [][]byte) (head, rest [][]byte) {
+	for i, key := range deletes {
+		entry := encodedEntryBytes(len(key), 0)
+		if spent+entry >= s.requestBytes {
+			return deletes[:i], deletes[i:]
+		}
+		spent += entry
+	}
+	return deletes, nil
+}
+
+// trimAfter deletes rest, the keys a commit at rev could not carry under
+// the transport cap, in chunks under it. Each chunk commits only while the
+// meta record is the one rev wrote, so a later writer's pages are never
+// deleted. Every key in rest reads as zeros under that record, and a later
+// commit that grows over one deletes it, so a chunk that is refused or
+// fails leaves only unreachable keys and is not the commit's error.
+func (s *Store) trimAfter(ctx context.Context, rev int64, rest [][]byte) {
+	guard := []ReadCheck{{Key: s.metaKey, Rev: rev, Found: true}}
+	spent := encodedRequestBytes(guard, nil, nil)
+	for len(rest) > 0 {
+		head, tail := s.splitDeletes(spent, rest)
+		if len(head) == 0 {
+			return
+		}
+		if _, err := s.backend.Commit(ctx, guard, nil, head); err != nil {
+			return
+		}
+		rest = tail
+	}
+}
+
 // Option configures a Store built by NewStore.
 type Option func(*Store) error
 
@@ -1064,24 +1098,33 @@ func (t *Txn) commitWrites(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	var deletes [][]byte
-	for pgno := uint64(t.floor) + 1; pgno <= uint64(t.base.PageCount); pgno++ {
-		if _, ok := t.dirty[uint32(pgno)]; ok { //nolint:gosec // G115: pgno <= base.PageCount, a uint32
+	// Every page past the floor that this commit does not write reads as
+	// zeros to this transaction, so its key goes. A page inside the new
+	// page count (a hole, possibly over a key a trimAfter left) goes with
+	// the commit; one past it, and every stale stage key, is unreachable
+	// under the new record and may follow in trimAfter.
+	var deletes, trim [][]byte
+	for pgno := uint64(t.floor) + 1; pgno <= uint64(max(t.base.PageCount, t.meta.PageCount)); pgno++ {
+		if _, ok := t.dirty[uint32(pgno)]; ok { //nolint:gosec // G115: pgno <= a page count, a uint32
 			continue
 		}
 		key, err := PageKey(t.store.db, uint32(pgno)) //nolint:gosec // G115: as above
 		if err != nil {
 			return 0, err
 		}
-		deletes = append(deletes, key)
+		if pgno > uint64(t.meta.PageCount) {
+			trim = append(trim, key)
+		} else {
+			deletes = append(deletes, key)
+		}
 	}
-	deletes = append(deletes, t.stageDeletes...)
+	trim = append(trim, t.stageDeletes...)
 	dirtyBytes := 0
 	for _, page := range t.dirty {
 		dirtyBytes += len(page)
 	}
 	if dirtyBytes > t.store.stageThreshold {
-		return t.commitStaged(ctx, reads, metaValue, deletes)
+		return t.commitStaged(ctx, reads, metaValue, deletes, trim)
 	}
 	puts := make(map[string][]byte, len(t.dirty)+1)
 	puts[string(t.store.metaKey)] = metaValue
@@ -1092,15 +1135,18 @@ func (t *Txn) commitWrites(ctx context.Context) (int64, error) {
 		}
 		puts[string(key)] = page
 	}
-	if encodedRequestBytes(reads, puts, deletes) >= t.store.requestBytes {
+	spent := encodedRequestBytes(reads, puts, deletes)
+	if len(t.dirty) > 0 && spent >= t.store.requestBytes {
 		// The pages fit the threshold but the request, encoded with its
 		// keys, read checks and framing, would reach the transport cap.
-		return t.commitStaged(ctx, reads, metaValue, deletes)
+		return t.commitStaged(ctx, reads, metaValue, deletes, trim)
 	}
-	rev, err := t.store.backend.Commit(ctx, reads, puts, deletes)
+	head, rest := t.store.splitDeletes(spent, trim)
+	rev, err := t.store.backend.Commit(ctx, reads, puts, append(deletes, head...))
 	if err != nil {
 		return 0, fmt.Errorf("sqlitevfs: commit %q: %w", t.store.db, err)
 	}
+	t.store.trimAfter(ctx, rev, rest)
 	return rev, nil
 }
 

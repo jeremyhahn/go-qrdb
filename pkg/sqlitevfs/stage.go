@@ -27,7 +27,9 @@ import (
 // StagePrefix(db, commitID) moves to PagePrefix(db) + the same 4-byte page
 // number (neither prefix is a prefix of the other), with the staged page
 // count as the expected count, and the meta record metaValue and the
-// truncated-page deletes apply at the same one revision, which it returns.
+// hole deletes apply at the same one revision, which it returns, with as
+// many of trim (pages past the new count, stale stage keys) as fit under
+// the transport cap; trimAfter deletes the rest.
 // A live staged count other than the pages it wrote is ErrPublishConflict
 // and publishes nothing. The publish carries the commit's read set (reads,
 // see Txn.readSet), so an optimistic staged commit whose reads moved
@@ -38,7 +40,7 @@ import (
 // publish revision and the new ones from it. On a staging or publish
 // failure commitStaged deletes every stage key it wrote in one best-effort
 // Backend.Commit and returns the original error wrapped with the db name.
-func (t *Txn) commitStaged(ctx context.Context, reads []ReadCheck, metaValue []byte, deletes [][]byte) (int64, error) {
+func (t *Txn) commitStaged(ctx context.Context, reads []ReadCheck, metaValue []byte, deletes, trim [][]byte) (int64, error) {
 	s := t.store
 	commitID, err := newCommitID()
 	if err != nil {
@@ -116,9 +118,11 @@ func (t *Txn) commitStaged(ctx context.Context, reads []ReadCheck, metaValue []b
 	if err != nil {
 		return fail(err)
 	}
-	rev, err := s.backend.Publish(ctx, stagePrefix, pagePrefix, int64(len(pgnos)), reads, puts, deletes)
+	head, rest := s.splitDeletes(encodedRequestBytes(reads, puts, deletes, stagePrefix, pagePrefix), trim)
+	rev, err := s.backend.Publish(ctx, stagePrefix, pagePrefix, int64(len(pgnos)), reads, puts, append(deletes, head...))
 	if err != nil {
 		return fail(err)
 	}
+	s.trimAfter(ctx, rev, rest)
 	return rev, nil
 }

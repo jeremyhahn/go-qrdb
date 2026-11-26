@@ -1308,6 +1308,140 @@ func TestCommitStagesBeforeTheEncodedRequestReachesTheCap(t *testing.T) {
 	}
 }
 
+// truncPages is a database large enough that deleting all but its first page
+// takes several requests under truncCap.
+const (
+	truncPages = 512
+	truncCap   = 3 * testPageSize
+)
+
+// seedTruncatable seeds truncPages pages on a Store over backend whose page
+// thresholds never stage, then lowers its request cap to truncCap.
+func seedTruncatable(t *testing.T, backend Backend) *Store {
+	t.Helper()
+	s, err := NewStore(backend, "app.db", WithStageThreshold(1<<30), WithStageChunkBytes(1<<30))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fills := make([]byte, truncPages)
+	for i := range fills {
+		fills[i] = byte(i%250 + 1)
+	}
+	seed(t, s, fills...)
+	s.requestBytes = truncCap
+	return s
+}
+
+// pageKeyCount is the number of live page keys of app.db.
+func pageKeyCount(t *testing.T, b *MVCCBackend) int {
+	t.Helper()
+	prefix, err := PagePrefix("app.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rev, err := b.Revision(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, err := b.Keys(t.Context(), prefix, rev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(keys)
+}
+
+// A commit that truncates more pages than one request can carry deletes
+// them in requests under the transport cap, direct and staged, and leaves
+// only the kept page.
+func TestTruncateChunksPageDeletesUnderTheCap(t *testing.T) {
+	for _, staged := range []bool{false, true} {
+		name := "direct"
+		if staged {
+			name = "staged"
+		}
+		t.Run(name, func(t *testing.T) {
+			b := newTestBackend(t)
+			rec := &requestRecorder{MVCCBackend: b}
+			s := seedTruncatable(t, rec)
+			*rec = requestRecorder{MVCCBackend: b}
+			want := byte(1)
+			txn := beginReserved(t, s)
+			if err := txn.Truncate(testPageSize); err != nil {
+				t.Fatal(err)
+			}
+			if staged {
+				s.stageThreshold = 0
+				want = 0x7f
+				writePages(t, txn, want)
+			}
+			commit(t, txn)
+			if rec.maxEst >= truncCap || rec.maxJSON >= truncCap {
+				t.Fatalf("a request of %d bytes (JSON %d) reached the cap %d", rec.maxEst, rec.maxJSON, truncCap)
+			}
+			if staged && rec.publishes != 1 {
+				t.Fatalf("%d publishes, want 1", rec.publishes)
+			}
+			if rec.commits+rec.publishes < 3 {
+				t.Fatalf("%d commits, %d publishes: the deletes were not split", rec.commits, rec.publishes)
+			}
+			if n := pageKeyCount(t, b); n != 1 {
+				t.Fatalf("%d page keys after the truncate, want 1", n)
+			}
+			r := begin(t, newTestStore(t, b, "app.db"))
+			if r.Size() != testPageSize {
+				t.Fatalf("size %d, want %d", r.Size(), testPageSize)
+			}
+			page := make([]byte, testPageSize)
+			if _, err := r.ReadAt(page, 0); err != nil || page[0] != want {
+				t.Fatalf("page 1 = %#x, %v, want %#x", page[0], err, want)
+			}
+		})
+	}
+}
+
+// trimRefuser refuses every delete-only commit guarded by one read check, as
+// if each trimAfter chunk found the meta record moved.
+type trimRefuser struct{ *MVCCBackend }
+
+func (b trimRefuser) Commit(ctx context.Context, reads []ReadCheck, puts map[string][]byte, deletes [][]byte) (int64, error) {
+	if len(puts) == 0 && len(deletes) > 0 && len(reads) == 1 {
+		return 0, ErrSnapshotChanged
+	}
+	return b.MVCCBackend.Commit(ctx, reads, puts, deletes)
+}
+
+// Page keys a refused trimAfter leaves behind are past the page count, and a
+// later commit that grows over them without writing them deletes them with
+// its commit: they read as zeros, never as the truncated pages.
+func TestRefusedTrimLeavesNoReachablePage(t *testing.T) {
+	b := newTestBackend(t)
+	s := seedTruncatable(t, trimRefuser{b})
+	txn := beginReserved(t, s)
+	if err := txn.Truncate(testPageSize); err != nil {
+		t.Fatal(err)
+	}
+	commit(t, txn)
+	if n := pageKeyCount(t, b); n <= 1 {
+		t.Fatalf("%d page keys after refused trims, want leftovers past page 1", n)
+	}
+	s.requestBytes = transportRequestBytes
+	txn = beginReserved(t, s)
+	if _, err := txn.WriteAt(pageOf(0x7f), int64(truncPages-1)*testPageSize); err != nil {
+		t.Fatal(err)
+	}
+	commit(t, txn)
+	if n := pageKeyCount(t, b); n != 2 {
+		t.Fatalf("%d page keys after the grow, want 2", n)
+	}
+	r := begin(t, newTestStore(t, b, "app.db"))
+	page := make([]byte, testPageSize)
+	for pgno := 2; pgno < truncPages; pgno++ {
+		if _, err := r.ReadAt(page, int64(pgno-1)*testPageSize); err != nil || !bytes.Equal(page, make([]byte, testPageSize)) {
+			t.Fatalf("hole page %d = %#x.., %v, want zeros", pgno, page[0], err)
+		}
+	}
+}
+
 // A staging commit is flushed before its encoded request would reach the
 // transport cap: a chunk exactly one byte under the cap is sent, and at the
 // cap the same pages go in smaller chunks.
