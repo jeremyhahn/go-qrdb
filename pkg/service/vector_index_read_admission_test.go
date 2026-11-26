@@ -50,9 +50,12 @@ func (h *sealableHost) SyncRead(ctx context.Context, shardID uint64, query inter
 func newSealableVectorService(t *testing.T) (service.VectorService, *sealableHost) {
 	t.Helper()
 	ctx := context.Background()
-	eng, err := engine.NewMVCCEngine(memory.NewStorage())
+	eng, err := engine.NewMVCCEngine(memory.NewStorage(), engine.WithMVCCVectorIndex("", nil))
 	if err != nil {
 		t.Fatalf("NewMVCCEngine: %v", err)
+	}
+	if err := eng.WarmVectorIndex(); err != nil {
+		t.Fatalf("WarmVectorIndex: %v", err)
 	}
 	host := &sealableHost{Host: backend.NewLocalBackend(eng)}
 	svc, err := service.NewVectorService(nil, hostVecLogger(t), service.WithVectorApplyHost(host, shard.ShardKV))

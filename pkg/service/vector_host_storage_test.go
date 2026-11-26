@@ -54,9 +54,12 @@ func closeVectorService(svc service.VectorService) {
 // whose storage is that engine, written through a LocalBackend host.
 func newHostVectorService(t *testing.T, stg *memory.MemoryStorage) service.VectorService {
 	t.Helper()
-	eng, err := engine.NewMVCCEngine(stg)
+	eng, err := engine.NewMVCCEngine(stg, engine.WithMVCCVectorIndex("", nil))
 	if err != nil {
 		t.Fatalf("NewMVCCEngine: %v", err)
+	}
+	if err := eng.WarmVectorIndex(); err != nil {
+		t.Fatalf("WarmVectorIndex: %v", err)
 	}
 	svc, err := service.NewVectorService(nil, hostVecLogger(t),
 		service.WithVectorApplyHost(backend.NewLocalBackend(eng), shard.ShardKV))

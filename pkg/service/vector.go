@@ -766,6 +766,46 @@ func (v *vectorService) ensureHNSWIndex(ctx context.Context, namespace string) (
 	return newIndex, nil
 }
 
+// namespaceSearch returns the k-nearest-neighbour search of namespace.
+// Without an apply host it is the service's own HNSW index. With one
+// (WithVectorApplyHost) it is the engine-owned index of the replica the
+// host reads: every replica updates that index as it applies each
+// replicated vector command, so a search on any replica sees writes and
+// deletes proposed through any other. A per-service cache would not: an
+// apply on another node never reaches it.
+func (v *vectorService) namespaceSearch(ctx context.Context, namespace string) (func([]float32, int) ([]*interfaces.HNSWSearchResult, error), error) {
+	if v.applyHost == nil {
+		index, err := v.ensureHNSWIndex(ctx, namespace)
+		if err != nil {
+			return nil, err
+		}
+		return index.Search, nil
+	}
+	info, err := v.storage.GetNamespaceInfo(ctx, namespace)
+	if err != nil {
+		return nil, translateVectorSealed(err)
+	}
+	if err := checkStoredGeometry(namespace, info); err != nil {
+		return nil, err
+	}
+	return func(query []float32, k int) ([]*interfaces.HNSWSearchResult, error) {
+		answer, err := v.applyHost.SyncRead(ctx, v.applyShardID,
+			VectorSearchQuery{Namespace: hostNamespace(namespace), Query: query, K: k})
+		if err != nil {
+			return nil, translateVectorSealed(err)
+		}
+		hits, ok := answer.([]VectorSearchHit)
+		if !ok {
+			return nil, &HostVectorAnswerError{Query: "vector search", Got: fmt.Sprintf("%T", answer)}
+		}
+		results := make([]*interfaces.HNSWSearchResult, len(hits))
+		for i, h := range hits {
+			results[i] = &interfaces.HNSWSearchResult{ID: h.ID, Distance: h.Distance}
+		}
+		return results, nil
+	}, nil
+}
+
 // =============================================================================
 // Tenant Validation Helpers
 // =============================================================================
@@ -1904,7 +1944,7 @@ func (v *vectorService) SearchSimilar(ctx context.Context, req *SearchSimilarReq
 		return nil, &VectorServiceClosedError{}
 	}
 
-	index, err := v.ensureHNSWIndex(ctx, scoped)
+	search, err := v.namespaceSearch(ctx, scoped)
 	if err != nil {
 		if unsupported, ok := errors.AsType[*UnsupportedNamespaceGeometryError](err); ok {
 			if v.metrics != nil {
@@ -1939,7 +1979,7 @@ func (v *vectorService) SearchSimilar(ctx context.Context, req *SearchSimilarReq
 	}
 
 	searchStart := time.Now()
-	results, err := index.Search(req.QueryVector, req.K)
+	results, err := search(req.QueryVector, req.K)
 	if err != nil {
 		if errors.Is(err, hnsw.ErrEmptyIndex) {
 			return &SearchSimilarResponse{

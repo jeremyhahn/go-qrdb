@@ -278,8 +278,17 @@ func (s *MVCCStateMachine) Open(_ context.Context, initialDir string, _ <-chan s
 		}
 		engineOpts = append(engineOpts, engine.WithMVCCTimeSeries(ts))
 	}
+	// Every replica keeps its own engine-owned vector index, updated by
+	// each applied vector command (UpdateEntries' index effects), so a
+	// search on any replica sees every committed write and delete.
+	engineOpts = append(engineOpts, engine.WithMVCCVectorIndex("", nil))
 
 	e, err := engine.NewMVCCEngine(s.storage, engineOpts...)
+	if err == nil {
+		if err = e.WarmVectorIndex(); err != nil {
+			_ = e.Close(context.Background())
+		}
+	}
 	if err != nil {
 		seals.Close()
 		_ = db.Close()
@@ -855,9 +864,15 @@ func (s *MVCCStateMachine) RecoverFromSnapshot(_ context.Context, r io.Reader, s
 	if s.engine != nil && s.engine.TimeSeries() != nil {
 		engineOpts = append(engineOpts, engine.WithMVCCTimeSeries(s.engine.TimeSeries()))
 	}
+	engineOpts = append(engineOpts, engine.WithMVCCVectorIndex("", nil))
 
 	e, err := engine.NewMVCCEngine(s.storage, engineOpts...)
 	if err != nil {
+		return &SnapshotError{Op: "recover", Err: err}
+	}
+	// The restored records replace the old index wholesale: rebuild it.
+	if err := e.WarmVectorIndex(); err != nil {
+		_ = e.Close(context.Background())
 		return &SnapshotError{Op: "recover", Err: err}
 	}
 	s.engine = e
