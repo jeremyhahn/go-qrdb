@@ -1508,6 +1508,11 @@ type StartedShard struct {
 	// database catalog. Only a placed shard whose entry is gone is purged
 	// by the reconciler's catch-up for a missed delete event.
 	Placed bool
+	// shard is the start this entry lists, nil for a start still in
+	// flight: CloseAndPurgeStarted acts only while the cache holds it, so
+	// a successor started under the same name since the listing is left
+	// alone.
+	shard *raftShard
 }
 
 // ListStarted returns a snapshot of every (TenantID, Database) pair whose
@@ -1522,7 +1527,7 @@ func (f *RaftBackendFactory) ListStarted() []StartedShard {
 	defer f.mu.Unlock()
 	out := make([]StartedShard, 0, len(f.shards))
 	for k, rs := range f.shards {
-		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database, Placed: rs.hadPlacement})
+		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database, Placed: rs.hadPlacement, shard: rs})
 	}
 	return out
 }
@@ -1539,7 +1544,7 @@ func (f *RaftBackendFactory) ListOnHost() []StartedShard {
 	defer f.mu.Unlock()
 	out := make([]StartedShard, 0, len(f.shards)+len(f.starting))
 	for k, rs := range f.shards {
-		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database, Placed: rs.hadPlacement})
+		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database, Placed: rs.hadPlacement, shard: rs})
 	}
 	for k := range f.starting {
 		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database})
@@ -1798,6 +1803,33 @@ func (f *RaftBackendFactory) CloseAndPurge(tenantID, db string) error {
 	if !ok {
 		return nil
 	}
+	return f.purgeShard(rs)
+}
+
+// CloseAndPurgeStarted is CloseAndPurge for the one start s names (a
+// ListStarted or ListOnHost entry): it stops and purges the shard only if
+// the cache still holds that start, compared under the factory lock, and is
+// a no-op otherwise. A caller that decided on a listing -- the reconciler's
+// purge of a shard whose placement is gone -- uses it so a drop and
+// recreate in between never stops or purges the successor.
+func (f *RaftBackendFactory) CloseAndPurgeStarted(s StartedShard) error {
+	f.mu.Lock()
+	key := raftShardKey{tenantID: s.TenantID, database: s.Database}
+	f.awaitStartsLocked(func(k raftShardKey, _ *startingShard) bool { return k == key })
+	rs, ok := f.shards[key]
+	if !ok || s.shard == nil || rs != s.shard {
+		f.mu.Unlock()
+		return nil
+	}
+	f.forgetLocked(key)
+	f.mu.Unlock()
+	return f.purgeShard(rs)
+}
+
+// purgeShard stops rs, already forgotten by the cache, and removes its data
+// directory.
+func (f *RaftBackendFactory) purgeShard(rs *raftShard) error {
+	tenantID, db := rs.tenantID, rs.database
 	if err := f.stopShard(rs); err != nil {
 		return err
 	}

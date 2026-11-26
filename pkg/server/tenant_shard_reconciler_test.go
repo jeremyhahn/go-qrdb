@@ -19,6 +19,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -97,6 +98,11 @@ func (f *fakeShardLifecycle) CloseAndPurge(tenantID, db string) error {
 	f.closed = append(f.closed, key)
 	f.purged = append(f.purged, key)
 	return nil
+}
+
+// CloseAndPurgeStarted purges by name: the fake keeps no start identity.
+func (f *fakeShardLifecycle) CloseAndPurgeStarted(s StartedShard) error {
+	return f.CloseAndPurge(s.TenantID, s.Database)
 }
 
 func (f *fakeShardLifecycle) ListStarted() []StartedShard {
@@ -397,6 +403,89 @@ func newTestReconciler(
 	}
 	r := NewTenantShardReconciler(store, factory, "local:1", nil, opts...)
 	return r, store
+}
+
+// successorHookLifecycle runs beforePurge ahead of every listed purge: the
+// window between the reconciler's absence check and its purge.
+type successorHookLifecycle struct {
+	*RaftBackendFactory
+	beforePurge func()
+}
+
+func (l *successorHookLifecycle) CloseAndPurgeStarted(s StartedShard) error {
+	if l.beforePurge != nil {
+		l.beforePurge()
+	}
+	return l.RaftBackendFactory.CloseAndPurgeStarted(s)
+}
+
+// TestTenantShardReconciler_PurgeWithoutPlacementSparesTheSuccessor: a
+// placed shard whose placement is gone is purged only if it is still the
+// start the pass listed. A drop and recreate that starts a successor under
+// the same name after the absence check leaves the successor running with
+// its data directory intact; the next pass, which lists the successor,
+// purges it.
+func TestTenantShardReconciler_PurgeWithoutPlacementSparesTheSuccessor(t *testing.T) {
+	ctx := context.Background()
+	host, _ := newSharedTestHost(t)
+	reg := newVolumePooledRegistry(t)
+	src := newFakeRaftInfoSource()
+	f := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg, src, volTestLogger())
+	t.Cleanup(func() { _ = f.CloseAll() })
+	dataRoot, _ := registerVolumeTenant(t, reg, "rp")
+	src.add("rp", "app", 1105, dataRoot)
+	src.placements = map[raftShardKey]*placement.Placement{{tenantID: "rp", database: "app"}: {
+		TenantID: "rp", Database: "app", ShardID: 1105,
+		Replicas: []placement.Replica{{ReplicaID: sharedHostReplicaID, NodeID: sharedHostRaftAddr, RaftAddr: sharedHostRaftAddr}},
+	}}
+	if _, err := f.Services(ctx, "rp", "app"); err != nil {
+		t.Fatalf("Services: %v", err)
+	}
+	dataDir := filepath.Join(dataRoot, "databases", "app")
+	listed := f.ListStarted()
+	if len(listed) != 1 || !listed[0].Placed {
+		t.Fatalf("precondition: ListStarted = %+v, want one placed shard", listed)
+	}
+	key := raftShardKey{tenantID: "rp", database: "app"}
+	var successor *raftShard
+	hook := &successorHookLifecycle{RaftBackendFactory: f}
+	hook.beforePurge = func() {
+		hook.beforePurge = nil
+		if err := f.Close("rp", "app"); err != nil {
+			t.Errorf("Close: %v", err)
+			return
+		}
+		if _, err := f.Services(ctx, "rp", "app"); err != nil {
+			t.Errorf("Services (successor): %v", err)
+			return
+		}
+		f.mu.Lock()
+		successor = f.shards[key]
+		f.mu.Unlock()
+	}
+	r, _ := newTestReconciler(t, hook, nil)
+	r.ReconcileOnce(ctx)
+
+	f.mu.Lock()
+	running := f.shards[key]
+	f.mu.Unlock()
+	if successor == nil || running != successor {
+		t.Fatalf("after the pass the cache holds %p, want the successor %p", running, successor)
+	}
+	if _, err := os.Stat(dataDir); err != nil {
+		t.Fatalf("successor's data dir %q after the pass: %v", dataDir, err)
+	}
+
+	r.ReconcileOnce(ctx)
+	f.mu.Lock()
+	_, still := f.shards[key]
+	f.mu.Unlock()
+	if still {
+		t.Fatal("the successor is still running after a pass that listed it")
+	}
+	if _, err := os.Stat(dataDir); !os.IsNotExist(err) {
+		t.Fatalf("data dir %q after the second pass: stat err = %v, want not exist", dataDir, err)
+	}
 }
 
 // ---------------------------------------------------------------------------

@@ -48,6 +48,11 @@ type ShardLifecycle interface {
 	// pair.
 	CloseAndPurge(tenantID, db string) error
 
+	// CloseAndPurgeStarted is CloseAndPurge for the one start s names (a
+	// ListStarted entry): a no-op when the shard running under s's name is
+	// no longer that start, as after a drop and recreate.
+	CloseAndPurgeStarted(s StartedShard) error
+
 	// ListStarted returns the set of (TenantID, Database) pairs whose dedicated
 	// raft shards are currently started on this node. Used by ReconcileOnce to
 	// detect orphans.
@@ -355,7 +360,7 @@ func (r *TenantShardReconciler) ReconcileOnce(ctx context.Context) {
 				r.logger.Info("placement reconciler: purging a shard whose placement is gone",
 					slog.String("tenant", s.TenantID),
 					slog.String("database", s.Database))
-				if err := r.closeDemoted(s.TenantID, s.Database); err != nil {
+				if err := r.closeListed(s); err != nil {
 					r.logger.Warn("placement reconciler: purge of a shard without placement failed",
 						slog.String("tenant", s.TenantID),
 						slog.String("database", s.Database),
@@ -376,7 +381,7 @@ func (r *TenantShardReconciler) ReconcileOnce(ctx context.Context) {
 		r.logger.Info("placement reconciler: stopping demoted shard",
 			slog.String("tenant", s.TenantID),
 			slog.String("database", s.Database))
-		if err := r.closeDemoted(s.TenantID, s.Database); err != nil {
+		if err := r.closeListed(s); err != nil {
 			r.logger.Warn("placement reconciler: demoted shard stop failed",
 				slog.String("tenant", s.TenantID),
 				slog.String("database", s.Database),
@@ -397,6 +402,18 @@ func (r *TenantShardReconciler) closeDemoted(tenantID, db string) error {
 		return r.factory.CloseAndPurge(tenantID, db)
 	}
 	return r.factory.Close(tenantID, db)
+}
+
+// closeListed is closeDemoted for a shard the pass decided on from its
+// ListStarted snapshot. The purge acts only on that start: a drop and
+// recreate since the listing leaves the successor running with its data.
+// Without purging, Close by name is safe, since the next pass starts a
+// successor it stopped again from its placement.
+func (r *TenantShardReconciler) closeListed(s StartedShard) error {
+	if r.purgeOnDemotion {
+		return r.factory.CloseAndPurgeStarted(s)
+	}
+	return r.factory.Close(s.TenantID, s.Database)
 }
 
 // placementGone re-reads the placement of a placed shard absent from the
