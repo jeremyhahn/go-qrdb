@@ -24,6 +24,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	vectorindex "github.com/jeremyhahn/go-qrdb/pkg/vector"
@@ -110,6 +112,12 @@ func (e *HostVectorAnswerError) Error() string {
 func (s *hostVectorStorage) propose(ctx context.Context, cmd []byte, encErr error) error {
 	if encErr != nil {
 		return &EncodeRequestError{Err: encErr}
+	}
+	// Every OpVector* command needs every replica of the group to apply the
+	// vector command set: refuse before proposing until the group has
+	// activated featuregate.VectorEngine.
+	if gated, ok := s.host.(FeatureGatedHost); ok && !gated.FeatureEnabled(s.shardID, featuregate.VectorEngine) {
+		return &feature.NotActiveError{Feature: featuregate.VectorEngine, ShardID: s.shardID}
 	}
 	res, err := propose(ctx, s.host, s.shardID, cmd)
 	if err != nil {

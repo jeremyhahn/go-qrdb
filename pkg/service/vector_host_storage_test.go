@@ -20,8 +20,12 @@ import (
 	"io"
 	"testing"
 
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -162,6 +166,54 @@ func TestHostVectorStorage_DimensionMismatchWritesNothing(t *testing.T) {
 	}
 	if data, _ := stg.Get(vector.VectorKey(service.HostVectorNamespace("", "ns"), 5)); data != nil {
 		t.Fatal("a refused upsert left its vector key in the engine store")
+	}
+}
+
+// vectorGateHost is a real local host whose group has not activated
+// featuregate.VectorEngine; it counts every proposal that reaches it.
+type vectorGateHost struct {
+	service.Host
+	enabled   bool
+	proposals int
+}
+
+func (h *vectorGateHost) FeatureEnabled(_ uint64, f feature.Feature) bool {
+	return f != featuregate.VectorEngine || h.enabled
+}
+
+func (h *vectorGateHost) SyncPropose(ctx context.Context, shardID uint64, cmd []byte) (sm.Result, error) {
+	h.proposals++
+	return h.Host.SyncPropose(ctx, shardID, cmd)
+}
+
+// TestHostVectorStorage_InactiveVectorEngineGateProposesNothing: until the
+// group activates featuregate.VectorEngine a vector host write is refused
+// with *feature.NotActiveError and no OpVector* command reaches Raft.
+func TestHostVectorStorage_InactiveVectorEngineGateProposesNothing(t *testing.T) {
+	ctx := context.Background()
+	eng, err := engine.NewMVCCEngine(memory.NewStorage())
+	if err != nil {
+		t.Fatalf("NewMVCCEngine: %v", err)
+	}
+	host := &vectorGateHost{Host: backend.NewLocalBackend(eng)}
+	stg := service.NewHostVectorStorage(host, shard.ShardKV)
+	err = stg.CreateNamespace(ctx, &vectorstorage.NamespaceInfo{Name: "ns", Dimension: 2})
+	var notActive *feature.NotActiveError
+	if !errors.As(err, &notActive) || notActive.Feature != featuregate.VectorEngine {
+		t.Fatalf("CreateNamespace with the gate inactive: err = %v, want *feature.NotActiveError for %s", err, featuregate.VectorEngine)
+	}
+	if err := stg.UpsertVector(ctx, "ns", &vectorstorage.VectorValue{ID: 1, Embedding: []float32{1, 2}}); !errors.As(err, &notActive) {
+		t.Fatalf("UpsertVector with the gate inactive: err = %v, want *feature.NotActiveError", err)
+	}
+	if host.proposals != 0 {
+		t.Fatalf("%d proposals reached the host with the vector-engine gate inactive", host.proposals)
+	}
+	host.enabled = true
+	if err := stg.CreateNamespace(ctx, &vectorstorage.NamespaceInfo{Name: "ns", Dimension: 2}); err != nil {
+		t.Fatalf("CreateNamespace with the gate active: %v", err)
+	}
+	if host.proposals == 0 {
+		t.Fatal("an active gate sent no proposal")
 	}
 }
 
