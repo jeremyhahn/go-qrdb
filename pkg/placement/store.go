@@ -21,6 +21,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -164,7 +165,8 @@ type Event struct {
 // under PlacementPrefix. It is stateless beyond its KV reference and therefore
 // safe for concurrent use.
 type Store struct {
-	kv KV
+	kv    KV
+	fence *replicaAddFence
 
 	// names caches id -> name for the entries this node has written or
 	// resolved. A database id is never reused, so a cached name never goes
@@ -278,17 +280,159 @@ func nameCacheKey(tenantID, databaseID string) string {
 	return tenantID + "/" + databaseID
 }
 
+// GuardedBatchKV is the optional multi-guard capability a KV backend may
+// provide: every write applied atomically, and only while every guard's key
+// still holds its expected value (a nil guard value means "the key must be
+// absent"). lifecycle's guardedKVStoreAdapter (kvstore.MultiGuardedBatchKVStore)
+// implements it. A Store built WithReplicaAddFence commits every
+// replica-adding write through it.
+type GuardedBatchKV interface {
+	PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (applied bool, err error)
+}
+
+// StoreOption configures a Store.
+type StoreOption func(*Store)
+
+// replicaAddFence is the WithReplicaAddFence configuration.
+type replicaAddFence struct {
+	key     func(tenantID string) string
+	refusal func(tenantID string, fence []byte) error
+}
+
+// WithReplicaAddFence fences every placement write that ADDS a replica to a
+// tenant (or creates a placement for it) on a key that must be absent: the
+// write commits as one guarded batch comparing the placement entry (its
+// expected bytes, or absent for a create) AND fenceKey(tenantID) absent, so
+// a fence key committed at any moment before the write is seen by it, and
+// one committed after it is ordered after it. lifecycle sets it with the
+// volume pool's move journal key, so a scale-up or a rebalance that read
+// "no move" before MoveTenant admitted the journal cannot commit a replica
+// the move's resync would miss: either the write lands first (and the
+// resync reads it) or it is refused. A refused write answers
+// refusal(tenantID, storedFenceValue) unwrapped; the store never writes the
+// fence key.
+//
+// Writes that add no replica (SetDropping, TryMarkDropping,
+// MarkDropCommitted, RemoveReplica, a promotion or a removal through
+// CompareAndSwapPlacement or Put) stay unfenced: a departure during a move
+// is the move's own business (SyncMoveNodes). A replica is "added" when next
+// names one whose (ReplicaID, NodeID, RaftAddr) no current replica has.
+//
+// A fenced write over a KV without GuardedBatchKV fails closed with a
+// *StoreError wrapping *AtomicWriteUnsupportedError.
+func WithReplicaAddFence(fenceKey func(tenantID string) string, refusal func(tenantID string, fence []byte) error) StoreOption {
+	return func(s *Store) {
+		if fenceKey == nil || refusal == nil {
+			return
+		}
+		s.fence = &replicaAddFence{key: fenceKey, refusal: refusal}
+	}
+}
+
+// addsReplica reports whether next names a replica current does not have.
+// A nil current (a create) adds every replica next names.
+func addsReplica(current, next *Placement) bool {
+	if current == nil {
+		return true
+	}
+	for _, r := range next.Replicas {
+		found := false
+		for _, c := range current.Replicas {
+			if c.ReplicaID == r.ReplicaID && c.NodeID == r.NodeID && c.RaftAddr == r.RaftAddr {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return true
+		}
+	}
+	return false
+}
+
+// fencedWrite commits key=next as one guarded batch: the placement entry
+// must hold expected (absent when expected is nil) and the tenant's fence
+// key must be absent. applied=false with a nil error is a placement change
+// (the caller declines or retries as it would without the fence); a fence
+// key present answers the configured refusal.
+func (s *Store) fencedWrite(ctx context.Context, op, tenantID, databaseID string, expected, next []byte) (bool, error) {
+	guarded, ok := s.kv.(GuardedBatchKV)
+	if !ok {
+		return false, &StoreError{TenantID: tenantID, DatabaseID: databaseID, Op: op, Err: &AtomicWriteUnsupportedError{}}
+	}
+	key := placementKey(tenantID, databaseID)
+	fenceKey := s.fence.key(tenantID)
+	applied, err := guarded.PutAllIfAllUnchanged(ctx,
+		[]kvstore.Guard{{Key: key, Value: expected}, {Key: fenceKey, Value: nil}},
+		[]kvstore.KV{{Key: key, Value: next}})
+	if err != nil {
+		return false, &StoreError{TenantID: tenantID, DatabaseID: databaseID, Op: op, Err: err}
+	}
+	if applied {
+		return true, nil
+	}
+	fence, err := s.kv.Get(ctx, fenceKey)
+	if err != nil {
+		return false, &StoreError{TenantID: tenantID, DatabaseID: databaseID, Op: op, Err: err}
+	}
+	if fence != nil {
+		return false, s.fence.refusal(tenantID, fence)
+	}
+	return false, nil
+}
+
 // NewStore constructs a Store over the given KV backend, which must be non-nil.
-func NewStore(kv KV) (*Store, error) {
+func NewStore(kv KV, opts ...StoreOption) (*Store, error) {
 	if kv == nil {
 		return nil, ErrNilKV
 	}
-	return &Store{kv: kv}, nil
+	s := &Store{kv: kv}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s, nil
 }
 
 // placementKey returns the storage key for a (tenant, databaseID) placement.
 func placementKey(tenantID, databaseID string) string {
 	return PlacementPrefix + tenantID + "/" + databaseID
+}
+
+// fencedPut is Put under WithReplicaAddFence: a Put that creates the
+// placement or adds a replica to the stored one commits through
+// fencedWrite against the bytes it read; any other Put stays a plain Put.
+// A placement that changes between the read and the guarded write is
+// re-read, at most setDroppingMaxAttempts times.
+func (s *Store) fencedPut(ctx context.Context, p *Placement, data []byte) error {
+	key := placementKey(p.TenantID, p.DatabaseID)
+	for attempt := 0; attempt < setDroppingMaxAttempts; attempt++ {
+		raw, err := s.kv.Get(ctx, key)
+		if err != nil {
+			return &StoreError{TenantID: p.TenantID, DatabaseID: p.DatabaseID, Op: "put", Err: err}
+		}
+		var current *Placement
+		if raw != nil {
+			c, err := decodePlacement(raw)
+			if err != nil {
+				return &StoreError{TenantID: p.TenantID, DatabaseID: p.DatabaseID, Op: "put", Err: err}
+			}
+			current = c
+		}
+		if !addsReplica(current, p) {
+			if err := s.kv.Put(ctx, key, data); err != nil {
+				return &StoreError{TenantID: p.TenantID, DatabaseID: p.DatabaseID, Op: "put", Err: err}
+			}
+			return nil
+		}
+		applied, err := s.fencedWrite(ctx, "put", p.TenantID, p.DatabaseID, raw, data)
+		if err != nil {
+			return err
+		}
+		if applied {
+			return nil
+		}
+	}
+	return &StoreError{TenantID: p.TenantID, DatabaseID: p.DatabaseID, Op: "put", Err: &ConflictError{}}
 }
 
 // Put stores (or replaces) the placement for its (TenantID, Database). The
@@ -306,6 +450,9 @@ func (s *Store) Put(ctx context.Context, p *Placement) error {
 	data, err := s.encodePlacement(p)
 	if err != nil {
 		return &StoreError{TenantID: p.TenantID, DatabaseID: p.DatabaseID, Op: "put", Err: err}
+	}
+	if s.fence != nil {
+		return s.fencedPut(ctx, p, data)
 	}
 	if err := s.kv.Put(ctx, placementKey(p.TenantID, p.DatabaseID), data); err != nil {
 		return &StoreError{TenantID: p.TenantID, DatabaseID: p.DatabaseID, Op: "put", Err: err}
@@ -380,6 +527,21 @@ func (s *Store) CompareAndSwapPlacement(ctx context.Context, expected, next *Pla
 	if next.DatabaseID == "" {
 		return false, &StoreError{TenantID: next.TenantID, Op: "compare-and-swap", Err: ErrEmptyDatabaseID}
 	}
+	if s.fence != nil && addsReplica(expected, next) {
+		var expectedBytes []byte
+		if expected != nil {
+			b, err := s.encodePlacement(expected)
+			if err != nil {
+				return false, &StoreError{TenantID: next.TenantID, DatabaseID: next.DatabaseID, Op: "compare-and-swap", Err: err}
+			}
+			expectedBytes = b
+		}
+		nextBytes, err := s.encodePlacement(next)
+		if err != nil {
+			return false, &StoreError{TenantID: next.TenantID, DatabaseID: next.DatabaseID, Op: "compare-and-swap", Err: err}
+		}
+		return s.fencedWrite(ctx, "compare-and-swap", next.TenantID, next.DatabaseID, expectedBytes, nextBytes)
+	}
 	atomicKV, ok := s.kv.(AtomicKV)
 	if !ok {
 		return false, &StoreError{TenantID: next.TenantID, DatabaseID: next.DatabaseID, Op: "compare-and-swap", Err: &AtomicWriteUnsupportedError{}}
@@ -436,17 +598,27 @@ func (s *Store) ClaimPlacement(ctx context.Context, p *Placement) (claimed bool,
 	if p.DatabaseID == "" {
 		return false, nil, &StoreError{TenantID: p.TenantID, Op: "claim", Err: ErrEmptyDatabaseID}
 	}
-	creator, ok := s.kv.(PutIfAbsentKV)
-	if !ok {
-		return false, nil, &StoreError{TenantID: p.TenantID, DatabaseID: p.DatabaseID, Op: "claim", Err: &AtomicWriteUnsupportedError{}}
-	}
 	data, err := s.encodePlacement(p)
 	if err != nil {
 		return false, nil, &StoreError{TenantID: p.TenantID, DatabaseID: p.DatabaseID, Op: "claim", Err: err}
 	}
-	stored, err := creator.PutIfAbsent(ctx, placementKey(p.TenantID, p.DatabaseID), data)
-	if err != nil {
-		return false, nil, &StoreError{TenantID: p.TenantID, DatabaseID: p.DatabaseID, Op: "claim", Err: err}
+	var stored bool
+	if s.fence != nil {
+		// A claim creates the placement: absent placement AND absent fence
+		// key, in one guarded batch (WithReplicaAddFence).
+		stored, err = s.fencedWrite(ctx, "claim", p.TenantID, p.DatabaseID, nil, data)
+		if err != nil {
+			return false, nil, err
+		}
+	} else {
+		creator, ok := s.kv.(PutIfAbsentKV)
+		if !ok {
+			return false, nil, &StoreError{TenantID: p.TenantID, DatabaseID: p.DatabaseID, Op: "claim", Err: &AtomicWriteUnsupportedError{}}
+		}
+		stored, err = creator.PutIfAbsent(ctx, placementKey(p.TenantID, p.DatabaseID), data)
+		if err != nil {
+			return false, nil, &StoreError{TenantID: p.TenantID, DatabaseID: p.DatabaseID, Op: "claim", Err: err}
+		}
 	}
 	if stored {
 		return true, nil, nil

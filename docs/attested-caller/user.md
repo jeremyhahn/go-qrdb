@@ -25,6 +25,7 @@ attestation verifier) enable it for the operations that need it.
 | `403` / `PERMISSION_DENIED` naming `peer-mismatch` or `evidence-from-future` | the evidence on record does not belong to the certificate you connected with, or is dated after now. Recorded as a security event. |
 | `403` / `PERMISSION_DENIED` naming `no-peer-certificate` | you did not connect with a client certificate, so there is no peer to attest. |
 | `403` / `PERMISSION_DENIED` naming `forwarded` | you sent a gated write to a follower, which forwarded it to the leader under its own certificate. Send gated writes to the leader. |
+| `403` / `PERMISSION_DENIED` naming `no-verdict` or `inconsistent-verdict` | the node's verifier returned no verdict, or a verdict that both passed and named a failure. The node's attestation verifier needs attention. |
 | `503` / `UNAVAILABLE` naming `verifier-error` | the node could not reach a verdict. Retry; if it persists, the node's attestation configuration needs attention. |
 
 You only ever see these for an operation you are **otherwise permitted** to

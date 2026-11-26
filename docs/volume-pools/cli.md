@@ -111,6 +111,63 @@ use is not reported: the `USED` column prints `-`. Paginated.
 qrdb volume-pool tenants fast --page-size 50
 ```
 
+## `qrdb volume-pool move-tenant <tenant> --to <pool>`
+
+Starts moving a `volume` or `raft` tenant to another pool the tenant is
+entitled to, and prints the journalled move. The move then runs in the
+background, node by node; follow it with `get-move`. Needs
+`volume_pools:move`. Refused when the tenant is not entitled to the pool, when
+a move is already journalled for it, and when the move goes from an encrypted
+(`Lockable`) pool to an unencrypted one without
+`--allow-unencrypted-destination` (decision Q9, ruling 1234). Stopping `qrdbd` during a
+move (SIGTERM, or a system encryption migration) waits for the current move
+step to return before any tenant store closes, and the move resumes at the
+next start.
+
+| Flag | Type | Default | Required | Meaning |
+|---|---|---|---|---|
+| `--to` | string | — | yes | the destination pool |
+| `--allow-unencrypted-destination` | bool | `false` | no | allow a move from an encrypted pool to an unencrypted one; this drops the tenant's at-rest encryption and is audited |
+
+```bash
+qrdb volume-pool move-tenant acme --to fast
+
+# Leave an encrypted pool for an unencrypted one, dropping encryption.
+qrdb volume-pool move-tenant acme --to bulk --allow-unencrypted-destination
+```
+
+A move that drops encryption prints `Encryption: dropped` (JSON
+`"encryptionDropped": true`). The server records the drop as the audit
+record `volume_pool.move_encryption_drop` (attributes `from_pool`, `to_pool`,
+`encryption: dropped`, `allow_unencrypted_destination`) before it admits the
+move, whatever the audit failure policy: when that record cannot be written,
+or the server has no audit sink, the move is refused. Every move start is
+also recorded as `volume_pool.move_start` with `allow_unencrypted_destination`
+and `encryption_dropped`; the tenant's identities holding `audit:query` read
+both with `qrdb audit query --action volume_pool.move_start --tenant-id acme`.
+
+## `qrdb volume-pool get-move <tenant>`
+
+Shows a tenant's move in progress: its state, the nodes copied, pending and
+retired, and the current step with its attempts and last error. A tenant with
+no move answers not found, so a move that has ended answers not found. Needs
+`volume_pools:read`.
+
+```bash
+qrdb volume-pool get-move acme --output json
+```
+
+## `qrdb volume-pool cancel-move <tenant>`
+
+Cancels a tenant's move before its cut over and prints the move in state
+`aborting`; the move rolls back to the source pool. Refused once the move is
+past its cut over, and not found when no move is journalled. Needs
+`volume_pools:move`.
+
+```bash
+qrdb volume-pool cancel-move acme
+```
+
 ## Tenant verbs that touch pools
 
 ### `qrdb tenant create --pool`

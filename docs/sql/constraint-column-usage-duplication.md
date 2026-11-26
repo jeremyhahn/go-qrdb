@@ -8,8 +8,8 @@
 
 | | where | scope | how it is reached |
 |---|---|---|---|
-| A | `pkg/sql/pgcatalog/constraint_column_usage.go` | **PostgreSQL dialect only** | `pgcatalog.InfoSchema()` wraps go-mysql-server's `information_schema` database and overrides `GetTableInsensitive` (`columns.go:126`) |
-| B | `pkg/sql/infoschema/constraint_column_usage.go` | **process-global** | `Register()` writes into go-mysql-server's package-level `information_schema.NewInformationSchemaTablesToAdd`, called from `pkg/sql/pgsql/server.go:377` |
+| A | `pkg/sql/pgcatalog/constraint_column_usage.go` | **PostgreSQL dialect only** | `pgcatalog.InfoSchema()` wraps go-mysql-server's `information_schema` database and overrides `GetTableInsensitive` (`columns.go:125`) |
+| B | `pkg/sql/infoschema/constraint_column_usage.go` | **process-global** | `Register()` writes into go-mysql-server's package-level `information_schema.NewInformationSchemaTablesToAdd`, called from `pkg/sql/pgsql/server.go:380` |
 
 Both compute the view from the same catalog data and report only PRIMARY KEY
 and UNIQUE constraints.

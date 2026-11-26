@@ -256,7 +256,7 @@ path that every authorization decision traverses.
 The event (`audit.AuditEvent`, `pkg/audit/audit_event.go`) carries: `Timestamp`
 (UTC), `Actor` (certificate CN, JWT `sub` or API key), `TenantID`, `Role` at the
 time of the event, `Resource`, `Action`, `Outcome` (`success`,
-`failure:<reason>`, `denied:<reason>`), `Attributes`, `ClientIP`, `RequestID`,
+`failure:<reason>`, `denied:<reason>`, `permitted`), `Attributes`, `ClientIP`, `RequestID`,
 and **`PrevHash`** — the hex SHA-256 digest of the previous event, empty for the
 first, forming a **tamper-detection chain**.
 

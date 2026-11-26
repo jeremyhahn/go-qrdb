@@ -480,3 +480,47 @@ type ObjstoreBarrierSealedError struct{}
 func (e *ObjstoreBarrierSealedError) Error() string {
 	return "lifecycle: the storage barrier is sealed; an objstore LSM store cannot open until it is unsealed (object-storage-lsm, fails closed)"
 }
+
+// RunModeMismatchError is returned when a data directory belongs to the
+// other run mode: its marker records that mode.
+type RunModeMismatchError struct {
+	DataDir    string
+	Recorded   string
+	Configured string
+}
+
+func (e *RunModeMismatchError) Error() string {
+	return "lifecycle: data directory " + e.DataDir + " was initialized in mode: " + e.Recorded +
+		" but this node is configured for mode: " + e.Configured +
+		"; the two modes keep separate stores and no migration exists: start with mode: " +
+		e.Recorded + ", or use a fresh data directory"
+}
+
+// RunModeMarkerError is returned when the run-mode marker cannot be read or
+// written, or records no known mode (Content).
+type RunModeMarkerError struct {
+	Path    string
+	Content string
+	Err     error
+}
+
+func (e *RunModeMarkerError) Error() string {
+	if e.Err == nil {
+		return "lifecycle: run-mode marker " + e.Path + " records unknown mode " + strconv.Quote(e.Content) +
+			"; want standalone or raft"
+	}
+	return "lifecycle: run-mode marker " + e.Path + ": " + e.Err.Error()
+}
+
+func (e *RunModeMarkerError) Unwrap() error { return e.Err }
+
+// RunModeInvalidError is returned when the configured run mode is neither
+// standalone nor raft. The guard refuses it before it touches the data
+// directory, so no marker records the unknown mode.
+type RunModeInvalidError struct {
+	Mode string
+}
+
+func (e *RunModeInvalidError) Error() string {
+	return "lifecycle: unknown run mode " + strconv.Quote(e.Mode) + "; want standalone or raft"
+}

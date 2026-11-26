@@ -46,6 +46,7 @@ type fakeShardLifecycle struct {
 	closed    []raftShardKey
 	purged    []raftShardKey
 	attachFn  func(tenantID, db string) error
+	closeErr  error
 	// shardIDs records the raft shard each started shard serves, as the
 	// real factory's raftShard.shardID does; ListStarted and ListOnHost
 	// report it.
@@ -110,6 +111,9 @@ func (f *fakeShardLifecycle) Attach(_ context.Context, tenantID, db string) erro
 func (f *fakeShardLifecycle) Close(tenantID, db string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.closeErr != nil {
+		return f.closeErr
+	}
 	key := raftShardKey{tenantID: tenantID, database: db}
 	delete(f.started, key)
 	f.closed = append(f.closed, key)
@@ -492,6 +496,68 @@ func TestTenantShardReconciler_BootReattach(t *testing.T) {
 	}
 }
 
+// TestTenantShardReconciler_RestartsPromotedObserver: an active local replica
+// still running with the observer role latched is closed and restarted as a
+// voter; a failed close leaves it running for the next pass.
+func TestTenantShardReconciler_RestartsPromotedObserver(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	p := placement1("acme", "orders", 1001)
+	r, _ := newTestReconciler(t, factory, nil, p)
+	ctx := context.Background()
+	r.ReconcileOnce(ctx)
+	if !factory.isStarted("acme", "orders") {
+		t.Fatal("acme/orders should be started")
+	}
+
+	factory.setStartedAsObserver("acme", "orders", true)
+	factory.mu.Lock()
+	factory.closeErr = errors.New("stop failed")
+	factory.mu.Unlock()
+	r.ReconcileOnce(ctx)
+	factory.mu.Lock()
+	closed := len(factory.closed)
+	factory.closeErr = nil
+	factory.mu.Unlock()
+	if closed != 0 || !factory.isStarted("acme", "orders") {
+		t.Fatalf("a failed stop must leave the replica running (closed %d)", closed)
+	}
+
+	r.ReconcileOnce(ctx)
+	factory.mu.Lock()
+	closed = len(factory.closed)
+	factory.mu.Unlock()
+	if closed != 1 {
+		t.Fatalf("closed = %d, want the promoted observer closed once", closed)
+	}
+	if !factory.isStarted("acme", "orders") {
+		t.Fatal("the promoted replica must be restarted")
+	}
+}
+
+// TestTenantShardReconciler_SetMoveHoldNilClears: a nil hold clears the hold.
+func TestTenantShardReconciler_SetMoveHoldNilClears(t *testing.T) {
+	r := &TenantShardReconciler{}
+	r.SetMoveHold(&MoveStoreCloser{})
+	r.SetMoveHold(nil)
+	if r.moveHold.Load() != nil {
+		t.Fatal("SetMoveHold(nil) must clear the hold")
+	}
+	var reg *TenantHostRegistry
+	reg.SetMoveHold(nil) // a nil registry ignores it
+	reg = &TenantHostRegistry{}
+	reg.SetMoveHold(&MoveStoreCloser{})
+	reg.SetMoveHold(nil)
+	if reg.moveHold.Load() != nil {
+		t.Fatal("TenantHostRegistry.SetMoveHold(nil) must clear the hold")
+	}
+	// A registry with no tenant source hosts no tenant.
+	for _, r := range []*TenantHostRegistry{nil, {}} {
+		if hosted, err := r.HostsTenant(context.Background(), "acme"); hosted || err != nil {
+			t.Fatalf("HostsTenant = %v, %v; want false, nil", hosted, err)
+		}
+	}
+}
+
 // TestTenantShardReconciler_IgnoresUnassigned proves shards not assigned to
 // the local node are not started.
 func TestTenantShardReconciler_IgnoresUnassigned(t *testing.T) {
@@ -677,6 +743,82 @@ func TestTenantShardReconciler_BarrierNotReadyDefers(t *testing.T) {
 	}
 	if !factory.isStarted("acme", "orders") {
 		t.Error("acme/orders should be started after barrier becomes ready")
+	}
+}
+
+// fakeMoveHold is a MoveHold the test flips.
+type fakeMoveHold struct {
+	mu   sync.Mutex
+	held map[string]bool
+}
+
+func (h *fakeMoveHold) HoldsTenant(tenantID string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.held[tenantID]
+}
+
+func (h *fakeMoveHold) set(tenantID string, held bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.held[tenantID] = held
+}
+
+// countingShellRegistrar records each RegisterTenantShell call.
+type countingShellRegistrar struct {
+	mu      sync.Mutex
+	tenants []string
+}
+
+func (s *countingShellRegistrar) RegisterTenantShell(_ context.Context, tenantID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tenants = append(s.tenants, tenantID)
+	return nil
+}
+
+func (s *countingShellRegistrar) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.tenants)
+}
+
+// TestTenantShardReconciler_MoveHoldDefers: while a volume-pool move holds a
+// tenant, the reconciler neither attaches its shard (barrier unsealed) nor
+// registers its barrier shell (barrier missing); once released it attaches.
+func TestTenantShardReconciler_MoveHoldDefers(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	barriers := newFakeBarrierReadiness()
+	barriers.markReady("acme")
+	p := placement1("acme", "orders", 1001)
+	r, _ := newTestReconciler(t, factory, barriers, p)
+	hold := &fakeMoveHold{held: map[string]bool{"acme": true}}
+	r.SetMoveHold(hold)
+	shells := &countingShellRegistrar{}
+	r.SetShellRegistrar(shells)
+
+	r.ReconcileOnce(context.Background())
+	if factory.attachCount() != 0 {
+		t.Fatalf("Attach called %d times while the move holds acme", factory.attachCount())
+	}
+
+	// A held tenant whose barrier is missing gets no shell either.
+	missing := newFakeBarrierReadiness()
+	rMissing, _ := newTestReconciler(t, factory, missing, placement1("acme", "orders", 1001))
+	rMissing.SetMoveHold(hold)
+	rMissing.SetShellRegistrar(shells)
+	rMissing.ReconcileOnce(context.Background())
+	if shells.count() != 0 || factory.attachCount() != 0 {
+		t.Fatalf("held tenant: shells = %d, attaches = %d, want 0 and 0", shells.count(), factory.attachCount())
+	}
+
+	hold.set("acme", false)
+	r.ReconcileOnce(context.Background())
+	if factory.attachCount() != 1 || !factory.isStarted("acme", "orders") {
+		t.Fatalf("after release: attaches = %d, started = %v", factory.attachCount(), factory.isStarted("acme", "orders"))
+	}
+	if shells.count() != 0 {
+		t.Fatalf("shells = %d after release with a ready barrier, want 0", shells.count())
 	}
 }
 
@@ -1401,6 +1543,37 @@ func TestTenantShardReconciler_WithPurgeOnDemotionFalse(t *testing.T) {
 	}
 	if factory.purgeCount() != 0 {
 		t.Errorf("purgeCount() = %d, want 0 (WithPurgeOnDemotion(false) must use plain Close)", factory.purgeCount())
+	}
+}
+
+// TestTenantShardReconciler_DemotionCloseFailureKeepsShard: a demoted or
+// deleted shard whose close fails stays started, from a pass and from a
+// put or delete event alike, for the next pass to retry.
+func TestTenantShardReconciler_DemotionCloseFailureKeepsShard(t *testing.T) {
+	ctx := context.Background()
+	demoted := &placement.Placement{
+		TenantID: "acme", Database: "orders", ShardID: 1001, RF: 1, LeaderReplicaID: 2,
+		Replicas: []placement.Replica{{ReplicaID: 2, NodeID: "other:1", RaftAddr: "other:1"}},
+	}
+	store, err := placement.NewStore(newMemKV())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.Put(ctx, demoted); err != nil {
+		t.Fatalf("store.Put: %v", err)
+	}
+	factory := newFakeShardLifecycle()
+	factory.mu.Lock()
+	factory.started[raftShardKey{tenantID: "acme", database: "orders"}] = true
+	factory.closeErr = errors.New("close failed")
+	factory.mu.Unlock()
+	r := NewTenantShardReconciler(store, factory, "local:1", nil, WithPurgeOnDemotion(false))
+
+	r.ReconcileOnce(ctx)
+	r.handleEvent(ctx, placement.Event{Type: placement.EventPut, TenantID: "acme", Database: "orders", Placement: demoted})
+	r.handleEvent(ctx, placement.Event{Type: placement.EventDelete, TenantID: "acme", Database: "orders"})
+	if !factory.isStarted("acme", "orders") || factory.closeCount() != 0 {
+		t.Fatalf("a failed close must keep the shard started (closed %d)", factory.closeCount())
 	}
 }
 

@@ -17,6 +17,7 @@ package lifecycle
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -25,8 +26,10 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
 // fencedCreators returns the two production FencedCreator implementations
@@ -238,4 +241,99 @@ func TestSealDisabledTenantService_CommitsStrictClusterFloor(t *testing.T) {
 			t.Fatalf("floor = %q, want %q", got, tenant.ClusterIsolationPolicyOperatorAccess)
 		}
 	})
+}
+
+// recordingTxService is evaluatingTxService that also records the compares
+// of every Execute, so a test can see which guards one proposal carried.
+type recordingTxService struct {
+	*evaluatingTxService
+	compares [][]service.Compare
+}
+
+func (r *recordingTxService) Execute(ctx context.Context, compares []service.Compare, successOps, failureOps []service.Op) (*service.TransactionResponse, error) {
+	r.compares = append(r.compares, compares)
+	return r.evaluatingTxService.Execute(ctx, compares, successOps, failureOps)
+}
+
+// TestPlacementStore_ReplicaAddFencedOnMoveJournal proves the wiring
+// lifecycle builds (placement.NewStore over guardedKVStoreAdapter with
+// WithReplicaAddFence(volume.MoveKey, moveJournalReplicaRefusal)): a replica
+// add for a tenant whose move journal is stored is refused with the
+// journal's *volume.TenantMovingReplicaError, the move key is compared at
+// CompareVersion 0 in the same Execute as the placement compare, and once
+// the journal is deleted (the move ended) the same write commits.
+func TestPlacementStore_ReplicaAddFencedOnMoveJournal(t *testing.T) {
+	ctx := context.Background()
+	tx := &recordingTxService{evaluatingTxService: newEvaluatingTxService()}
+	kv := &mockKVServicer{getFn: func(_ context.Context, key string) ([]byte, error) {
+		if v, ok := tx.data[key]; ok {
+			return v.Value, nil
+		}
+		return nil, nil
+	}}
+	adapter, err := NewGuardedKVStoreAdapter(kv, nil, tx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := placement.NewStore(adapter, placement.WithReplicaAddFence(volume.MoveKey, moveJournalReplicaRefusal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cur := &placement.Placement{TenantID: "acme", DatabaseID: "db", ShardID: 9, RF: 1, LeaderReplicaID: 1,
+		Replicas: []placement.Replica{{ReplicaID: 1, NodeID: "n1", RaftAddr: "n1:1"}}}
+	curBytes, err := json.Marshal(cur)
+	if err != nil {
+		t.Fatal(err)
+	}
+	placementKey := placement.PlacementPrefix + "acme/db"
+	tx.put(placementKey, curBytes)
+	journal, err := json.Marshal(volume.Move{TenantID: "acme", FromPool: "fast", ToPool: "bulk", State: volume.MoveStateAdmitted})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx.put(volume.MoveKey("acme"), journal)
+	next := *cur
+	next.Replicas = append([]placement.Replica{}, cur.Replicas...)
+	next.Replicas = append(next.Replicas, placement.Replica{ReplicaID: 2, NodeID: "n2", RaftAddr: "n2:1", State: placement.ReplicaStateObserver})
+
+	swapped, err := store.CompareAndSwapPlacement(ctx, cur, &next)
+	var refusal *volume.TenantMovingReplicaError
+	if !errors.As(err, &refusal) || swapped {
+		t.Fatalf("CAS = %v, %v; want *volume.TenantMovingReplicaError", swapped, err)
+	}
+	if refusal.TenantID != "acme" || refusal.FromPool != "fast" || refusal.ToPool != "bulk" || refusal.State != volume.MoveStateAdmitted {
+		t.Fatalf("refusal = %+v, want the stored journal's move", refusal)
+	}
+	if string(tx.data[placementKey].Value) != string(curBytes) {
+		t.Fatal("a refused replica add changed the placement")
+	}
+	if len(tx.compares) != 1 {
+		t.Fatalf("Execute calls = %d, want one guarded proposal", len(tx.compares))
+	}
+	fenced, guarded := false, false
+	for _, c := range tx.compares[0] {
+		if string(c.Key) == volume.MoveKey("acme") && c.Target == service.CompareVersion && c.Result == service.CompareEqual && c.Version == 0 {
+			fenced = true
+		}
+		if string(c.Key) == placementKey && c.Target == service.CompareValue && string(c.Value) == string(curBytes) {
+			guarded = true
+		}
+	}
+	if !fenced || !guarded {
+		t.Fatalf("compares = %+v, want the move key absent and the placement unchanged in the same Execute", tx.compares[0])
+	}
+
+	delete(tx.data, volume.MoveKey("acme"))
+	swapped, err = store.CompareAndSwapPlacement(ctx, cur, &next)
+	if err != nil || !swapped {
+		t.Fatalf("after the move ended: CAS = %v, %v; want committed", swapped, err)
+	}
+}
+
+func TestMoveJournalReplicaRefusal_UndecodableJournalStillRefuses(t *testing.T) {
+	err := moveJournalReplicaRefusal("acme", []byte("not json"))
+	var refusal *volume.TenantMovingReplicaError
+	if !errors.As(err, &refusal) || refusal.TenantID != "acme" {
+		t.Fatalf("refusal = %v, want *volume.TenantMovingReplicaError for acme", err)
+	}
 }

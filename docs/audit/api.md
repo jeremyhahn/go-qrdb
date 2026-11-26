@@ -138,14 +138,14 @@ expires bodies below the cutoff and keeps the tree.
 | `actor` | string | actor identity |
 | `action` | string | action |
 | `resource` | string | resource |
-| `outcome` | string | `success`, or a `failure` / `denied` **prefix** |
+| `outcome` | string | an outcome **prefix**: `success`, `permitted`, `failure`, `denied` |
 | `tenant_id` | string | the caller's own tenant, or omitted; any other tenant is refused |
 | `limit` | int | default **100**, **maximum 1000** |
 | `cursor` | string | pagination cursor from a previous response |
 | `replicated` | bool | read the cluster-wide replicated chain instead of the node-local trail; see [The replicated chain read surface](#the-replicated-chain-read-surface) |
 
-Outcomes carry a reason (`denied:missing permission`), so `outcome` matches
-`success` exactly and matches `failure` / `denied` by prefix.
+Outcomes carry a reason (`denied:missing permission`), and `outcome` matches
+by prefix, so `failure` / `denied` select every reason.
 
 **Every query is confined to the caller's own tenant**, on all six transports.
 An omitted `tenant_id` reads the caller's own events, never every tenant's; a
@@ -167,7 +167,7 @@ QUIC, the permission-denied tool code on MCP, and
 | `role` | the actor's role **at the time of the event** |
 | `resource` | barrier, ceremony, keys, user, role, … |
 | `action` | initialize, unseal, sign, create, delete, … |
-| `outcome` | `success` · `failure:<reason>` · `denied:<reason>` |
+| `outcome` | `success` · `failure:<reason>` · `denied:<reason>` · `permitted` (a gating record written before its effect) |
 | `attributes` | JSON-serializable custom attributes |
 | `client_ip` | the remote address of the caller's connection, where the emitter records one |
 | `request_id` | for tracing across logs |

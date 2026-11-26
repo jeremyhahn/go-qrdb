@@ -109,6 +109,7 @@ func TestLookupScope_RegisteredCrossScopePermissions(t *testing.T) {
 		VolumePoolRead,
 		VolumePoolUpdate,
 		VolumePoolDelete,
+		VolumePoolMove,
 		RegistrationConfigRead,
 		RegistrationConfigUpdate,
 	}

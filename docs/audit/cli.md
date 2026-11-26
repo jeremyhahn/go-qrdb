@@ -76,7 +76,7 @@ of the node-local verify's own `Genesis: false` case.
 | `--actor` | string | — | filter by actor identity |
 | `--action` | string | — | filter by action |
 | `--resource` | string | — | filter by resource |
-| `--outcome` | string | — | `success`, or a `failure`/`denied` **prefix** |
+| `--outcome` | string | — | `success`, `permitted`, or a `failure`/`denied` **prefix** |
 | `--tenant-id` | string | — | your own tenant; any other is refused. Omitted, the query reads your own tenant |
 | `--limit` | int | server default **100**, max **1000** | maximum events |
 | `--cursor` | string | — | pagination cursor from a previous response |

@@ -22,7 +22,7 @@ GORM ──▶ gorm.io/driver/mysql ──▶ sdk/go/driver ("qrdb")
          (configured by                 │
           sdk/go/gorm)  node:// ────────┴──────── embedded://
                      full in-process stack      KV-only stack
-                     (Raft, registry,           (no relational
+                     (MVCC, registry,           (no relational
                       relational tables,         catalog)
                       transactions)
 ```
@@ -98,14 +98,14 @@ same database, and choosing the wrong one is the single most common way to see
 
 | DSN | Backed by | `CREATE TABLE` / DML / transactions | Use it when |
 |---|---|---|---|
-| `node://memory?database=app` | A complete in-process QRDB node (`sdk/go/node.NewStandaloneNode`) with every protocol server disabled: Raft state machine, service registry, relational catalog, sequences | **Yes** | Almost always. This is the GORM path. |
+| `node://memory?database=app` | A complete in-process QRDB node (`sdk/go/node.NewStandaloneNode`) with every protocol server disabled: the MVCC engine (no Raft state machine), service registry, relational catalog, sequences | **Yes** | Almost always. This is the GORM path. |
 | `node:///var/lib/qrdb?backend=pebble&database=app` | Same, persisted to disk | **Yes** | A durable single-process application. |
 | `embedded://memory?database=app` | A storage backend plus the KV / entity / collection tables. No Raft, no `service.Registry` | **No** — `CREATE TABLE` fails with `*provider.RelationalCatalogUnavailableError` | You want only the KV surface and the fastest possible open. |
 | `rest://host:port/db`, `grpc://host:port/db` | The network SQL API | **Refused by `qrdbgorm.Open`** | Never, for GORM. |
 
 `embedded://` failing `CREATE TABLE` is **by design**, not a gap: it has no
 `TransactionServicer`/`MVCCKVServicer`, which the catalog and sequences require,
-and those only exist Raft-host-backed. A test pins that behaviour. If a
+and those come from the node's service registry. A test pins that behaviour. If a
 relational feature "doesn't work embedded", the answer is the wrong scheme, not
 a missing feature. See `sdk/go/driver/node/node.go`'s package comment.
 
@@ -252,7 +252,7 @@ err := db.Transaction(func(tx *gorm.DB) error {
 ```
 
 The whole transaction is buffered and committed as **one** MVCC compare-and-swap
-against the Raft group. Reads inside it are served from a pinned snapshot
+against the database's store (its Raft group on a raft-mode node). Reads inside it are served from a pinned snapshot
 overlaid with the transaction's own writes; conflicts are resolved
 first-committer-wins. The full model, including savepoint semantics and the
 write-set size ceilings, is in [engineering.md](engineering.md#transaction-control).

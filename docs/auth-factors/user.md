@@ -112,9 +112,9 @@ PINs are set during initialization and used to authorize privileged barrier
 operations. There is no separate PIN command group.
 
 ```bash
-qrdb init --so-pin SOPIN --user-pin USERPIN
+qrdb init --passphrase '<pp>' --so-pin SOPIN --user-pin USERPIN
 qrdb barrier seal --so-pin SO123 -y
-qrdb barrier rekey --so-pin SO123
+qrdb barrier rekey --threshold 3 --so-pin SO123
 ```
 
 `qrdb init` requires both `--so-pin` and `--user-pin`. `qrdb barrier init`

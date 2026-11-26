@@ -38,8 +38,9 @@ func (e *UnexpectedCallError) Error() string {
 // with Errorf rather than Fatal because transports call the service from
 // server goroutines, where Fatal cannot stop the test.
 //
-// MoveTenant and GetMove return *volume.MoveNotImplementedError, as the real
-// catalog does until tenant moves land.
+// MoveTenant returns *volume.MoveNotImplementedError, as the catalog does
+// with no MoveAdmission wired; GetMove returns *volume.MoveNotFoundError, as
+// the catalog does with no move journalled.
 type Service struct {
 	T                 testing.TB
 	ListPoolsFn       func(context.Context) ([]volume.PoolView, error)
@@ -48,6 +49,9 @@ type Service struct {
 	UpdatePoolFn      func(context.Context, string, volume.UpdatePoolRequest) (*volume.Pool, error)
 	DeletePoolFn      func(context.Context, string) error
 	ListAssignmentsFn func(context.Context, string, string, int) (*volume.AssignmentPage, error)
+	MoveTenantFn      func(context.Context, volume.MoveTenantRequest) (*volume.Move, error)
+	GetMoveFn         func(context.Context, string) (*volume.Move, error)
+	CancelMoveFn      func(context.Context, string) (*volume.Move, error)
 }
 
 var _ volume.Service = (*Service)(nil)
@@ -111,11 +115,26 @@ func (s *Service) ListAssignments(ctx context.Context, pool, pageToken string, p
 }
 
 // MoveTenant implements volume.Service.
-func (s *Service) MoveTenant(context.Context, string, string) (*volume.Move, error) {
-	return nil, &volume.MoveNotImplementedError{}
+// Unset, it answers MoveNotImplementedError.
+func (s *Service) MoveTenant(ctx context.Context, req volume.MoveTenantRequest) (*volume.Move, error) {
+	if s.MoveTenantFn == nil {
+		return nil, &volume.MoveNotImplementedError{}
+	}
+	return s.MoveTenantFn(ctx, req)
 }
 
-// GetMove implements volume.Service.
-func (s *Service) GetMove(context.Context, string) (*volume.Move, error) {
-	return nil, &volume.MoveNotImplementedError{}
+// GetMove implements volume.Service. Unset, it answers MoveNotFoundError.
+func (s *Service) GetMove(ctx context.Context, tenantID string) (*volume.Move, error) {
+	if s.GetMoveFn == nil {
+		return nil, &volume.MoveNotFoundError{TenantID: tenantID}
+	}
+	return s.GetMoveFn(ctx, tenantID)
+}
+
+// CancelMove implements volume.Service. Unset, it answers MoveNotFoundError.
+func (s *Service) CancelMove(ctx context.Context, tenantID string) (*volume.Move, error) {
+	if s.CancelMoveFn == nil {
+		return nil, &volume.MoveNotFoundError{TenantID: tenantID}
+	}
+	return s.CancelMoveFn(ctx, tenantID)
 }

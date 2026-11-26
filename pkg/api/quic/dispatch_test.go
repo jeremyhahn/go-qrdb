@@ -279,6 +279,9 @@ var expectedMethods = []string{
 	"volumepool.Update",
 	"volumepool.Delete",
 	"volumepool.ListTenants",
+	"volumepool.MoveTenant",
+	"volumepool.GetMove",
+	"volumepool.CancelMove",
 	"tenant.TrustAnchorAdd",
 	"tenant.TrustAnchorList",
 	"tenant.TrustAnchorRemove",
@@ -345,8 +348,9 @@ func TestBuildHandlers_MethodCount(t *testing.T) {
 	// dataset bigger than one pre-auth-capped message
 	// (docs/transactions/architecture.md "Import session", go-qrdb#576
 	// part 2)
-	// + the 6 volumepool.* verbs (docs/volume-pools/api.md): List, Get,
-	// Create, Update, Delete, ListTenants.
+	// + the 9 volumepool.* verbs (docs/volume-pools/api.md): List, Get,
+	// Create, Update, Delete, ListTenants, and the tenant-move verbs
+	// MoveTenant, GetMove, CancelMove (219 = 207 + the nine group.* methods + those 3).
 	// cert.Export is retired entirely: encoding a PKCS#12 archive needs
 	// the private key, and no private key may reach a node (go-qrdb
 	// security review). The archive is now built LOCALLY, in the CLI and the
@@ -385,7 +389,7 @@ func TestBuildHandlers_MethodCount(t *testing.T) {
 	// kv.CompareAndDelete, kv.CompareAndSwap — go-qrdb#124), and the 161 was
 	// 160 plus user.GetByEmail, the canonical login-key lookup (go-qrdb#190).
 	// The 2 watch methods remain on the streaming path, not the unary table.
-	const wantCount = 218
+	const wantCount = 220
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}

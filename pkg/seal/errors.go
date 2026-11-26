@@ -343,6 +343,19 @@ var (
 	// rejects such ids at creation; this is the fail-closed defense at
 	// the filesystem sink.
 	ErrTenantPathEscapesPool = errors.New("qrdb/seal: tenant path escapes volume pool root")
+
+	// ErrMoveStepInvalid is returned by RunMoveCopyStep when it is called
+	// without a node ID or without a destination pool name.
+	ErrMoveStepInvalid = errors.New("qrdb/seal: move step needs a node ID and a destination pool")
+
+	// ErrMoveSamePool is returned by RunMoveCopyStep when the destination
+	// pool is the pool the tenant's assignment already names.
+	ErrMoveSamePool = errors.New("qrdb/seal: move destination pool is the tenant's current pool")
+
+	// ErrMoveTenantOpen is returned by RunMoveCopyStep when this registry
+	// still holds a barrier for the tenant: the step copies a closed
+	// replica directory, so the caller closes the tenant first.
+	ErrMoveTenantOpen = errors.New("qrdb/seal: tenant must be closed on this node before its move step")
 )
 
 // GetError is returned when a barrier Get operation fails during decryption.

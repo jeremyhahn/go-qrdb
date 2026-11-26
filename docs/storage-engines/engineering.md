@@ -548,7 +548,7 @@ panic.
 
 ### Invariants (target, additive to the ones above)
 
-- **An `objstore`-backed engine is a `pebble.Engine`.** It is not a second KV
+- **An `objstore`-backed engine is a `pebble.PebbleStorage`.** It is not a second KV
   implementation: `storage.Storage`, `Batch`, `Iterator`, `Snapshot`, the
   closed-store contract (`ErrStorageClosed`, the PebbleDB reader gate) all
   apply unchanged. Anything this document says about the `pebble` engine
@@ -560,7 +560,7 @@ panic.
   tenant id, or database name embedded in an object name sent to go-objstore
   on this path is a defect.
 - **Encryption happens in the `remote.Storage` adapter, not in `vfs.FS`.**
-  `pkg/atrest.Encryptor.Apply` continues to cover the local WAL/MANIFEST/local
+  `pkg/atrest.Encryptor.Wrap` continues to cover the local WAL/MANIFEST/local
   SSTables exactly as today; it does **not** reach objects written through
   `remotelsm.WithRemote`. The adapter encrypts the whole object payload with the same
   `seal.StorageBarrier` AEAD before `CreateObject` and decrypts after

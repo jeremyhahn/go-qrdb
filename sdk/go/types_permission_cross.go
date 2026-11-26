@@ -135,6 +135,10 @@ const (
 	// from the catalog.
 	PermissionVolumePoolDelete = permission.VolumePoolDelete
 
+	// PermissionVolumePoolMove ("volume_pools:move") starts and cancels
+	// a move of a volume tenant to another pool.
+	PermissionVolumePoolMove = permission.VolumePoolMove
+
 	// PermissionRegistrationConfigRead ("registration_config:read") reads the
 	// platform-wide self-service registration policy.
 	PermissionRegistrationConfigRead = permission.RegistrationConfigRead

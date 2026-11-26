@@ -28,7 +28,9 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
+	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
 // ---------------------------------------------------------------------------
@@ -1056,5 +1058,57 @@ func TestRebalanceService_MoveGenericShard_UnreadableMembership(t *testing.T) {
 	}
 	if len(host.addedIdentities) != 0 {
 		t.Fatalf("an unreadable membership must propose nothing, proposed %v", host.addedIdentities)
+	}
+}
+
+// TestScaleForTenant_ScaleUp_MoveFence_RefusesMovingTenant: scale-up of a
+// tenant with a volume pool move journal is refused before any placement
+// write or membership change (round 3 P1 2).
+func TestScaleForTenant_ScaleUp_MoveFence_RefusesMovingTenant(t *testing.T) {
+	t.Parallel()
+
+	host := &fakeRaftHost{leaderOK: true}
+	svc, store, _ := newScaleDatabaseService(t, healthyNodes("n1", "n2", "n3", "n4", "n5"),
+		&quota.Quotas{MaxReplicasPerGroup: 10, MaxTotalReplicas: 100}, host)
+	createScaleDB(t, svc, "db1", 2)
+	fence := &movingFence{refuseFrom: 1}
+	svc.moveFence = fence.fence
+
+	_, err := svc.ScaleForTenant(scaleCtx(), "db1", 5)
+	var moving *volume.TenantMovingReplicaError
+	if !errors.As(err, &moving) {
+		t.Fatalf("ScaleForTenant = %v, want *volume.TenantMovingReplicaError", err)
+	}
+	if len(host.observerCalls) != 0 {
+		t.Fatalf("AddObserver called %d times, want 0", len(host.observerCalls))
+	}
+	p, gerr := store.Get(scaleCtx(), scaleTenantID, "db1")
+	if gerr != nil {
+		t.Fatalf("placement Get: %v", gerr)
+	}
+	if p.RF != 2 || len(p.Replicas) != 2 {
+		t.Fatalf("placement RF=%d replicas=%d, want 2/2", p.RF, len(p.Replicas))
+	}
+}
+
+// TestScaleForTenant_ScaleUp_MoveFence_AdmittedMidLoopStops: a move admitted
+// after the first add refuses the remaining adds.
+func TestScaleForTenant_ScaleUp_MoveFence_AdmittedMidLoopStops(t *testing.T) {
+	t.Parallel()
+
+	host := &fakeRaftHost{leaderOK: true}
+	svc, _, _ := newScaleDatabaseService(t, healthyNodes("n1", "n2", "n3", "n4", "n5"),
+		&quota.Quotas{MaxReplicasPerGroup: 10, MaxTotalReplicas: 100}, host)
+	createScaleDB(t, svc, "db1", 2)
+	fence := &movingFence{refuseFrom: 3}
+	svc.moveFence = fence.fence
+
+	_, err := svc.ScaleForTenant(scaleCtx(), "db1", 5)
+	var moving *volume.TenantMovingReplicaError
+	if !errors.As(err, &moving) {
+		t.Fatalf("ScaleForTenant = %v, want *volume.TenantMovingReplicaError", err)
+	}
+	if len(host.observerCalls) != 1 {
+		t.Fatalf("AddObserver called %d times, want 1", len(host.observerCalls))
 	}
 }

@@ -8,7 +8,56 @@
 
 package volume
 
-import "strconv"
+import (
+	"context"
+	"errors"
+	"strconv"
+)
+
+// TenantMovingReplicaError refuses a change to the replica set of a tenant
+// whose volume pool move is journalled, in any state: a replica added
+// mid-move would hold the tenant on its source pool past cut over, and a
+// replica removed mid-move would leave a copy step that never completes.
+// The placement scheduler's filter, the rebalancer's MOVE and scale-up all
+// answer it; the caller retries once the move ends. It unwraps to a
+// *MoveConflictError, so it classifies as a move conflict
+// (FailedPrecondition).
+type TenantMovingReplicaError struct {
+	TenantID string
+	FromPool string
+	ToPool   string
+	State    string
+}
+
+// Error implements the error interface.
+func (e *TenantMovingReplicaError) Error() string {
+	return "volume: tenant " + strconv.Quote(e.TenantID) + " is moving from pool " + strconv.Quote(e.FromPool) +
+		" to " + strconv.Quote(e.ToPool) + " (" + e.State + "); its replica set changes after the move ends"
+}
+
+// Unwrap answers the move conflict the refusal is.
+func (e *TenantMovingReplicaError) Unwrap() error {
+	return &MoveConflictError{TenantID: e.TenantID, Reason: "replica set change during a move (" + e.State + ")"}
+}
+
+// RefuseReplicaChangeIfMoving answers *TenantMovingReplicaError when the
+// tenant has a move journal in any state, nil when it has none
+// (*MoveNotFoundError), and any other read error as is: the fence fails
+// closed on a journal it cannot read.
+func RefuseReplicaChangeIfMoving(ctx context.Context, svc Service, tenantID string) error {
+	m, err := svc.GetMove(ctx, tenantID)
+	if err != nil {
+		var noMove *MoveNotFoundError
+		if errors.As(err, &noMove) {
+			return nil
+		}
+		return err
+	}
+	if m == nil {
+		return nil
+	}
+	return &TenantMovingReplicaError{TenantID: tenantID, FromPool: m.FromPool, ToPool: m.ToPool, State: m.State}
+}
 
 // PoolNotFoundError is returned when a request names a pool the catalog
 // does not have.
@@ -166,13 +215,166 @@ func (e *ReservationConflictError) Error() string {
 	return "volume: reservation conflict on pool " + strconv.Quote(e.Pool) + ": too many concurrent racers, retry"
 }
 
-// MoveNotImplementedError is returned by MoveTenant and GetMove: tenant
-// moves are Phase 2 (decision D5) and are not implemented by this build.
+// MoveNotImplementedError is returned by Catalog.MoveTenant when the
+// composition wired no MoveAdmission, and by a tenant service with no
+// replica-node source: tenant moves are not wired in that composition. It
+// classifies as Unimplemented.
 type MoveNotImplementedError struct{}
 
 // Error implements the error interface.
 func (e *MoveNotImplementedError) Error() string {
-	return "volume: tenant moves are not implemented in this release (decision D5, Phase 2)"
+	return "volume: tenant moves are not wired in this composition"
+}
+
+// MoveConflictError is returned when a tenant move is refused: by
+// Catalog.AdmitMove (a move already runs, the destination is the current
+// pool, or the destination is not ready on a replica node per decision Q3),
+// by the move-journal step transitions (no step to grant, or the node does
+// not hold the step), by Catalog.CutOverMove (the move is not copied, a
+// node is pending or holds a step, or the assignment no longer names
+// FromPool), by the retire and abort steps, by Catalog.CancelMove after cut
+// over, by RecordTenantPoolMoved for a tenant naming neither pool, or by
+// Release, AdjustReservation or a second admit while a move runs (decision
+// Q10). NodeID is set only for a per-node refusal. It classifies as
+// FailedPrecondition (errclass); no transport carries it yet.
+type MoveConflictError struct {
+	TenantID string
+	NodeID   string
+	Reason   string
+}
+
+// Error implements the error interface.
+func (e *MoveConflictError) Error() string {
+	msg := "volume: move of tenant " + strconv.Quote(e.TenantID)
+	if e.NodeID != "" {
+		msg += " on node " + strconv.Quote(e.NodeID)
+	}
+	return msg + " refused: " + e.Reason
+}
+
+// MoveToUnencryptedPoolError is returned by Catalog.AdmitMove for a move from
+// a pool whose provider opens Lockable volumes to one whose provider does
+// not, when the request does not carry the operator's explicit, audited
+// allow_unencrypted_destination flag (decision Q9, ruling 1234). The
+// message names the flag as the remedy. It classifies as
+// FailedPrecondition (errclass).
+type MoveToUnencryptedPoolError struct {
+	TenantID string
+	FromPool string
+	ToPool   string
+}
+
+// Error implements the error interface.
+func (e *MoveToUnencryptedPoolError) Error() string {
+	return "volume: move of tenant " + strconv.Quote(e.TenantID) +
+		" from pool " + strconv.Quote(e.FromPool) +
+		" to pool " + strconv.Quote(e.ToPool) +
+		" refused: the source pool is encrypted (Lockable) and the destination is not" +
+		"; set allow_unencrypted_destination (qrdb volume-pool move-tenant --allow-unencrypted-destination) to drop encryption"
+}
+
+// MoveEncryptionDropUnauditedError is returned by Catalog.MoveTenant for a
+// move under allow_unencrypted_destination that drops the tenant's at-rest
+// encryption while no MoveStartAuditor is wired: a drop is always audited
+// (decision Q9, ruling 1234), so an unaudited one never happens. It
+// classifies as FailedPrecondition (errclass).
+type MoveEncryptionDropUnauditedError struct {
+	TenantID string
+	FromPool string
+	ToPool   string
+}
+
+// Error implements the error interface.
+func (e *MoveEncryptionDropUnauditedError) Error() string {
+	return "volume: move of tenant " + strconv.Quote(e.TenantID) +
+		" from pool " + strconv.Quote(e.FromPool) +
+		" to pool " + strconv.Quote(e.ToPool) +
+		" refused: dropping encryption needs an audit sink"
+}
+
+// MoveJournalConflictError is returned by a move-journal step transition
+// when the journal changed under it on every compare-and-swap attempt.
+// Nothing was written; retrying is safe. It classifies as Aborted
+// (errclass); no transport carries it yet.
+type MoveJournalConflictError struct {
+	TenantID string
+}
+
+// Error implements the error interface.
+func (e *MoveJournalConflictError) Error() string {
+	return "volume: move journal of tenant " + strconv.Quote(e.TenantID) +
+		" changed under too many concurrent writers, retry"
+}
+
+// InvalidMoveRequestError is returned by Catalog.AdmitMove for a malformed
+// MoveAdmitRequest (an empty tenant or pool, no replica nodes, or an empty
+// or duplicate node ID), by Catalog.MoveTenant for an empty tenant or pool,
+// and by Catalog.GetMove for an empty tenant.
+type InvalidMoveRequestError struct {
+	Reason string
+}
+
+// Error implements the error interface.
+func (e *InvalidMoveRequestError) Error() string {
+	return "volume: invalid move request: " + e.Reason
+}
+
+// MoveNotFoundError is returned by Catalog.GetMove and Catalog.CancelMove
+// when no move is journalled for the tenant. It classifies as NotFound
+// (errclass); no transport carries it yet.
+type MoveNotFoundError struct {
+	TenantID string
+}
+
+// Error implements the error interface.
+func (e *MoveNotFoundError) Error() string {
+	return "volume: no move journalled for tenant " + strconv.Quote(e.TenantID)
+}
+
+// MoveStepError is returned by the node-local step of a tenant move
+// (CopyTree, VerifyCopy). Phase is "copy" or "verify". NodeID is left
+// empty by those functions and filled in by the caller that runs the step
+// on a node. Path is the entry relative to the tree's root ("" when the
+// failure concerns a root itself), never an absolute path, so the message
+// carries no mount path. It classifies (errclass) as Unavailable when its
+// cause is a PoolUnavailableError or a NodeSealedError, else Internal.
+type MoveStepError struct {
+	NodeID string
+	Phase  string
+	Path   string
+	Err    error
+}
+
+// Error implements the error interface.
+func (e *MoveStepError) Error() string {
+	msg := "volume: move step " + strconv.Quote(e.Phase)
+	if e.NodeID != "" {
+		msg += " on node " + strconv.Quote(e.NodeID)
+	}
+	if e.Path != "" {
+		msg += " at " + strconv.Quote(e.Path)
+	}
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Unwrap supports errors.Is / errors.As against the wrapped cause.
+func (e *MoveStepError) Unwrap() error { return e.Err }
+
+// ManifestMismatchError is the cause VerifyCopy wraps in a MoveStepError
+// when the destination's manifest differs from the one built while
+// copying. Path is root-relative; Reason is one of "missing", "extra",
+// "type", "mode", "size" or "digest".
+type ManifestMismatchError struct {
+	Path   string
+	Reason string
+}
+
+// Error implements the error interface.
+func (e *ManifestMismatchError) Error() string {
+	return "volume: manifest mismatch at " + strconv.Quote(e.Path) + ": " + e.Reason
 }
 
 // PoolUnavailableError is returned when this node cannot open or resolve
@@ -231,6 +433,20 @@ type NodeSealedError struct {
 // Error implements the error interface.
 func (e *NodeSealedError) Error() string {
 	return "volume: node barrier is sealed: " + e.Op + " not proposed"
+}
+
+// TenantSealedError is returned when a move step reopens a self-managed
+// tenant whose barrier stays sealed until its administrator unseals it: the
+// replica's stores are not attached and it has not caught up, so the step
+// is not settled. The step keeps settling, uncounted, until the unseal and
+// the catch-up.
+type TenantSealedError struct {
+	TenantID string
+}
+
+// Error implements error.
+func (e *TenantSealedError) Error() string {
+	return "volume: tenant barrier is sealed: " + e.TenantID + " awaits its administrator's unseal"
 }
 
 // EncodeError is returned when a record cannot be marshaled to JSON.

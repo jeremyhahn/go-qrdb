@@ -34,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/wiring"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
+	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -188,11 +189,27 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 		return &EmbeddedServerError{Op: "start", Err: &AlreadyRunningError{}}
 	}
 
-	// The compliance trail, when enabled, is opened before anything else --
-	// before the node and before the seal barrier -- so it records from the
-	// first sealed moment, and a trail that cannot be opened stops the start
-	// with nothing running (openEmbeddedAudit). A start that fails later
-	// closes it again.
+	// The data directory belongs to one run mode. Claim it before anything
+	// writes under it -- the audit trail included -- so a start in the
+	// other mode is refused with the directory untouched (#658).
+	dataDir, dirErr := b.resolveDataDir(cfg)
+	if dirErr != nil {
+		return &EmbeddedServerError{Op: "start", Err: dirErr}
+	}
+	runMode := capabilities.ModeStandalone
+	if cfg.RaftEnabled {
+		runMode = capabilities.ModeRaft
+	}
+	if err := lifecycle.ClaimRunMode(dataDir, runMode); err != nil {
+		b.logger.Error("StartEmbedded failed", "error", err)
+		return &EmbeddedServerError{Op: "start", Err: err}
+	}
+
+	// The compliance trail, when enabled, is opened before anything else
+	// that writes -- before the node and before the seal barrier -- so it
+	// records from the first sealed moment, and a trail that cannot be
+	// opened stops the start with nothing running (openEmbeddedAudit). A
+	// start that fails later closes it again.
 	trail, auditErr := b.openEmbeddedAudit(cfg)
 	if auditErr != nil {
 		b.logger.Error("StartEmbedded failed", "error", auditErr)
@@ -231,14 +248,6 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 		}
 		svcHost = lb
 		b.localBackend = lb
-	}
-
-	// Resolve the data directory once; it is used for service construction
-	// (vector, database) and optional embedded seal barrier init.
-	dataDir, dirErr := b.resolveDataDir(cfg)
-	if dirErr != nil {
-		hub.Close()
-		return &EmbeddedServerError{Op: "start", Err: dirErr}
 	}
 
 	// Initialize the in-process seal barrier so that all seal-gated

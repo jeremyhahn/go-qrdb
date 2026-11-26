@@ -315,6 +315,12 @@ func WithQuotaUsageRecorder(rec QuotaUsageRecorder) DatabaseServiceOption {
 	return func(s *DatabaseService) { s.quotaUsage = rec }
 }
 
+// WithMoveFence sets the fence scale-up consults before it adds a replica:
+// a tenant mid volume pool move is refused (see MoveFence).
+func WithMoveFence(fence MoveFence) DatabaseServiceOption {
+	return func(s *DatabaseService) { s.moveFence = fence }
+}
+
 // WithLocalNodeID sets the local Raft node ID, the identity this node has in
 // placements: it decides whether this node leads a dedicated group. It should be set to the node's Raft address (the same value that
 // appears as Replica.NodeID in the placement table).
@@ -859,6 +865,7 @@ type DatabaseService struct {
 	// (WithStrictIsolationGate).
 	strictIsolationGate func() error
 	placementScheduler  *placement.Scheduler
+	moveFence           MoveFence
 	dataRootResolver    TenantDataRootResolver
 	localNodeID         string
 	raftHost            atomic.Pointer[raftHostRef]
@@ -2898,6 +2905,11 @@ func scaleInfoFromPlacement(db *database.Database, p *placement.Placement) *data
 // placement AND admitted as observers) is rolled back, so a
 // partially-applied scale-up plus a retry never double-reserves.
 func (s *DatabaseService) scaleUp(ctx context.Context, tenantID, name string, db *database.Database, p *placement.Placement, targetReplicas, delta int) (*database.DatabaseInfo, error) {
+	// A tenant mid volume pool move keeps its replica set until the move
+	// ends: a replica added now gets no copy step (volume.TenantMovingReplicaError).
+	if err := s.checkMoveFence(ctx, tenantID); err != nil {
+		return nil, err
+	}
 	if s.quotaChecker != nil {
 		if err := s.quotaChecker.CheckN(ctx, tenantID, quota.ResourceReplicasPerGroup, int64(targetReplicas)); err != nil {
 			return nil, err
@@ -2958,6 +2970,12 @@ func (s *DatabaseService) scaleUp(ctx context.Context, tenantID, name string, db
 	var added int
 	var loopErr error
 	for _, r := range newReplicas {
+		// The move fence is read again before each add: a move admitted
+		// mid-loop refuses the rest.
+		if err := s.checkMoveFence(ctx, tenantID); err != nil {
+			loopErr = err
+			break
+		}
 		updated, _, err := addObserverReplica(ctx, s.currentRaftHost(), s.placementStore, current, r)
 		current = updated
 		if err != nil {
@@ -2993,6 +3011,15 @@ func (s *DatabaseService) scaleUp(ctx context.Context, tenantID, name string, db
 	}
 
 	return scaleInfoFromPlacement(db, current), nil
+}
+
+// checkMoveFence answers the composed MoveFence's refusal for tenantID, nil
+// when no fence is composed or the tenant is not moving.
+func (s *DatabaseService) checkMoveFence(ctx context.Context, tenantID string) error {
+	if s.moveFence == nil {
+		return nil
+	}
+	return s.moveFence(ctx, tenantID)
 }
 
 // scaleDown implements the C.3 scale-down sequence: no quota check (freeing
