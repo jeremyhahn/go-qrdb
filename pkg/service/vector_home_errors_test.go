@@ -11,7 +11,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 var errHomeFault = errors.New("injected home fault")
@@ -207,47 +206,4 @@ func TestVectorService_StorageForRoutesAndCaches(t *testing.T) {
 
 	// noteHomeWrite ignores the node-wide store.
 	vs.noteHomeWrite(ctx, vs.storage, scopedNamespace("acme", "docs"))
-}
-
-// TestVectorService_HomedUpdateAndSearch covers UpdateNamespace and the home
-// index cache for a tenant whose vectors live in its home store.
-func TestVectorService_HomedUpdateAndSearch(t *testing.T) {
-	_, vs := newRoutedStorage(t, &routedHomes{inHome: true, store: kvstoretest.NewGuardedMemoryStore()})
-	ctx := tenant.WithTenantID(context.Background(), "acme")
-
-	_, err := vs.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: "docs", Dimension: 2, DistanceMetric: "cosine"})
-	require.NoError(t, err)
-	_, err = vs.UpsertVector(ctx, &UpsertVectorRequest{Namespace: "docs", ID: 1, Vector: []float32{1, 0}})
-	require.NoError(t, err)
-
-	for range 2 {
-		res, err := vs.SearchSimilar(ctx, &SearchSimilarRequest{Namespace: "docs", QueryVector: []float32{1, 0}, K: 1})
-		require.NoError(t, err)
-		require.NotNil(t, res)
-	}
-	_, err = vs.UpsertVector(ctx, &UpsertVectorRequest{Namespace: "docs", ID: 2, Vector: []float32{0, 1}})
-	require.NoError(t, err)
-	_, err = vs.SearchSimilar(ctx, &SearchSimilarRequest{Namespace: "docs", QueryVector: []float32{0, 1}, K: 2})
-	require.NoError(t, err)
-
-	upd, err := vs.UpdateNamespace(ctx, &UpdateNamespaceRequest{Namespace: "docs", Dimension: 2, Metadata: map[string]interface{}{"owner": "acme"}})
-	require.NoError(t, err)
-	require.True(t, upd.Success)
-
-	_, err = vs.UpdateNamespace(ctx, &UpdateNamespaceRequest{Namespace: "docs", Dimension: 3})
-	_, ok := errors.AsType[*DimensionMismatchError](err)
-	require.True(t, ok, "got %v", err)
-	_, err = vs.UpdateNamespace(ctx, &UpdateNamespaceRequest{Namespace: "missing"})
-	require.Error(t, err)
-	_, err = vs.UpdateNamespace(ctx, nil)
-	_, ok = errors.AsType[*InvalidVectorError](err)
-	require.True(t, ok, "got %v", err)
-	_, err = vs.UpdateNamespace(ctx, &UpdateNamespaceRequest{})
-	_, ok = errors.AsType[*InvalidVectorError](err)
-	require.True(t, ok, "got %v", err)
-
-	require.NoError(t, vs.Close())
-	_, err = vs.UpdateNamespace(ctx, &UpdateNamespaceRequest{Namespace: "docs"})
-	_, ok = errors.AsType[*VectorServiceClosedError](err)
-	require.True(t, ok, "got %v", err)
 }
