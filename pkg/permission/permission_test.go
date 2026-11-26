@@ -622,8 +622,10 @@ func TestAll_TotalCount(t *testing.T) {
 	//   (groups:create/read/update/delete/list/add_member/remove_member;
 	//   ScopeSelf, granted like their roles:* counterparts) = 424 total.
 	// + 1 mvcc:move_prefix, the atomic prefix move (ScopeSelf, Admin and
-	//   Operator; go-qrdb#926) = 425 total.
-	const expectedTotal = 425
+	//   Operator; go-qrdb#926)
+	// + 1 volume_pools:move, starting and cancelling a tenant's move
+	//   between volume pools (ScopeCross) = 426 total.
+	const expectedTotal = 426
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)

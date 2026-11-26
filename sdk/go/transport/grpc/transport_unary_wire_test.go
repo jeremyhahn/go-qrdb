@@ -18,7 +18,10 @@ import (
 	"context"
 	"errors"
 	"net"
+	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	googlegrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -523,6 +526,18 @@ func unaryCalls() map[string]func(context.Context, *Transport) error {
 			_, err := tr.ListPoolTenants(ctx, &transport.ListVolumePoolTenantsRequest{})
 			return err
 		},
+		"MoveTenant": func(ctx context.Context, tr *Transport) error {
+			_, err := tr.MoveTenant(ctx, &transport.MoveVolumePoolTenantRequest{})
+			return err
+		},
+		"GetMove": func(ctx context.Context, tr *Transport) error {
+			_, err := tr.GetMove(ctx, "t")
+			return err
+		},
+		"CancelMove": func(ctx context.Context, tr *Transport) error {
+			_, err := tr.CancelMove(ctx, "t")
+			return err
+		},
 		"Get": func(ctx context.Context, tr *Transport) error {
 			_, err := tr.Get(ctx, "k")
 			return err
@@ -831,6 +846,136 @@ func connectWireServer(t *testing.T, reply error) *Transport {
 		config: &transport.Config{Address: "bufnet"},
 		conn:   conn,
 		client: pb.NewQRDBServiceClient(conn),
+	}
+}
+
+// moveWireCall is one move-verb request the fake server decoded.
+type moveWireCall struct {
+	method string
+	tenant string
+	toPool string
+	// allowDrop is the request's allow_unencrypted_destination; the fake
+	// echoes it as the reply's encryption_dropped.
+	allowDrop bool
+}
+
+// connectMoveWireServer serves the three volume-pool move RPCs: each request
+// is decoded as its proto type and sent on calls; tenant "acme" gets a move
+// back in the state named per method, any other tenant codes.NotFound.
+func connectMoveWireServer(t *testing.T, calls chan<- moveWireCall) *Transport {
+	t.Helper()
+	lis := bufconn.Listen(1 << 20)
+	srv := googlegrpc.NewServer(googlegrpc.UnknownServiceHandler(func(_ any, stream googlegrpc.ServerStream) error {
+		full, _ := googlegrpc.MethodFromServerStream(stream)
+		var c moveWireCall
+		state := ""
+		switch {
+		case strings.HasSuffix(full, "/VolumePoolMoveTenant"):
+			req := &pb.VolumePoolMoveTenantRequest{}
+			if err := stream.RecvMsg(req); err != nil {
+				return err
+			}
+			c, state = moveWireCall{
+				method: "MoveTenant", tenant: req.GetTenant(), toPool: req.GetToPool(),
+				allowDrop: req.GetAllowUnencryptedDestination(),
+			}, "copying"
+		case strings.HasSuffix(full, "/VolumePoolGetMove"):
+			req := &pb.VolumePoolGetMoveRequest{}
+			if err := stream.RecvMsg(req); err != nil {
+				return err
+			}
+			c, state = moveWireCall{method: "GetMove", tenant: req.GetTenant()}, "copying"
+		case strings.HasSuffix(full, "/VolumePoolCancelMove"):
+			req := &pb.VolumePoolCancelMoveRequest{}
+			if err := stream.RecvMsg(req); err != nil {
+				return err
+			}
+			c, state = moveWireCall{method: "CancelMove", tenant: req.GetTenant()}, "aborting"
+		default:
+			return status.Error(codes.Unimplemented, full)
+		}
+		calls <- c
+		if c.tenant != "acme" {
+			return status.Error(codes.NotFound, "volume move "+c.tenant)
+		}
+		return stream.SendMsg(&pb.VolumePoolMove{
+			TenantId: c.tenant, FromPool: "fast", ToPool: "slow", State: state,
+			NodesCopied: []string{"n1"}, NodesPending: []string{"n2"}, StepNode: "n2",
+			StepAttempts: 2, ReservedBytes: 4096, TenantRecorded: true,
+			AdmittedAt: "2026-11-23T10:00:00Z", EncryptionDropped: c.allowDrop,
+		})
+	}))
+	go func() { _ = srv.Serve(lis) }()
+	conn, err := googlegrpc.NewClient("passthrough:///bufnet",
+		googlegrpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
+		googlegrpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = conn.Close()
+		srv.Stop()
+	})
+	return &Transport{
+		config: &transport.Config{Address: "bufnet"},
+		conn:   conn,
+		client: pb.NewQRDBServiceClient(conn),
+	}
+}
+
+// TestGRPC_MoveVerbs_WireRoundTrip: MoveTenant, GetMove and CancelMove send
+// the tenant (and target pool) on the wire, decode the server's move, and
+// map codes.NotFound to the typed not-found.
+func TestGRPC_MoveVerbs_WireRoundTrip(t *testing.T) {
+	calls := make(chan moveWireCall, 8)
+	tr := connectMoveWireServer(t, calls)
+	ctx := context.Background()
+
+	check := func(method string, got *transport.VolumePoolMove, err error, want moveWireCall, state string) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("%s: %v", method, err)
+		}
+		if c := <-calls; c != want {
+			t.Fatalf("%s wire request = %+v, want %+v", method, c, want)
+		}
+		admitted := time.Date(2026, 11, 23, 10, 0, 0, 0, time.UTC)
+		if got.TenantID != "acme" || got.FromPool != "fast" || got.ToPool != "slow" || got.State != state ||
+			!reflect.DeepEqual(got.NodesCopied, []string{"n1"}) || !reflect.DeepEqual(got.NodesPending, []string{"n2"}) ||
+			got.StepNode != "n2" || got.StepAttempts != 2 || got.ReservedBytes != 4096 || !got.TenantRecorded ||
+			!got.AdmittedAt.Equal(admitted) || got.EncryptionDropped != want.allowDrop {
+			t.Fatalf("%s decoded move = %+v", method, got)
+		}
+	}
+	m, err := tr.MoveTenant(ctx, &transport.MoveVolumePoolTenantRequest{TenantID: "acme", ToPool: "slow"})
+	check("MoveTenant", m, err, moveWireCall{method: "MoveTenant", tenant: "acme", toPool: "slow"}, "copying")
+	m, err = tr.MoveTenant(ctx, &transport.MoveVolumePoolTenantRequest{
+		TenantID: "acme", ToPool: "slow", AllowUnencryptedDestination: true,
+	})
+	check("MoveTenant allow_unencrypted_destination", m, err,
+		moveWireCall{method: "MoveTenant", tenant: "acme", toPool: "slow", allowDrop: true}, "copying")
+	m, err = tr.GetMove(ctx, "acme")
+	check("GetMove", m, err, moveWireCall{method: "GetMove", tenant: "acme"}, "copying")
+	m, err = tr.CancelMove(ctx, "acme")
+	check("CancelMove", m, err, moveWireCall{method: "CancelMove", tenant: "acme"}, "aborting")
+
+	for method, call := range map[string]func(context.Context, string) (*transport.VolumePoolMove, error){
+		"MoveTenant": func(ctx context.Context, id string) (*transport.VolumePoolMove, error) {
+			return tr.MoveTenant(ctx, &transport.MoveVolumePoolTenantRequest{TenantID: id, ToPool: "slow"})
+		},
+		"GetMove": tr.GetMove, "CancelMove": tr.CancelMove,
+	} {
+		var nf *transport.KeyNotFoundError
+		if _, err := call(ctx, "gone"); !errors.As(err, &nf) {
+			t.Fatalf("%s(gone): err = %v, want *transport.KeyNotFoundError", method, err)
+		}
+		if c := <-calls; c.method != method || c.tenant != "gone" {
+			t.Fatalf("%s(gone) wire request = %+v", method, c)
+		}
+	}
+	var re *transport.RequestError
+	if _, err := tr.MoveTenant(ctx, nil); !errors.As(err, &re) || re.Method != "MoveTenant" {
+		t.Fatalf("MoveTenant(nil) = %v, want a RequestError naming MoveTenant", err)
 	}
 }
 

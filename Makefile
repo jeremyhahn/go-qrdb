@@ -1804,6 +1804,7 @@ test-ci-image: ## Test the CI image hand-off (save, load, GHCR push)
 test-in-toolchain-image: ## Test that no stage container outlives its script
 	@./scripts/in-toolchain-image_test.sh
 	@./scripts/ci-cache-dir_test.sh
+	@./scripts/ci-sweep-volumes_test.sh
 
 .PHONY: check-tool-versions
 check-tool-versions:
@@ -2248,11 +2249,15 @@ docker-build-it:
 		scripts/ci-image.sh registry-push '$(IT_IMAGE)'; \
 	fi
 
-# docker-down-it removes a run's compose project but keeps its image.
+# docker-down-it removes a run's compose project but keeps its image, then
+# sweeps the project's leftover volumes and the stale CI volumes of runs
+# whose runner died before their own teardown (scripts/ci-sweep-volumes.sh).
 .PHONY: docker-down-it
 docker-down-it:
-	@QRDB_IT_IMAGE='$(IT_IMAGE)' docker compose -f $(DEVCONTAINER_COMPOSE) -p '$(IT_PROJECT)' \
-		down --volumes --remove-orphans >/dev/null 2>&1 || true
+	@out=$$(QRDB_IT_IMAGE='$(IT_IMAGE)' docker compose -f $(DEVCONTAINER_COMPOSE) -p '$(IT_PROJECT)' \
+		down --volumes --remove-orphans 2>&1) \
+		|| { echo "docker-down-it: compose down of $(IT_PROJECT) failed:"; echo "$$out"; } || true
+	@IT_PROJECT='$(IT_PROJECT)' scripts/ci-sweep-volumes.sh --own
 
 toolchain-image:
 	@echo $(TOOLCHAIN_IMAGE)

@@ -15,7 +15,9 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"strings"
@@ -24,8 +26,11 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
+	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
 // ---------------------------------------------------------------------------
@@ -1199,6 +1204,251 @@ func TestMoveTenantGroupShard_HappyPath_NoKeyDelivery(t *testing.T) {
 	}
 	if foundSrc {
 		t.Error("src node-a:9100 still present in updated placement")
+	}
+}
+
+// movingFence answers a *volume.TenantMovingReplicaError for every call
+// from the refuseFrom'th on (1-based), nil before it, counting the calls.
+type movingFence struct {
+	calls      int
+	refuseFrom int
+}
+
+func (f *movingFence) fence(_ context.Context, tenantID string) error {
+	f.calls++
+	if f.calls >= f.refuseFrom {
+		return &volume.TenantMovingReplicaError{TenantID: tenantID, FromPool: "fast", ToPool: "slow", State: volume.MoveStateCopying}
+	}
+	return nil
+}
+
+// TestMoveTenantGroupShard_MoveFence_RefusesMovingTenant: a rebalance MOVE
+// of a tenant with a volume pool move journal is refused before any
+// placement write or membership change (round 3 P1 2).
+func TestMoveTenantGroupShard_MoveFence_RefusesMovingTenant(t *testing.T) {
+	p := newTestPlacement("acme", "db1", 10)
+	store := newTestPlacementStore(t, p)
+	host := &fakeRaftHost{leaderID: 2, leaderOK: true}
+	fence := &movingFence{refuseFrom: 1}
+	svc := &RebalanceService{
+		host:           hostForMove(t),
+		placementStore: store,
+		selfNodeID:     "node-b:9100",
+		raftHost:       host,
+		moveFence:      fence.fence,
+		logger:         testLogger(),
+	}
+
+	move := RebalanceMovePlan{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"}
+	err := svc.moveTenantGroupShard(context.Background(), move, p)
+	var moving *volume.TenantMovingReplicaError
+	if !errors.As(err, &moving) {
+		t.Fatalf("moveTenantGroupShard = %v, want *volume.TenantMovingReplicaError", err)
+	}
+	var rme *RebalanceMoveError
+	if !errors.As(err, &rme) || rme.Step != "volume-move" {
+		t.Fatalf("moveTenantGroupShard = %v, want a RebalanceMoveError at step volume-move", err)
+	}
+	if len(host.observerCalls) != 0 || len(host.removeCalls) != 0 {
+		t.Fatalf("membership changed: %d adds, %d removes; want none", len(host.observerCalls), len(host.removeCalls))
+	}
+	current, gerr := store.Get(context.Background(), p.TenantID, p.Database)
+	if gerr != nil {
+		t.Fatalf("store.Get: %v", gerr)
+	}
+	if len(current.Replicas) != len(p.Replicas) || current.RF != p.RF {
+		t.Fatalf("placement written: %d replicas RF %d, want %d replicas RF %d", len(current.Replicas), current.RF, len(p.Replicas), p.RF)
+	}
+}
+
+// TestMoveTenantGroupShard_MoveFence_AdmittedMidMoveKeepsSource: a move
+// admitted after the destination was added refuses the source removal, so
+// the replica the journal recorded is not removed.
+func TestMoveTenantGroupShard_MoveFence_AdmittedMidMoveKeepsSource(t *testing.T) {
+	p := newTestPlacement("acme", "db1", 10)
+	store := newTestPlacementStore(t, p)
+	host := &fakeRaftHost{leaderID: 2, leaderOK: true}
+	fence := &movingFence{refuseFrom: 2}
+	svc := &RebalanceService{
+		host:           hostForMove(t),
+		placementStore: store,
+		selfNodeID:     "node-b:9100",
+		raftHost:       host,
+		moveFence:      fence.fence,
+		logger:         testLogger(),
+	}
+
+	move := RebalanceMovePlan{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"}
+	err := svc.moveTenantGroupShard(context.Background(), move, p)
+	var moving *volume.TenantMovingReplicaError
+	if !errors.As(err, &moving) {
+		t.Fatalf("moveTenantGroupShard = %v, want *volume.TenantMovingReplicaError", err)
+	}
+	if len(host.observerCalls) != 1 {
+		t.Fatalf("AddObserver called %d times, want 1", len(host.observerCalls))
+	}
+	if len(host.removeCalls) != 0 {
+		t.Fatalf("RemoveFollowerNode called %d times, want 0", len(host.removeCalls))
+	}
+	current, gerr := store.Get(context.Background(), p.TenantID, p.Database)
+	if gerr != nil {
+		t.Fatalf("store.Get: %v", gerr)
+	}
+	if _, ok := findReplicaByAddr(current, "node-a:9100"); !ok {
+		t.Fatal("source node-a:9100 removed from the placement; want it kept")
+	}
+}
+
+func TestWithRebalanceMoveFence_SetsField(t *testing.T) {
+	fence := &movingFence{refuseFrom: 1}
+	svc, ok := NewRebalanceService(hostForMove(t), WithRebalanceMoveFence(fence.fence)).(*RebalanceService)
+	if !ok {
+		t.Fatal("NewRebalanceService did not return *RebalanceService")
+	}
+	if svc.moveFence == nil {
+		t.Fatal("moveFence not set by WithRebalanceMoveFence")
+	}
+	if err := svc.checkMoveFence(context.Background(), "acme"); err == nil {
+		t.Fatal("checkMoveFence = nil, want the fence's refusal")
+	}
+	if err := (&RebalanceService{}).checkMoveFence(context.Background(), "acme"); err != nil {
+		t.Fatalf("checkMoveFence with no fence = %v, want nil", err)
+	}
+}
+
+// guardedMemPlacementKV adds the multi-guard batch the production system KV
+// (lifecycle's guardedKVStoreAdapter) offers to memPlacementKV: every guard
+// evaluated and every write applied under one lock, a nil guard value
+// meaning "the key must be absent".
+type guardedMemPlacementKV struct{ *memPlacementKV }
+
+func (g guardedMemPlacementKV) PutAllIfAllUnchanged(_ context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, gd := range guards {
+		v, ok := g.data[gd.Key]
+		if gd.Value == nil {
+			if ok {
+				return false, nil
+			}
+			continue
+		}
+		if !ok || !bytes.Equal(v, gd.Value) {
+			return false, nil
+		}
+	}
+	for _, w := range writes {
+		if w.Delete {
+			delete(g.data, w.Key)
+			continue
+		}
+		g.data[w.Key] = append([]byte(nil), w.Value...)
+	}
+	return true, nil
+}
+
+// newMoveFencedPlacementStore builds the placement store lifecycle builds:
+// replica additions fenced on the tenant's move journal key.
+func newMoveFencedPlacementStore(t *testing.T, placements ...*placement.Placement) (*placement.Store, *memPlacementKV) {
+	t.Helper()
+	kv := newMemPlacementKV()
+	store, err := placement.NewStore(guardedMemPlacementKV{kv}, placement.WithReplicaAddFence(volume.MoveKey,
+		func(tenantID string, journal []byte) error {
+			var m volume.Move
+			_ = json.Unmarshal(journal, &m)
+			return &volume.TenantMovingReplicaError{TenantID: tenantID, FromPool: m.FromPool, ToPool: m.ToPool, State: m.State}
+		}))
+	if err != nil {
+		t.Fatalf("placement.NewStore: %v", err)
+	}
+	for _, p := range placements {
+		if err := store.Put(context.Background(), p); err != nil {
+			t.Fatalf("placement.Store.Put: %v", err)
+		}
+	}
+	return store, kv
+}
+
+// admitAfterFenceRead is a move fence read that finds no move (the caller
+// passes it) after which MoveTenant admits the tenant's journal: the
+// round 4 P1 3 / round 5 P1 2 interleaving, where only the placement
+// write's own guard can still refuse the replica.
+func admitAfterFenceRead(kv *memPlacementKV) func(context.Context, string) error {
+	return func(_ context.Context, tenantID string) error {
+		journal, _ := json.Marshal(volume.Move{TenantID: tenantID, FromPool: "fast", ToPool: "slow", State: volume.MoveStateAdmitted})
+		kv.mu.Lock()
+		kv.data[volume.MoveKey(tenantID)] = journal
+		kv.mu.Unlock()
+		return nil
+	}
+}
+
+func TestScaleForTenant_ScaleUp_JournalAdmittedAfterFenceReadRefusedAtPlacementWrite(t *testing.T) {
+	host := &fakeRaftHost{leaderOK: true}
+	svc, plain, quotas := newScaleDatabaseService(t, healthyNodes("n1", "n2", "n3", "n4", "n5"),
+		&quota.Quotas{MaxReplicasPerGroup: 10, MaxTotalReplicas: 100}, host)
+	createScaleDB(t, svc, "db1", 2)
+	p, err := plain.Get(scaleCtx(), scaleTenantID, "db1")
+	if err != nil {
+		t.Fatalf("placement Get: %v", err)
+	}
+	store, kv := newMoveFencedPlacementStore(t, p)
+	svc.placementStore = store
+	svc.moveFence = admitAfterFenceRead(kv)
+	netRaft, netTotal := quotas.incRaft-quotas.decRaft, quotas.incTotal-quotas.decTotal
+
+	_, err = svc.ScaleForTenant(scaleCtx(), "db1", 3)
+	var moving *volume.TenantMovingReplicaError
+	if !errors.As(err, &moving) || moving.State != volume.MoveStateAdmitted {
+		t.Fatalf("ScaleForTenant = %v, want the placement write's *volume.TenantMovingReplicaError", err)
+	}
+	if len(host.observerCalls) != 0 {
+		t.Fatalf("AddObserver called %d times, want 0", len(host.observerCalls))
+	}
+	got, err := store.Get(scaleCtx(), scaleTenantID, "db1")
+	if err != nil {
+		t.Fatalf("placement Get: %v", err)
+	}
+	if got.RF != 2 || len(got.Replicas) != 2 {
+		t.Fatalf("placement RF=%d replicas=%d, want 2/2", got.RF, len(got.Replicas))
+	}
+	if quotas.incRaft-quotas.decRaft != netRaft || quotas.incTotal-quotas.decTotal != netTotal {
+		t.Fatalf("replica quota net raft %d->%d total %d->%d, want the refused replica released",
+			netRaft, quotas.incRaft-quotas.decRaft, netTotal, quotas.incTotal-quotas.decTotal)
+	}
+}
+
+func TestMoveTenantGroupShard_JournalAdmittedAfterFenceReadRefusedAtPlacementWrite(t *testing.T) {
+	p := newTestPlacement("acme", "db1", 10)
+	store, kv := newMoveFencedPlacementStore(t, p)
+	host := &fakeRaftHost{leaderID: 2, leaderOK: true}
+	svc := &RebalanceService{
+		host:           hostForMove(t),
+		placementStore: store,
+		selfNodeID:     "node-b:9100",
+		raftHost:       host,
+		moveFence:      admitAfterFenceRead(kv),
+		logger:         testLogger(),
+	}
+
+	move := RebalanceMovePlan{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"}
+	err := svc.moveTenantGroupShard(context.Background(), move, p)
+	var moving *volume.TenantMovingReplicaError
+	if !errors.As(err, &moving) || moving.State != volume.MoveStateAdmitted {
+		t.Fatalf("moveTenantGroupShard = %v, want the placement write's *volume.TenantMovingReplicaError", err)
+	}
+	if len(host.observerCalls) != 0 || len(host.removeCalls) != 0 {
+		t.Fatalf("AddObserver %d / RemoveFollowerNode %d calls, want 0/0", len(host.observerCalls), len(host.removeCalls))
+	}
+	current, err := store.Get(context.Background(), p.TenantID, p.Database)
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
+	if _, ok := findReplicaByAddr(current, "node-a:9100"); !ok {
+		t.Fatal("source node-a:9100 removed from the placement; want it kept")
+	}
+	if _, ok := findReplicaByAddr(current, "node-c:9100"); ok {
+		t.Fatal("destination node-c:9100 placed while the move is journalled")
 	}
 }
 

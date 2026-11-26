@@ -379,6 +379,9 @@ var operationPermissions = map[string]permission.Permission{
 	"UpdatePool":      permission.VolumePoolUpdate,
 	"DeletePool":      permission.VolumePoolDelete,
 	"ListPoolTenants": permission.VolumePoolRead,
+	"MoveTenant":      permission.VolumePoolMove,
+	"GetMove":         permission.VolumePoolRead,
+	"CancelMove":      permission.VolumePoolMove,
 
 	// RBACClient.ListPermissions resolves an ARBITRARY identity's effective
 	// permissions (the identity argument, not necessarily the caller) --

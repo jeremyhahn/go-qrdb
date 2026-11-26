@@ -2391,6 +2391,11 @@ func (s *Server) registerRoutes() {
 	s.route(http.MethodPut, "/v1/volume-pools/{pool}", permission.VolumePoolUpdate, s.handleVolumePoolByName)
 	s.route(http.MethodDelete, "/v1/volume-pools/{pool}", permission.VolumePoolDelete, s.handleVolumePoolByName)
 	s.route(http.MethodGet, "/v1/volume-pools/{pool}/tenants", permission.VolumePoolRead, s.handleVolumePoolByName)
+	// Tenant moves between pools (docs/decisions/volume-pool-tenant-moves.md):
+	// {pool} is the destination pool.
+	s.route(http.MethodPost, "/v1/volume-pools/{pool}/tenants/{tenant}/move", permission.VolumePoolMove, s.handleVolumePoolMoveTenant)
+	s.route(http.MethodGet, "/v1/tenants/{tenant}/volume-move", permission.VolumePoolRead, s.handleVolumeMove)
+	s.route(http.MethodDelete, "/v1/tenants/{tenant}/volume-move", permission.VolumePoolMove, s.handleVolumeMove)
 
 	// Tenant path-param routes, including the per-tenant barrier plane. The
 	// barrier sub-routes carry tenant-scoped (ScopeTenantOnly) permissions;

@@ -1,0 +1,177 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package server
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
+)
+
+// servicesDuringCloseBarriers is a MoveBarriers double that, inside the
+// move's close (after the Host was evicted, before the barrier closes), runs
+// the Services call a concurrent request would make, so the race the move
+// hold closes is exercised deterministically.
+type servicesDuringCloseBarriers struct {
+	hosts *TenantHostRegistry
+	reg   *seal.BarrierRegistry
+	err   error
+}
+
+func (b *servicesDuringCloseBarriers) CloseVolumeTenant(ctx context.Context, tenantID string) error {
+	_, b.err = b.hosts.Services(ctx, tenantID)
+	return b.reg.CloseVolumeTenant(ctx, tenantID)
+}
+
+func (b *servicesDuringCloseBarriers) ReopenVolumeTenant(ctx context.Context, tenantID string) error {
+	return b.reg.ReopenVolumeTenant(ctx, tenantID)
+}
+
+// TestTenantHostRegistry_MoveHoldRefusesServices: while a move step holds a
+// tenant, Services neither creates nor caches a Host and returns the
+// retryable ErrTenantMoveInProgress; the move's own reopen (Attach) still
+// builds it, and Services serves again once the hold is released.
+func TestTenantHostRegistry_MoveHoldRefusesServices(t *testing.T) {
+	reg := newVolumePooledRegistry(t)
+	ctx := context.Background()
+	// A system-managed tenant: the move's reopen unseals it again.
+	allocVal, _ := testVolumeAllocators.Load(reg)
+	sealtest.ReserveVolumeTenant(t, allocVal.(volume.Allocator), "vt")
+	if _, _, err := reg.RegisterVolumeTenant(ctx, "vt", true); err != nil {
+		t.Fatalf("RegisterVolumeTenant: %v", err)
+	}
+	if err := reg.InitializeTenant(ctx, "vt", seal.Credentials{}); err != nil {
+		t.Fatalf("InitializeTenant: %v", err)
+	}
+
+	hostReg := NewTenantHostRegistry(reg, &lookupDataRootSource{registry: reg}, volTestLogger())
+	t.Cleanup(func() { _ = hostReg.CloseAll() })
+	if _, err := hostReg.Services(ctx, "vt"); err != nil {
+		t.Fatalf("Services before the move: %v", err)
+	}
+
+	barriers := &servicesDuringCloseBarriers{hosts: hostReg, reg: reg}
+	closer, err := NewMoveStoreCloser(nil, barriers, nil, 0, WithMoveTenantHosts(hostReg))
+	if err != nil {
+		t.Fatalf("NewMoveStoreCloser: %v", err)
+	}
+	hostReg.SetMoveHold(closer)
+
+	if err := closer.CloseTenantStores(ctx, "vt"); err != nil {
+		t.Fatalf("CloseTenantStores: %v", err)
+	}
+	if !errors.Is(barriers.err, ErrTenantMoveInProgress) {
+		t.Fatalf("Services during the close = %v, want ErrTenantMoveInProgress", barriers.err)
+	}
+	if hostReg.Started("vt") {
+		t.Fatal("Services during the close created and cached a Host")
+	}
+	if _, err := hostReg.Services(ctx, "vt"); !errors.Is(err, ErrTenantMoveInProgress) {
+		t.Fatalf("Services while held = %v, want ErrTenantMoveInProgress", err)
+	}
+	if hostReg.Started("vt") {
+		t.Fatal("Services while held cached a Host")
+	}
+
+	if err := closer.OpenTenantStores(ctx, "vt"); err != nil {
+		t.Fatalf("OpenTenantStores: %v", err)
+	}
+	if !hostReg.Started("vt") {
+		t.Fatal("the move's reopen did not attach the Host")
+	}
+	if closer.HoldsTenant("vt") {
+		t.Fatal("the hold outlived the reopen")
+	}
+	if svcs, err := hostReg.Services(ctx, "vt"); err != nil || svcs == nil {
+		t.Fatalf("Services after the move = %v, %v", svcs, err)
+	}
+}
+
+// TestMoveStoreCloser_SelfManagedTenantAwaitsUnseal: moving an active
+// self-managed tenant reopens its barrier sealed. The reopen completes at
+// once (no Attach on the sealed barrier, so no retries), and the tenant
+// serves once its administrator unseals it.
+func TestMoveStoreCloser_SelfManagedTenantAwaitsUnseal(t *testing.T) {
+	reg := newVolumePooledRegistry(t)
+	ctx := context.Background()
+	allocVal, _ := testVolumeAllocators.Load(reg)
+	sealtest.ReserveVolumeTenant(t, allocVal.(volume.Allocator), "vt")
+	if _, _, err := reg.RegisterVolumeTenant(ctx, "vt", false); err != nil {
+		t.Fatalf("RegisterVolumeTenant: %v", err)
+	}
+	creds := seal.MustCredentials(ctx, []byte("self-managed-pass-0123"))
+	if err := reg.InitializeTenant(ctx, "vt", creds); err != nil {
+		t.Fatalf("InitializeTenant: %v", err)
+	}
+	if reg.TenantBarrierSealed("vt") {
+		if err := reg.UnsealTenant(ctx, "vt", creds); err != nil {
+			t.Fatalf("UnsealTenant before the move: %v", err)
+		}
+	}
+
+	hostReg := NewTenantHostRegistry(reg, &lookupDataRootSource{registry: reg}, volTestLogger())
+	t.Cleanup(func() { _ = hostReg.CloseAll() })
+	if _, err := hostReg.Services(ctx, "vt"); err != nil {
+		t.Fatalf("Services before the move: %v", err)
+	}
+	closer, err := NewMoveStoreCloser(nil, reg, nil, 0, WithMoveTenantHosts(hostReg))
+	if err != nil {
+		t.Fatalf("NewMoveStoreCloser: %v", err)
+	}
+	hostReg.SetMoveHold(closer)
+
+	if err := closer.CloseTenantStores(ctx, "vt"); err != nil {
+		t.Fatalf("CloseTenantStores: %v", err)
+	}
+	// The reopen is not done while the barrier stays sealed: the settle
+	// that called it waits, and the tenant stays pending.
+	var sealedErr *volume.TenantSealedError
+	if err := closer.OpenTenantStores(ctx, "vt"); !errors.As(err, &sealedErr) {
+		t.Fatalf("OpenTenantStores of a sealed self-managed tenant = %v, want *volume.TenantSealedError (awaits unseal)", err)
+	}
+	if got := closer.PendingReopen(); len(got) != 1 || got[0] != "vt" {
+		t.Fatalf("pending = %v, want [vt]", got)
+	}
+	if closer.HoldsTenant("vt") {
+		t.Fatal("the hold outlived the reopen")
+	}
+	if !reg.TenantBarrierSealed("vt") {
+		t.Fatal("the self-managed barrier was unsealed without its credentials")
+	}
+	if hostReg.Started("vt") {
+		t.Fatal("the reopen attached a Host on a sealed barrier")
+	}
+
+	if err := reg.UnsealTenant(ctx, "vt", creds); err != nil {
+		t.Fatalf("administrator UnsealTenant: %v", err)
+	}
+	// The retry once the barrier serves attaches the Host and finishes.
+	if err := closer.RetryReopen(ctx, "vt"); err != nil {
+		t.Fatalf("RetryReopen after the unseal: %v", err)
+	}
+	if got := closer.PendingReopen(); len(got) != 0 {
+		t.Fatalf("pending after the unseal = %v", got)
+	}
+	if !hostReg.Started("vt") {
+		t.Fatal("the retry after the unseal attached no Host")
+	}
+	if svcs, err := hostReg.Services(ctx, "vt"); err != nil || svcs == nil {
+		t.Fatalf("Services after unseal = %v, %v", svcs, err)
+	}
+}

@@ -211,7 +211,9 @@ func run() int {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	if err := rootCmd.ExecuteContext(ctx); err != nil {
+	err = rootCmd.ExecuteContext(ctx)
+	closeCLIClient()
+	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
 		// An error that names its own exit status (the SQLite result
 		// codes of `qrdb sqlite`) exits with it, so a script tells a busy
