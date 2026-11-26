@@ -1088,8 +1088,9 @@ func (f databaseFence) apply(svcs *DatabaseServices, prefix string, wrapLease bo
 		out.KV = &namespacedKVService{dbGuard: g, inner: svcs.KV, prefix: prefix}
 	}
 	// The lease view is built first, over the RAW (unwrapped) lease and MVCC
-	// services -- a lease attach is a KV/MVCC write, which the namespaced MVCC
-	// view below guards, so the lease view itself carries no guard -- so the
+	// services, and carries the same guard as every other view, so a grant,
+	// revoke, keep-alive and the ownership record it writes are fenced and
+	// rechecked against the isolation policy like any KV write -- so the
 	// namespaced MVCC view can attach it as the ownership check that confines
 	// lease attachment to leases this namespace owns.
 	//
@@ -1101,6 +1102,7 @@ func (f databaseFence) apply(svcs *DatabaseServices, prefix string, wrapLease bo
 	var leases *namespacedLeaseService
 	if wrapLease && svcs.Lease != nil {
 		leases = newNamespacedLeaseService(svcs.Lease, svcs.MVCC, prefix)
+		leases.dbGuard = g
 		out.Lease = leases
 	}
 	if svcs.MVCC != nil {

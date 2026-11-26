@@ -24,11 +24,9 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
-// leaseOwnerKeyPrefix roots the ownership records of namespaced leases. It is
-// in the internal key namespace and outside every (tenant, database)
-// namespace, so no caller can read, write or forge one through a namespaced
-// view.
-const leaseOwnerKeyPrefix = service.InternalKeyPrefixSystem + "lease-owner/"
+// leaseOwnerKeyPrefix roots the ownership records of namespaced leases
+// (service.LeaseOwnerKeyPrefix, which the shared-namespace probe scans).
+const leaseOwnerKeyPrefix = service.LeaseOwnerKeyPrefix
 
 // namespacedLeaseService confines leases to the composite (tenant, db)
 // namespace that granted them.
@@ -50,6 +48,11 @@ const leaseOwnerKeyPrefix = service.InternalKeyPrefixSystem + "lease-owner/"
 // stripped, and keys outside the namespace, the ownership record among them,
 // are never shown.
 type namespacedLeaseService struct {
+	// dbGuard scopes every lease write (grant, revoke, keep-alive and the
+	// ownership record) with the database's drop fence, the propose-time
+	// isolation recheck and the apply-time isolation-epoch guard, exactly
+	// as the namespaced KV and MVCC views scope theirs.
+	dbGuard
 	inner  service.LeaseServicer
 	mvcc   service.MVCCKVServicer
 	prefix string
@@ -147,15 +150,19 @@ func (s *namespacedLeaseService) Grant(ctx context.Context, ttl int64) (*lease.L
 	if s.mvcc == nil {
 		return nil, &service.CapabilityUnsupportedError{Message: "lease: this database has no MVCC engine to record lease ownership"}
 	}
-	l, err := s.inner.Grant(ctx, ttl)
+	scoped := s.scope(ctx)
+	l, err := s.inner.Grant(scoped, ttl)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.mvcc.PutWithLease(ctx, string(s.ownerKey(l.ID)), nil, l.ID); err != nil {
+	if _, err := s.mvcc.PutWithLease(scoped, string(s.ownerKey(l.ID)), nil, l.ID); err != nil {
 		var notFound *service.LeaseNotFoundError
 		if errors.As(err, &notFound) && notFound.LeaseID == l.ID {
 			return s.stripLease(l), nil
 		}
+		// The cleanup revoke is not scoped: a recording refused because
+		// the database was fenced or tightened in between must still
+		// take back the lease it granted.
 		_ = s.inner.Revoke(ctx, l.ID)
 		return nil, err
 	}
@@ -179,7 +186,7 @@ func (s *namespacedLeaseService) Revoke(ctx context.Context, leaseID int64) erro
 		}
 		return err
 	}
-	return s.inner.Revoke(ctx, leaseID)
+	return s.inner.Revoke(s.scope(ctx), leaseID)
 }
 
 // KeepAlive resets the TTL on a lease this namespace owns.
@@ -187,7 +194,7 @@ func (s *namespacedLeaseService) KeepAlive(ctx context.Context, leaseID int64) (
 	if _, _, err := s.owned(ctx, leaseID); err != nil {
 		return nil, err
 	}
-	l, err := s.inner.KeepAlive(ctx, leaseID)
+	l, err := s.inner.KeepAlive(s.scope(ctx), leaseID)
 	if err != nil {
 		return nil, err
 	}

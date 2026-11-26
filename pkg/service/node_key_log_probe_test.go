@@ -249,6 +249,34 @@ func TestNodeKeyLogProbe_VectorOnlyTenantRefusesStrict(t *testing.T) {
 	}
 }
 
+// TestNodeKeyLogProbe_LeaseOnlyDatabaseRefusesStrict pins that a database
+// whose only state in the shared store is a live lease's ownership record
+// (LeaseOwnerKeyPrefix + "<tenant>/<db>/<id>") reports data, so the strict
+// tightening is refused rather than stranding the lease on the shared WAL.
+func TestNodeKeyLogProbe_LeaseOnlyDatabaseRefusesStrict(t *testing.T) {
+	kv := sharedShardKeys{keys: []string{
+		LeaseOwnerKeyPrefix + tenant.ComposeNamespace("bt", tenant.DefaultDatabase) + "7",
+		LeaseOwnerKeyPrefix + tenant.ComposeNamespace("other", "appdb") + "8",
+	}}
+	reader := NewKVSharedNamespaceReader(kv)
+	has, err := reader.HasTenantData(context.Background(), "bt", tenant.DefaultDatabase)
+	if err != nil || !has {
+		t.Fatalf("HasTenantData(lease-only) = %v, %v; want true, nil", has, err)
+	}
+	probe := NewNodeKeyLogProbe(unopenableCatalog{}, WithSharedNamespaces(reader, tenant.DefaultDatabase, "appdb"))
+	got, err := probe.NodeKeyLogDatabases(context.Background(), "bt")
+	if err != nil {
+		t.Fatalf("NodeKeyLogDatabases: %v", err)
+	}
+	if want := []string{tenant.DefaultDatabase}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("lease-only tenant: got %v, want %v", got, want)
+	}
+	clean, err := probe.NodeKeyLogDatabases(context.Background(), "clean")
+	if err != nil || len(clean) != 0 {
+		t.Fatalf("clean tenant: got %v, %v; want none", clean, err)
+	}
+}
+
 // TestCreateForTenant_BarrierPebbleBlocksTightening: a barrier tenant's
 // pebble database is served from the shared system shard, so once created
 // the probe a tightening consults lists it.

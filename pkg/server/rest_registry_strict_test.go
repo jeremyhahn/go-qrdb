@@ -19,6 +19,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 
@@ -180,6 +181,82 @@ func TestRestRegistry_ResolvedHandleWriteRefusedAfterStrictTightening(t *testing
 	if got := string(shared.store["bt/system/still"]); got != "yes" {
 		t.Fatalf("shared store bt/system/still = %q, want yes", got)
 	}
+}
+
+// TestRestRegistry_ResolvedLeaseGrantRefusedAfterStrictTightening pins that
+// the namespaced lease view carries the database guard: a LeaseService
+// resolved while the policy was shared, then tightened to strict before
+// Grant, has the grant refused with *rest.StrictTenantSharedStoreError and
+// writes no lease-owner record into the shared store. It runs for a
+// standalone (barrier) tenant and a raft tenant resolving the shared store.
+func TestRestRegistry_ResolvedLeaseGrantRefusedAfterStrictTightening(t *testing.T) {
+	for _, mode := range []struct {
+		name   string
+		shared func(t *testing.T) *DatabaseServices
+	}{
+		{"standalone", func(t *testing.T) *DatabaseServices {
+			_, svcs := newLockDataPlane(t, "system")
+			return svcs
+		}},
+		{"raft", func(t *testing.T) *DatabaseServices {
+			f, reg, src := newRaftFactory(t)
+			dataRoot, _ := registerVolumeTenant(t, reg, "rs")
+			src.add("rs", "sys", 1000, dataRoot)
+			svcs, err := f.Services(context.Background(), "rs", "sys")
+			if err != nil {
+				t.Fatalf("raft Services: %v", err)
+			}
+			return svcs
+		}},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			ctx := context.Background()
+			raw := mode.shared(t)
+			rr, _ := newStrictSharedRegistry(t, tenant.TenantIsolationPolicyInherit, tenant.ClusterIsolationPolicyOperatorAccess, nil)
+			floor := rr.tenantSvc.(*floorTenantSvc)
+			rr.tenantSvc = &epochTenantSvc{floorTenantSvc: floor, system: raw.KV}
+			rr.dbReg.Register("system", raw)
+			leases, err := rr.LeaseService("bt", "system")
+			if err != nil {
+				t.Fatalf("LeaseService(operator-access): %v", err)
+			}
+			if _, err := leases.Grant(ctx, 30); err != nil {
+				t.Fatalf("Grant before tightening: %v", err)
+			}
+			granted, owners := leaseOwnerRecords(ctx, t, raw.Lease)
+			if granted != 1 || owners != 1 {
+				t.Fatalf("after one grant: %d leases, %d owner records; want 1, 1", granted, owners)
+			}
+
+			floor.floor = tenant.ClusterIsolationPolicyStrict
+			_, err = leases.Grant(ctx, 30)
+			var strictErr *rest.StrictTenantSharedStoreError
+			if !errors.As(err, &strictErr) {
+				t.Fatalf("Grant after strict tightening: err = %v, want *rest.StrictTenantSharedStoreError", err)
+			}
+			if g, o := leaseOwnerRecords(ctx, t, raw.Lease); g != granted || o != owners {
+				t.Fatalf("after the refused grant: %d leases, %d owner records; want %d, %d", g, o, granted, owners)
+			}
+		})
+	}
+}
+
+// leaseOwnerRecords counts the leases the raw lessor holds and the
+// lease-ownership records attached to them.
+func leaseOwnerRecords(ctx context.Context, t *testing.T, raw service.LeaseServicer) (leases, owners int) {
+	t.Helper()
+	all, err := raw.Leases(ctx)
+	if err != nil {
+		t.Fatalf("raw Leases: %v", err)
+	}
+	for _, l := range all {
+		for _, k := range l.Keys {
+			if strings.HasPrefix(string(k), service.LeaseOwnerKeyPrefix) {
+				owners++
+			}
+		}
+	}
+	return len(all), owners
 }
 
 // holdFirstProposalHost is a LocalBackend that, when armed, holds the next

@@ -225,7 +225,11 @@ func (r *KVSharedNamespaceReader) hasVectors(ctx context.Context, tenantID, db s
 // hasKeys reports whether any KV key sits under the tenant's composite
 // namespace prefixes for db.
 func (r *KVSharedNamespaceReader) hasKeys(ctx context.Context, tenantID, db string) (bool, error) {
-	for _, prefix := range NamespacedKeyPrefixes(tenant.ComposeNamespace(tenantID, db)) {
+	ns := tenant.ComposeNamespace(tenantID, db)
+	// A live lease's ownership record counts as data: a database holding
+	// only a lease still holds state in the shared store.
+	prefixes := append(NamespacedKeyPrefixes(ns), LeaseOwnerKeyPrefix+ns)
+	for _, prefix := range prefixes {
 		keys, err := r.kv.ListAll(ctx, prefix)
 		if err != nil {
 			return false, err
