@@ -236,3 +236,73 @@ func TestStoreRestoreImageEdgeCases(t *testing.T) {
 		}
 	})
 }
+
+// TestStoreImageAt covers the write plan a restore to rev is priced on: the
+// meta record plus every page of the image at rev.
+func TestStoreImageAt(t *testing.T) {
+	ctx := t.Context()
+
+	t.Run("names the meta and every page at rev", func(t *testing.T) {
+		b := newTestBackend(t)
+		s := newTestStore(t, b, "app.db")
+		target := seed(t, s, 0x01, 0x02, 0x03)
+		txn := begin(t, s)
+		writePages(t, txn, 0x04, 0x05, 0x06, 0x07)
+		commit(t, txn)
+		plan, err := s.ImageAt(ctx, target)
+		if err != nil {
+			t.Fatalf("ImageAt: %v", err)
+		}
+		metaKey, _ := MetaKey("app.db")
+		raw, _ := metaRecordAt(t, b, "app.db", target)
+		if len(plan) != 4 || plan[0].Key != string(metaKey) || plan[0].Bytes != int64(len(raw)) {
+			t.Fatalf("plan = %+v, want the meta (%d bytes) then 3 pages", plan, len(raw))
+		}
+		for i, ik := range plan[1:] {
+			key, _ := PageKey("app.db", uint32(i+1))
+			if ik.Key != string(key) || ik.Bytes != testPageSize {
+				t.Fatalf("plan[%d] = %+v, want page %d of %d bytes", i+1, ik, i+1, testPageSize)
+			}
+		}
+	})
+
+	t.Run("an absent database prices only the cleared meta", func(t *testing.T) {
+		b := newTestBackend(t)
+		s := newTestStore(t, b, "app.db")
+		plan, err := s.ImageAt(ctx, revOf(t, b))
+		if err != nil {
+			t.Fatalf("ImageAt: %v", err)
+		}
+		// The empty meta has no page size yet, so it does not encode and
+		// the cleared record is priced at the zero bytes found.
+		metaKey, _ := MetaKey("app.db")
+		if len(plan) != 1 || plan[0].Key != string(metaKey) || plan[0].Bytes != 0 {
+			t.Fatalf("plan = %+v, want one zero-byte meta entry", plan)
+		}
+	})
+
+	t.Run("a meta read failure fails", func(t *testing.T) {
+		mb := newTestBackend(t)
+		metaKey, _ := MetaKey("app.db")
+		b := &pageFailBackend{MVCCBackend: mb, prefix: metaKey}
+		s := newTestStore(t, b, "app.db")
+		target := seed(t, s, 0x01)
+		b.fail = true
+		if _, err := s.ImageAt(ctx, target); !errors.Is(err, errInjected) {
+			t.Fatalf("ImageAt over a failing meta read = %v, want errInjected", err)
+		}
+	})
+
+	t.Run("a corrupt meta fails", func(t *testing.T) {
+		b := newTestBackend(t)
+		s := newTestStore(t, b, "app.db")
+		metaKey, _ := MetaKey("app.db")
+		rev, err := b.Commit(ctx, nil, map[string][]byte{string(metaKey): []byte("junk")}, nil)
+		if err != nil {
+			t.Fatalf("Commit corrupt meta: %v", err)
+		}
+		if _, err := s.ImageAt(ctx, rev); err == nil {
+			t.Fatal("ImageAt accepted a corrupt meta record")
+		}
+	})
+}
