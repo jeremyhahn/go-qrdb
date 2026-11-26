@@ -513,3 +513,14 @@ func (e *RunModeMarkerError) Error() string {
 }
 
 func (e *RunModeMarkerError) Unwrap() error { return e.Err }
+
+// RunModeInvalidError is returned when the configured run mode is neither
+// standalone nor raft. The guard refuses it before it touches the data
+// directory, so no marker records the unknown mode.
+type RunModeInvalidError struct {
+	Mode string
+}
+
+func (e *RunModeInvalidError) Error() string {
+	return "lifecycle: unknown run mode " + strconv.Quote(e.Mode) + "; want standalone or raft"
+}

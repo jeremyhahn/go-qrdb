@@ -37,10 +37,15 @@ const runModeMarker = ".qrdb-run-mode"
 // A present marker must name mode (*RunModeMismatchError otherwise, or
 // *RunModeMarkerError when it is unreadable or names no known mode). A
 // directory without a marker is fresh: the marker records mode. An empty
-// mode is raft, the configuration default.
+// mode is raft, the configuration default; any mode other than standalone
+// or raft is refused with *RunModeInvalidError before dataDir is created,
+// read or written, so an unknown mode never reaches the marker.
 func ClaimRunMode(dataDir, mode string) error {
 	if mode == "" {
 		mode = capabilities.ModeRaft
+	}
+	if mode != capabilities.ModeStandalone && mode != capabilities.ModeRaft {
+		return &RunModeInvalidError{Mode: mode}
 	}
 	marker := filepath.Join(dataDir, runModeMarker)
 	data, err := os.ReadFile(marker) // #nosec G304 -- marker is the node's own data directory joined with a constant name

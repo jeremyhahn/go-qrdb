@@ -1874,6 +1874,26 @@ func TestRunStart_CACertMkdirAllError(t *testing.T) {
 	require.True(t, errors.As(err, &markerErr), "err = %v (%T)", err, err)
 }
 
+// TestRunStart_InvalidRunModeRefused pins that a misspelt --mode fails the
+// start with RunModeInvalidError and records no marker, so a corrected
+// restart still claims the directory.
+func TestRunStart_InvalidRunModeRefused(t *testing.T) {
+	dir := t.TempDir()
+	f := &startFlags{
+		discoveryMethod: "static",
+		dataDir:         dir,
+		smType:          "memory",
+		host:            testBindHost,
+		mode:            "rafft",
+	}
+	err := runStart(f)
+	var ie *RunModeInvalidError
+	require.True(t, errors.As(err, &ie), "err = %v (%T)", err, err)
+	assert.Equal(t, "rafft", ie.Mode)
+	_, statErr := os.Stat(filepath.Join(dir, ".qrdb-run-mode"))
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
 // ---------------------------------------------------------------------------
 // runStart: CA cert file write failure
 //

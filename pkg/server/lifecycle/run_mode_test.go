@@ -128,6 +128,32 @@ func TestClaimRunMode_LeftoverTmpIgnored(t *testing.T) {
 	}
 }
 
+// TestClaimRunMode_InvalidModeRefused pins that an unknown mode is refused
+// before the guard touches the data directory: an existing directory gets no
+// marker and no temporary file, and a missing one is not created.
+func TestClaimRunMode_InvalidModeRefused(t *testing.T) {
+	existing := t.TempDir()
+	missing := filepath.Join(t.TempDir(), "data")
+	for _, dir := range []string{existing, missing} {
+		err := ClaimRunMode(dir, "rafft")
+		var ie *RunModeInvalidError
+		if !errors.As(err, &ie) {
+			t.Fatalf("ClaimRunMode(%q) err = %v, want *RunModeInvalidError", dir, err)
+		}
+		if ie.Mode != "rafft" {
+			t.Fatalf("Mode = %q, want rafft", ie.Mode)
+		}
+		for _, name := range []string{runModeMarker, runModeMarker + ".tmp"} {
+			if _, statErr := os.Stat(filepath.Join(dir, name)); !errors.Is(statErr, fs.ErrNotExist) {
+				t.Fatalf("%s in %s: stat err = %v, want not exist", name, dir, statErr)
+			}
+		}
+	}
+	if _, err := os.Stat(missing); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("missing data dir was created: stat err = %v", err)
+	}
+}
+
 // TestClaimRunMode_MarkerIOFailures pins the guard failing closed when the
 // marker cannot be read or written: each failure is a *RunModeMarkerError
 // naming the path and wrapping the OS error, and no marker is left behind.
@@ -237,6 +263,7 @@ func TestLifecycleErrorMessages(t *testing.T) {
 		{"node identity with cause", &NodeIdentityError{Reason: "bad pair", Err: cause}, "node identity: bad pair: cause", true},
 		{"node identity", &NodeIdentityError{Reason: "no node certificate"}, "node identity: no node certificate", false},
 		{"run-mode marker unknown", &RunModeMarkerError{Path: "p", Content: "x"}, `records unknown mode "x"`, false},
+		{"run mode invalid", &RunModeInvalidError{Mode: "rafft"}, `unknown run mode "rafft"; want standalone or raft`, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -46,6 +46,10 @@ type RunModeMismatchError = lifecycle.RunModeMismatchError
 // written, or records no known mode.
 type RunModeMarkerError = lifecycle.RunModeMarkerError
 
+// RunModeInvalidError is returned when the configured run mode is neither
+// standalone nor raft; the data directory is left untouched.
+type RunModeInvalidError = lifecycle.RunModeInvalidError
+
 // UnknownDiscoveryError is returned when the --discovery flag specifies an
 // unknown discovery method. Aliased from pkg/cluster.
 type UnknownDiscoveryError = cluster.UnknownDiscoveryError
