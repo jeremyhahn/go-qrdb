@@ -112,7 +112,10 @@ func TestNodeMigrationProvider_StoreDirs_RefusesAnObjstoreLSMStore(t *testing.T)
 		dataDir := t.TempDir()
 		cfg := qrdbconfig.DefaultConfig()
 		cfg.Raft.DataDir = dataDir
-		cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendObjstore)}}
+		// The standalone node store follows storage.backend (not
+		// databases[0].backend); per-database objstore bindings are refused
+		// by database.NodeEncryptedStoreDirs.
+		cfg.Storage.Backend = string(database.BackendObjstore)
 
 		p := &nodeMigrationProvider{node: &Node{retainedStandalone: &pendingStandaloneBoot{dataDir: dataDir, cfg: cfg}}}
 		_, err := p.StoreDirs(context.Background(), service.BarrierScope{Kind: service.ScopeSystem})
@@ -205,7 +208,7 @@ func TestNode_EnableEncryption_ObjstoreLSMRefusedAndIntact(t *testing.T) {
 		cfg := qrdbconfig.DefaultConfig()
 		cfg.Auth.Enabled = qrdbconfig.BoolPtr(false) // not an authorization test; see testhelpers_test.go
 		cfg.Raft.DataDir = dataDir
-		cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendObjstore)}}
+		cfg.Storage.Backend = string(database.BackendObjstore)
 		cfg.Storage.Objstore = qrdbconfig.ObjstoreConfig{Provider: "local", Settings: map[string]string{"path": bucket}}
 		cfg.Seal.Enabled = true
 		cfg.Seal.Strategy = "none"
