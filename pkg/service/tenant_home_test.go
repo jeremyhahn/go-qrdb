@@ -22,11 +22,12 @@ import (
 	"testing"
 	"time"
 
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
-	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 )
 
 // newHomeDatabaseService returns a placement-wired DatabaseService for the

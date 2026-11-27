@@ -20,13 +20,14 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
+	"github.com/stretchr/testify/require"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
-	"github.com/jeremyhahn/go-quicraft/pkg/sm"
-	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
-	"github.com/stretchr/testify/require"
 )
 
 // recordingHost records every command proposed to it and answers with

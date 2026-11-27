@@ -20,10 +20,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
-	"github.com/stretchr/testify/require"
 )
 
 func TestVectorNotFoundError(t *testing.T) {

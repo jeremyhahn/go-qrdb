@@ -19,11 +19,12 @@ import (
 	"errors"
 	"testing"
 
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
-	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 )
 
 // stubRebalance implements RebalanceServicer returning a fixed imbalance report.
