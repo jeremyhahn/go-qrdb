@@ -205,5 +205,6 @@ func prefixHoldsNoMeta(prefix string) bool {
 	}
 	root := len(metaKey) - len("meta")
 	rest := prefix[root:]
-	return rest != "" && !strings.HasPrefix("meta", rest)
+	metaSegment := string(metaKey[root:])
+	return rest != "" && !strings.HasPrefix(metaSegment, rest)
 }
