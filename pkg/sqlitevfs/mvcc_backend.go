@@ -179,7 +179,9 @@ func (b *MVCCBackend) checkReadsLocked(reads []ReadCheck) error {
 // Publish lists the keys live under src at CurrentRevision(), puts each
 // value under dst + (key without src), deletes the source key, and applies
 // puts and deletes, all in one storage batch at one revision
-// (commitLocked). A live count other than expectedKeys is
+// (commitLocked), in that order: an explicit put overwrites a moved value
+// on the same key and an explicit delete removes either, as the engine's
+// OpMVCCMovePrefix does. A live count other than expectedKeys is
 // ErrPublishConflict and writes nothing. This is the local-process path
 // only; the replicated path is ServiceBackend over the server's
 // OpMVCCMovePrefix.
@@ -204,12 +206,16 @@ func (b *MVCCBackend) Publish(ctx context.Context, src, dst []byte, expectedKeys
 		return 0, fmt.Errorf("%w: %d keys live under %q at revision %d, expected %d",
 			ErrPublishConflict, len(keys), src, rev, expectedKeys)
 	}
-	all := make(map[string][]byte, len(puts)+len(keys))
-	for k, v := range puts {
-		all[k] = v
-	}
-	allDeletes := make([][]byte, 0, len(deletes)+len(keys))
-	allDeletes = append(allDeletes, deletes...)
+	// The batch applies puts before deletes and a key at most once, so
+	// the ordered writes are folded into their net effect first, in the
+	// engine's order (ServiceBackend's OpMVCCMovePrefix): the moved values
+	// and the source deletes, then the explicit puts, then the explicit
+	// deletes. An explicit put therefore wins over a moved value on the
+	// same key, and an explicit delete over both.
+	final := make(map[string][]byte, len(puts)+2*len(keys))
+	deleted := make(map[string]bool, len(deletes)+len(keys))
+	set := func(k string, v []byte) { final[k] = v; delete(deleted, k) }
+	del := func(k string) { delete(final, k); deleted[k] = true }
 	for _, key := range keys {
 		value, found, err := b.GetAt(ctx, key, rev)
 		if err != nil {
@@ -220,10 +226,21 @@ func (b *MVCCBackend) Publish(ctx context.Context, src, dst []byte, expectedKeys
 		}
 		dstKey := make([]byte, 0, len(dst)+len(key)-len(src))
 		dstKey = append(append(dstKey, dst...), key[len(src):]...)
-		all[string(dstKey)] = value
-		allDeletes = append(allDeletes, key)
+		set(string(dstKey), value)
+		del(string(key))
 	}
-	return b.commitLocked(all, allDeletes)
+	for k, v := range puts {
+		set(k, v)
+	}
+	for _, k := range deletes {
+		del(string(k))
+	}
+	allDeletes := make([][]byte, 0, len(deleted))
+	for k := range deleted {
+		allDeletes = append(allDeletes, []byte(k))
+	}
+	sort.Slice(allDeletes, func(i, j int) bool { return bytes.Compare(allDeletes[i], allDeletes[j]) < 0 })
+	return b.commitLocked(final, allDeletes)
 }
 
 // validatePublish refuses an empty src or dst, prefixes where one is a

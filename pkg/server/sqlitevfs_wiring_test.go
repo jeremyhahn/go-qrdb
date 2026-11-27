@@ -155,6 +155,37 @@ func TestSQLiteVFSWiring_CommitReadsBack(t *testing.T) {
 	}
 }
 
+// TestSQLiteVFSWiring_PublishExplicitWritesWinOverMoved is the backend
+// publish precedence over the engine's OpMVCCMovePrefix on every isolation:
+// an explicit put on a moved key stores the explicit value, an explicit
+// delete removes a moved key (pkg/sqlitevfs runs the same case against its
+// local backends).
+func TestSQLiteVFSWiring_PublishExplicitWritesWinOverMoved(t *testing.T) {
+	for name, build := range lockScenes {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			b := newWiringStore(t, build(t).registry, lockTenantA, lockHolderA).backend
+			seed := map[string][]byte{"src/1": []byte("old"), "src/2": []byte("two")}
+			if _, err := b.Commit(ctx, nil, seed, nil); err != nil {
+				t.Fatalf("Commit: %v", err)
+			}
+			rev, err := b.Publish(ctx, []byte("src/"), []byte("dst/"), 2, nil,
+				map[string][]byte{"dst/1": []byte("new")}, [][]byte{[]byte("dst/2")})
+			if err != nil {
+				t.Fatalf("Publish: %v", err)
+			}
+			if v, found, err := b.GetAt(ctx, []byte("dst/1"), rev); err != nil || !found || string(v) != "new" {
+				t.Fatalf("dst/1 = %q found=%v err=%v, want the explicit put \"new\"", v, found, err)
+			}
+			for _, key := range []string{"dst/2", "src/1", "src/2"} {
+				if _, found, err := b.GetAt(ctx, []byte(key), rev); err != nil || found {
+					t.Fatalf("%s after the publish: found=%v err=%v, want deleted", key, found, err)
+				}
+			}
+		})
+	}
+}
+
 func TestSQLiteVFSWiring_StagedCommitPublishesThroughPrefixMove(t *testing.T) {
 	for name, build := range lockScenes {
 		t.Run(name, func(t *testing.T) {
