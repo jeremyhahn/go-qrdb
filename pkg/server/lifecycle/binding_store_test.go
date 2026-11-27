@@ -1232,7 +1232,7 @@ func TestLocalBindingFactory_ReservedRoots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReservedRoots: %v", err)
 	}
-	want := []string{wal, objects, objects + ".journal"}
+	want := []string{wal, objects, objects + ".journal", filepath.Join(dir, "objstore-lsm"), filepath.Join(dir, "objstore-lsm-cache")}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("ReservedRoots = %v, want %v", got, want)
 	}
@@ -1253,7 +1253,7 @@ func TestLocalBindingFactory_ReservedRootsFollowTheWorkingDirectory(t *testing.T
 	if err != nil {
 		t.Fatalf("ReservedRoots: %v", err)
 	}
-	want := []string{filepath.Join(cwd, "wal"), filepath.Join(cwd, "objects"), filepath.Join(cwd, "objects.journal")}
+	want := []string{filepath.Join(cwd, "wal"), filepath.Join(cwd, "objects"), filepath.Join(cwd, "objects.journal"), filepath.Join(dir, "objstore-lsm"), filepath.Join(dir, "objstore-lsm-cache")}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("ReservedRoots = %v, want %v", got, want)
 	}
@@ -1272,7 +1272,28 @@ func TestLocalBindingFactory_ReservedRootsDefaultObjstoreJournal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReservedRoots: %v", err)
 	}
-	want := []string{filepath.Join(dir, "objstore"), filepath.Join(dir, "objstore.journal")}
+	want := []string{filepath.Join(dir, "objstore"), filepath.Join(dir, "objstore.journal"), filepath.Join(dir, "objstore-lsm"), filepath.Join(dir, "objstore-lsm-cache")}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("ReservedRoots = %v, want %v", got, want)
+	}
+}
+
+// TestLocalBindingFactory_ReservedRootsObjstoreLSM proves the objstore
+// backend's local Pebble directory and object cache are reserved at the
+// paths newObjstoreLSMStorage opens them: under the node's data dir, made
+// absolute against the working directory when that dir is relative.
+func TestLocalBindingFactory_ReservedRootsObjstoreLSM(t *testing.T) {
+	cwd, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(cwd)
+	cfg := qrdbconfig.StorageConfig{Objstore: qrdbconfig.ObjstoreConfig{Provider: "s3"}}
+	got, err := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: "node"}, nil, cfg, prefixTenants).ReservedRoots()
+	if err != nil {
+		t.Fatalf("ReservedRoots: %v", err)
+	}
+	want := []string{filepath.Join(cwd, "node", "objstore-lsm"), filepath.Join(cwd, "node", "objstore-lsm-cache")}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("ReservedRoots = %v, want %v", got, want)
 	}

@@ -144,7 +144,8 @@ func (f *LocalBindingFactory) WithRaftMode() *LocalBindingFactory {
 // for the local object-store provider, the settings path resolved exactly as
 // NewLocalStorage resolves it (empty: <data dir>/objstore; relative: against
 // the working directory, as the local provider opens it), its physical
-// directory and its commit-journal sibling (objstore.LocalRoots). A path that
+// directory and its commit-journal sibling (objstore.LocalRoots); and the
+// objstore backend's <data dir>/objstore-lsm and objstore-lsm-cache. A path that
 // cannot be resolved is an error: the Manager then fails closed.
 func (f *LocalBindingFactory) ReservedRoots() ([]string, error) {
 	var roots []string
@@ -162,6 +163,18 @@ func (f *LocalBindingFactory) ReservedRoots() ([]string, error) {
 			return nil, fmt.Errorf("resolve storage.objstore.settings.path %q: %w", settings["path"], err)
 		}
 		roots = append(roots, local...)
+	}
+	// The objstore backend's local Pebble state and object cache, opened
+	// under the node's data dir (newObjstoreLSMStorage), made absolute
+	// against the working directory as a relative data dir is opened.
+	if dataDir := f.node.DataDir; dataDir != "" {
+		for _, sub := range []string{objstoreLSMDir, objstoreLSMCacheDir} {
+			abs, err := filepath.Abs(filepath.Join(dataDir, sub))
+			if err != nil {
+				return nil, fmt.Errorf("resolve %s under data dir %q: %w", sub, dataDir, err)
+			}
+			roots = append(roots, abs)
+		}
 	}
 	return roots, nil
 }

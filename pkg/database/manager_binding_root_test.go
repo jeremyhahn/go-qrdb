@@ -475,6 +475,27 @@ func TestManager_DataDirOverNodeStoresRefused(t *testing.T) {
 	}
 }
 
+// TestManager_ReservedObjstoreLSMDirsRefused proves a database data_dir on
+// the objstore backend's local Pebble directory or its object cache, or
+// inside either, is refused even with no factory reporting them.
+func TestManager_ReservedObjstoreLSMDirsRefused(t *testing.T) {
+	dir := t.TempDir()
+	m := newCatalogManager(slog.Default(), dir)
+	t.Cleanup(func() { _ = m.Close() })
+	for i, dataDir := range []string{
+		filepath.Join(dir, "objstore-lsm"),
+		filepath.Join(dir, "objstore-lsm", "inner"),
+		filepath.Join(dir, "objstore-lsm-cache"),
+		filepath.Join(dir, "objstore-lsm-cache", "inner"),
+	} {
+		_, err := m.Create(DatabaseConfig{Name: fmt.Sprintf("db%d", i), Backend: BackendFile, DataDir: dataDir})
+		var reserved *DataDirReservedPathError
+		if !errors.As(err, &reserved) {
+			t.Fatalf("Create with data_dir %s: err = %v, want *DataDirReservedPathError", dataDir, err)
+		}
+	}
+}
+
 // TestManager_DropNeverRemovesANodeStore proves a drop whose owned root is a
 // node store (a record written before the reservation) is refused and the
 // store's files stay.

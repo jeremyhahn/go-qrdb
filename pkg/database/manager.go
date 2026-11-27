@@ -72,7 +72,9 @@ var reservedDataSubdirs = []string{"seal", "wal", "snapshot", "snapshots", "syst
 	// The node's own control-plane stores, one per storage engine.
 	"pebble", "file", "vector", "objstore",
 	// The default local object store's commit-journal sibling.
-	"objstore.journal"}
+	"objstore.journal",
+	// The objstore backend's local Pebble state and its object cache.
+	"objstore-lsm", "objstore-lsm-cache"}
 
 // ReservedRootsReporter is implemented by a BackendFactory that knows node
 // stores at the paths storage opens them (the write-ahead log directory, a
