@@ -16,6 +16,7 @@ package objstore
 
 import (
 	"errors"
+	"sync"
 
 	objcommon "github.com/jeremyhahn/go-objstore/pkg/common"
 )
@@ -26,7 +27,8 @@ import (
 // refused to any other owner, in this process (*NamespaceInUseError) and
 // through its durable owner marker, until Release.
 type NamespaceClaim struct {
-	e *Engine
+	mu sync.Mutex // guards e: concurrent Releases unregister once
+	e  *Engine
 }
 
 // ClaimNamespace claims the namespace of store, opened by OpenStore from
@@ -92,14 +94,21 @@ func (e *Engine) claimMarker(owner string) error {
 
 // Release drops the in-process hold on the namespace. The durable owner
 // marker stays: the namespace remains its owner's across restarts. Release
-// on a nil claim, or a second Release, does nothing.
+// on a nil claim, or a second Release, does nothing; concurrent Releases
+// drop the hold exactly once.
 func (c *NamespaceClaim) Release() {
-	if c == nil || c.e == nil {
+	if c == nil {
 		return
 	}
-	if c.e.namespaceHeld {
-		unregisterNamespace(c.e)
-	}
-	unregisterRoots(c.e)
+	c.mu.Lock()
+	e := c.e
 	c.e = nil
+	c.mu.Unlock()
+	if e == nil {
+		return
+	}
+	if e.namespaceHeld {
+		unregisterNamespace(e)
+	}
+	unregisterRoots(e)
 }

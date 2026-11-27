@@ -309,3 +309,35 @@ func TestObjstoreLSM_NodeStoreRefusesADatabaseOpen(t *testing.T) {
 		t.Fatalf("Close reopened: %v", err)
 	}
 }
+
+// TestObjstoreLSM_ConcurrentCloseReleasesOnce closes one node store from two
+// goroutines: the namespace claim is released exactly once, without a race,
+// and the namespace reopens afterwards.
+func TestObjstoreLSM_ConcurrentCloseReleasesOnce(t *testing.T) {
+	dataDir := t.TempDir()
+	stg, err := newObjstoreLSMStorage(dataDir, atrest.New(nil), qrdbconfig.StorageConfig{})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() {
+			<-start
+			errs <- stg.Close()
+		}()
+	}
+	close(start)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent Close: %v", err)
+		}
+	}
+	reopened, err := newObjstoreLSMStorage(dataDir, atrest.New(nil), qrdbconfig.StorageConfig{})
+	if err != nil {
+		t.Fatalf("reopen after concurrent Close: %v", err)
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatalf("Close reopened: %v", err)
+	}
+}
