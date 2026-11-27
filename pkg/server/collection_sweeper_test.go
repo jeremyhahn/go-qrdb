@@ -19,13 +19,108 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
+
+// sealableHost is a materialized database's service host whose reads fail
+// with database.SealedError while sealed is set, as a binding store behind
+// a sealed barrier refuses them.
+type sealableHost struct {
+	service.Host
+	sealed *atomic.Bool
+}
+
+func (h *sealableHost) SyncRead(ctx context.Context, shardID uint64, query interface{}) (interface{}, error) {
+	if h.sealed.Load() {
+		return nil, &database.SealedError{}
+	}
+	return h.Host.SyncRead(ctx, shardID, query)
+}
+
+// sealableMaterialized is a fakeMaterialized whose host is a sealableHost.
+type sealableMaterialized struct {
+	*fakeMaterialized
+	host service.Host
+}
+
+func (m *sealableMaterialized) Host() service.Host { return m.host }
+
+// sealableFactory materializes every database through fakeMaterializingFactory
+// and gates the host of the databases of tenant sealedTenant on sealed.
+type sealableFactory struct {
+	inner        *fakeMaterializingFactory
+	sealedTenant string
+	sealed       *atomic.Bool
+}
+
+func (f *sealableFactory) Create(cfg database.DatabaseConfig, dataDir string) (database.Backend, error) {
+	b, err := f.inner.Create(cfg, dataDir)
+	if err != nil || cfg.TenantID != f.sealedTenant {
+		return b, err
+	}
+	fm, ok := b.(*fakeMaterialized)
+	if !ok {
+		return b, nil
+	}
+	return &sealableMaterialized{fakeMaterialized: fm, host: &sealableHost{Host: fm.host, sealed: f.sealed}}, nil
+}
+
+func (f *sealableFactory) Close() error { return f.inner.Close() }
+
+// TestServer_CollectionSweepTargets_SealedDatabaseDoesNotStopRecovery: a
+// sealed database's journal cannot be read, and the pass skips that database
+// rather than failing: every other database is still swept, and the sealed
+// one is swept by the first pass after its unseal.
+func TestServer_CollectionSweepTargets_SealedDatabaseDoesNotStopRecovery(t *testing.T) {
+	sealed := &atomic.Bool{}
+	factory := &sealableFactory{inner: &fakeMaterializingFactory{}, sealedTenant: "locked", sealed: sealed}
+	mgr := databasetest.NewManager(nil, t.TempDir(), database.WithBackendFactory(factory))
+	t.Cleanup(func() { _ = mgr.Close() })
+	for _, tenantID := range []string{"open", "locked"} {
+		if _, err := mgr.Create(database.DatabaseConfig{Name: "app", TenantID: tenantID, Backend: database.BackendMemory}); err != nil {
+			t.Fatalf("create %s/app: %v", tenantID, err)
+		}
+	}
+	tenants := &listFnServicer{fn: func(context.Context) ([]tenant.TenantInfo, error) {
+		return []tenant.TenantInfo{{ID: tenantid.System}, {ID: "open"}, {ID: "locked"}}, nil
+	}}
+	srv := New(testConfig(t, false, false), newMockKVService(), &mockAdminService{},
+		WithDatabaseServiceRegistry(NewDatabaseServiceRegistry("system")),
+		WithTenantService(tenants), WithDatabaseManager(mgr))
+
+	targetsOf := func() []string {
+		t.Helper()
+		targets, err := srv.collectionSweepTargets(context.Background())
+		if err != nil {
+			t.Fatalf("collectionSweepTargets: %v", err)
+		}
+		got := make([]string, len(targets))
+		for i, tgt := range targets {
+			got[i] = tgt.Tenant + "/" + tgt.Database
+		}
+		sort.Strings(got)
+		return got
+	}
+
+	sealed.Store(true)
+	if got := targetsOf(); strings.Join(got, ",") != "open/app" {
+		t.Fatalf("sealed pass targets = %v, want [open/app]", got)
+	}
+	sealed.Store(false)
+	if got := targetsOf(); strings.Join(got, ",") != "locked/app,open/app" {
+		t.Fatalf("unsealed pass targets = %v, want [locked/app open/app]", got)
+	}
+}
 
 // markCollectionDropping rewrites every stored collection record in kv into
 // the DROPPING state, entered long ago -- the state a drop that crashed after

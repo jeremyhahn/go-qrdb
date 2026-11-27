@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -343,6 +344,15 @@ func (s *Server) collectionSweepTargets(ctx context.Context) ([]collectionSweepT
 			// database itself for CREATING/DROPPING collections.
 			if ms, ok := dbase.Backend().(materializedStore); ok {
 				targets, err := s.journaledTargets(ctx, service.NewKVService(ms.Host(), ms.ShardID()), known)
+				if _, sealed := errors.AsType[*database.SealedError](err); sealed {
+					// A sealed database's journal cannot be read until it
+					// is unsealed; the other databases still recover, and
+					// this one is swept by the first pass after the unseal.
+					s.logger.Debug("collection sweeper: skipping sealed database",
+						slog.String("tenant_id", owner), slog.String("database", info.name),
+						slog.Any("error", err))
+					continue
+				}
 				if err != nil {
 					return nil, err
 				}
