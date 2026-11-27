@@ -50,6 +50,31 @@ func (e *ConfigError) Error() string {
 	return "pebble config: " + e.Field + ": " + e.Message
 }
 
+// FormatMajorVersion is the pinned on-disk format of every main store: Open
+// creates new stores at it, raises older stores to it, and refuses stores
+// written at a newer format. It changes only by a code change here, never by
+// a Pebble bump (Pebble's own default moves with each release). It must stay
+// at or above pebble.FormatMinForSharedObjects, which the remote LSM needs.
+const FormatMajorVersion = pebble.FormatValueSeparation
+
+// formatPin is the version Open enforces. It is FormatMajorVersion; tests
+// lower it to exercise the refusal of a newer on-disk format.
+var formatPin = FormatMajorVersion
+
+// FormatVersionError reports a store whose on-disk format major version is
+// newer than the pinned one: a newer build wrote it, and this build refuses
+// to open it rather than run against a format it does not pin.
+type FormatVersionError struct {
+	Dir    string
+	OnDisk pebble.FormatMajorVersion
+	Pinned pebble.FormatMajorVersion
+}
+
+func (e *FormatVersionError) Error() string {
+	return "pebble store " + e.Dir + " was written by a newer build: on-disk format " +
+		e.OnDisk.String() + " is above the pinned format " + e.Pinned.String()
+}
+
 // Config holds PebbleDB configuration options.
 type Config struct {
 	// DataDir is the directory where data files are stored.

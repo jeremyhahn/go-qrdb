@@ -1916,19 +1916,17 @@ barrier's encrypted filesystem wraps Pebble's file system and the file
 engine's. On a raft node it covers every state machine that persists anything
 -- `mvcc` and `pebble`, and `disk` and `fast` over pebble or file storage (see
 [../storage-engines/](../storage-engines/engineering.md)) -- so a raft node
-reports no gap. On a standalone node it covers the `pebble` backend and the `file`
-backend, whose record files the same encrypting filesystem writes; it does not
-cover the `objstore` backend.
+reports no gap. On a standalone node it covers the `pebble` backend, the `file`
+backend, whose record files the same encrypting filesystem writes, and the
+`objstore` backend, whose Pebble WAL and manifest it writes and whose bucket
+objects the encrypting remote (`objstore.NewEncryptedRemote`) seals with the
+same barrier. No standalone backend currently reports a gap.
 
-Such a node still runs. It says so in two places, both computed once at boot
-from the configuration (`config.Config.EffectiveCapabilities`):
+A node with a gap still runs. It says so in two places, both computed once at
+boot from the configuration (`config.Config.EffectiveCapabilities`):
 
 - **A startup WARNING** per gap, logged by every composition root (the daemon
-  and `sdk/go/node`) before the node serves traffic:
-
-  ```
-  seal is enabled but data is stored unencrypted at rest  where="standalone backend \"objstore\" stores its data without the seal barrier's at-rest encryption; use backend \"pebble\" or \"file\""
-  ```
+  and `sdk/go/node`) before the node serves traffic.
 
 - **The capability report**: `UnencryptedAtRest` (`unencryptedAtRest` in JSON,
   `unencrypted_at_rest` in the protobuf) lists the same gaps on REST, gRPC,
