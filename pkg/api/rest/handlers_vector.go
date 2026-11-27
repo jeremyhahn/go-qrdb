@@ -28,11 +28,12 @@ import (
 
 // vectorCreateNamespaceRequest is the JSON payload for POST /vector/namespace.
 type vectorCreateNamespaceRequest struct {
-	Namespace      string            `json:"namespace"`
-	Dimension      uint32            `json:"dimension"`
-	DistanceMetric string            `json:"distance_metric"`
-	IndexType      string            `json:"index_type"`
-	IndexConfig    map[string]string `json:"index_config,omitempty"`
+	Namespace      string                 `json:"namespace"`
+	Dimension      uint32                 `json:"dimension"`
+	DistanceMetric string                 `json:"distance_metric"`
+	IndexType      string                 `json:"index_type"`
+	IndexConfig    map[string]string      `json:"index_config,omitempty"`
+	Metadata       map[string]interface{} `json:"metadata,omitempty"`
 }
 
 // vectorCreateNamespaceResponse is the JSON payload returned by
@@ -206,9 +207,11 @@ type vectorListResponse struct {
 
 // vectorUpdateMetadataRequest is the JSON payload for POST /vector/metadata.
 type vectorUpdateMetadataRequest struct {
-	Namespace string                 `json:"namespace"`
-	ID        uint64                 `json:"id"`
-	Metadata  map[string]interface{} `json:"metadata"`
+	Namespace     string                 `json:"namespace"`
+	ID            uint64                 `json:"id"`
+	Metadata      map[string]interface{} `json:"metadata"`
+	MergeMetadata bool                   `json:"merge_metadata,omitempty"`
+	DeleteKeys    []string               `json:"delete_keys,omitempty"`
 }
 
 // vectorUpdateMetadataResponse is the JSON payload returned by
@@ -237,12 +240,15 @@ type vectorSearchResultJSON struct {
 // vectorSearchSimilarRequest is the JSON payload for
 // POST /vector/search/similar.
 type vectorSearchSimilarRequest struct {
-	Namespace   string    `json:"namespace"`
-	QueryVector []float32 `json:"query_vector"`
-	K           int       `json:"k"`
-	EfSearch    int       `json:"ef_search,omitempty"`
-	MinScore    float32   `json:"min_score,omitempty"`
-	Consistency uint8     `json:"consistency,omitempty"`
+	Namespace       string                 `json:"namespace"`
+	QueryVector     []float32              `json:"query_vector"`
+	K               int                    `json:"k"`
+	EfSearch        int                    `json:"ef_search,omitempty"`
+	MinScore        float32                `json:"min_score,omitempty"`
+	IncludeVectors  bool                   `json:"include_vectors,omitempty"`
+	IncludeMetadata bool                   `json:"include_metadata,omitempty"`
+	MetadataFilter  map[string]interface{} `json:"metadata_filter,omitempty"`
+	Consistency     uint8                  `json:"consistency,omitempty"`
 }
 
 // vectorSearchSimilarResponse is the JSON payload returned by
@@ -256,11 +262,14 @@ type vectorSearchSimilarResponse struct {
 // vectorSearchByMetadataRequest is the JSON payload for
 // POST /vector/search/metadata.
 type vectorSearchByMetadataRequest struct {
-	Namespace   string                 `json:"namespace"`
-	Filters     map[string]interface{} `json:"filters"`
-	Limit       int                    `json:"limit,omitempty"`
-	Offset      int                    `json:"offset,omitempty"`
-	Consistency uint8                  `json:"consistency,omitempty"`
+	Namespace       string                 `json:"namespace"`
+	Filters         map[string]interface{} `json:"filters"`
+	FilterOperator  string                 `json:"filter_operator,omitempty"`
+	Limit           int                    `json:"limit,omitempty"`
+	Offset          int                    `json:"offset,omitempty"`
+	IncludeVectors  bool                   `json:"include_vectors,omitempty"`
+	IncludeMetadata bool                   `json:"include_metadata,omitempty"`
+	Consistency     uint8                  `json:"consistency,omitempty"`
 }
 
 // vectorSearchByMetadataResponse is the JSON payload returned by
@@ -274,13 +283,17 @@ type vectorSearchByMetadataResponse struct {
 // vectorHybridSearchRequest is the JSON payload for
 // POST /vector/search/hybrid.
 type vectorHybridSearchRequest struct {
-	Namespace      string                 `json:"namespace"`
-	QueryVector    []float32              `json:"query_vector"`
-	K              int                    `json:"k"`
-	EfSearch       int                    `json:"ef_search,omitempty"`
-	MinScore       float32                `json:"min_score,omitempty"`
-	MetadataFilter map[string]interface{} `json:"metadata_filter"`
-	Consistency    uint8                  `json:"consistency,omitempty"`
+	Namespace          string                 `json:"namespace"`
+	QueryVector        []float32              `json:"query_vector"`
+	K                  int                    `json:"k"`
+	EfSearch           int                    `json:"ef_search,omitempty"`
+	MinScore           float32                `json:"min_score,omitempty"`
+	MetadataFilter     map[string]interface{} `json:"metadata_filter"`
+	FilterOperator     string                 `json:"filter_operator,omitempty"`
+	RerankingAlgorithm string                 `json:"reranking_algorithm,omitempty"`
+	IncludeVectors     bool                   `json:"include_vectors,omitempty"`
+	IncludeMetadata    bool                   `json:"include_metadata,omitempty"`
+	Consistency        uint8                  `json:"consistency,omitempty"`
 }
 
 // vectorHybridSearchResponse is the JSON payload returned by
@@ -295,10 +308,16 @@ type vectorHybridSearchResponse struct {
 
 // vectorSearchByIDRequest is the JSON payload for POST /vector/search/by-id.
 type vectorSearchByIDRequest struct {
-	Namespace   string `json:"namespace"`
-	ID          uint64 `json:"id"`
-	K           int    `json:"k"`
-	Consistency uint8  `json:"consistency,omitempty"`
+	Namespace       string                 `json:"namespace"`
+	ID              uint64                 `json:"id"`
+	K               int                    `json:"k"`
+	EfSearch        int                    `json:"ef_search,omitempty"`
+	MinScore        float32                `json:"min_score,omitempty"`
+	IncludeVectors  bool                   `json:"include_vectors,omitempty"`
+	IncludeMetadata bool                   `json:"include_metadata,omitempty"`
+	MetadataFilter  map[string]interface{} `json:"metadata_filter,omitempty"`
+	ExcludeSelf     bool                   `json:"exclude_self,omitempty"`
+	Consistency     uint8                  `json:"consistency,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -308,7 +327,9 @@ type vectorSearchByIDRequest struct {
 // vectorRebuildIndexRequest is the JSON payload for
 // POST /vector/index/rebuild.
 type vectorRebuildIndexRequest struct {
-	Namespace string `json:"namespace"`
+	Namespace   string            `json:"namespace"`
+	IndexConfig map[string]string `json:"index_config,omitempty"`
+	Async       bool              `json:"async,omitempty"`
 }
 
 // vectorRebuildIndexResponse is the JSON payload returned by
@@ -361,6 +382,8 @@ type vectorIndexStatsResponse struct {
 // vectorCompactRequest is the JSON payload for POST /vector/compact.
 type vectorCompactRequest struct {
 	Namespace string `json:"namespace"`
+	Async     bool   `json:"async,omitempty"`
+	TimeoutMs int64  `json:"timeout_ms,omitempty"`
 }
 
 // vectorCompactResponse is the JSON payload returned by
@@ -425,6 +448,7 @@ func (s *Server) handleVectorCreateNamespace(w http.ResponseWriter, r *http.Requ
 		DistanceMetric: req.DistanceMetric,
 		IndexType:      req.IndexType,
 		IndexConfig:    req.IndexConfig,
+		Metadata:       req.Metadata,
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -877,9 +901,11 @@ func (s *Server) handleVectorUpdateMetadata(w http.ResponseWriter, r *http.Reque
 	}
 
 	resp, err := vectorSvc.UpdateMetadata(ctx, &service.UpdateVectorMetadataRequest{
-		Namespace: req.Namespace,
-		ID:        req.ID,
-		Metadata:  req.Metadata,
+		Namespace:     req.Namespace,
+		ID:            req.ID,
+		Metadata:      req.Metadata,
+		MergeMetadata: req.MergeMetadata,
+		DeleteKeys:    req.DeleteKeys,
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -917,12 +943,15 @@ func (s *Server) handleVectorSearchSimilar(w http.ResponseWriter, r *http.Reques
 	}
 
 	resp, err := vectorSvc.SearchSimilar(ctx, &service.SearchSimilarRequest{
-		Namespace:   req.Namespace,
-		QueryVector: req.QueryVector,
-		K:           req.K,
-		EfSearch:    req.EfSearch,
-		MinScore:    req.MinScore,
-		Consistency: service.ConsistencyLevel(req.Consistency),
+		Namespace:       req.Namespace,
+		QueryVector:     req.QueryVector,
+		K:               req.K,
+		EfSearch:        req.EfSearch,
+		MinScore:        req.MinScore,
+		IncludeVectors:  req.IncludeVectors,
+		IncludeMetadata: req.IncludeMetadata,
+		MetadataFilter:  req.MetadataFilter,
+		Consistency:     service.ConsistencyLevel(req.Consistency),
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -955,11 +984,14 @@ func (s *Server) handleVectorSearchByMetadata(w http.ResponseWriter, r *http.Req
 	}
 
 	resp, err := vectorSvc.SearchByMetadata(ctx, &service.SearchByMetadataRequest{
-		Namespace:   req.Namespace,
-		Filters:     req.Filters,
-		Limit:       req.Limit,
-		Offset:      req.Offset,
-		Consistency: service.ConsistencyLevel(req.Consistency),
+		Namespace:       req.Namespace,
+		Filters:         req.Filters,
+		FilterOperator:  req.FilterOperator,
+		Limit:           req.Limit,
+		Offset:          req.Offset,
+		IncludeVectors:  req.IncludeVectors,
+		IncludeMetadata: req.IncludeMetadata,
+		Consistency:     service.ConsistencyLevel(req.Consistency),
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -993,13 +1025,17 @@ func (s *Server) handleVectorHybridSearch(w http.ResponseWriter, r *http.Request
 	}
 
 	resp, err := vectorSvc.HybridSearch(ctx, &service.HybridSearchRequest{
-		Namespace:      req.Namespace,
-		QueryVector:    req.QueryVector,
-		K:              req.K,
-		EfSearch:       req.EfSearch,
-		MinScore:       req.MinScore,
-		MetadataFilter: req.MetadataFilter,
-		Consistency:    service.ConsistencyLevel(req.Consistency),
+		Namespace:          req.Namespace,
+		QueryVector:        req.QueryVector,
+		K:                  req.K,
+		EfSearch:           req.EfSearch,
+		MinScore:           req.MinScore,
+		MetadataFilter:     req.MetadataFilter,
+		FilterOperator:     req.FilterOperator,
+		RerankingAlgorithm: req.RerankingAlgorithm,
+		IncludeVectors:     req.IncludeVectors,
+		IncludeMetadata:    req.IncludeMetadata,
+		Consistency:        service.ConsistencyLevel(req.Consistency),
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -1035,10 +1071,16 @@ func (s *Server) handleVectorSearchByID(w http.ResponseWriter, r *http.Request) 
 	}
 
 	resp, err := vectorSvc.SearchByID(ctx, &service.SearchByIDRequest{
-		Namespace:   req.Namespace,
-		ID:          req.ID,
-		K:           req.K,
-		Consistency: service.ConsistencyLevel(req.Consistency),
+		Namespace:       req.Namespace,
+		ID:              req.ID,
+		K:               req.K,
+		EfSearch:        req.EfSearch,
+		MinScore:        req.MinScore,
+		IncludeVectors:  req.IncludeVectors,
+		IncludeMetadata: req.IncludeMetadata,
+		MetadataFilter:  req.MetadataFilter,
+		ExcludeSelf:     req.ExcludeSelf,
+		Consistency:     service.ConsistencyLevel(req.Consistency),
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -1075,7 +1117,9 @@ func (s *Server) handleVectorRebuildIndex(w http.ResponseWriter, r *http.Request
 	}
 
 	resp, err := vectorSvc.RebuildIndex(ctx, &service.RebuildIndexRequest{
-		Namespace: req.Namespace,
+		Namespace:   req.Namespace,
+		IndexConfig: req.IndexConfig,
+		Async:       req.Async,
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -1216,6 +1260,8 @@ func (s *Server) handleVectorCompactNamespace(w http.ResponseWriter, r *http.Req
 
 	resp, err := vectorSvc.CompactNamespace(ctx, &service.CompactNamespaceRequest{
 		Namespace: req.Namespace,
+		Async:     req.Async,
+		TimeoutMs: req.TimeoutMs,
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
