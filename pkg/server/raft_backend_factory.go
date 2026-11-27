@@ -232,6 +232,12 @@ type raftDatabaseInfoSource interface {
 	// that is not the dropping incarnation's. A catalog that cannot be read
 	// is an error, never "no record".
 	recordedIncarnation(ctx context.Context, tenantID, db string) (incarnation string, ok bool, err error)
+
+	// recordedDataDir returns the explicit data_dir the replicated catalog
+	// records for the (tenant, db) database, or ok=false when it records
+	// none. A placed group starts there. A catalog that cannot be read is
+	// an error, never "no record".
+	recordedDataDir(ctx context.Context, tenantID, db string) (dataDir string, ok bool, err error)
 }
 
 // RaftBackendFactory manages the lifecycle of dedicated per-database raft groups
@@ -2217,6 +2223,13 @@ func (s *managerRaftInfoSource) recordedIncarnation(ctx context.Context, tenantI
 	return s.manager.RecordedIncarnation(ctx, tenantID, db)
 }
 
+func (s *managerRaftInfoSource) recordedDataDir(ctx context.Context, tenantID, db string) (string, bool, error) {
+	if s.manager == nil {
+		return "", false, ErrRaftBackendUnavailable
+	}
+	return s.manager.RecordedDataDir(ctx, tenantID, db)
+}
+
 // compile-time check that managerRaftInfoSource satisfies the interface.
 var _ raftDatabaseInfoSource = (*managerRaftInfoSource)(nil)
 
@@ -2318,6 +2331,21 @@ func (s *placementRaftInfoSource) databaseAndPlacementInfo(tenantID, db string) 
 	if rerr != nil {
 		return 0, "", nil, false, rerr
 	}
+	// A database created with an explicit data_dir runs its group there:
+	// the catalog record names it (the placement names no path), and the
+	// data_dir root claims and the drop guard protect that directory. It
+	// must lie strictly under this node's tenant root. A catalog that
+	// cannot be read fails the lookup rather than start at the default.
+	explicit, hasExplicit, derr := s.recordedDataDir(resolveCtx, tenantID, db)
+	if derr != nil {
+		return 0, "", nil, false, derr
+	}
+	if hasExplicit {
+		if err := database.CheckDataDirUnderTenantRoot(db, explicit, tenantRoot); err != nil {
+			return 0, "", nil, false, err
+		}
+		return p.ShardID, filepath.Clean(explicit), p, true, nil
+	}
 	return p.ShardID, filepath.Join(tenantRoot, "databases", db), p, true, nil
 }
 
@@ -2353,6 +2381,10 @@ func (s *placementRaftInfoSource) stateStorage(tenantID, db string) database.Bac
 // entry names a shard, never the incarnation it belongs to.
 func (s *placementRaftInfoSource) recordedIncarnation(ctx context.Context, tenantID, db string) (string, bool, error) {
 	return s.fallback.recordedIncarnation(ctx, tenantID, db)
+}
+
+func (s *placementRaftInfoSource) recordedDataDir(ctx context.Context, tenantID, db string) (string, bool, error) {
+	return s.fallback.recordedDataDir(ctx, tenantID, db)
 }
 
 // compile-time check that placementRaftInfoSource satisfies the interface.

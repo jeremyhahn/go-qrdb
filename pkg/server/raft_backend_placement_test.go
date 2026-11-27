@@ -320,6 +320,51 @@ func TestPlacementInfoSource_EmptyDataRootResolvesLocally(t *testing.T) {
 	}
 }
 
+// TestPlacementInfoSource_RecordedExplicitDataDir pins that a placed group
+// starts at the explicit data_dir its catalog record names (under this
+// node's tenant root), that one outside the tenant root is refused, and
+// that a catalog read failure fails the lookup instead of answering the
+// default directory.
+func TestPlacementInfoSource_RecordedExplicitDataDir(t *testing.T) {
+	store := newPlacementStore(t)
+	if err := store.Put(context.Background(), &placement.Placement{
+		TenantID: "rt", Database: "orders", ShardID: 7001, RF: 1, LeaderReplicaID: 1,
+		Replicas: []placement.Replica{{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1"}},
+	}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	newSrc := func(fallback *fakeRaftInfoSource) *placementRaftInfoSource {
+		return &placementRaftInfoSource{store: store, localNodeID: "local:1", fallback: fallback,
+			timeout: placementResolveTimeout, localRootResolver: poolRootResolver}
+	}
+	key := raftShardKey{tenantID: "rt", database: "orders"}
+
+	fallback := newFakeRaftInfoSource()
+	fallback.dataDirs = map[raftShardKey]string{key: "/pool/rt/custom"}
+	shardID, dataDir, _, ok, err := newSrc(fallback).databaseAndPlacementInfo("rt", "orders")
+	if err != nil || !ok || shardID != 7001 {
+		t.Fatalf("databaseAndPlacementInfo = (%d, %q, ok %v, %v); want (7001, /pool/rt/custom, true, nil)", shardID, dataDir, ok, err)
+	}
+	if dataDir != "/pool/rt/custom" {
+		t.Fatalf("dataDir = %q, want the recorded explicit /pool/rt/custom", dataDir)
+	}
+
+	fallback.dataDirs[key] = "/elsewhere/custom"
+	_, dataDir, _, ok, err = newSrc(fallback).databaseAndPlacementInfo("rt", "orders")
+	var outside *database.DataDirOutsideTenantRootError
+	if !errors.As(err, &outside) || ok {
+		t.Fatalf("data_dir outside the tenant root: (%q, ok %v, %v); want *DataDirOutsideTenantRootError", dataDir, ok, err)
+	}
+
+	readErr := errors.New("catalog unavailable")
+	failing := newFakeRaftInfoSource()
+	failing.dataDirErr = readErr
+	_, dataDir, _, ok, err = newSrc(failing).databaseAndPlacementInfo("rt", "orders")
+	if !errors.Is(err, readErr) || ok || dataDir != "" {
+		t.Fatalf("failing catalog read: (%q, ok %v, %v); want the read error, no directory", dataDir, ok, err)
+	}
+}
+
 // TestPlacementInfoSource_EmptyDataRootNoResolverFallsBack verifies that when
 // DataRoot is empty and no resolver is wired, databaseInfo falls back to the
 // meta source rather than returning an empty path.

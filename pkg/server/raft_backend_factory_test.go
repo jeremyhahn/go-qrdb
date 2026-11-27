@@ -91,6 +91,18 @@ type fakeRaftInfoSource struct {
 	// stateStorages, when set for a key, is the state storage the database
 	// records for its group.
 	stateStorages map[raftShardKey]database.BackendType
+	// dataDirs, when set for a key, is the explicit data_dir the catalog
+	// records for it; dataDirErr, when set, is the catalog read failing.
+	dataDirs   map[raftShardKey]string
+	dataDirErr error
+}
+
+func (s *fakeRaftInfoSource) recordedDataDir(_ context.Context, tenantID, db string) (string, bool, error) {
+	if s.dataDirErr != nil {
+		return "", false, s.dataDirErr
+	}
+	dir, ok := s.dataDirs[raftShardKey{tenantID: tenantID, database: db}]
+	return dir, ok && dir != "", nil
 }
 
 func (s *fakeRaftInfoSource) stateStorage(tenantID, db string) database.BackendType {

@@ -224,6 +224,10 @@ func (staticRaftInfo) recordedIncarnation(context.Context, string, string) (stri
 	return "", false, nil
 }
 
+func (staticRaftInfo) recordedDataDir(context.Context, string, string) (string, bool, error) {
+	return "", false, nil
+}
+
 // raftLockScene gives each (tenant, database) its own dedicated shard, which
 // is what IsolationRaft buys. No composite prefix is applied on this path --
 // the shard IS the keyspace -- so the raw keys carry no tenant segment and
