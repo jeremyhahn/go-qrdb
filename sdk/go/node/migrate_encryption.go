@@ -316,6 +316,15 @@ func (p *nodeMigrationProvider) StoreDirs(_ context.Context, scope service.Barri
 	if externalPebbleWAL(n.retainedStandalone.cfg, dataDir) != "" && len(existingDirs(pebbleDir)) > 0 {
 		return service.MigrationStores{}, &MigrationNotSupportedError{Reason: "the pebble store keeps its write-ahead log outside its directory (storage.wal_dir); encryption migration moves the store directory alone"}
 	}
+	// An objstore node store is the Pebble engine with its SSTables in the
+	// bucket and only its WAL and MANIFEST under <dataDir>/objstore-lsm. The
+	// copy-verify-swap mechanisms re-encrypt local directories, never bucket
+	// objects, so a migration would commit a barrier the bucket SSTables are
+	// not sealed under and the store could not reopen. Refuse it before
+	// anything is minted or quiesced.
+	if objstoreLSMNodeStore(n.retainedStandalone.cfg, dataDir) {
+		return service.MigrationStores{}, &MigrationNotSupportedError{Reason: "the objstore node store keeps its SSTables as bucket objects (storage.objstore); encryption migration copies and swaps local store directories and cannot re-encrypt the bucket SSTables"}
+	}
 	stores := service.MigrationStores{
 		Pebble: existingDirs(pebbleDir, filepath.Join(dataDir, "vector")),
 		File:   existingDirs(filepath.Join(dataDir, "file")),
@@ -352,6 +361,18 @@ func externalPebbleWAL(cfg *qrdbconfig.Config, dataDir string) string {
 		return ""
 	}
 	return cfg.Storage.WALDir
+}
+
+// objstoreLSMNodeStore reports whether the node's store is the objstore
+// engine: the config selects the objstore backend, or the engine's local
+// directory (<dataDir>/objstore-lsm) already exists.
+func objstoreLSMNodeStore(cfg *qrdbconfig.Config, dataDir string) bool {
+	if cfg != nil {
+		if bt, _, err := resolveBackend(cfg); err == nil && bt == database.BackendObjstore {
+			return true
+		}
+	}
+	return len(existingDirs(filepath.Join(dataDir, "objstore-lsm"))) > 0
 }
 
 // MintKeyedTarget creates an initialized+unsealed keyed barrier over the seal

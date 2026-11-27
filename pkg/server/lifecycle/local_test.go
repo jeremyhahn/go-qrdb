@@ -66,7 +66,7 @@ func TestNewLocalStorage_EveryBackend(t *testing.T) {
 		{database.BackendMemory, false},
 		{database.BackendFile, false},
 		{database.BackendPebble, true},
-		{database.BackendObjstore, false},
+		{database.BackendObjstore, true},
 	} {
 		t.Run(string(tc.backend), func(t *testing.T) {
 			stg, pdb, err := lifecycle.NewLocalStorage(
@@ -164,7 +164,7 @@ func TestNewLocalStorage_OnDiskBackendsEncryptThroughTheEncryptor(t *testing.T) 
 	enc := atrest.New(newUnsealedBarrier(t))
 	key := []byte("localstore-at-rest-key")
 	value := []byte("localstore-at-rest-plaintext-value")
-	for _, backend := range []database.BackendType{database.BackendPebble, database.BackendFile} {
+	for _, backend := range []database.BackendType{database.BackendPebble, database.BackendFile, database.BackendObjstore} {
 		t.Run(string(backend), func(t *testing.T) {
 			dataDir := t.TempDir()
 			stg, _, err := lifecycle.NewLocalStorage(backend, dataDir, enc, qrdbconfig.StorageConfig{})
@@ -177,6 +177,11 @@ func TestNewLocalStorage_OnDiskBackendsEncryptThroughTheEncryptor(t *testing.T) 
 			got, err := stg.Get(key)
 			if err != nil || !bytes.Equal(got, value) {
 				t.Fatalf("Get = %q, %v; want %q", got, err, value)
+			}
+			if f, ok := stg.(interface{ Flush() error }); ok {
+				if err := f.Flush(); err != nil {
+					t.Fatalf("Flush: %v", err)
+				}
 			}
 			if err := stg.Close(); err != nil {
 				t.Fatalf("Close: %v", err)
@@ -276,6 +281,61 @@ func TestNewLocalStorage_ObjstoreHonoursAnExplicitPath(t *testing.T) {
 	}
 	if _, err := statDir(filepath.Join(dataDir, "objstore")); err == nil {
 		t.Error("the default path was created even though an explicit one was configured")
+	}
+}
+
+// TestNewLocalStorage_ObjstoreIsTheLSMEngine: the objstore backend is the
+// Pebble engine over the bucket (object-storage-lsm). Keys written through it
+// survive a Close and reopen on the same data directory, the WAL and
+// MANIFEST live under <dataDir>/objstore-lsm, and the bucket root carries the
+// LSM format marker at version 3.
+func TestNewLocalStorage_ObjstoreIsTheLSMEngine(t *testing.T) {
+	dataDir := t.TempDir()
+	bucket := filepath.Join(t.TempDir(), "bucket")
+	cfg := qrdbconfig.StorageConfig{Objstore: qrdbconfig.ObjstoreConfig{Provider: "local", Settings: map[string]string{"path": bucket}}}
+	keys := map[string]string{"alpha": "1", "beta": "2", "gamma": "3"}
+
+	stg, pdb, err := lifecycle.NewLocalStorage(database.BackendObjstore, dataDir, nil, cfg)
+	if err != nil {
+		t.Fatalf("NewLocalStorage(objstore): %v", err)
+	}
+	if pdb == nil {
+		t.Fatal("the objstore backend returned a nil *pebble.DB")
+	}
+	for k, v := range keys {
+		if err := stg.Set([]byte(k), []byte(v)); err != nil {
+			t.Fatalf("Set(%q): %v", k, err)
+		}
+	}
+	if err := stg.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	reopened, _, err := lifecycle.NewLocalStorage(database.BackendObjstore, dataDir, nil, cfg)
+	if err != nil {
+		t.Fatalf("reopen NewLocalStorage(objstore): %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	for k, want := range keys {
+		got, err := reopened.Get([]byte(k))
+		if err != nil {
+			t.Fatalf("Get(%q) after reopen: %v", k, err)
+		}
+		if string(got) != want {
+			t.Errorf("Get(%q) after reopen = %q, want %q", k, got, want)
+		}
+	}
+
+	manifests, err := filepath.Glob(filepath.Join(dataDir, "objstore-lsm", "MANIFEST-*"))
+	if err != nil || len(manifests) == 0 {
+		t.Errorf("no MANIFEST-* under %s/objstore-lsm (err %v)", dataDir, err)
+	}
+	marker, err := os.ReadFile(filepath.Join(bucket, "qrdb-objstore-format"))
+	if err != nil {
+		t.Fatalf("read the format marker: %v", err)
+	}
+	if string(marker) != "3" {
+		t.Errorf("format marker = %q, want %q", marker, "3")
 	}
 }
 

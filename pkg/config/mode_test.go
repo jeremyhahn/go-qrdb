@@ -275,7 +275,7 @@ func TestEffectiveCapabilities_UnencryptedAtRest(t *testing.T) {
 		{"standalone default", "standalone", true, "", "", ""},
 		{"standalone memory", "standalone", true, "", "memory", ""},
 		{"standalone file", "standalone", true, "", "file", ""},
-		{"standalone objstore", "standalone", true, "", "objstore", `"objstore"`},
+		{"standalone objstore", "standalone", true, "", "objstore", ""},
 		{"standalone file, seal off", "standalone", false, "", "file", ""},
 	}
 	for _, c := range cases {
