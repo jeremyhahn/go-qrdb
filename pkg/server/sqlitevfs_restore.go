@@ -292,7 +292,7 @@ func (s *sqliteRestoreMVCC) MovePrefix(ctx context.Context, req *service.MovePre
 	if s.gate == nil || req == nil {
 		return mover.MovePrefix(ctx, req)
 	}
-	moved, err := s.movedMeta(ctx, req)
+	moved, pinned, err := s.movedMeta(ctx, req)
 	if err != nil {
 		return 0, err
 	}
@@ -300,7 +300,9 @@ func (s *sqliteRestoreMVCC) MovePrefix(ctx context.Context, req *service.MovePre
 	if err != nil {
 		return 0, err
 	}
-	rev, err := mover.MovePrefix(ctx, req)
+	bound := *req
+	bound.Compares = append(append(make([]service.Compare, 0, len(req.Compares)+len(pinned)), req.Compares...), pinned...)
+	rev, err := mover.MovePrefix(ctx, &bound)
 	if err == nil {
 		s.gate.record(ctx, live, append(moved, req.Ops...))
 	}
@@ -309,18 +311,39 @@ func (s *sqliteRestoreMVCC) MovePrefix(ctx context.Context, req *service.MovePre
 
 // movedMeta returns the meta-record writes the move itself makes: a delete
 // of each SQLite meta record under req.Src and a put of each source key that
-// lands on a SQLite meta record under req.Dst.
-func (s *sqliteRestoreMVCC) movedMeta(ctx context.Context, req *service.MovePrefixRequest) ([]service.Op, error) {
+// lands on a SQLite meta record under req.Dst. It also returns one
+// ModRevision compare per inspected source key, which MovePrefix adds to the
+// proposal so the move applies only to the key set admitted here. A listing
+// whose count is not req.ExpectedKeys is a *service.CommandConflictError.
+func (s *sqliteRestoreMVCC) movedMeta(ctx context.Context, req *service.MovePrefixRequest) ([]service.Op, []service.Compare, error) {
 	if req.Src == "" || req.ExpectedKeys < 1 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	src := []byte(req.Src)
 	kvs, _, _, err := s.kv.Range(ctx, src, storage.PrefixEnd(src), service.WithKeysOnly(), service.WithLimit(req.ExpectedKeys+1))
 	if err != nil {
-		return nil, fmt.Errorf("sqlitevfs move gate: list %q: %w", req.Src, err)
+		return nil, nil, fmt.Errorf("sqlitevfs move gate: list %q: %w", req.Src, err)
+	}
+	if int64(len(kvs)) != req.ExpectedKeys {
+		// Apply refuses a count other than ExpectedKeys anyway; refusing here
+		// keeps a short listing from leaving room for keys nobody admitted.
+		return nil, nil, &service.CommandConflictError{Message: fmt.Sprintf(
+			"sqlitevfs move gate: %d live keys under %q, expected %d", len(kvs), req.Src, req.ExpectedKeys)}
 	}
 	var ops []service.Op
+	compares := make([]service.Compare, 0, len(kvs))
 	for _, kv := range kvs {
+		// Every inspected key must still be the revision admitted here when
+		// the move applies: with apply's count check this pins the exact
+		// source key set, so a key swapped in after inspection (seed/other
+		// replaced by seed/meta) refuses the move instead of creating an
+		// unadmitted database.
+		compares = append(compares, service.Compare{
+			Key:         append([]byte(nil), kv.Key...),
+			Target:      service.CompareModRevision,
+			Result:      service.CompareEqual,
+			ModRevision: kv.ModRevision,
+		})
 		if _, ok := metaDatabase(kv.Key); ok {
 			ops = append(ops, service.Op{Type: service.OpDelete, Key: kv.Key})
 		}
@@ -329,7 +352,7 @@ func (s *sqliteRestoreMVCC) movedMeta(ctx context.Context, req *service.MovePref
 			ops = append(ops, service.Op{Type: service.OpPut, Key: mapped})
 		}
 	}
-	return ops, nil
+	return ops, compares, nil
 }
 
 // KeepsRevisionHistory forwards to the wrapped service.

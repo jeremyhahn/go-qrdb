@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sqlitevfs"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -361,6 +362,76 @@ func TestSQLiteAdmitMovePrefix_MovedMetaIsGated(t *testing.T) {
 				t.Fatalf("usage after the move out = %d, want 0", usage)
 			}
 		})
+	}
+}
+
+// swapAfterRangeKV runs swap once, right after the first Range it serves
+// returns: the source changes between the gate's inspection and the apply.
+type swapAfterRangeKV struct {
+	sqlitevfs.ServiceKV
+	swap func()
+	once sync.Once
+}
+
+func (k *swapAfterRangeKV) Range(ctx context.Context, start, end []byte, opts ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
+	kvs, count, rev, err := k.ServiceKV.Range(ctx, start, end, opts...)
+	k.once.Do(k.swap)
+	return kvs, count, rev, err
+}
+
+// A move admitted on seed/<db>/other must not apply after seed/<db>/other is
+// swapped for seed/<db>/meta: the count still matches, but the key set the
+// gate admitted is gone, so the move is refused and creates nothing.
+func TestSQLiteAdmitMovePrefix_SwappedSourceIsRefused(t *testing.T) {
+	for name, build := range lockScenes {
+		t.Run(name, func(t *testing.T) {
+			fakes := &admitFakes{allowed: false, max: 1}
+			svcs := gatedServices(t, build(t).registry, lockTenantA, fakes)
+			other := []byte("seed/" + wiringDB + "/other")
+			meta := []byte("seed/" + wiringDB + "/meta")
+			seed := []service.Op{{Type: service.OpPut, Key: other, Value: []byte("staged")}}
+			if resp, err := svcs.Transaction.Execute(t.Context(), nil, seed, nil); err != nil || resp == nil || !resp.Succeeded {
+				t.Fatalf("seed: %+v, %v", resp, err)
+			}
+			rm, ok := svcs.MVCC.(*sqliteRestoreMVCC)
+			if !ok {
+				t.Fatalf("gated MVCC %T is no *sqliteRestoreMVCC", svcs.MVCC)
+			}
+			swapped := *rm
+			swapped.kv = &swapAfterRangeKV{ServiceKV: rm.kv, swap: func() {
+				ops := []service.Op{{Type: service.OpDelete, Key: other}, {Type: service.OpPut, Key: meta, Value: []byte("staged")}}
+				if resp, err := svcs.Transaction.Execute(t.Context(), nil, ops, nil); err != nil || resp == nil || !resp.Succeeded {
+					t.Errorf("swap: %+v, %v", resp, err)
+				}
+			}}
+			_, err := swapped.MovePrefix(t.Context(), &service.MovePrefixRequest{Src: "seed/", Dst: "sqlite/", ExpectedKeys: 1})
+			var refused *service.WriteGuardRefusedError
+			if !errors.As(err, &refused) {
+				t.Fatalf("move after the source swap = %v, want service.WriteGuardRefusedError", err)
+			}
+			assertNoMeta(t, gatedStore(t, svcs))
+			kvs, _, _, err := rm.kv.Range(t.Context(), []byte("sqlite/"), storage.PrefixEnd([]byte("sqlite/")), service.WithKeysOnly())
+			if err != nil || len(kvs) != 0 {
+				t.Fatalf("keys under sqlite/ after the refused move: %d, %v; want none", len(kvs), err)
+			}
+			if usage, _ := fakes.counts(); usage != 0 {
+				t.Fatalf("usage after the refused move = %d, want 0", usage)
+			}
+		})
+	}
+}
+
+// A listing shorter than ExpectedKeys is refused before anything is
+// proposed: compares on the listed keys alone would leave room for a key
+// added after inspection.
+func TestSQLiteAdmitMovePrefix_ShortListingIsRefused(t *testing.T) {
+	fakes := &admitFakes{allowed: true, max: 1}
+	svcs := gatedServices(t, lockScenes["prefix"](t).registry, lockTenantA, fakes)
+	mover := svcs.MVCC.(service.PrefixMover)
+	_, err := mover.MovePrefix(t.Context(), &service.MovePrefixRequest{Src: "seed/", Dst: "sqlite/", ExpectedKeys: 1})
+	var conflict *service.CommandConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("move of an empty source = %v, want service.CommandConflictError", err)
 	}
 }
 
