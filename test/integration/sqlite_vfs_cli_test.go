@@ -18,7 +18,10 @@ package integration_test
 
 import (
 	"encoding/json"
+	"fmt"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -102,6 +105,146 @@ func testSQLiteVFSOverProtocol(t *testing.T, node *multiProtoNode, proto multiPr
 	if got := sqliteNames(t, node, proto, db); got != "alice,carol" {
 		t.Fatalf("[%s] names after failed exec = %s, want alice,carol", proto.name, got)
 	}
+
+	testSQLiteStagedCommit(t, node, proto, db+"-staged")
+	testSQLiteWriterContention(t, node, proto, db+"-contend")
+	testSQLiteRestore(t, node, proto, db+"-restore")
+}
+
+// sqliteSeries is a SELECT of n rows, each a 4 KiB blob: every row puts
+// one page (plus its overflow) in the commit.
+func sqliteSeries(n int, column string) string {
+	return fmt.Sprintf("SELECT %s FROM (WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < %d) SELECT i FROM c)", column, n)
+}
+
+// sqliteExecThreshold runs stmt with --stage-threshold and returns how
+// many revisions the exec took: a staged commit writes its chunks as
+// revisions of their own before the one publish, a direct commit none.
+func sqliteExecThreshold(t *testing.T, node *multiProtoNode, proto multiProtocol, db, stmt string, threshold int) int64 {
+	t.Helper()
+	before := kvCLIRevision(t, node, proto)
+	out, err := runCLIProto(t, node, proto, "sqlite", "exec", db, stmt, "--stage-threshold", strconv.Itoa(threshold))
+	if err != nil {
+		t.Fatalf("[%s] sqlite exec --stage-threshold %d %q: %v\n%s", proto.name, threshold, stmt, err, out)
+	}
+	return kvCLIRevision(t, node, proto) - before
+}
+
+func sqliteCount(t *testing.T, node *multiProtoNode, proto multiProtocol, db, query string) int64 {
+	t.Helper()
+	rows := sqliteQueryJSON(t, node, proto, db, query)
+	if len(rows) != 1 {
+		t.Fatalf("[%s] %q rows = %v, want one", proto.name, query, rows)
+	}
+	n, ok := rows[0]["n"].(float64)
+	if !ok {
+		t.Fatalf("[%s] %q row = %v, want a numeric n", proto.name, query, rows[0])
+	}
+	return int64(n)
+}
+
+func sqliteIntegrityOK(t *testing.T, node *multiProtoNode, proto multiProtocol, db string) {
+	t.Helper()
+	rows := sqliteQueryJSON(t, node, proto, db, "PRAGMA integrity_check")
+	if len(rows) != 1 || rows[0]["integrity_check"] != "ok" {
+		t.Fatalf("[%s] integrity_check of %s = %v, want ok", proto.name, db, rows)
+	}
+}
+
+// testSQLiteStagedCommit drives staged commits through --stage-threshold
+// (docs/decisions/sqlite-vfs-build.md): a 2 MiB insert stages only when
+// the flag lowers the threshold below it, then a bulk insert and a VACUUM
+// above the 4 MiB default publish whole.
+func testSQLiteStagedCommit(t *testing.T, node *multiProtoNode, proto multiProtocol, db string) {
+	t.Helper()
+	const mib = 1 << 20
+	sqliteExec(t, node, proto, db, "CREATE TABLE s (id INTEGER PRIMARY KEY, data BLOB)")
+	insert := func(n int) string { return "INSERT INTO s (data) " + sqliteSeries(n, "zeroblob(4096)") }
+	direct := sqliteExecThreshold(t, node, proto, db, insert(512), 0)
+	staged := sqliteExecThreshold(t, node, proto, db, insert(512), mib)
+	if staged <= direct {
+		t.Fatalf("[%s] a 2 MiB insert at --stage-threshold %d took %d revisions, the default-threshold one %d: want the staged commit's chunks on top", proto.name, mib, staged, direct)
+	}
+	sqliteExecThreshold(t, node, proto, db, insert(1400), mib)
+	if got := sqliteCount(t, node, proto, db, "SELECT count(*) AS n FROM s"); got != 512+512+1400 {
+		t.Fatalf("[%s] rows after the staged bulk insert = %d, want %d", proto.name, got, 512+512+1400)
+	}
+	sqliteExec(t, node, proto, db, "DELETE FROM s WHERE id % 3 = 0")
+	sqliteExecThreshold(t, node, proto, db, "VACUUM", mib)
+	if got := sqliteCount(t, node, proto, db, "SELECT count(*) AS n FROM s"); got != 1616 {
+		t.Fatalf("[%s] rows after the staged VACUUM = %d, want 1616", proto.name, got)
+	}
+	if got := sqliteCount(t, node, proto, db, "SELECT sum(length(data)) AS n FROM s"); got != 1616*4096 {
+		t.Fatalf("[%s] blob bytes after the staged VACUUM = %d, want %d", proto.name, got, 1616*4096)
+	}
+	sqliteIntegrityOK(t, node, proto, db)
+}
+
+// testSQLiteWriterContention runs two `qrdb sqlite exec` on one database at
+// once. A writer refused with the busy mapping retries; no sleeps: each
+// retry is a new exec once the last one has returned. Both inserts land.
+func testSQLiteWriterContention(t *testing.T, node *multiProtoNode, proto multiProtocol, db string) {
+	t.Helper()
+	const rows, attempts = 300, 200
+	sqliteExec(t, node, proto, db, "CREATE TABLE c (id INTEGER PRIMARY KEY, w TEXT)")
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	busy := make([]int, 2)
+	for w := range errs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			stmt := fmt.Sprintf("INSERT INTO c (w) %s", sqliteSeries(rows, fmt.Sprintf("'w%d'", w)))
+			for range attempts {
+				out, err := runCLIProto(t, node, proto, "sqlite", "exec", db, stmt)
+				if err == nil {
+					return
+				}
+				if !strings.Contains(out, "is busy") {
+					errs[w] = fmt.Errorf("%w\n%s", err, out)
+					return
+				}
+				busy[w]++
+			}
+			errs[w] = fmt.Errorf("still busy after %d attempts", attempts)
+		}()
+	}
+	wg.Wait()
+	for w, err := range errs {
+		if err != nil {
+			t.Fatalf("[%s] writer %d: %v", proto.name, w, err)
+		}
+	}
+	for w := range errs {
+		if got := sqliteCount(t, node, proto, db, fmt.Sprintf("SELECT count(*) AS n FROM c WHERE w = 'w%d'", w)); got != rows {
+			t.Fatalf("[%s] writer %d rows = %d, want %d (busy retries %v)", proto.name, w, got, rows, busy)
+		}
+	}
+	if got := sqliteCount(t, node, proto, db, "SELECT count(*) AS n FROM c"); got != 2*rows {
+		t.Fatalf("[%s] rows after two concurrent writers = %d, want %d", proto.name, got, 2*rows)
+	}
+}
+
+// testSQLiteRestore returns a database to a recorded revision with
+// `qrdb sqlite restore`: the query shows the earlier rows again.
+func testSQLiteRestore(t *testing.T, node *multiProtoNode, proto multiProtocol, db string) {
+	t.Helper()
+	sqliteExec(t, node, proto, db, "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+	sqliteExec(t, node, proto, db, "INSERT INTO t (name) VALUES ('before')")
+	rev := kvCLIRevision(t, node, proto)
+	sqliteExec(t, node, proto, db, "INSERT INTO t (name) VALUES ('after')")
+	sqliteExec(t, node, proto, db, "DELETE FROM t WHERE name = 'before'")
+	if got := sqliteNames(t, node, proto, db); got != "after" {
+		t.Fatalf("[%s] names before the restore = %s, want after", proto.name, got)
+	}
+	out, err := runCLIProto(t, node, proto, "sqlite", "restore", db, "--revision", strconv.FormatInt(rev, 10))
+	if err != nil {
+		t.Fatalf("[%s] sqlite restore --revision %d: %v\n%s", proto.name, rev, err, out)
+	}
+	if got := sqliteNames(t, node, proto, db); got != "before" {
+		t.Fatalf("[%s] names after restoring revision %d = %s, want before", proto.name, rev, got)
+	}
+	sqliteIntegrityOK(t, node, proto, db)
 }
 
 func sqliteExec(t *testing.T, node *multiProtoNode, proto multiProtocol, db, stmt string) string {
