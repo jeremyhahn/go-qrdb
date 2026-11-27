@@ -94,8 +94,7 @@ func TestRESTServiceRegistry_ObjstoreDatabaseServedFromItsProvider(t *testing.T)
 	}
 	nodeStore := newFilledRegistry()
 	reg := NewRESTServiceRegistry(nodeStore, nil, tenantid.System,
-		WithDatabaseCatalog(newManagerCatalog(mgr)),
-		setRegistryDatabaseManager(mgr),
+		WithRegistryDatabaseManager(mgr),
 	)
 
 	kv, err := reg.KVService(tenantid.System, "blobs")
@@ -135,8 +134,7 @@ func newObjstoreRegistry(t *testing.T) (*restServiceRegistry, *database.Database
 		t.Fatalf("Create: %v", err)
 	}
 	reg := NewRESTServiceRegistry(newFilledRegistry(), nil, tenantid.System,
-		WithDatabaseCatalog(newManagerCatalog(mgr)),
-		setRegistryDatabaseManager(mgr),
+		WithRegistryDatabaseManager(mgr),
 	)
 	r, ok := reg.(*restServiceRegistry)
 	if !ok {
@@ -233,8 +231,7 @@ func TestRESTServiceRegistry_ObjstoreCatalogFailureAfterLookupNeverFallsBackToSh
 	}
 	nodeStore := newFilledRegistry()
 	reg := NewRESTServiceRegistry(nodeStore, nil, tenantid.System,
-		WithDatabaseCatalog(newManagerCatalog(mgr)),
-		setRegistryDatabaseManager(mgr),
+		WithRegistryDatabaseManager(mgr),
 	)
 
 	faulty := &failAfterFirstGetCatalog{Catalog: databasetest.Catalog(dataDir)}
@@ -279,8 +276,7 @@ func TestRESTServiceRegistry_VolumeTenantObjstoreDatabaseServedFromItsProvider(t
 		t.Fatalf("Create: %v", err)
 	}
 	reg := NewRESTServiceRegistry(newFilledRegistry(), nil, tenantid.System,
-		WithDatabaseCatalog(newManagerCatalog(mgr)),
-		setRegistryDatabaseManager(mgr),
+		WithRegistryDatabaseManager(mgr),
 		WithTenantServicer(&isolationTenantServicer{isolation: tenant.IsolationVolume}),
 	)
 
@@ -316,16 +312,5 @@ func TestDatabaseManager_ObjstoreDatabaseWithoutProviderRefused(t *testing.T) {
 	var create *database.StorageCreateError
 	if !errors.As(err, &create) || create.Backend != string(database.BackendObjstore) {
 		t.Fatalf("Create(objstore, no provider) = %v, want *database.StorageCreateError for objstore", err)
-	}
-}
-
-// setRegistryDatabaseManager attaches mgr as the registry's database manager,
-// the half of the server's registry wiring that the WithDatabaseCatalog
-// option alongside it does not cover. The test sets the field itself so it
-// builds against both this branch and main, where the package-private
-// withDatabaseManager option was folded into WithRegistryDatabaseManager.
-func setRegistryDatabaseManager(mgr *database.Manager) RESTRegistryOption {
-	return func(r *restServiceRegistry) {
-		r.dbManager = mgr
 	}
 }
