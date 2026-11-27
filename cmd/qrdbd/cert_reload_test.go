@@ -145,16 +145,26 @@ func unwatchableDir(t *testing.T) string {
 	if os.Geteuid() == 0 {
 		t.Skip("root watches a directory it cannot read")
 	}
-	dir := t.TempDir()
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
-	return dir
+	return t.TempDir()
+}
+
+// revokeRead takes the read bits off dir, so its files still open by path
+// but the directory itself cannot be watched, and restores the mode dir had
+// when the test ends so the temp-dir cleanup can remove it.
+func revokeRead(t *testing.T, dir string) {
+	t.Helper()
+	info, err := os.Stat(dir)
+	require.NoError(t, err)
+	orig := info.Mode().Perm()
+	t.Cleanup(func() { _ = os.Chmod(dir, orig) })
+	require.NoError(t, os.Chmod(dir, orig&^0o444))
 }
 
 func TestCertReloader_RefusesAnUnwatchableCertDir(t *testing.T) {
 	certPEM, keyPEM := testCertPair(t)
 	certDir := unwatchableDir(t)
 	certPath, keyPath := writeCertFiles(t, certDir, certPEM, keyPEM)
-	require.NoError(t, os.Chmod(certDir, 0o300))
+	revokeRead(t, certDir)
 
 	_, err := NewCertReloader(certPath, keyPath, testLogger())
 	var reloadErr *CertReloadError
@@ -170,7 +180,7 @@ func TestCertReloader_RefusesAnUnwatchableKeyDir(t *testing.T) {
 	keyPath := filepath.Join(keyDir, "tls.key")
 	require.NoError(t, os.WriteFile(certPath, certPEM, 0o600))
 	require.NoError(t, os.WriteFile(keyPath, keyPEM, 0o600))
-	require.NoError(t, os.Chmod(keyDir, 0o300))
+	revokeRead(t, keyDir)
 
 	_, err := NewCertReloader(certPath, keyPath, testLogger())
 	var reloadErr *CertReloadError
