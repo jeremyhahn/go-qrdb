@@ -208,21 +208,6 @@ func TestNode_TenantIsolation_RestartSurvival(t *testing.T) {
 // all back. This exercises BuildTenantInfra's RaftBackendFactory.Services (lazy
 // shard start on the shared quicraft.Host) and the per-shard Pebble state
 // machine stack.
-// createRaftTenant creates an IsolationRaft tenant with a system-managed
-// auto-unseal barrier and provisions its home group, as onboarding does
-// (bootstrap.ProvisionTenant): TenantService.CreateTenant alone places no home,
-// and the tenant's database catalog records live in it.
-func createRaftTenant(t *testing.T, n *Node, id, name string) {
-	t.Helper()
-	ctx := context.Background()
-	_, err := n.Services().Tenant.CreateTenant(ctx, id, name,
-		tenant.IsolationRaft, tenant.WithBarrierAutoUnseal(true))
-	require.NoError(t, err, "CreateTenant(IsolationRaft) must succeed with raft entitlements")
-	router, ok := n.Services().StoreResolver.(tenant.HomeRouter)
-	require.True(t, ok, "the node's StoreResolver must route tenant homes")
-	require.NoError(t, router.EnsureHome(ctx, id), "EnsureHome(%s)", id)
-}
-
 // strictRaftEntitlements is raftEntitlements plus the dedicated WAL: a
 // strict-isolation tenant's databases must each have their own WAL.
 func strictRaftEntitlements() *quota.Entitlements {

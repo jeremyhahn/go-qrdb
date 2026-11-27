@@ -79,7 +79,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
-	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/store"
@@ -281,8 +280,15 @@ type startFlags struct {
 	// restoreBackupID, when non-empty, makes this boot perform an OFFLINE,
 	// one-shot restore of the named backup into the primary system shard
 	// (shard.ShardKV) BEFORE the shard is started for normal service and
-	// before any API listener opens. It requires backupDir. See restore.go.
+	// before any API listener opens. It requires backupDir or
+	// backupDestination. See restore.go.
 	restoreBackupID string
+
+	// backupDestination, from the config file's backup.destination block,
+	// names the go-objstore provider the backup repository lives on. It and
+	// backupDir are exclusive (BackupDestinationConflictError). See
+	// backup_store.go.
+	backupDestination *qrdbconfig.ObjstoreConfig
 
 	// restoreDecryptionKeyRef overrides the key reference stored in the
 	// restored backup's own envelope -- useful when the key file named at
@@ -507,7 +513,19 @@ func resolveStartFlags(cmd *cobra.Command, f *startFlags) error {
 				Err:    err,
 			}
 		}
+		if d := cfg.Backup.Destination; d != nil {
+			if err := objstore.RejectCredentialSettings(d.Settings); err != nil {
+				return &qrdbconfig.ValidationError{
+					Field:  "backup.destination.settings",
+					Reason: "carries a credential inline; reference it by file under backup.destination.credentials",
+					Err:    err,
+				}
+			}
+		}
 		applyConfigToFlags(cmd, f, cfg)
+		if err := checkBackupRepository(f); err != nil {
+			return err
+		}
 	} else if f.authEnabled {
 		// No --config at all, and auth is enabled (its own flag default):
 		// there is no YAML to default the seal subsystem the way
@@ -731,9 +749,9 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 	cmd.Flags().StringVar(&f.clusterTrustDomain, "cluster-trust-domain", "qrdb.cluster",
 		"Cluster-wide SPIFFE trust domain for node identity (e.g. spiffe://<domain>/node/<raftAddr>); must be identical on all cluster members")
 	cmd.Flags().StringVar(&f.backupDir, "backup-dir", "",
-		"Directory for a durable, file-backed backup repository (empty = in-memory only, lost on restart)")
+		"Directory for a durable, file-backed backup repository; exclusive with the config file's backup.destination (object storage). Neither = in-memory only, lost on restart")
 	cmd.Flags().StringVar(&f.restoreBackupID, "restore-backup-id", "",
-		"Perform a one-shot OFFLINE restore of this backup ID into the system shard before serving traffic (requires --backup-dir)")
+		"Perform a one-shot OFFLINE restore of this backup ID into the system shard before serving traffic (requires --backup-dir or backup.destination)")
 	cmd.Flags().StringVar(&f.restoreDecryptionKeyRef, "restore-decryption-key-file", "",
 		"Name of the key file, inside --backup-key-dir, that overrides the key reference stored in the restored backup's own envelope (only needed if the backup's own key reference is not usable on this node)")
 	cmd.Flags().BoolVar(&f.allowPlaintextRestore, "allow-plaintext-restore", false,
@@ -752,6 +770,7 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 // fields that were not explicitly set via CLI flags. CLI flags always take
 // precedence over YAML values.
 func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Config) {
+	f.backupDestination = cfg.Backup.Destination
 	if !cmd.Flags().Changed("mode") && cfg.Mode != "" {
 		f.mode = cfg.Mode
 	}
@@ -1983,14 +2002,14 @@ func runStart(f *startFlags) (err error) {
 			// against the same directory (during a --restore-backup-id boot)
 			// waits at most one mutation behind this one.
 			var backupSink service.BackupSink
-			if f.backupDir != "" {
-				backupFileStore, berr := file.New(f.backupDir)
-				if berr != nil {
-					_ = shutdownNode(nodeCloser)
-					return &RestoreBackupError{Phase: "open-backup-store", Err: berr}
-				}
-				defer func() { _ = backupFileStore.Close() }()
-				backupSink = backupsink.New(backupFileStore)
+			backupStore, berr := openBackupStore(f)
+			if berr != nil {
+				_ = shutdownNode(nodeCloser)
+				return &RestoreBackupError{Phase: "open-backup-store", Err: berr}
+			}
+			if backupStore != nil {
+				defer func() { _ = backupStore.Close() }()
+				backupSink = backupsink.New(backupStore)
 			}
 
 			// Seal the effective capability profile (build tags x mode x

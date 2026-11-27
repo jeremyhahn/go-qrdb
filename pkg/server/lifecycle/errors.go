@@ -367,6 +367,26 @@ func (e *LocalStorageError) Unwrap() error {
 	return e.Err
 }
 
+// BackupDestinationError reports a backup.destination that could not be
+// opened. The message names the provider and the cause, never a settings
+// value.
+type BackupDestinationError struct {
+	// Provider is the go-objstore provider the destination names.
+	Provider string
+	Err      error
+}
+
+func (e *BackupDestinationError) Error() string {
+	if e.Provider == "" {
+		return "lifecycle: backup destination: " + e.Err.Error()
+	}
+	return "lifecycle: backup destination " + e.Provider + ": " + e.Err.Error()
+}
+
+func (e *BackupDestinationError) Unwrap() error {
+	return e.Err
+}
+
 // UnsupportedLocalBackendError is returned when NewLocalStorage is asked
 // for a backend type it does not recognize.
 type UnsupportedLocalBackendError struct {

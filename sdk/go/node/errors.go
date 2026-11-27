@@ -90,6 +90,15 @@ func (e *HostCreateError) Error() string {
 // Unwrap returns the underlying error.
 func (e *HostCreateError) Unwrap() error { return e.Err }
 
+// BackupDestinationConflictError reports a node constructor given two backup
+// repositories: a WithBackupSink or server.WithBackupSink option (nil
+// included) and the configuration's backup.destination. Exactly one may be set.
+type BackupDestinationConflictError struct{}
+
+func (e *BackupDestinationConflictError) Error() string {
+	return "node: WithBackupSink or server.WithBackupSink and backup.destination both name a backup repository"
+}
+
 // ConfigError indicates an invalid node configuration was supplied.
 type ConfigError struct {
 	Field   string

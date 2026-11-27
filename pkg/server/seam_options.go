@@ -46,6 +46,7 @@ type StorageFactory func(dataDir string, dataPlaneFS filesys.FS) (storage.Storag
 // services they configure are built before server.New runs.
 type seamOptions struct {
 	backupSink              service.BackupSink
+	backupSinkSet           bool
 	clock                   clock.Clock
 	storageFactory          StorageFactory
 	dekProvider             dek.Provider
@@ -64,7 +65,10 @@ type seamOptions struct {
 // restart. qrdbd passes a file-backed sink only when --backup-dir is set; its
 // default is empty. The sink's owner closes it.
 func WithBackupSink(sink service.BackupSink) ServerOption {
-	return func(o *serverOptions) { o.backupSink = sink }
+	return func(o *serverOptions) {
+		o.backupSink = sink
+		o.backupSinkSet = true
+	}
 }
 
 // WithClock sets the time source of the node's security time gates: lease

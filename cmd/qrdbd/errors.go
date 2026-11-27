@@ -468,7 +468,16 @@ type RestoreBackupSourceRequiredError struct{}
 
 // Error returns a human-readable description.
 func (e *RestoreBackupSourceRequiredError) Error() string {
-	return "cli: --restore-backup-id requires --backup-dir to locate the backup"
+	return "cli: --restore-backup-id requires --backup-dir or backup.destination to locate the backup"
+}
+
+// BackupDestinationConflictError reports a boot that names two backup
+// repositories: the --backup-dir file repository and a backup.destination
+// object-storage provider. Exactly one may be set.
+type BackupDestinationConflictError struct{}
+
+func (e *BackupDestinationConflictError) Error() string {
+	return "cli: --backup-dir and backup.destination both name a backup repository; set one"
 }
 
 // RestoreBackupServiceTypeError is returned when service.NewBackupService
