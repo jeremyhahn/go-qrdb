@@ -15,7 +15,7 @@ standalone server runs without the backup service and refuses every verb (see
 
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
-| `--destination` | string | — (required) | the backup's destination label, recorded with it and bound into its authenticated data, e.g. `/backups/daily`; the bytes go to the server's backup sink (`qrdbd start --backup-dir`) |
+| `--destination` | string | — (required) | the backup's destination label, recorded with it and bound into its authenticated data, e.g. `/backups/daily`; the bytes go to the server's backup sink (`qrdbd start --backup-dir` or the configuration's `backup.destination`) |
 | `--compression` | string | `none` | `none \| zstd \| snappy`; validated and recorded in the backup's metadata, not applied to shard data |
 | `--encryption` | string | *(unset)* | `aes256 \| none` — unset defaults to `aes256` server-side |
 | `--encryption-key-file` | string | — | **required unless `--encryption` is explicitly `none`**: the bare name of a key file inside the server's configured key directory, never a path — see [../key-wrapping/cli.md](../key-wrapping/cli.md) |
