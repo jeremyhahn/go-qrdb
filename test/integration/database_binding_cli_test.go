@@ -672,7 +672,7 @@ func TestDatabaseBinding_CLI_ProvisionedFourBackendsOwnStores_PerProtocol(t *tes
 // TestDatabaseBinding_CLI_ObjstoreJournalRefusedAsDataDir_PerProtocol proves,
 // on every transport, that `qrdb database create --data-dir` refuses the
 // node's local object store and its commit-journal sibling as a database data
-// directory, and that both trees survive the refusals and keep serving.
+// directory, and that the store tree survives the refusals and keeps serving.
 func TestDatabaseBinding_CLI_ObjstoreJournalRefusedAsDataDir_PerProtocol(t *testing.T) {
 	// Absolute: the daemon's working directory is the source tree.
 	store := filepath.Join(t.TempDir(), "objects")
@@ -695,10 +695,11 @@ func TestDatabaseBinding_CLI_ObjstoreJournalRefusedAsDataDir_PerProtocol(t *test
 		})
 	}
 
-	for _, dir := range []string{store, journal} {
-		if _, err := os.Stat(dir); err != nil {
-			t.Fatalf("node object store tree %s after the refused creates: %v", dir, err)
-		}
+	// The node store is the object-storage-lsm engine (#924): it opens the
+	// bucket alone and never creates the journal sibling, which stays
+	// reserved because objstore.LocalRoots names it for the journaled engine.
+	if _, err := os.Stat(store); err != nil {
+		t.Fatalf("node object store tree %s after the refused creates: %v", store, err)
 	}
 	for _, proto := range multiProtocols {
 		conn := node.cliArgsFor(proto)
