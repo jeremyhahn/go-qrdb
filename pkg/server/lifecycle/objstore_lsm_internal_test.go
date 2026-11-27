@@ -275,3 +275,37 @@ func TestObjstoreLSM_PebbleOpenFailureReleasesTheCache(t *testing.T) {
 		t.Fatalf("cache Close: %v", err)
 	}
 }
+
+// TestObjstoreLSM_NodeStoreRefusesADatabaseOpen pins the node's owner claim
+// on its segment-layout store: a database engine opened onto the node
+// store's path is refused while the node holds it, and the claim is released
+// on Close so the node store reopens.
+func TestObjstoreLSM_NodeStoreRefusesADatabaseOpen(t *testing.T) {
+	dataDir := t.TempDir()
+	stg, err := newObjstoreLSMStorage(dataDir, atrest.New(nil), qrdbconfig.StorageConfig{})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	provider, settings := resolveObjstoreSettings(qrdbconfig.StorageConfig{}.Objstore, dataDir)
+	db, err := objstore.New(provider, settings, objstore.WithOwner("database"))
+	var inUse *objstore.NamespaceInUseError
+	if !errors.As(err, &inUse) {
+		if db != nil {
+			_ = db.Close()
+		}
+		t.Fatalf("database open on the node store = %v, want *objstore.NamespaceInUseError", err)
+	}
+	if inUse.Held != objstore.NodeStoreOwner {
+		t.Fatalf("held by %q, want %q", inUse.Held, objstore.NodeStoreOwner)
+	}
+	if err := stg.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	reopened, err := newObjstoreLSMStorage(dataDir, atrest.New(nil), qrdbconfig.StorageConfig{})
+	if err != nil {
+		t.Fatalf("reopen after Close: %v", err)
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatalf("Close reopened: %v", err)
+	}
+}

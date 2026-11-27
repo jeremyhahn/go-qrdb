@@ -84,19 +84,29 @@ func newObjstoreLSMStorage(dataDir string, enc *atrest.Encryptor, storageCfg qrd
 	if err := objstore.EnsureLSMFormat(context.Background(), store); err != nil {
 		return nil, err
 	}
+	// The node owns its store's namespace: no database is opened onto the
+	// node's bucket or path. The claim follows the format check, which
+	// refuses a non-empty namespace without its marker.
+	claim, err := objstore.ClaimNamespace(provider, settings, store, objstore.NodeStoreOwner)
+	if err != nil {
+		return nil, err
+	}
 	var shared remote.Storage
 	rs, err := objstore.NewRemote(store, objstoreLSMPrefix)
 	if err != nil {
+		claim.Release()
 		return nil, err
 	}
 	cached, err := objstore.NewCachedRemote(rs, filepath.Join(dataDir, objstoreLSMCacheDir))
 	if err != nil {
+		claim.Release()
 		return nil, err
 	}
 	shared = cached
 	if enc.Enabled() {
 		encrypted, err := objstore.NewEncryptedRemote(cached, enc.Barrier())
 		if err != nil {
+			claim.Release()
 			return nil, errors.Join(err, cached.Close())
 		}
 		shared = encrypted
@@ -104,9 +114,10 @@ func newObjstoreLSMStorage(dataDir string, enc *atrest.Encryptor, storageCfg qrd
 	cfg := localPebbleConfig(filepath.Join(dataDir, objstoreLSMDir), enc, storageCfg)
 	stg, err := pebbleStorage.New(cfg, remotelsm.WithRemote(shared, objstoreLSMLocator, remote.CreateOnSharedAll))
 	if err != nil {
+		claim.Release()
 		return nil, errors.Join(err, cached.Close())
 	}
-	return &objstoreLSMStorage{PebbleStorage: stg, cache: cached}, nil
+	return &objstoreLSMStorage{PebbleStorage: stg, cache: cached, claim: claim}, nil
 }
 
 // objstoreLSMStorage is the object-storage-lsm engine: the Pebble storage
@@ -115,10 +126,15 @@ func newObjstoreLSMStorage(dataDir string, enc *atrest.Encryptor, storageCfg qrd
 type objstoreLSMStorage struct {
 	*pebbleStorage.PebbleStorage
 	cache *objstore.CachedRemote
+	// claim is the node's owner claim on the store's namespace
+	// (NodeStoreOwner), released on Close.
+	claim *objstore.NamespaceClaim
 }
 
 // Close closes the Pebble storage, then the object cache (its directory
 // lock and root). Both are idempotent, so a second Close is a no-op.
 func (s *objstoreLSMStorage) Close() error {
-	return errors.Join(s.PebbleStorage.Close(), s.cache.Close())
+	err := errors.Join(s.PebbleStorage.Close(), s.cache.Close())
+	s.claim.Release()
+	return err
 }
