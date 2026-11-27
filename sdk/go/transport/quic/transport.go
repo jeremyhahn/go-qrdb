@@ -432,8 +432,12 @@ func reachableButSealed(err error) bool {
 
 // Request performs a generic QUIC wire protocol request by method name.
 // This method is not supported for the QUIC transport; callers should
-// use the typed KVClient and AdminClient methods instead.
-func (t *Transport) Request(_ context.Context, method string, _, _ any) error {
+// use the typed KVClient and AdminClient methods instead. The request's PIN
+// buffers are still wiped: the caller handed them to the transport.
+func (t *Transport) Request(_ context.Context, method string, req, _ any) error {
+	if w, ok := req.(interface{ WipePINs() }); ok {
+		w.WipePINs()
+	}
 	return &transport.NotImplementedError{Method: "Request(" + method + ")"}
 }
 
