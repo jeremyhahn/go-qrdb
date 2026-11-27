@@ -285,6 +285,43 @@ test.describe("Admin - Certificates", () => {
     ).toHaveValue("9999");
   });
 
+  test("row detail shows the record's fields and pre-fills Revoke", async ({ page }) => {
+    await navigateToCerts(page);
+    await issueCert(page, "hank");
+
+    const main = page.locator("main");
+    const row = main.locator("table tbody tr").filter({ hasText: "hank" });
+    await expect(row).toHaveCount(1);
+    const toggle = row.getByRole("button", { name: "Details", exact: true });
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await toggle.click();
+
+    const detail = main.getByTestId("cert-detail");
+    await expect(detail).toHaveCount(1);
+    await expect(row.getByRole("button", { name: "Hide", exact: true })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    const field = (name: string) =>
+      detail.locator("dt", { hasText: name }).locator("xpath=following-sibling::dd[1]");
+    await expect(field("Serial")).toHaveText("1001");
+    await expect(field("Username")).toHaveText("hank");
+    await expect(field("Tenant")).toHaveText("default");
+    await expect(field("Expires at (UTC)")).toHaveText(/^\d{4}-\d{2}-\d{2}T/);
+    await expect(field("Validity remaining")).toHaveText(/^36[45] days$/);
+    await expect(field("Status")).toHaveText("Active");
+
+    // The shortcut opens the Revoke tab with the serial filled in, unconfirmed.
+    await detail.getByRole("button", { name: "Revoke this certificate…" }).click();
+    const body = panelBody(page);
+    await expect(body.getByPlaceholder("e.g. 1a2b3c4d...")).toHaveValue("1001");
+    await expect(body.getByRole("button", { name: "Confirm Revoke" })).toHaveCount(0);
+
+    // Hide collapses the detail again.
+    await row.getByRole("button", { name: "Hide", exact: true }).click();
+    await expect(detail).toHaveCount(0);
+  });
+
   test("revoke button disabled when serial is empty", async ({ page }) => {
     await navigateToCerts(page);
 

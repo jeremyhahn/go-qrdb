@@ -147,21 +147,14 @@ func (c *Config) EffectiveCapabilities() capabilities.Capabilities {
 		// daemon's gated registry serve it would make the capability report
 		// the lie instead of the gate.
 		//
-		// Like MVCC and the other engine-shaped rows, this is a MODE-level
-		// statement. The file and objstore backends compose the plain KV
-		// engine and cannot execute a transaction on any mode; that is the
-		// engine boundary (docs/run-modes.md), reported per operation as a
-		// typed engine.UnsupportedOperationError, not per node here.
+		// Every local backend composes the MVCC engine (lifecycle.NewLocalEngine).
 		Transaction: true,
 
 		// The coordination families are served in EVERY mode too
 		// (go-qrdb#582): a standalone node composes them over the same
 		// engine, lessor and watch hub as raft mode's MVCC state machine,
 		// applying commands in process instead of through the log. Config
-		// toggles narrow them in either mode. Like Transaction these are
-		// MODE-level statements: the file and objstore backends compose the
-		// plain KV engine, which keeps no revisions and no leases, and refuse
-		// those operations per call with a typed capability error.
+		// toggles narrow them in either mode.
 		MVCC:  enabled(c.MVCC.Enabled),
 		Watch: enabled(c.Watch.Enabled),
 		Lease: enabled(c.Lease.Enabled),

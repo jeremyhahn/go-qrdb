@@ -241,9 +241,13 @@ Build flag: `WITH_QRDB_TS=1`.
 // storage.Storage itself (not a *pebble.DB), and does not own it: the
 // caller opens and closes it, exactly as the caller owns the storage.Batch
 // passed to every write method.
-type Storage struct{ /* stg storage.Storage; closed atomic.Bool */ }
+type Storage struct{ /* stg storage.Storage; reader storage.Reader; closed *atomic.Bool */ }
 
 func New(stg storage.Storage) (*Storage, error)
+
+// View returns s with every query read through r rather than through live
+// storage; writes still go to the batch each write method is given.
+func (s *Storage) View(r storage.Reader) *Storage
 
 func (s *Storage) Write(batch storage.Batch, metric string, value float64, timestamp time.Time, tags map[string]string) error
 func (s *Storage) WritePoint(batch storage.Batch, point *DataPoint) error
@@ -271,8 +275,10 @@ func (s *Storage) Close() error
   `ApplyRetention` goes through `batch`, not through `s.stg`.
 - **Read methods (`Query`, `QueryRich`, `Aggregate`, `GetRetentionPolicy`,
   `ListMetrics`) take no reader argument.** They read through the
-  `Storage`'s own `stg` (set once at construction by `New`), because a query
-  is never part of an in-flight apply batch.
+  `Storage`'s own reader -- the `stg` given to `New`, or the reader given to
+  `View` (a published snapshot, so a time-series answer and a KV read come
+  from one commit) -- because a query is never part of an in-flight apply
+  batch.
 
 Other facts:
 

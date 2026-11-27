@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
+	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	secure "github.com/jeremyhahn/go-qrdb/sdk/go/secure"
 )
@@ -36,6 +37,18 @@ var errNoCertsInPEM = clustertls.ErrNoCertsInPEM
 // parsed. The canonical type lives in pkg/cluster; the daemon aliases it so
 // CLI callers and tests share the cluster package's error contract.
 type PeerParseError = cluster.PeerParseError
+
+// RunModeMismatchError is returned when the data directory belongs to the
+// other run mode; the canonical type lives in pkg/server/lifecycle.
+type RunModeMismatchError = lifecycle.RunModeMismatchError
+
+// RunModeMarkerError is returned when the run-mode marker cannot be read or
+// written, or records no known mode.
+type RunModeMarkerError = lifecycle.RunModeMarkerError
+
+// RunModeInvalidError is returned when the configured run mode is neither
+// standalone nor raft; the data directory is left untouched.
+type RunModeInvalidError = lifecycle.RunModeInvalidError
 
 // UnknownDiscoveryError is returned when the --discovery flag specifies an
 // unknown discovery method. Aliased from pkg/cluster.
@@ -455,7 +468,16 @@ type RestoreBackupSourceRequiredError struct{}
 
 // Error returns a human-readable description.
 func (e *RestoreBackupSourceRequiredError) Error() string {
-	return "cli: --restore-backup-id requires --backup-dir to locate the backup"
+	return "cli: --restore-backup-id requires --backup-dir or backup.destination to locate the backup"
+}
+
+// BackupDestinationConflictError reports a boot that names two backup
+// repositories: the --backup-dir file repository and a backup.destination
+// object-storage provider. Exactly one may be set.
+type BackupDestinationConflictError struct{}
+
+func (e *BackupDestinationConflictError) Error() string {
+	return "cli: --backup-dir and backup.destination both name a backup repository; set one"
 }
 
 // RestoreBackupServiceTypeError is returned when service.NewBackupService

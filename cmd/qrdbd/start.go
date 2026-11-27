@@ -79,7 +79,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
-	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/store"
@@ -281,8 +280,15 @@ type startFlags struct {
 	// restoreBackupID, when non-empty, makes this boot perform an OFFLINE,
 	// one-shot restore of the named backup into the primary system shard
 	// (shard.ShardKV) BEFORE the shard is started for normal service and
-	// before any API listener opens. It requires backupDir. See restore.go.
+	// before any API listener opens. It requires backupDir or
+	// backupDestination. See restore.go.
 	restoreBackupID string
+
+	// backupDestination, from the config file's backup.destination block,
+	// names the go-objstore provider the backup repository lives on. It and
+	// backupDir are exclusive (BackupDestinationConflictError). See
+	// backup_store.go.
+	backupDestination *qrdbconfig.ObjstoreConfig
 
 	// restoreDecryptionKeyRef overrides the key reference stored in the
 	// restored backup's own envelope -- useful when the key file named at
@@ -507,7 +513,19 @@ func resolveStartFlags(cmd *cobra.Command, f *startFlags) error {
 				Err:    err,
 			}
 		}
+		if d := cfg.Backup.Destination; d != nil {
+			if err := objstore.RejectCredentialSettings(d.Settings); err != nil {
+				return &qrdbconfig.ValidationError{
+					Field:  "backup.destination.settings",
+					Reason: "carries a credential inline; reference it by file under backup.destination.credentials",
+					Err:    err,
+				}
+			}
+		}
 		applyConfigToFlags(cmd, f, cfg)
+		if err := checkBackupRepository(f); err != nil {
+			return err
+		}
 	} else if f.authEnabled {
 		// No --config at all, and auth is enabled (its own flag default):
 		// there is no YAML to default the seal subsystem the way
@@ -731,9 +749,9 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 	cmd.Flags().StringVar(&f.clusterTrustDomain, "cluster-trust-domain", "qrdb.cluster",
 		"Cluster-wide SPIFFE trust domain for node identity (e.g. spiffe://<domain>/node/<raftAddr>); must be identical on all cluster members")
 	cmd.Flags().StringVar(&f.backupDir, "backup-dir", "",
-		"Directory for a durable, file-backed backup repository (empty = in-memory only, lost on restart)")
+		"Directory for a durable, file-backed backup repository; exclusive with the config file's backup.destination (object storage). Neither = in-memory only, lost on restart")
 	cmd.Flags().StringVar(&f.restoreBackupID, "restore-backup-id", "",
-		"Perform a one-shot OFFLINE restore of this backup ID into the system shard before serving traffic (requires --backup-dir)")
+		"Perform a one-shot OFFLINE restore of this backup ID into the system shard before serving traffic (requires --backup-dir or backup.destination)")
 	cmd.Flags().StringVar(&f.restoreDecryptionKeyRef, "restore-decryption-key-file", "",
 		"Name of the key file, inside --backup-key-dir, that overrides the key reference stored in the restored backup's own envelope (only needed if the backup's own key reference is not usable on this node)")
 	cmd.Flags().BoolVar(&f.allowPlaintextRestore, "allow-plaintext-restore", false,
@@ -752,6 +770,7 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 // fields that were not explicitly set via CLI flags. CLI flags always take
 // precedence over YAML values.
 func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Config) {
+	f.backupDestination = cfg.Backup.Destination
 	if !cmd.Flags().Changed("mode") && cfg.Mode != "" {
 		f.mode = cfg.Mode
 	}
@@ -1400,6 +1419,11 @@ func runStart(f *startFlags) (err error) {
 	)
 	defer recordSecureMemoryWipe(&err)
 
+	// The data directory must belong to this run mode before anything opens or writes into it.
+	if err := lifecycle.ClaimRunMode(f.dataDir, f.mode); err != nil {
+		return err
+	}
+
 	// Resolve TLS: explicit files -> cached certs -> generate/bootstrap.
 	bundle, bootServers, err := resolveTLS(f, slog.Default())
 	if err != nil {
@@ -1917,6 +1941,9 @@ func runStart(f *startFlags) (err error) {
 			// shard -- so the KV/Transaction pair built directly over
 			// svcHost here is safe to use well before the shard is ready to
 			// serve a linearizable read.
+			// volumeCatalog outlives this block: the tenant-move worker,
+			// wired once the tenant service and runtimes exist, runs over it.
+			var volumeCatalog *volume.Catalog
 			if barrierRegistry != nil {
 				catalogKVSvc := lifecycle.NewVolumeCatalogKVServicer(service.NewKVService(svcHost, shard.ShardKV))
 				catalogTxSvc := service.NewTransactionService(svcHost, shard.ShardKV)
@@ -1925,6 +1952,7 @@ func runStart(f *startFlags) (err error) {
 					_ = shutdownNode(nodeCloser)
 					return catErr
 				}
+				volumeCatalog = catalog
 				barrierRegistry.Attach(seal.WithVolumeAllocator(catalog))
 				if volumePoolAttached != nil {
 					volumePoolAttached()
@@ -1974,14 +2002,14 @@ func runStart(f *startFlags) (err error) {
 			// against the same directory (during a --restore-backup-id boot)
 			// waits at most one mutation behind this one.
 			var backupSink service.BackupSink
-			if f.backupDir != "" {
-				backupFileStore, berr := file.New(f.backupDir)
-				if berr != nil {
-					_ = shutdownNode(nodeCloser)
-					return &RestoreBackupError{Phase: "open-backup-store", Err: berr}
-				}
-				defer func() { _ = backupFileStore.Close() }()
-				backupSink = backupsink.New(backupFileStore)
+			backupStore, berr := openBackupStore(f)
+			if berr != nil {
+				_ = shutdownNode(nodeCloser)
+				return &RestoreBackupError{Phase: "open-backup-store", Err: berr}
+			}
+			if backupStore != nil {
+				defer func() { _ = backupStore.Close() }()
+				backupSink = backupsink.New(backupStore)
 			}
 
 			// Seal the effective capability profile (build tags x mode x
@@ -2541,6 +2569,7 @@ func runStart(f *startFlags) (err error) {
 				SnapshotEntries:      f.snapshotEntries,
 				CompactionOverhead:   f.compactionOverhead,
 				Lease:                f.leaseConfig,
+				VolumeNodeID:         nodeID,
 			})
 			if err != nil {
 				_ = shutdownNode(nodeCloser)
@@ -2619,6 +2648,39 @@ func runStart(f *startFlags) (err error) {
 					ti.Reconciler.SetShellRegistrar(shells)
 				}
 				go ti.Reconciler.Run(bootCtx)
+			}
+			// Tenant moves between volume pools: every node runs its own
+			// move steps, and the system shard's leader grants them and cuts
+			// each move over (docs/decisions/volume-pool-tenant-moves.md).
+			stopMoveWorker := func() {}
+			if moveTenants, ok := svcNode.Tenant.(server.TenantMoveService); ok && volumeCatalog != nil && barrierRegistry != nil {
+				var membership server.MoveMembership
+				if host != nil {
+					membership = host
+				}
+				moveWorker, mwErr := server.WireTenantMoves(server.TenantMoveConfig{
+					Catalog:     volumeCatalog,
+					BarrierReg:  barrierRegistry,
+					Tenants:     moveTenants,
+					Infra:       ti,
+					NodeID:      nodeID,
+					Membership:  membership,
+					ReplicaID:   f.replicaID,
+					Placements:  svcNode.PlacementStore,
+					StartAudit:  service.NewVolumeMoveAudit(complianceAudit, auditPolicy),
+					Transitions: service.NewVolumeMoveTransitionAudit(complianceAudit),
+					DataDirs:    dbManager,
+					Logger:      slog.Default(),
+				})
+				if mwErr != nil {
+					_ = shutdownNode(nodeCloser)
+					return mwErr
+				}
+				// Shutdown and migration call stopMoveWorker before they close
+				// a store, the server or the host, so no move step is still
+				// closing, copying or reopening tenant stores under them.
+				stopMoveWorker = moveWorker.Start(bootCtx)
+				defer stopMoveWorker()
 			}
 			// Wire the IsolationRaft factory into the already-built backup
 			// service as its ShardRestarter, enabling ONLINE restore (the
@@ -2815,6 +2877,7 @@ func runStart(f *startFlags) (err error) {
 				serverOpts = append(serverOpts, server.WithHost(host))
 				fwdOpt, fwdErr := replicaForwardingOption(bootCtx, f, standalone, placementChanges(svcNode), kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc)
 				if fwdErr != nil {
+					stopMoveWorker()
 					_ = shutdownNode(nodeCloser)
 					return fwdErr
 				}
@@ -3116,13 +3179,16 @@ func runStart(f *startFlags) (err error) {
 			// bound here otherwise.
 			handover, err := sockets.options(serverCfg)
 			if err != nil {
+				stopMoveWorker()
 				_ = shutdownNode(nodeCloser)
 				return err
 			}
 			serverOpts = append(serverOpts, handover...)
+			serverOpts = append(serverOpts, server.WithVersion(version))
 
 			srv := server.New(serverCfg, kvSvc, adminSvc, serverOpts...)
 			if err := srv.Start(); err != nil {
+				stopMoveWorker()
 				_ = shutdownNode(nodeCloser)
 				return err
 			}
@@ -3149,6 +3215,7 @@ func runStart(f *startFlags) (err error) {
 			} else if leaseSvc != nil && host != nil {
 				expiryOpts, err := service.LeaseExpiryOptions(svcHost, shard.ShardKV, f.leaseConfig)
 				if err != nil {
+					stopMoveWorker()
 					_ = shutdownNode(nodeCloser)
 					return err
 				}
@@ -3202,6 +3269,7 @@ func runStart(f *startFlags) (err error) {
 				membershipMgr, mErr := startDynamicMembership(bootCtx, f, kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc, rnode, nodeSeal)
 				if mErr != nil {
 					srv.Stop()
+					stopMoveWorker()
 					_ = shutdownNode(nodeCloser)
 					return mErr
 				}
@@ -3215,6 +3283,7 @@ func runStart(f *startFlags) (err error) {
 				publisher, aErr := startNodeAdvertiser(bootCtx, f, kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc, nodeSeal)
 				if aErr != nil {
 					srv.Stop()
+					stopMoveWorker()
 					_ = shutdownNode(nodeCloser)
 					return aErr
 				}
@@ -3227,6 +3296,9 @@ func runStart(f *startFlags) (err error) {
 			select {
 			case <-sigCtx.Done():
 				slog.Info("received signal, shutting down")
+				// Wait for an in-flight tenant move step before any store,
+				// server or host closes; the step resumes at the next start.
+				stopMoveWorker()
 
 				if memberRecord != nil {
 					if err := memberRecord.Close(); err != nil {
@@ -3282,6 +3354,10 @@ func runStart(f *startFlags) (err error) {
 				stopLeaseExpiry()
 				return shutdownNode(nodeCloser)
 			case req := <-migrateCh:
+				// The next boot iteration starts its own worker: stop this
+				// one, and wait for its step, before the migration stops
+				// svcNode and the stores under it.
+				stopMoveWorker()
 				if host == nil {
 					// Unreachable: the migrator is not wired in standalone.
 					slog.Error("system encryption migration is not supported in standalone mode")

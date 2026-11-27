@@ -28,9 +28,17 @@ type IndexCreateParams struct {
 	Unique    bool   `json:"unique"`
 	Sparse    bool   `json:"sparse"`
 	Numeric   bool   `json:"numeric"`
+	// CaseInsensitive folds string values on write and lookup; the Wails
+	// client sends it as case_insensitive, the name transport.IndexConfig uses.
+	CaseInsensitive bool   `json:"case_insensitive"`
+	KeyPrefix       string `json:"key_prefix"`
 }
 
 // IndexBinding exposes secondary index management to the Wails frontend.
+//
+// Every method takes the database it is scoped to first, as KVBinding does,
+// so an index lives in the keyspace the same workspace writes; "" and
+// "system" name the connection's default database.
 type IndexBinding struct {
 	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
@@ -43,17 +51,19 @@ func NewIndexBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *IndexBin
 
 // Create creates a new secondary index with the name, field name, and
 // configuration described by params.
-func (b *IndexBinding) Create(params IndexCreateParams) error {
-	b.logger.Debug("Create called", "name", params.Name, "fieldName", params.FieldName)
-	cl, err := b.conn.loadClient()
+func (b *IndexBinding) Create(database string, params IndexCreateParams) error {
+	b.logger.Debug("Create called", "database", database, "name", params.Name, "fieldName", params.FieldName)
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("Create failed", "error", err)
 		return err
 	}
 	cfg := transport.IndexConfig{
-		Unique:  params.Unique,
-		Sparse:  params.Sparse,
-		Numeric: params.Numeric,
+		Unique:          params.Unique,
+		Sparse:          params.Sparse,
+		Numeric:         params.Numeric,
+		CaseInsensitive: params.CaseInsensitive,
+		KeyPrefix:       params.KeyPrefix,
 	}
 	if err := cl.Index().IndexCreate(context.Background(), params.Name, params.FieldName, cfg); err != nil {
 		b.logger.Error("Create failed", "name", params.Name, "error", err)
@@ -64,9 +74,9 @@ func (b *IndexBinding) Create(params IndexCreateParams) error {
 }
 
 // Drop removes the secondary index with the given name.
-func (b *IndexBinding) Drop(name string) error {
-	b.logger.Debug("Drop called", "name", name)
-	cl, err := b.conn.loadClient()
+func (b *IndexBinding) Drop(database string, name string) error {
+	b.logger.Debug("Drop called", "database", database, "name", name)
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("Drop failed", "error", err)
 		return err
@@ -80,9 +90,9 @@ func (b *IndexBinding) Drop(name string) error {
 }
 
 // Query returns the entity keys that match value in the named index.
-func (b *IndexBinding) Query(indexName, value string) (*transport.IndexQueryResponse, error) {
-	b.logger.Debug("Query called", "indexName", indexName, "value", value)
-	cl, err := b.conn.loadClient()
+func (b *IndexBinding) Query(database, indexName, value string) (*transport.IndexQueryResponse, error) {
+	b.logger.Debug("Query called", "database", database, "indexName", indexName, "value", value)
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("Query failed", "error", err)
 		return nil, err
@@ -97,9 +107,9 @@ func (b *IndexBinding) Query(indexName, value string) (*transport.IndexQueryResp
 }
 
 // Scan returns index entries whose values fall within [start, end).
-func (b *IndexBinding) Scan(indexName, start, end string) (*transport.IndexScanResponse, error) {
-	b.logger.Debug("Scan called", "indexName", indexName, "start", start, "end", end)
-	cl, err := b.conn.loadClient()
+func (b *IndexBinding) Scan(database, indexName, start, end string) (*transport.IndexScanResponse, error) {
+	b.logger.Debug("Scan called", "database", database, "indexName", indexName, "start", start, "end", end)
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("Scan failed", "error", err)
 		return nil, err
@@ -122,11 +132,10 @@ func (b *IndexBinding) Scan(indexName, start, end string) (*transport.IndexScanR
 	return resp, nil
 }
 
-// List returns the names of all registered secondary indexes. The prefix
-// parameter is accepted for API compatibility but is currently unused.
-func (b *IndexBinding) List(_ string) (*transport.IndexListResponse, error) {
-	b.logger.Debug("List called")
-	cl, err := b.conn.loadClient()
+// List returns the names of all secondary indexes registered in database.
+func (b *IndexBinding) List(database string) (*transport.IndexListResponse, error) {
+	b.logger.Debug("List called", "database", database)
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("List failed", "error", err)
 		return nil, err

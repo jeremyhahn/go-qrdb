@@ -52,8 +52,10 @@ func WithPeerAttestationGate(gate *middleware.PeerAttestationGate) NodeOption
 (never on a denied one), whichever way it granted it:
 
 - `authorizer.Authorize` returned nil;
-- the `permission.IdentityGated` sentinel, which skips RBAC;
-- the sealed-tenant `admin:health` allowance, which also skips RBAC.
+- the `permission.IdentityGated` sentinel, which skips RBAC.
+
+Health is a no-login verb served before authorization
+(`pkg/api/publicverbs`), so it never reaches the gate.
 
 The decision record (`auth.authorize`) records the gate's refusal as the
 decision's outcome, so the ordinary trail stays complete; the gate's own record

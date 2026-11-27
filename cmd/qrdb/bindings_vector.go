@@ -34,10 +34,23 @@ func NewVectorBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *VectorB
 	return &VectorBinding{logger: log, conn: conn}
 }
 
-// CreateNamespace creates a new vector namespace.
-func (b *VectorBinding) CreateNamespace(req *transport.CreateNamespaceRequest) (*transport.CreateNamespaceResponse, error) {
-	b.logger.Debug("CreateNamespace called")
+// scopedClient returns the active connection's client scoped to database.
+// Every vector method takes the database the frontend has selected as its
+// first argument, so an operation reaches that database's vector store and
+// never the connection's default one. An empty name or "system" is the
+// unscoped client.
+func (b *VectorBinding) scopedClient(database string) (*sdk.Client, error) {
 	cl, err := b.conn.loadClient()
+	if err != nil {
+		return nil, err
+	}
+	return cl.DatabaseScoped(database)
+}
+
+// CreateNamespace creates a new vector namespace.
+func (b *VectorBinding) CreateNamespace(database string, req *transport.CreateNamespaceRequest) (*transport.CreateNamespaceResponse, error) {
+	b.logger.Debug("CreateNamespace called")
+	cl, err := b.scopedClient(database)
 	if err != nil {
 		b.logger.Error("CreateNamespace failed", "error", err)
 		return nil, err
@@ -52,9 +65,9 @@ func (b *VectorBinding) CreateNamespace(req *transport.CreateNamespaceRequest) (
 }
 
 // DeleteNamespace removes a namespace and all its vectors.
-func (b *VectorBinding) DeleteNamespace(req *transport.DeleteNamespaceRequest) (*transport.DeleteNamespaceResponse, error) {
+func (b *VectorBinding) DeleteNamespace(database string, req *transport.DeleteNamespaceRequest) (*transport.DeleteNamespaceResponse, error) {
 	b.logger.Debug("DeleteNamespace called")
-	cl, err := b.conn.loadClient()
+	cl, err := b.scopedClient(database)
 	if err != nil {
 		b.logger.Error("DeleteNamespace failed", "error", err)
 		return nil, err
@@ -69,9 +82,9 @@ func (b *VectorBinding) DeleteNamespace(req *transport.DeleteNamespaceRequest) (
 }
 
 // ListNamespaces returns all vector namespace names.
-func (b *VectorBinding) ListNamespaces(req *transport.ListNamespacesRequest) (*transport.ListNamespacesResponse, error) {
+func (b *VectorBinding) ListNamespaces(database string, req *transport.ListNamespacesRequest) (*transport.ListNamespacesResponse, error) {
 	b.logger.Debug("ListNamespaces called")
-	cl, err := b.conn.loadClient()
+	cl, err := b.scopedClient(database)
 	if err != nil {
 		b.logger.Error("ListNamespaces failed", "error", err)
 		return nil, err
@@ -86,9 +99,9 @@ func (b *VectorBinding) ListNamespaces(req *transport.ListNamespacesRequest) (*t
 }
 
 // GetNamespaceInfo returns metadata about a namespace.
-func (b *VectorBinding) GetNamespaceInfo(req *transport.GetNamespaceInfoRequest) (*transport.GetNamespaceInfoResponse, error) {
+func (b *VectorBinding) GetNamespaceInfo(database string, req *transport.GetNamespaceInfoRequest) (*transport.GetNamespaceInfoResponse, error) {
 	b.logger.Debug("GetNamespaceInfo called")
-	cl, err := b.conn.loadClient()
+	cl, err := b.scopedClient(database)
 	if err != nil {
 		b.logger.Error("GetNamespaceInfo failed", "error", err)
 		return nil, err
@@ -103,9 +116,9 @@ func (b *VectorBinding) GetNamespaceInfo(req *transport.GetNamespaceInfoRequest)
 }
 
 // UpsertVector inserts or updates a vector in a namespace.
-func (b *VectorBinding) UpsertVector(req *transport.UpsertVectorRequest) (*transport.UpsertVectorResponse, error) {
+func (b *VectorBinding) UpsertVector(database string, req *transport.UpsertVectorRequest) (*transport.UpsertVectorResponse, error) {
 	b.logger.Debug("UpsertVector called")
-	cl, err := b.conn.loadClient()
+	cl, err := b.scopedClient(database)
 	if err != nil {
 		b.logger.Error("UpsertVector failed", "error", err)
 		return nil, err
@@ -120,9 +133,9 @@ func (b *VectorBinding) UpsertVector(req *transport.UpsertVectorRequest) (*trans
 }
 
 // GetVector retrieves a single vector by ID.
-func (b *VectorBinding) GetVector(req *transport.GetVectorRequest) (*transport.GetVectorResponse, error) {
+func (b *VectorBinding) GetVector(database string, req *transport.GetVectorRequest) (*transport.GetVectorResponse, error) {
 	b.logger.Debug("GetVector called")
-	cl, err := b.conn.loadClient()
+	cl, err := b.scopedClient(database)
 	if err != nil {
 		b.logger.Error("GetVector failed", "error", err)
 		return nil, err
@@ -137,9 +150,9 @@ func (b *VectorBinding) GetVector(req *transport.GetVectorRequest) (*transport.G
 }
 
 // DeleteVector removes a single vector by ID.
-func (b *VectorBinding) DeleteVector(req *transport.DeleteVectorRequest) (*transport.DeleteVectorResponse, error) {
+func (b *VectorBinding) DeleteVector(database string, req *transport.DeleteVectorRequest) (*transport.DeleteVectorResponse, error) {
 	b.logger.Debug("DeleteVector called")
-	cl, err := b.conn.loadClient()
+	cl, err := b.scopedClient(database)
 	if err != nil {
 		b.logger.Error("DeleteVector failed", "error", err)
 		return nil, err
@@ -154,9 +167,9 @@ func (b *VectorBinding) DeleteVector(req *transport.DeleteVectorRequest) (*trans
 }
 
 // BatchUpsert inserts or updates multiple vectors atomically.
-func (b *VectorBinding) BatchUpsert(req *transport.BatchUpsertRequest) (*transport.BatchUpsertResponse, error) {
+func (b *VectorBinding) BatchUpsert(database string, req *transport.BatchUpsertRequest) (*transport.BatchUpsertResponse, error) {
 	b.logger.Debug("BatchUpsert called")
-	cl, err := b.conn.loadClient()
+	cl, err := b.scopedClient(database)
 	if err != nil {
 		b.logger.Error("BatchUpsert failed", "error", err)
 		return nil, err
@@ -171,9 +184,9 @@ func (b *VectorBinding) BatchUpsert(req *transport.BatchUpsertRequest) (*transpo
 }
 
 // BatchDeleteVectors removes multiple vectors by ID.
-func (b *VectorBinding) BatchDeleteVectors(req *transport.BatchDeleteVectorsRequest) (*transport.BatchDeleteVectorsResponse, error) {
+func (b *VectorBinding) BatchDeleteVectors(database string, req *transport.BatchDeleteVectorsRequest) (*transport.BatchDeleteVectorsResponse, error) {
 	b.logger.Debug("BatchDeleteVectors called")
-	cl, err := b.conn.loadClient()
+	cl, err := b.scopedClient(database)
 	if err != nil {
 		b.logger.Error("BatchDeleteVectors failed", "error", err)
 		return nil, err
@@ -188,9 +201,9 @@ func (b *VectorBinding) BatchDeleteVectors(req *transport.BatchDeleteVectorsRequ
 }
 
 // ListVectors returns a paginated list of vectors in a namespace.
-func (b *VectorBinding) ListVectors(req *transport.ListVectorsRequest) (*transport.ListVectorsResponse, error) {
+func (b *VectorBinding) ListVectors(database string, req *transport.ListVectorsRequest) (*transport.ListVectorsResponse, error) {
 	b.logger.Debug("ListVectors called")
-	cl, err := b.conn.loadClient()
+	cl, err := b.scopedClient(database)
 	if err != nil {
 		b.logger.Error("ListVectors failed", "error", err)
 		return nil, err
@@ -205,9 +218,9 @@ func (b *VectorBinding) ListVectors(req *transport.ListVectorsRequest) (*transpo
 }
 
 // UpdateMetadata updates the metadata for an existing vector.
-func (b *VectorBinding) UpdateMetadata(req *transport.UpdateVectorMetadataRequest) (*transport.UpdateVectorMetadataResponse, error) {
+func (b *VectorBinding) UpdateMetadata(database string, req *transport.UpdateVectorMetadataRequest) (*transport.UpdateVectorMetadataResponse, error) {
 	b.logger.Debug("UpdateMetadata called")
-	cl, err := b.conn.loadClient()
+	cl, err := b.scopedClient(database)
 	if err != nil {
 		b.logger.Error("UpdateMetadata failed", "error", err)
 		return nil, err
@@ -222,9 +235,9 @@ func (b *VectorBinding) UpdateMetadata(req *transport.UpdateVectorMetadataReques
 }
 
 // SearchSimilar performs a k-nearest-neighbor similarity search.
-func (b *VectorBinding) SearchSimilar(req *transport.SearchSimilarRequest) (*transport.SearchSimilarResponse, error) {
+func (b *VectorBinding) SearchSimilar(database string, req *transport.SearchSimilarRequest) (*transport.SearchSimilarResponse, error) {
 	b.logger.Debug("SearchSimilar called")
-	cl, err := b.conn.loadClient()
+	cl, err := b.scopedClient(database)
 	if err != nil {
 		b.logger.Error("SearchSimilar failed", "error", err)
 		return nil, err
@@ -239,9 +252,9 @@ func (b *VectorBinding) SearchSimilar(req *transport.SearchSimilarRequest) (*tra
 }
 
 // SearchByMetadata returns vectors matching metadata filters.
-func (b *VectorBinding) SearchByMetadata(req *transport.SearchByMetadataRequest) (*transport.SearchByMetadataResponse, error) {
+func (b *VectorBinding) SearchByMetadata(database string, req *transport.SearchByMetadataRequest) (*transport.SearchByMetadataResponse, error) {
 	b.logger.Debug("SearchByMetadata called")
-	cl, err := b.conn.loadClient()
+	cl, err := b.scopedClient(database)
 	if err != nil {
 		b.logger.Error("SearchByMetadata failed", "error", err)
 		return nil, err
@@ -256,9 +269,9 @@ func (b *VectorBinding) SearchByMetadata(req *transport.SearchByMetadataRequest)
 }
 
 // HybridSearch combines vector similarity and metadata filtering.
-func (b *VectorBinding) HybridSearch(req *transport.HybridSearchRequest) (*transport.HybridSearchResponse, error) {
+func (b *VectorBinding) HybridSearch(database string, req *transport.HybridSearchRequest) (*transport.HybridSearchResponse, error) {
 	b.logger.Debug("HybridSearch called")
-	cl, err := b.conn.loadClient()
+	cl, err := b.scopedClient(database)
 	if err != nil {
 		b.logger.Error("HybridSearch failed", "error", err)
 		return nil, err
@@ -273,9 +286,9 @@ func (b *VectorBinding) HybridSearch(req *transport.HybridSearchRequest) (*trans
 }
 
 // SearchByID searches using an existing vector's ID as the query.
-func (b *VectorBinding) SearchByID(req *transport.SearchByIDRequest) (*transport.SearchByIDResponse, error) {
+func (b *VectorBinding) SearchByID(database string, req *transport.SearchByIDRequest) (*transport.SearchByIDResponse, error) {
 	b.logger.Debug("SearchByID called")
-	cl, err := b.conn.loadClient()
+	cl, err := b.scopedClient(database)
 	if err != nil {
 		b.logger.Error("SearchByID failed", "error", err)
 		return nil, err
@@ -290,9 +303,9 @@ func (b *VectorBinding) SearchByID(req *transport.SearchByIDRequest) (*transport
 }
 
 // RebuildIndex triggers an asynchronous index rebuild for a namespace.
-func (b *VectorBinding) RebuildIndex(req *transport.RebuildIndexRequest) (*transport.RebuildIndexResponse, error) {
+func (b *VectorBinding) RebuildIndex(database string, req *transport.RebuildIndexRequest) (*transport.RebuildIndexResponse, error) {
 	b.logger.Debug("RebuildIndex called")
-	cl, err := b.conn.loadClient()
+	cl, err := b.scopedClient(database)
 	if err != nil {
 		b.logger.Error("RebuildIndex failed", "error", err)
 		return nil, err
@@ -307,9 +320,9 @@ func (b *VectorBinding) RebuildIndex(req *transport.RebuildIndexRequest) (*trans
 }
 
 // GetRebuildProgress returns the current progress of an index rebuild.
-func (b *VectorBinding) GetRebuildProgress(req *transport.GetRebuildProgressRequest) (*transport.GetRebuildProgressResponse, error) {
+func (b *VectorBinding) GetRebuildProgress(database string, req *transport.GetRebuildProgressRequest) (*transport.GetRebuildProgressResponse, error) {
 	b.logger.Debug("GetRebuildProgress called")
-	cl, err := b.conn.loadClient()
+	cl, err := b.scopedClient(database)
 	if err != nil {
 		b.logger.Error("GetRebuildProgress failed", "error", err)
 		return nil, err
@@ -324,9 +337,9 @@ func (b *VectorBinding) GetRebuildProgress(req *transport.GetRebuildProgressRequ
 }
 
 // GetIndexStats returns statistics about a namespace's vector index.
-func (b *VectorBinding) GetIndexStats(req *transport.GetIndexStatsRequest) (*transport.GetIndexStatsResponse, error) {
+func (b *VectorBinding) GetIndexStats(database string, req *transport.GetIndexStatsRequest) (*transport.GetIndexStatsResponse, error) {
 	b.logger.Debug("GetIndexStats called")
-	cl, err := b.conn.loadClient()
+	cl, err := b.scopedClient(database)
 	if err != nil {
 		b.logger.Error("GetIndexStats failed", "error", err)
 		return nil, err
@@ -341,9 +354,9 @@ func (b *VectorBinding) GetIndexStats(req *transport.GetIndexStatsRequest) (*tra
 }
 
 // CompactNamespace triggers compaction of a namespace's storage.
-func (b *VectorBinding) CompactNamespace(req *transport.CompactNamespaceRequest) (*transport.CompactNamespaceResponse, error) {
+func (b *VectorBinding) CompactNamespace(database string, req *transport.CompactNamespaceRequest) (*transport.CompactNamespaceResponse, error) {
 	b.logger.Debug("CompactNamespace called")
-	cl, err := b.conn.loadClient()
+	cl, err := b.scopedClient(database)
 	if err != nil {
 		b.logger.Error("CompactNamespace failed", "error", err)
 		return nil, err
@@ -358,9 +371,9 @@ func (b *VectorBinding) CompactNamespace(req *transport.CompactNamespaceRequest)
 }
 
 // GetCompactionProgress returns the current progress of a compaction job.
-func (b *VectorBinding) GetCompactionProgress(req *transport.GetCompactionProgressRequest) (*transport.GetCompactionProgressResponse, error) {
+func (b *VectorBinding) GetCompactionProgress(database string, req *transport.GetCompactionProgressRequest) (*transport.GetCompactionProgressResponse, error) {
 	b.logger.Debug("GetCompactionProgress called")
-	cl, err := b.conn.loadClient()
+	cl, err := b.scopedClient(database)
 	if err != nil {
 		b.logger.Error("GetCompactionProgress failed", "error", err)
 		return nil, err

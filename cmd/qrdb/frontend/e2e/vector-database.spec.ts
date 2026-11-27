@@ -85,7 +85,7 @@ async function injectStatefulVectorBinding(page: Page): Promise<void> {
     };
 
     go.main.VectorBinding = {
-      CreateNamespace: async (req: unknown) => {
+      CreateNamespace: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.CreateNamespace");
         const r = req as {
           namespace: string;
@@ -105,7 +105,7 @@ async function injectStatefulVectorBinding(page: Page): Promise<void> {
         vectorStore.set(r.namespace, new Map());
         return {};
       },
-      DeleteNamespace: async (req: unknown) => {
+      DeleteNamespace: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.DeleteNamespace");
         const r = req as { namespace: string };
         namespaceStore.delete(r.namespace);
@@ -115,7 +115,7 @@ async function injectStatefulVectorBinding(page: Page): Promise<void> {
         maybeReject("VectorBinding.ListNamespaces");
         return { namespaces: Array.from(namespaceStore.keys()) };
       },
-      GetNamespaceInfo: async (req: unknown) => {
+      GetNamespaceInfo: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.GetNamespaceInfo");
         const r = req as { namespace: string };
         const info = namespaceStore.get(r.namespace);
@@ -127,7 +127,7 @@ async function injectStatefulVectorBinding(page: Page): Promise<void> {
           indexType: "flat",
         };
       },
-      UpsertVector: async (req: unknown) => {
+      UpsertVector: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.UpsertVector");
         const r = req as {
           namespace: string;
@@ -149,7 +149,7 @@ async function injectStatefulVectorBinding(page: Page): Promise<void> {
         if (info) info.vectorCount = vecs.size;
         return {};
       },
-      GetVector: async (req: unknown) => {
+      GetVector: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.GetVector");
         const r = req as { namespace: string; id: string };
         const vecs = vectorStore.get(r.namespace);
@@ -158,7 +158,7 @@ async function injectStatefulVectorBinding(page: Page): Promise<void> {
         if (!vec) throw new Error(`vector "${r.id}" not found`);
         return { ...vec };
       },
-      DeleteVector: async (req: unknown) => {
+      DeleteVector: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.DeleteVector");
         const r = req as { namespace: string; id: string };
         const vecs = vectorStore.get(r.namespace);
@@ -170,7 +170,7 @@ async function injectStatefulVectorBinding(page: Page): Promise<void> {
       },
       BatchUpsert: async () => ({}),
       BatchDeleteVectors: async () => ({}),
-      ListVectors: async (req: unknown) => {
+      ListVectors: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.ListVectors");
         const r = req as { namespace: string };
         const vecs = vectorStore.get(r.namespace);

@@ -91,6 +91,7 @@ var schemePrefixes = []string{
 // during PersistentPreRunE from resolved flags.
 var (
 	client       *sdk.Client
+	baseClient   *sdk.Client // the connected client client is scoped from; closeCLIClient closes both
 	outputFormat string
 	logLevel     string
 	logFile      string
@@ -179,6 +180,8 @@ Supported transports:
 			if err != nil {
 				return err
 			}
+
+			baseClient = c
 
 			// Scope data-plane operations to a named database when
 			// requested, mirroring the GUI's per-database workspace.
@@ -274,6 +277,21 @@ Supported transports:
 	rootCmd.AddCommand(newDelAliasCmd(kvCmd))
 
 	return rootCmd
+}
+
+// closeCLIClient closes the client the root command connected once the
+// command has run. Without it the process exits with its QUIC connection
+// still open: the server gets no CONNECTION_CLOSE and holds the connection,
+// and its per-peer slot, until the idle timeout, so a script that runs the
+// CLI in a loop (following a move with get-move) runs out of connections.
+func closeCLIClient() {
+	if client != nil && client != baseClient {
+		_ = client.Close()
+	}
+	if baseClient != nil {
+		_ = baseClient.Close()
+	}
+	client, baseClient = nil, nil
 }
 
 // validOutputFormats is the set of supported output formats for O(1) lookup.

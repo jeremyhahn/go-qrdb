@@ -72,13 +72,42 @@ async function injectStatefulVectorBinding(
       }
     }
 
+    // Held calls, keyed "Method:namespace": __VEC_HOLD__(key) makes the next
+    // such call wait until __VEC_RELEASE__(key). __VEC_ARRIVED__ lists the
+    // held calls that are waiting; __VEC_RETURNED__ those released.
+    const gates = new Map<string, { wait: Promise<void>; release: () => void }>();
+    const arrived: string[] = [];
+    const returned: string[] = [];
+    w.__VEC_ARRIVED__ = arrived;
+    w.__VEC_RETURNED__ = returned;
+    w.__VEC_HOLD__ = (key: string) => {
+      let release = (): void => {};
+      const wait = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      gates.set(key, { wait, release });
+    };
+    w.__VEC_RELEASE__ = (key: string) => {
+      gates.get(key)?.release();
+    };
+
+    async function gate(method: string, namespace: string): Promise<void> {
+      const key = `${method}:${namespace}`;
+      const g = gates.get(key);
+      if (!g) return;
+      arrived.push(key);
+      await g.wait;
+      gates.delete(key);
+      returned.push(key);
+    }
+
     const waitForGo = setInterval(() => {
       const go = w.go as Record<string, Record<string, Record<string, unknown>>> | undefined;
       if (!go?.main?.VectorBinding) return;
       clearInterval(waitForGo);
 
       go.main.VectorBinding = {
-        CreateNamespace: async (req: unknown) => {
+        CreateNamespace: async (_database: unknown, req: unknown) => {
           maybeReject("VectorBinding.CreateNamespace");
           const r = req as { namespace: string; dimension?: number; distanceMetric?: number; indexType?: number };
           if (namespaceStore.has(r.namespace)) {
@@ -96,7 +125,7 @@ async function injectStatefulVectorBinding(
           return {};
         },
 
-        DeleteNamespace: async (req: unknown) => {
+        DeleteNamespace: async (_database: unknown, req: unknown) => {
           maybeReject("VectorBinding.DeleteNamespace");
           const r = req as { namespace: string };
           namespaceStore.delete(r.namespace);
@@ -118,9 +147,10 @@ async function injectStatefulVectorBinding(
           };
         },
 
-        GetNamespaceInfo: async (req: unknown) => {
+        GetNamespaceInfo: async (_database: unknown, req: unknown) => {
           maybeReject("VectorBinding.GetNamespaceInfo");
           const r = req as { namespace: string };
+          await gate("GetNamespaceInfo", r.namespace);
           const info = namespaceStore.get(r.namespace);
           if (!info) throw new Error(`namespace "${r.namespace}" not found`);
           const vecs = vectorStore.get(r.namespace);
@@ -133,7 +163,7 @@ async function injectStatefulVectorBinding(
           };
         },
 
-        UpsertVector: async (req: unknown) => {
+        UpsertVector: async (_database: unknown, req: unknown) => {
           maybeReject("VectorBinding.UpsertVector");
           const r = req as { namespace: string; id: string; vector: number[]; metadata?: Record<string, unknown> };
           let vecs = vectorStore.get(r.namespace);
@@ -149,7 +179,7 @@ async function injectStatefulVectorBinding(
           return {};
         },
 
-        GetVector: async (req: unknown) => {
+        GetVector: async (_database: unknown, req: unknown) => {
           maybeReject("VectorBinding.GetVector");
           const r = req as { namespace: string; id: string };
           const vecs = vectorStore.get(r.namespace);
@@ -159,7 +189,7 @@ async function injectStatefulVectorBinding(
           return { ...vec };
         },
 
-        DeleteVector: async (req: unknown) => {
+        DeleteVector: async (_database: unknown, req: unknown) => {
           maybeReject("VectorBinding.DeleteVector");
           const r = req as { namespace: string; id: string };
           const vecs = vectorStore.get(r.namespace);
@@ -170,7 +200,7 @@ async function injectStatefulVectorBinding(
           }
         },
 
-        BatchUpsert: async (req: unknown) => {
+        BatchUpsert: async (_database: unknown, req: unknown) => {
           maybeReject("VectorBinding.BatchUpsert");
           const r = req as { namespace: string; vectors: Array<{ id: string; vector: number[]; metadata?: Record<string, unknown> }> };
           let vecs = vectorStore.get(r.namespace);
@@ -183,24 +213,32 @@ async function injectStatefulVectorBinding(
           }
           const info = namespaceStore.get(r.namespace);
           if (info) info.vectorCount = vecs.size;
-          return { count: r.vectors.length };
+          // The Go BatchUpsertResponse.
+          return { ids: r.vectors.map((v) => v.id), success: true, inserted_count: r.vectors.length };
         },
 
-        BatchDeleteVectors: async (req: unknown) => {
+        BatchDeleteVectors: async (_database: unknown, req: unknown) => {
           maybeReject("VectorBinding.BatchDeleteVectors");
           const r = req as { namespace: string; ids: string[] };
           const vecs = vectorStore.get(r.namespace);
+          // The Go BatchDeleteVectorsResponse: deleted_count and failed_ids.
+          let deletedCount = 0;
+          const failedIds: string[] = [];
           if (vecs) {
-            for (const id of r.ids) vecs.delete(id);
+            for (const id of r.ids) {
+              if (vecs.delete(id)) deletedCount++;
+              else failedIds.push(id);
+            }
             const info = namespaceStore.get(r.namespace);
             if (info) info.vectorCount = vecs.size;
           }
-          return {};
+          return { deleted_count: deletedCount, failed_ids: failedIds, success: true };
         },
 
-        ListVectors: async (req: unknown) => {
+        ListVectors: async (_database: unknown, req: unknown) => {
           maybeReject("VectorBinding.ListVectors");
           const r = req as { namespace: string; limit?: number; offset?: number };
+          await gate("ListVectors", r.namespace);
           const vecs = vectorStore.get(r.namespace);
           if (!vecs) return { vectors: [], total: 0 };
           const all = Array.from(vecs.values());
@@ -221,9 +259,13 @@ async function injectStatefulVectorBinding(
           };
         },
 
-        HybridSearch: async (req: unknown) => {
+        HybridSearch: async (_database: unknown, req: unknown) => {
           maybeReject("VectorBinding.HybridSearch");
-          const r = req as { namespace: string; k?: number };
+          // transport.HybridSearchRequest: query_vector is required.
+          const r = req as { namespace: string; query_vector?: number[]; k?: number };
+          if (!Array.isArray(r.query_vector) || r.query_vector.length === 0) {
+            throw new Error("query vector is required");
+          }
           const vecs = vectorStore.get(r.namespace);
           if (!vecs) return { results: [] };
           return {
@@ -233,7 +275,7 @@ async function injectStatefulVectorBinding(
           };
         },
 
-        SearchByID: async (req: unknown) => {
+        SearchByID: async (_database: unknown, req: unknown) => {
           maybeReject("VectorBinding.SearchByID");
           const r = req as { namespace: string; id: string; k: number };
           const vecs = vectorStore.get(r.namespace);
@@ -256,9 +298,10 @@ async function injectStatefulVectorBinding(
           return { progress: 100, status: "completed" };
         },
 
-        GetIndexStats: async (req: unknown) => {
+        GetIndexStats: async (_database: unknown, req: unknown) => {
           maybeReject("VectorBinding.GetIndexStats");
           const r = req as { namespace: string };
+          await gate("GetIndexStats", r.namespace);
           const vecs = vectorStore.get(r.namespace);
           const info = namespaceStore.get(r.namespace);
           return {
@@ -439,5 +482,110 @@ test.describe("Vector Namespace Display - Regression (.namespace field fix)", ()
 
     // Dropdown must now show the namespace string as the selected value.
     await expect(page.locator("select").first()).toHaveValue("click-ns");
+  });
+});
+
+// A response applies only while its namespace selection is current: a late
+// reply for namespace A must not overwrite what is shown for namespace B.
+test.describe("Vector namespace selection - stale responses", () => {
+  test.use({ mockState: vectorState });
+
+  type HeldWindow = {
+    __VEC_HOLD__: (key: string) => void;
+    __VEC_RELEASE__: (key: string) => void;
+    __VEC_ARRIVED__: string[];
+    __VEC_RETURNED__: string[];
+    go: { main: { VectorBinding: Record<string, (db: unknown, req: unknown) => Promise<unknown>> } };
+  };
+
+  async function seedTwoNamespaces(page: import("@playwright/test").Page): Promise<void> {
+    await setupVector(page);
+    await createNamespace(page, "ns-a", "3");
+    await createNamespace(page, "ns-b", "5");
+    await page.evaluate(async () => {
+      const w = window as unknown as HeldWindow;
+      await w.go.main.VectorBinding.UpsertVector("", { namespace: "ns-a", id: "a-vec", vector: [0.1, 0.2, 0.3] });
+      await w.go.main.VectorBinding.UpsertVector("", {
+        namespace: "ns-b",
+        id: "b-vec",
+        vector: [0.1, 0.2, 0.3, 0.4, 0.5],
+      });
+    });
+  }
+
+  async function hold(page: import("@playwright/test").Page, key: string): Promise<void> {
+    await page.evaluate((k) => (window as unknown as HeldWindow).__VEC_HOLD__(k), key);
+  }
+
+  async function release(page: import("@playwright/test").Page, key: string): Promise<void> {
+    await page.evaluate((k) => (window as unknown as HeldWindow).__VEC_RELEASE__(k), key);
+  }
+
+  async function waitArrived(page: import("@playwright/test").Page, key: string): Promise<void> {
+    await page.waitForFunction((k) => (window as unknown as HeldWindow).__VEC_ARRIVED__.includes(k), key);
+  }
+
+  async function waitReturned(page: import("@playwright/test").Page, key: string): Promise<void> {
+    await page.waitForFunction((k) => (window as unknown as HeldWindow).__VEC_RETURNED__.includes(k), key);
+  }
+
+  function statValue(page: import("@playwright/test").Page, label: string) {
+    return page
+      .locator("div.surface-panel.rounded-lg.p-4", { hasText: label })
+      .locator("span.font-mono.text-2xl");
+  }
+
+  test("a late vector list and namespace info for the previous namespace are dropped", async ({ page }) => {
+    await seedTwoNamespaces(page);
+    const select = page.locator("select").first();
+
+    await hold(page, "ListVectors:ns-a");
+    await hold(page, "GetNamespaceInfo:ns-a");
+    await select.selectOption("ns-a");
+    await waitArrived(page, "ListVectors:ns-a");
+
+    await select.selectOption("ns-b");
+    await expect(page.locator("table").getByText("b-vec")).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await expect(statValue(page, "Dimensions")).toHaveText("5");
+
+    await release(page, "ListVectors:ns-a");
+    await release(page, "GetNamespaceInfo:ns-a");
+    await waitReturned(page, "ListVectors:ns-a");
+
+    await expect(select).toHaveValue("ns-b");
+    await expect(page.locator("table").getByText("a-vec")).toHaveCount(0);
+    await expect(page.locator("table").getByText("b-vec")).toBeVisible();
+    await expect(statValue(page, "Dimensions")).toHaveText("5");
+    await expect(statValue(page, "Vectors")).toHaveText("1");
+  });
+
+  test("late index stats for the previous namespace are dropped", async ({ page }) => {
+    await seedTwoNamespaces(page);
+    const select = page.locator("select").first();
+
+    // Hold A's list so the stats request is sent while A is still loading.
+    await hold(page, "ListVectors:ns-a");
+    await select.selectOption("ns-a");
+    await waitArrived(page, "ListVectors:ns-a");
+
+    await page.getByRole("tab", { name: "Maintenance" }).click();
+    await hold(page, "GetIndexStats:ns-a");
+    await page.getByRole("button", { name: "Load Stats" }).click();
+    await waitArrived(page, "GetIndexStats:ns-a");
+
+    // A's list and info finish; the selector is usable while A's stats wait.
+    await release(page, "ListVectors:ns-a");
+    await waitReturned(page, "ListVectors:ns-a");
+    await expect(select).toBeEnabled();
+    await select.selectOption("ns-b");
+    await expect(select).toBeEnabled();
+
+    await release(page, "GetIndexStats:ns-a");
+    await waitReturned(page, "GetIndexStats:ns-a");
+    await expect(page.getByText("Total Vectors")).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Load Stats" }).click();
+    await expect(statValue(page, "Total Vectors")).toHaveText("1");
+    await expect(statValue(page, "Dimensions")).toHaveText("5");
   });
 });

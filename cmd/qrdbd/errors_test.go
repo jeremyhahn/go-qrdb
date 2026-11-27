@@ -24,6 +24,20 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 )
 
+func TestRunModeMismatchError_MessageNamesBothModesAndRemedy(t *testing.T) {
+	var err error = &RunModeMismatchError{DataDir: "/d", Recorded: "standalone", Configured: "raft"}
+	msg := err.Error()
+	for _, want := range []string{"/d", "initialized in mode: standalone", "configured for mode: raft", "start with mode: standalone", "fresh data directory"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("message %q lacks %q", msg, want)
+		}
+	}
+	var mm *RunModeMismatchError
+	if !errors.As(err, &mm) || mm.Recorded != "standalone" {
+		t.Fatalf("errors.As failed: %v", err)
+	}
+}
+
 func TestLegacyDataDirError_Message(t *testing.T) {
 	e := &LegacyDataDirError{DataDir: "/var/lib/qrdb", Err: seal.ErrLegacyDataDir}
 	msg := e.Error()
@@ -93,7 +107,8 @@ func TestStartErrors_MessageNamesWhatToAct(t *testing.T) {
 		{"sm storage mismatch", &SMStorageTypeMismatchError{Storage: "file", SMType: "standard"},
 			[]string{`sm-storage "file"`, "--sm disk or --sm fast", `got "standard"`}},
 		{"data dir", &DataDirError{Path: "/srv/qrdb", Err: cause}, []string{"data directory /srv/qrdb", "permission denied"}},
-		{"restore source required", &RestoreBackupSourceRequiredError{}, []string{"--restore-backup-id requires --backup-dir"}},
+		{"restore source required", &RestoreBackupSourceRequiredError{}, []string{"--restore-backup-id requires --backup-dir or backup.destination"}},
+		{"backup destination conflict", &BackupDestinationConflictError{}, []string{"--backup-dir and backup.destination both name a backup repository"}},
 		{"restore service type", &RestoreBackupServiceTypeError{}, []string{"internal error", "*service.BackupService"}},
 		{"restore phase", &RestoreBackupError{Phase: "verify", BackupID: "b-7", ShardID: 3, Err: cause},
 			[]string{`backup "b-7"`, "into shard 3", `during "verify"`, "permission denied"}},

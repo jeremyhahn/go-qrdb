@@ -51,6 +51,12 @@ type failStorage struct {
 
 	// List injection: listErr is returned instead of calling inner.List.
 	listErr error
+
+	// Exists injection: existsErr is returned on the existsFailAt-th call.
+	// existsFailAt == 0 means fail on every call.
+	existsErr    error
+	existsFailAt int
+	existsCalls  int
 }
 
 func (f *failStorage) Get(key []byte) ([]byte, error) {
@@ -85,8 +91,14 @@ func (f *failStorage) List(prefix []byte) ([][]byte, error) {
 	return f.inner.List(prefix)
 }
 
-func (f *failStorage) Exists(key []byte) (bool, error) { return f.inner.Exists(key) }
-func (f *failStorage) Batch() storage.Batch            { return f.inner.Batch() }
+func (f *failStorage) Exists(key []byte) (bool, error) {
+	f.existsCalls++
+	if f.existsErr != nil && (f.existsFailAt == 0 || f.existsCalls == f.existsFailAt) {
+		return false, f.existsErr
+	}
+	return f.inner.Exists(key)
+}
+func (f *failStorage) Batch() storage.Batch { return f.inner.Batch() }
 func (f *failStorage) NewIterator(opts *storage.IteratorOptions) storage.Iterator {
 	return f.inner.NewIterator(opts)
 }
@@ -378,21 +390,57 @@ func TestSink_List_ReadInfoError(t *testing.T) {
 func TestSink_Delete_MetaFails(t *testing.T) {
 	ctx := context.Background()
 	_, fail := newFailStore(t)
+	sink := backupsink.New(fail)
+	// The backup must exist: Delete refuses an unknown ID before any delete.
+	require.NoError(t, sink.Write(ctx, service.BackupInfo{ID: "someid"}, map[uint64][]byte{1: []byte("x")}, nil))
 	fail.deleteErr = errors.New("delete meta failure")
 	fail.deleteFailAt = 1 // fail on the first Delete (meta key)
-
-	sink := backupsink.New(fail)
 	err := sink.Delete(ctx, "someid")
 	require.ErrorIs(t, err, fail.deleteErr, "Delete must propagate a meta-key deletion error")
+}
+
+// TestSink_Delete_ExistsFails proves Delete propagates a probe error, both
+// on the metadata probe and on the leftover-artifact probe, and deletes
+// nothing when it cannot tell whether the backup exists.
+func TestSink_Delete_ExistsFails(t *testing.T) {
+	cases := []struct {
+		name   string
+		write  bool
+		failAt int
+	}{
+		{name: "metadata probe", write: true, failAt: 1},
+		{name: "artifact probe", write: false, failAt: 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			inner, fail := newFailStore(t)
+			sink := backupsink.New(fail)
+			if tc.write {
+				require.NoError(t, sink.Write(ctx, service.BackupInfo{ID: "someid"}, map[uint64][]byte{1: []byte("x")}, nil))
+			}
+			fail.existsErr = errors.New("exists failure")
+			fail.existsFailAt = tc.failAt
+			err := sink.Delete(ctx, "someid")
+			require.ErrorIs(t, err, fail.existsErr)
+			require.Zero(t, fail.deleteCalls, "Delete must not delete after a failed probe")
+			if tc.write {
+				ok, err := inner.Exists([]byte("meta/someid"))
+				require.NoError(t, err)
+				require.True(t, ok, "metadata must survive a failed probe")
+			}
+		})
+	}
 }
 
 func TestSink_Delete_EnvelopeFails(t *testing.T) {
 	ctx := context.Background()
 	_, fail := newFailStore(t)
+	sink := backupsink.New(fail)
+	// The backup must exist: Delete refuses an unknown ID before any delete.
+	require.NoError(t, sink.Write(ctx, service.BackupInfo{ID: "someid"}, map[uint64][]byte{1: []byte("x")}, nil))
 	fail.deleteErr = errors.New("delete envelope failure")
 	fail.deleteFailAt = 2 // fail on the second Delete (envelope key)
-
-	sink := backupsink.New(fail)
 	err := sink.Delete(ctx, "someid")
 	require.ErrorIs(t, err, fail.deleteErr, "Delete must propagate an envelope-key deletion error")
 }
@@ -400,10 +448,58 @@ func TestSink_Delete_EnvelopeFails(t *testing.T) {
 func TestSink_Delete_DataFails(t *testing.T) {
 	ctx := context.Background()
 	_, fail := newFailStore(t)
+	sink := backupsink.New(fail)
+	// The backup must exist: Delete refuses an unknown ID before any delete.
+	require.NoError(t, sink.Write(ctx, service.BackupInfo{ID: "someid"}, map[uint64][]byte{1: []byte("x")}, nil))
 	fail.deleteErr = errors.New("delete data failure")
 	fail.deleteFailAt = 3 // fail on the third Delete (data key)
-
-	sink := backupsink.New(fail)
 	err := sink.Delete(ctx, "someid")
 	require.ErrorIs(t, err, fail.deleteErr, "Delete must propagate a data-key deletion error")
+}
+
+func TestSink_Delete_UnknownIDIsNotFound(t *testing.T) {
+	ctx := context.Background()
+	_, fail := newFailStore(t)
+	sink := backupsink.New(fail)
+	err := sink.Delete(ctx, "never-written")
+	var nf *service.BackupNotFoundError
+	require.ErrorAs(t, err, &nf, "Delete of an unknown ID must report BackupNotFoundError")
+	require.Equal(t, "never-written", nf.ID)
+}
+
+func TestSink_Delete_RetryAfterPartialFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		failAt int
+	}{
+		{name: "envelope", failAt: 2},
+		{name: "data", failAt: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			inner, fail := newFailStore(t)
+			sink := backupsink.New(fail)
+			envelope := &service.BackupEnvelope{FormatVersion: 1, ProviderID: "software", KeyRef: "k", WrappedDEK: []byte("x")}
+			require.NoError(t, sink.Write(ctx, service.BackupInfo{ID: "someid"}, map[uint64][]byte{1: []byte("x")}, envelope))
+
+			fail.deleteErr = errors.New("delete failure")
+			fail.deleteFailAt = tc.failAt
+			require.ErrorIs(t, sink.Delete(ctx, "someid"), fail.deleteErr)
+
+			fail.deleteErr = nil
+			require.NoError(t, sink.Delete(ctx, "someid"), "a retry must remove the remaining objects")
+
+			_, err := sink.ReadShards(ctx, "someid")
+			var nf *service.BackupNotFoundError
+			require.ErrorAs(t, err, &nf)
+			for _, key := range []string{"envelope/someid", "data/someid"} {
+				ok, err := inner.Exists([]byte(key))
+				require.NoError(t, err)
+				require.False(t, ok, "%s must be gone after the retry", key)
+			}
+
+			err = sink.Delete(ctx, "someid")
+			require.ErrorAs(t, err, &nf, "a delete after full cleanup must report BackupNotFoundError")
+		})
+	}
 }

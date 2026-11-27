@@ -184,6 +184,62 @@ func TestCompoundIndex_BatchOperations(t *testing.T) {
 	assert.Len(t, keys, 2)
 }
 
+// GetCompoundInBatch reads through the batch: an entry staged in it is seen
+// before commit, and a committed entry the batch deleted is not.
+func TestCompoundIndex_GetCompoundInBatch_ReadsTheBatch(t *testing.T) {
+	s, err := pebbleStorage.New(pebbleStorage.TestConfig(t.TempDir()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+
+	idx, err := NewCompoundIndex(s, IndexConfig{
+		Name:       "test.reactions.MessageID_AuthorUUID",
+		FieldNames: []string{"MessageID", "AuthorUUID"},
+		ValueTypes: []IndexValueType{IndexValueTypeString, IndexValueTypeString},
+		Unique:     true,
+		Type:       IndexTypeUnique,
+	}, testCompoundLogger(t))
+	require.NoError(t, err)
+
+	committed := [][]byte{[]byte("msg-1"), []byte("user-a")}
+	require.NoError(t, idx.PutCompound([]byte("reactions/1"), committed))
+
+	batch := s.Batch()
+	defer func() { _ = batch.Close() }()
+
+	staged := [][]byte{[]byte("msg-2"), []byte("user-b")}
+	require.NoError(t, idx.PutCompoundBatch(batch, []byte("reactions/2"), staged))
+	require.NoError(t, idx.DeleteCompoundBatch(batch, []byte("reactions/1"), committed))
+
+	keys, err := idx.GetCompoundInBatch(batch, staged)
+	require.NoError(t, err)
+	assert.Equal(t, [][]byte{[]byte("reactions/2")}, keys, "an entry staged in the batch is seen")
+
+	keys, err = idx.GetCompoundInBatch(batch, committed)
+	require.NoError(t, err)
+	assert.Empty(t, keys, "a committed entry the batch deleted is not seen")
+
+	keys, err = idx.GetCompound(staged)
+	require.NoError(t, err)
+	assert.Empty(t, keys, "GetCompound reads committed storage only")
+}
+
+// CompoundTuple is equal for two value lists exactly when they index under one
+// tuple: a case-insensitive index folds case.
+func TestCompoundIndex_CompoundTuple_Normalizes(t *testing.T) {
+	idx := newTestCompoundIndex(t, IndexConfig{
+		Name:       "test.users.Org_Email",
+		FieldNames: []string{"Org", "Email"},
+		ValueTypes: []IndexValueType{IndexValueTypeString, IndexValueTypeString},
+		Unique:     true,
+		Type:       IndexTypeUnique,
+	})
+	a := idx.CompoundTuple([][]byte{[]byte("acme"), []byte("A@example.com")})
+	b := idx.CompoundTuple([][]byte{[]byte("acme"), []byte("a@example.com")})
+	c := idx.CompoundTuple([][]byte{[]byte("acme"), []byte("b@example.com")})
+	assert.Equal(t, a, b)
+	assert.NotEqual(t, a, c)
+}
+
 func TestCompoundIndex_Clear(t *testing.T) {
 	idx := newTestCompoundIndex(t, IndexConfig{
 		Name:       "test.messages.ConversationID_Timestamp",
@@ -365,6 +421,42 @@ func TestCompoundIndex_ScanCompound_WithRangeBounds(t *testing.T) {
 	result, err := idx.ScanCompound([][]byte{[]byte("conv-1")}, []byte("1000"), []byte("2500"))
 	require.NoError(t, err)
 	assert.Equal(t, []string{"messages/1", "messages/2"}, scanEntityKeys(result))
+}
+
+// TestCompoundIndex_ScanCompound_CaseSensitiveRangeBounds checks that a
+// case-sensitive index keeps the range bounds' case: the stored entries and
+// the prefix keep it, so folding only the bounds would miss (red, B) in [A, C).
+func TestCompoundIndex_ScanCompound_CaseSensitiveRangeBounds(t *testing.T) {
+	idx := newTestCompoundIndex(t, IndexConfig{
+		Name:          "test.casescan.Team_State",
+		FieldNames:    []string{"Team", "State"},
+		ValueTypes:    []IndexValueType{IndexValueTypeString, IndexValueTypeString},
+		CaseSensitive: true,
+	})
+
+	require.NoError(t, idx.PutCompound([]byte("messages/1"), [][]byte{[]byte("red"), []byte("B")}))
+	require.NoError(t, idx.PutCompound([]byte("messages/2"), [][]byte{[]byte("red"), []byte("D")}))
+
+	result, err := idx.ScanCompound([][]byte{[]byte("red")}, []byte("A"), []byte("C"))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"messages/1"}, scanEntityKeys(result))
+}
+
+// TestCompoundIndex_ScanCompound_CaseInsensitiveRangeBounds guards the
+// folding path: a case-insensitive index stores (red, b) folded and still
+// finds it with upper-case bounds [A, C).
+func TestCompoundIndex_ScanCompound_CaseInsensitiveRangeBounds(t *testing.T) {
+	idx := newTestCompoundIndex(t, IndexConfig{
+		Name:       "test.casefold.Team_State",
+		FieldNames: []string{"Team", "State"},
+		ValueTypes: []IndexValueType{IndexValueTypeString, IndexValueTypeString},
+	})
+
+	require.NoError(t, idx.PutCompound([]byte("messages/1"), [][]byte{[]byte("red"), []byte("b")}))
+
+	result, err := idx.ScanCompound([][]byte{[]byte("red")}, []byte("A"), []byte("C"))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"messages/1"}, scanEntityKeys(result))
 }
 
 func TestCompoundIndex_DeleteCompoundBatch(t *testing.T) {

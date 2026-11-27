@@ -27,6 +27,7 @@ import {
   clearError,
 } from "./fixtures/wails-mock.ts";
 import type { Page } from "@playwright/test";
+import { webTest, injectWebRestMock, type WebMockState } from "./fixtures/web-mode-mock.ts";
 
 /** Timeout for async operations. */
 const LOAD_TIMEOUT = 10_000;
@@ -293,5 +294,54 @@ test.describe("Admin - Group Management", () => {
     );
     await expect(page.getByText("Edit Group")).toBeVisible();
     await clearError(page, "GroupBinding.Delete");
+  });
+});
+
+// The connect-time admin probes (connection-manager adminViewProbes) offer
+// Groups on its own read route: a role delegated only the group list keeps
+// the admin section and its Groups view, and a refused group list hides it.
+webTest.describe("Admin - Groups nav probe", () => {
+  const state: WebMockState = {
+    sealStatus: { sealed: false, initialized: false, strategy: "none", hardware_backed: false },
+    databases: [{ name: "default", backend: "pebble", status: "open" }],
+  };
+  // The read route of every other admin view a delegated role may hold.
+  const otherRoutes = [
+    "**/admin/topology",
+    "**/v1/tenants/list",
+    "**/peers",
+    "**/v1/rebalance/report",
+    "**/users/list**",
+    "**/roles/list**",
+    "**/v1/volume-pools/list",
+    "**/certs/list**",
+    "**/v1/credentials",
+    "**/v1/backups/list",
+    "**/v1/audit/events**",
+  ];
+
+  async function refuse(page: Page, pattern: string): Promise<void> {
+    await page.route(pattern, (route) =>
+      route.fulfill({ status: 403, contentType: "application/json", body: '{"error":"forbidden"}' }),
+    );
+  }
+
+  webTest("keeps Groups for a role delegated only the group list", async ({ page }) => {
+    await injectWebRestMock(page, state);
+    for (const pattern of otherRoutes) await refuse(page, pattern);
+    await page.goto("/");
+    const aside = page.locator("aside");
+    await expect(aside.getByText("Groups", { exact: true })).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await expect(aside.getByText("Users", { exact: true })).toHaveCount(0);
+    await expect(aside.getByText("Tenants", { exact: true })).toHaveCount(0);
+  });
+
+  webTest("hides Groups when the group list is refused", async ({ page }) => {
+    await injectWebRestMock(page, state);
+    await refuse(page, "**/groups/list**");
+    await page.goto("/");
+    const aside = page.locator("aside");
+    await expect(aside.getByText("Users", { exact: true })).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await expect(aside.getByText("Groups", { exact: true })).toHaveCount(0);
   });
 });

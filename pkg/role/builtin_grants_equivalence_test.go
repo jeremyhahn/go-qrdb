@@ -168,6 +168,8 @@ var goldenAdminPermissions = []permission.Permission{
 	permission.RolesReconcileAll,
 	permission.VolumePoolCreate, permission.VolumePoolList, permission.VolumePoolRead,
 	permission.VolumePoolUpdate, permission.VolumePoolDelete,
+	// volume_pools:move (start/cancel a tenant move, row 925) is ScopeCross: effective only for system-tenant Admin.
+	permission.VolumePoolMove,
 	permission.RegistrationConfigRead, permission.RegistrationConfigUpdate,
 	permission.CertsRevokeCross,
 	permission.SecretsRead, permission.SecretsWrite, permission.SecretsDelete,

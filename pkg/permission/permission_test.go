@@ -620,8 +620,10 @@ func TestAll_TotalCount(t *testing.T) {
 	//   device:share, device:sync; ScopeSelf) + 1 passwords:override_ownership
 	//   (ScopeSelf, Admin and Security Officer) + 7 IAM groups perms
 	//   (groups:create/read/update/delete/list/add_member/remove_member;
-	//   ScopeSelf, granted like their roles:* counterparts) = 424 total.
-	const expectedTotal = 424
+	//   ScopeSelf, granted like their roles:* counterparts)
+	// + 1 volume_pools:move, starting and cancelling a tenant's move
+	//   between volume pools (ScopeCross) = 425 total.
+	const expectedTotal = 425
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)

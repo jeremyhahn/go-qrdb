@@ -45,6 +45,7 @@ func (s *Server) handleIndexCreate(ctx context.Context, payload []byte) ([]byte,
 		// site now that the engine derives the index's case behaviour from the
 		// config instead of hardcoding CaseSensitive:true (go-qrdb#34).
 		CaseSensitive: !req.GetCaseInsensitive(),
+		KeyPrefix:     req.GetKeyPrefix(),
 	}
 	if req.GetNumeric() {
 		cfg.ValueType = index.IndexValueTypeNumeric

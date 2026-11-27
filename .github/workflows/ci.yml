@@ -1594,6 +1594,12 @@ jobs:
         if: ${{ always() && runner.environment != 'github-hosted' }}
         run: scripts/ci-image.sh prune 24
 
+      # A runner killed mid-job never ran its teardown or its EXIT traps:
+      # drop the dangling CI volumes of runs that ended over 3 h ago.
+      - name: Sweep stale CI volumes
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: scripts/ci-sweep-volumes.sh
+
   # Every stage below runs its `make` target in the toolchain image as its own
   # step, through scripts/in-toolchain-image.sh, which copies the checkout
   # into the container. A failed step names its stage; `if: !cancelled()` runs
@@ -1762,6 +1768,12 @@ jobs:
         if: ${{ always() && runner.environment != 'github-hosted' }}
         run: scripts/ci-image.sh prune 24
 
+      # A runner killed mid-job never ran its teardown or its EXIT traps:
+      # drop the dangling CI volumes of runs that ended over 3 h ago.
+      - name: Sweep stale CI volumes
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: scripts/ci-sweep-volumes.sh
+
   # v1.27.0 (ruling 211): `make lint-gates` beside `make lint`, on the PR tier.
   lint-gates:
     if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
@@ -1899,6 +1911,12 @@ jobs:
       - name: Prune old CI images
         if: ${{ always() && runner.environment != 'github-hosted' }}
         run: scripts/ci-image.sh prune 24
+
+      # A runner killed mid-job never ran its teardown or its EXIT traps:
+      # drop the dangling CI volumes of runs that ended over 3 h ago.
+      - name: Sweep stale CI volumes
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: scripts/ci-sweep-volumes.sh
 
   image:
     name: Devcontainer image [build]
@@ -2093,6 +2111,12 @@ jobs:
         if: ${{ always() && runner.environment != 'github-hosted' }}
         run: scripts/ci-image.sh prune 24
 
+      # A runner killed mid-job never ran its teardown or its EXIT traps:
+      # drop the dangling CI volumes of runs that ended over 3 h ago.
+      - name: Sweep stale CI volumes
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: scripts/ci-sweep-volumes.sh
+
   # CUSTOMIZE (go-qrdb, ruling 211, DS-7377): `make coverage` is ONE
   # repo-wide gate, measured in legs. Each leg is
   # `make coverage-leg COVER_LEG=<leg>` on a runner of its own, which writes
@@ -2245,6 +2269,12 @@ jobs:
       - name: Prune old CI images
         if: ${{ always() && runner.environment != 'github-hosted' }}
         run: scripts/ci-image.sh prune 24
+
+      # A runner killed mid-job never ran its teardown or its EXIT traps:
+      # drop the dangling CI volumes of runs that ended over 3 h ago.
+      - name: Sweep stale CI volumes
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: scripts/ci-sweep-volumes.sh
 
   # CUSTOMIZE (go-qrdb, DS-7377): the one coverage gate over every leg's
   # profile. It needs coverage, so a failed leg skips it and CI Gate fails on
@@ -2607,6 +2637,12 @@ jobs:
         if: ${{ always() && runner.environment != 'github-hosted' }}
         run: scripts/ci-image.sh prune 24
 
+      # A runner killed mid-job never ran its teardown or its EXIT traps:
+      # drop the dangling CI volumes of runs that ended over 3 h ago.
+      - name: Sweep stale CI volumes
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: scripts/ci-sweep-volumes.sh
+
   # CUSTOMIZE (go-qrdb, DS-7377): `make test-sdk` in legs, the Makefile's
   # TEST_SDK_LEGS, each `make test-sdk-leg SDK_LEG=<leg>`; together they are
   # exactly `make test-sdk`. The whole measured 29.8 minutes (run 76127),
@@ -2712,6 +2748,11 @@ jobs:
         env:
           SDK_LEG: ${{ matrix.leg }}
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k test-sdk-leg SDK_LEG='$SDK_LEG' GOTEST_TIMEOUT=145m GO_BUILD_TAGS='$GO_BUILD_TAGS'"
+      - name: make test-objstore-cloud
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && matrix.leg == 'sdk' }}
+        env:
+          SDK_LEG: ${{ matrix.leg }}
+        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k test-objstore-cloud GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
       - name: Save the Go caches (main)
         if: ${{ !cancelled() && env.CI_CACHE_SAVE == 'true' && runner.environment == 'github-hosted' }}
@@ -2731,6 +2772,12 @@ jobs:
       - name: Prune old CI images
         if: ${{ always() && runner.environment != 'github-hosted' }}
         run: scripts/ci-image.sh prune 24
+
+      # A runner killed mid-job never ran its teardown or its EXIT traps:
+      # drop the dangling CI volumes of runs that ended over 3 h ago.
+      - name: Sweep stale CI volumes
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: scripts/ci-sweep-volumes.sh
 
   # CUSTOMIZE (go-qrdb, #674): the self-spawned integration suites, one
   # feature list per shard; `make -s print-integration-features` is every
@@ -2849,6 +2896,7 @@ jobs:
         run: make integration-test-features IT_FEATURES="$IT_FEATURES" IT_FEATURES_IN=image IT_PROJECT="$IT_PROJECT" IT_PREBUILT=1
 
       # integration-test downs its own stack; this covers a cancelled shard.
+      # docker-down-it also sweeps the stale volumes of runs whose runner died.
       - name: Tear down (shard ${{ matrix.shard }})
         if: always()
         run: make docker-down-it IT_PROJECT="$IT_PROJECT"
@@ -3120,6 +3168,12 @@ jobs:
         if: ${{ always() && runner.environment != 'github-hosted' }}
         run: scripts/ci-image.sh prune 24
 
+      # A runner killed mid-job never ran its teardown or its EXIT traps:
+      # drop the dangling CI volumes of runs that ended over 3 h ago.
+      - name: Sweep stale CI volumes
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: scripts/ci-sweep-volumes.sh
+
   # CUSTOMIZE (go-qrdb): the TypeScript SDK and the desktop frontend, which
   # rotted unseen while they had no CI. `make test-typescript` runs the SDK's
   # npm ci, tsc, npm test (vitest, and the wire contract test pinning the
@@ -3261,6 +3315,10 @@ jobs:
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
           echo "IT_IMAGE=$ID" >> "$GITHUB_ENV"
 
+      - name: Sweep stale CI volumes
+        if: runner.environment != 'github-hosted'
+        run: scripts/ci-sweep-volumes.sh
+
       - name: Soak (integration suite, looped)
         run: |
           deadline=$(( $(date +%s) + SOAK_MINUTES * 60 ))
@@ -3288,10 +3346,17 @@ jobs:
           if [ -s "$RUNNER_TEMP/soak-project" ]; then read -r p < "$RUNNER_TEMP/soak-project"; fi
           make docker-down-it IT_PROJECT="$p"
           rm -f "$RUNNER_TEMP/soak-project"
+          scripts/ci-sweep-volumes.sh --own
 
       - name: Prune old CI images
         if: ${{ always() && runner.environment != 'github-hosted' }}
         run: scripts/ci-image.sh prune 24
+
+      # A runner killed mid-job never ran its teardown or its EXIT traps:
+      # drop the dangling CI volumes of runs that ended over 3 h ago.
+      - name: Sweep stale CI volumes
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: scripts/ci-sweep-volumes.sh
 
   # #1619 (rulings 819, 841): the cluster proof itself, nightly. The per-PR
   # test-clusterproof job tests only the harness; this job builds the release

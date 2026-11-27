@@ -32,7 +32,7 @@ func newVolumePoolCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "volume-pool",
 		Short: "Volume pool management",
-		Long:  "Create, inspect, update and delete named volume pools in the replicated catalog, and list the tenants assigned to one.",
+		Long:  "Create, inspect, update and delete named volume pools in the replicated catalog, list the tenants assigned to one, and move a tenant between pools.",
 	}
 
 	cmd.AddCommand(
@@ -42,6 +42,9 @@ func newVolumePoolCmd() *cobra.Command {
 		newVolumePoolUpdateCmd(),
 		newVolumePoolDeleteCmd(),
 		newVolumePoolTenantsCmd(),
+		newVolumePoolMoveTenantCmd(),
+		newVolumePoolGetMoveCmd(),
+		newVolumePoolCancelMoveCmd(),
 	)
 
 	return cmd
@@ -237,6 +240,107 @@ func newVolumePoolTenantsCmd() *cobra.Command {
 	cmd.Flags().StringVar(&pageToken, "page-token", "", "Resume after a previous page")
 
 	return cmd
+}
+
+func newVolumePoolMoveTenantCmd() *cobra.Command {
+	var toPool string
+	var allowUnencrypted bool
+	cmd := &cobra.Command{
+		Use:   "move-tenant <tenant> --to <pool>",
+		Short: "Move a tenant's volume to another pool",
+		Long: "Start moving a tenant's volume to another pool the tenant is entitled to. The move runs in the " +
+			"background, one replica at a time; follow it with get-move. A move from an encrypted pool to an " +
+			"unencrypted one needs --allow-unencrypted-destination: it drops the tenant's at-rest encryption and " +
+			"is audited (ruling 1234). Requires volume_pools:move.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			m, err := client.VolumePools().MoveTenant(cmd.Context(), &transport.MoveVolumePoolTenantRequest{
+				TenantID:                    args[0],
+				ToPool:                      toPool,
+				AllowUnencryptedDestination: allowUnencrypted,
+			})
+			if err != nil {
+				return err
+			}
+			return printVolumePoolMove(m)
+		},
+	}
+	cmd.Flags().StringVar(&toPool, "to", "", "Destination pool (required)")
+	_ = cmd.MarkFlagRequired("to")
+	cmd.Flags().BoolVar(&allowUnencrypted, "allow-unencrypted-destination", false,
+		"Allow a move from an encrypted pool to an unencrypted one; this drops the tenant's at-rest encryption and is audited")
+	return cmd
+}
+
+func newVolumePoolGetMoveCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "get-move <tenant>",
+		Short: "Show a tenant's volume move in progress",
+		Long:  "Show a tenant's volume move in progress: its state, the nodes copied, pending and retired, and the current step. A tenant with no move answers not found.",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			m, err := client.VolumePools().GetMove(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			return printVolumePoolMove(m)
+		},
+	}
+}
+
+func newVolumePoolCancelMoveCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "cancel-move <tenant>",
+		Short: "Cancel a tenant's volume move before cut over",
+		Long:  "Cancel a tenant's volume move before cut over; the move rolls back to the source pool. Requires volume_pools:move.",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			m, err := client.VolumePools().CancelMove(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			return printVolumePoolMove(m)
+		},
+	}
+}
+
+// printVolumePoolMove prints a move journal in the selected output format.
+func printVolumePoolMove(m *transport.VolumePoolMove) error {
+	switch outputFormat {
+	case "json":
+		return printJSON(m)
+	case "yaml":
+		return printYAML(m)
+	default:
+		_, _ = fmt.Fprintf(outputWriter, "Tenant:     %s\n", m.TenantID)
+		_, _ = fmt.Fprintf(outputWriter, "From pool:  %s\n", m.FromPool)
+		_, _ = fmt.Fprintf(outputWriter, "To pool:    %s\n", m.ToPool)
+		_, _ = fmt.Fprintf(outputWriter, "State:      %s\n", m.State)
+		_, _ = fmt.Fprintf(outputWriter, "Reserved:   %s\n", formatBytes(m.ReservedBytes))
+		if m.EncryptionDropped {
+			_, _ = fmt.Fprintf(outputWriter, "Encryption: dropped\n")
+		}
+		if m.StepNode != "" {
+			_, _ = fmt.Fprintf(outputWriter, "Step node:  %s (failed attempts %d)\n", m.StepNode, m.StepAttempts)
+		}
+		if m.Error != "" {
+			_, _ = fmt.Fprintf(outputWriter, "Error:      %s\n", m.Error)
+		}
+		rows := make([][]string, 0, len(m.NodesCopied)+len(m.NodesPending))
+		for _, n := range m.NodesCopied {
+			rows = append(rows, []string{n, "copied"})
+		}
+		for _, n := range m.NodesPending {
+			rows = append(rows, []string{n, "pending"})
+		}
+		for _, n := range m.NodesRetired {
+			rows = append(rows, []string{n, "retired"})
+		}
+		if len(rows) > 0 {
+			printTable([]string{"NODE", "STEP"}, rows)
+		}
+		return nil
+	}
 }
 
 // volumePoolRow converts a VolumePool into a table row for tabular output.

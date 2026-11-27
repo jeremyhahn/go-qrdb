@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -449,6 +450,94 @@ func TestQUICRoundTrip_VolumePools(t *testing.T) {
 	}
 	if err := tr.DeletePool(ctx, "slow"); err != nil || seen().deleted != "slow" {
 		t.Fatalf("DeletePool: err = %v, deleted %q", err, seen().deleted)
+	}
+}
+
+// TestQUICRoundTrip_VolumePools_MoveVerbs: MoveTenant, GetMove and CancelMove
+// carry the tenant (and target pool) to the volume service, decode the move
+// it answers, and surface its not-found naming the tenant.
+func TestQUICRoundTrip_VolumePools_MoveVerbs(t *testing.T) {
+	admitted := time.Date(2026, 11, 23, 10, 0, 0, 0, time.UTC)
+	move := func(id, state string) *volume.Move {
+		return &volume.Move{TenantID: id, FromPool: "default", ToPool: "fast", State: state,
+			NodesCopied: []string{"n0"}, NodesPending: []string{"n1"}, StepNode: "n1", StepAttempts: 1,
+			ReservedBytes: 64, TenantRecorded: true, AdmittedAt: admitted}
+	}
+	got := make(chan string, 8)
+	svc := &volumetest.Service{T: t,
+		MoveTenantFn: func(_ context.Context, req volume.MoveTenantRequest) (*volume.Move, error) {
+			if req.AllowUnencryptedDestination {
+				got <- "MoveTenant " + req.TenantID + "->" + req.ToPool + " allow_unencrypted_destination"
+				m := move(req.TenantID, "copying")
+				m.EncryptionDropped = true
+				return m, nil
+			}
+			got <- "MoveTenant " + req.TenantID + "->" + req.ToPool
+			return move(req.TenantID, "copying"), nil
+		},
+		GetMoveFn: func(_ context.Context, id string) (*volume.Move, error) {
+			got <- "GetMove " + id
+			if id != "acme" {
+				return nil, &volume.MoveNotFoundError{TenantID: id}
+			}
+			return move(id, "copying"), nil
+		},
+		CancelMoveFn: func(_ context.Context, id string) (*volume.Move, error) {
+			got <- "CancelMove " + id
+			if id != "acme" {
+				return nil, &volume.MoveNotFoundError{TenantID: id}
+			}
+			return move(id, "aborting"), nil
+		},
+	}
+	tr := startRoundTripServer(t, quicserver.WithVolumeService(svc))
+	ctx := context.Background()
+
+	check := func(method string, m *transport.VolumePoolMove, err error, wantReq, state string) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("%s: %v", method, err)
+		}
+		if r := <-got; r != wantReq {
+			t.Fatalf("%s: server got %q, want %q", method, r, wantReq)
+		}
+		if m.TenantID != "acme" || m.FromPool != "default" || m.ToPool != "fast" || m.State != state ||
+			len(m.NodesCopied) != 1 || m.NodesCopied[0] != "n0" || len(m.NodesPending) != 1 || m.NodesPending[0] != "n1" ||
+			m.StepNode != "n1" || m.StepAttempts != 1 || m.ReservedBytes != 64 || !m.TenantRecorded ||
+			!m.AdmittedAt.Equal(admitted) {
+			t.Fatalf("%s decoded move = %+v", method, m)
+		}
+	}
+	m, err := tr.MoveTenant(ctx, &transport.MoveVolumePoolTenantRequest{TenantID: "acme", ToPool: "fast"})
+	check("MoveTenant", m, err, "MoveTenant acme->fast", "copying")
+	if m.EncryptionDropped {
+		t.Fatalf("MoveTenant without the flag decoded encryptionDropped: %+v", m)
+	}
+	m, err = tr.MoveTenant(ctx, &transport.MoveVolumePoolTenantRequest{
+		TenantID: "acme", ToPool: "fast", AllowUnencryptedDestination: true,
+	})
+	check("MoveTenant allow", m, err, "MoveTenant acme->fast allow_unencrypted_destination", "copying")
+	if !m.EncryptionDropped {
+		t.Fatalf("MoveTenant with the flag: encryptionDropped not decoded: %+v", m)
+	}
+	m, err = tr.GetMove(ctx, "acme")
+	check("GetMove", m, err, "GetMove acme", "copying")
+	m, err = tr.CancelMove(ctx, "acme")
+	check("CancelMove", m, err, "CancelMove acme", "aborting")
+
+	if _, err := tr.MoveTenant(ctx, nil); err == nil {
+		t.Fatal("MoveTenant(nil): want an error")
+	}
+	for method, call := range map[string]func(context.Context, string) (*transport.VolumePoolMove, error){
+		"GetMove": tr.GetMove, "CancelMove": tr.CancelMove,
+	} {
+		m, err := call(ctx, "nobody")
+		if err == nil || m != nil || !strings.Contains(err.Error(), "nobody") {
+			t.Fatalf("%s(nobody) = %+v, %v; want a not-found error naming the tenant", method, m, err)
+		}
+		if r := <-got; r != method+" nobody" {
+			t.Fatalf("%s(nobody): server got %q", method, r)
+		}
 	}
 }
 

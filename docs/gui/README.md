@@ -1,6 +1,6 @@
 # GUI System
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-23
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-11-12
 > Companion to `docs/desktop-gui/`, which is the contract.
 
 <!--
@@ -99,7 +99,7 @@ The desktop build embeds the compiled frontend assets:
 var assets embed.FS
 ```
 
-The Wails application registers 31 Go binding objects, each wrapping a
+The Wails application registers 34 Go binding objects, each wrapping a
 domain of the Go SDK (the authoritative list is `guiBindings.bindList()`
 in `cmd/qrdb/gui_desktop_bindings.go`, pinned by
 `TestGUIBindings_AllBindingsPresent`):
@@ -129,6 +129,7 @@ in `cmd/qrdb/gui_desktop_bindings.go`, pinned by
 | `SealBinding`              | Seal/unseal             |
 | `ConfigBinding`            | App config state        |
 | `TenantBinding`            | Tenant management       |
+| `VolumePoolBinding`        | Volume pools            |
 | `BackupBinding`            | Backup/restore          |
 | `OfficerBinding`           | Share holders           |
 | `CeremonyBinding`          | Initialization ceremony |
@@ -136,6 +137,7 @@ in `cmd/qrdb/gui_desktop_bindings.go`, pinned by
 | `LockBinding`              | Row locks               |
 | `CredentialBinding`        | Named credentials       |
 | `AuditBinding`             | Audit log               |
+| `VlogBinding`              | Verifiable logs         |
 | `DaemonBinding`            | Local qrdbd lifecycle   |
 
 `OfficerBinding` exposes share-holder operations to the desktop GUI for
@@ -242,7 +244,7 @@ database exposes every engine, so the tabs are not gated by engine:
 
 | Tab          | Description                              |
 |--------------|------------------------------------------|
-| Data         | Browse, search, create, edit key-values  |
+| Data         | Browse, search, create, edit key-values (`KVExplorer.svelte`): Go to key, Keys only, as-of revision browse, value at revision, restore and compact to a revision, lease id on save |
 | Collections  | Collection management                    |
 | Indexes      | Create, drop, query secondary indexes    |
 | Transactions | Build and execute transactions           |
@@ -252,6 +254,7 @@ database exposes every engine, so the tabs are not gated by engine:
 | Locks        | Row locks                                |
 | Time Series  | Write, query, aggregate time-series data |
 | Vectors      | Namespace CRUD, search, index management |
+| Verifiable Logs | Create logs, append and read entries, inclusion and consistency proofs, sign heads, rotate the head-signing key, expire bodies (`VlogView.svelte`) |
 | SQL Browser  | Shown only when MySQL or PostgreSQL is enabled for the database |
 | Settings     | Per-database settings, always last       |
 
@@ -262,16 +265,17 @@ The admin navigation (`components/sidebar/AdminNav.svelte`):
 | View             | Description                                    |
 |------------------|------------------------------------------------|
 | Dashboard        | Cluster health, node status, shard overview    |
-| Cluster          | Peer membership, add/remove members; Raft mode only |
+| Cluster          | Peer membership, add/remove members; Raft mode only. In browser mode any server whose topology loads with one node or more counts as Raft, so a single-node Raft server shows Cluster and Topology and can mint its first join token; a server whose topology cannot be read stays standalone |
 | Topology         | Shard topology; Raft mode only                 |
 | Rebalance        | Shard rebalancing; Raft mode only              |
 | Seal Manager     | Initialize, seal, unseal, rotate, rekey; for Shamir barriers a Security Officers panel handles CSR enrollment, claim status, and quorum seal votes (single-admin seal is blocked). When no encryption barrier is configured (strategy `none`) it shows an "Encryption Not Configured" panel — no Seal/Unseal controls, since there is nothing to seal — with [migration guidance](../seal/enabling-encryption.md) for enabling encryption |
-| Tenants          | Tenant lifecycle, per-tenant barrier strategy and officer management |
-| Users            | Create, edit, enable/disable user accounts     |
+| Tenants          | Tenant lifecycle, per-tenant barrier strategy and officer management, volume pool picker; a tenant's detail view edits quotas, entitlements and trust anchors |
+| Users            | Create, edit, enable/disable, delete user accounts; add and remove certificate bindings; look a user up by certificate thumbprint; invite a user |
+| Volume Pools     | Create, edit, delete volume pools and list the tenants on each |
 | Roles            | Create, edit, assign/unassign roles            |
 | Certificates     | Generate, export, revoke client certificates   |
 | Credentials      | Named credential management                    |
-| Databases        | Create, drop, configure databases and protocols |
+| Databases        | Create, drop, configure databases and protocols; a database's detail view manages its Shamir holders (initialize, register, revoke, unenrol, rekey) |
 | Backups          | Backup and restore                             |
 | Daemon           | Start/stop the local `qrdbd` process; shown only for **external** profiles on desktop builds — embedded ("Local Server") profiles run in-process and hide this panel |
 | Audit Log        | Browse and search audit trail entries          |
@@ -284,11 +288,66 @@ Settings tab, toggle the MySQL and PostgreSQL wire protocols for that
 database. The etcd-compatible API is chosen when the database is created
 (`StepDatabaseSQL.svelte` in the database wizard), for Raft databases only.
 
+#### Database Wizard Request
+
+The database wizard (`database-wizard.svelte.ts`) keeps UI-only state,
+such as the engine and mode choices, that the create call does not take.
+The REST create handler refuses unknown JSON fields, so on apply the wizard
+sends only the fields `POST /v1/databases` accepts. The wizard keys its
+Raft steps on the node count, so a single-node Raft server keeps the
+single-node steps.
+
 ## Authentication
 
 No login screen exists. Authentication is handled entirely via mTLS
 client certificates at the TLS handshake level. The identity displayed
 in the GUI header is extracted from the client certificate Subject CN.
+An administrator invites a user from the Users view (`InviteUserModal.svelte`);
+the invited user redeems the invitation with **Redeem Invitation** in the
+connection manager (`RedeemInvitationModal.svelte`).
+
+## Testing
+
+The frontend has three Playwright tiers, each with its own config in
+`cmd/qrdb/frontend/`. Install the browser once with
+`npx playwright install chromium-headless-shell`.
+
+| Tier | Config | Specs | Backend | Run |
+|------|--------|-------|---------|-----|
+| Mocked UI | `playwright.config.ts` | `e2e/` | none: the backend is mocked; the built UI is served by `vite preview` | `npm run test:e2e` |
+| API-only (real backend) | `playwright.real.config.ts` | `e2e/real-backend/` | a real `qrdbd`; specs call the daemon URL directly (no `baseURL`, no UI) | `npm run test:e2e:real` |
+| DOM (real backend) | `playwright.dom.config.ts` | `e2e/dom/` | a real `qrdbd` per spec, driven through the browser UI | `npx playwright test --config=playwright.dom.config.ts` |
+
+The mocked tier is fast and covers every view and error path; the two real
+tiers prove the UI and SDK against the server's actual routes and wire
+format. Both real tiers need the daemon binary: build it with
+`make build-server` (the fixtures use `bin/qrdbd`, or the path in
+`QRDBD_BIN`), and the SDK with `npm ci && npm run build` in
+`sdk/typescript/`.
+
+### DOM tier
+
+`playwright.dom.config.ts` runs one worker and starts the Vite dev server
+on `https://localhost:5273`, which proxies API calls to the daemon at
+`QRDB_PROXY_TARGET` (`https://127.0.0.1:63012`). Each spec boots its own
+daemon through a fixture in `e2e/dom/fixtures/` and stops it afterwards:
+
+- `dom-daemon.ts` — `startDaemon(options)` spawns one `qrdbd` (a
+  single-node Raft server on fixed ports) and waits until it is ready.
+  Options:
+
+  | Option | Effect |
+  |--------|--------|
+  | `seal` | `none` (no barrier, auth off), `none-committed` (barrier enabled with strategy `none`, still needs initialize), `passphrase` or `shamir` (`shamirThreshold`/`shamirTotal`, default 2 of 3) |
+  | `sm` | state machine; `mvcc` for specs that need an MVCC shard (row locks) |
+  | `tlsClientAuth` | `none` (default) or `request`, so officers can present mTLS certificates during the share claim |
+  | `volumePools` | named `dir` volume pools, granted to new tenants through the default entitlements; needs a seal other than `none` |
+  | `tenantAdmin` | turns auth on, runs the first-boot ceremony, creates the tenant with a first admin and has the Vite proxy present that admin's certificate; needs a seal other than `none` |
+
+  `stopDaemon` stops the process and removes its data directory;
+  `waitForHealthy` waits for `/health` after an initialize or unseal.
+- `dom-cluster.ts` — `startCluster()` boots a three-node Raft cluster;
+  the UI talks to node 1 through the proxy. `stopCluster` tears it down.
 
 ## Makefile Targets
 

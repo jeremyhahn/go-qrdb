@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"log/slog"
 	"maps"
 	"sync"
@@ -324,24 +325,14 @@ func (s *PebbleVectorStorage) UpsertVector(ctx context.Context, namespace string
 		return err
 	}
 
-	// Delete old metadata indexes if this is an update
-	if vec.Version > 1 {
-		oldVectorKey := schema.EncodeVectorKey(namespace, vec.ID, vec.Version-1)
-		oldValue, closer, err := s.db.Get(oldVectorKey)
-		if err == nil {
-			oldVec, decodeErr := schema.DecodeVectorValue(oldValue)
-			_ = closer.Close() //nolint:gosec // G104: Error deliberately ignored - cleanup during error path
-			if decodeErr == nil {
-				// Delete old metadata indexes
-				for field, fieldValue := range oldVec.Metadata {
-					metaKey := schema.EncodeMetadataKey(namespace, field, fieldValue, vec.ID, vec.Version-1)
-					_ = batch.Delete(metaKey, pebble.NoSync) //nolint:gosec // G104: Error deliberately ignored - batch operation, checked on commit
-
-					reverseKey := schema.EncodeReverseKey(namespace, vec.ID, field, vec.Version-1)
-					_ = batch.Delete(reverseKey, pebble.NoSync) //nolint:gosec // G104: Error deliberately ignored - batch operation, checked on commit
-				}
-			}
-		}
+	// Delete the index entries of the record this write replaces, before the
+	// new ones are set: a re-write at the same version (UpdateMetadata
+	// writes Version 1) would otherwise leave a changed field's old value
+	// indexed. Pebble applies batch operations in order, so an unchanged
+	// field is deleted and then set again.
+	if err := deleteReplacedIndexEntries(s.db, batch, namespace, vec); err != nil {
+		s.metrics.errors.Inc()
+		return err
 	}
 
 	// Create metadata indexes
@@ -374,6 +365,52 @@ func (s *PebbleVectorStorage) UpsertVector(ctx context.Context, namespace string
 	s.metrics.bytesWritten.Add(float64(len(value)))
 	s.metrics.vectorsStored.Inc()
 
+	return nil
+}
+
+// deleteStoredIndexEntries adds to batch a delete of every metadata index
+// key and reverse index key of the vector stored in db under namespace, id
+// and version. Nothing is deleted when no such vector is stored or it does
+// not decode.
+func deleteStoredIndexEntries(r pebble.Reader, batch *pebble.Batch, namespace string, id, version uint64) error {
+	if storedRecordReaderHook != nil {
+		r = storedRecordReaderHook(r)
+	}
+	value, closer, err := r.Get(schema.EncodeVectorKey(namespace, id, version))
+	if errors.Is(err, pebble.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read the record version %d of vector %d replaces: %w", version, id, err)
+	}
+	stored, decodeErr := schema.DecodeVectorValue(value)
+	_ = closer.Close() //nolint:gosec // G104: the value is decoded; a close error leaves nothing to undo
+	if decodeErr != nil {
+		return fmt.Errorf("decode the record version %d of vector %d replaces: %w", version, id, decodeErr)
+	}
+	for field, fieldValue := range stored.Metadata {
+		_ = batch.Delete(schema.EncodeMetadataKey(namespace, field, fieldValue, id, version), pebble.NoSync) //nolint:gosec // G104: batch operation, checked on commit
+		_ = batch.Delete(schema.EncodeReverseKey(namespace, id, field, version), pebble.NoSync)              //nolint:gosec // G104: batch operation, checked on commit
+	}
+	return nil
+}
+
+// storedRecordReaderHook, when set by a test, wraps the reader
+// deleteStoredIndexEntries reads the replaced record through, so a test
+// can fault it.
+var storedRecordReaderHook func(pebble.Reader) pebble.Reader
+
+// deleteReplacedIndexEntries deletes the index entries of the records a
+// write of vec replaces: the same version and, past version 1, the one
+// before it. A record that cannot be read or decoded fails the write, so
+// its stale index entries are never left behind a committed upsert.
+func deleteReplacedIndexEntries(r pebble.Reader, batch *pebble.Batch, namespace string, vec *VectorValue) error {
+	if err := deleteStoredIndexEntries(r, batch, namespace, vec.ID, vec.Version); err != nil {
+		return err
+	}
+	if vec.Version > 1 {
+		return deleteStoredIndexEntries(r, batch, namespace, vec.ID, vec.Version-1)
+	}
 	return nil
 }
 

@@ -722,6 +722,37 @@ func TestStoragePebbleIndex_Clear_CanPutAfterClear(t *testing.T) {
 	}
 }
 
+// ClearBatch removes the committed entries and the ones staged earlier in the
+// same batch, so nothing queued before the clear survives its commit.
+func TestStoragePebbleIndex_ClearBatch_DropsCommittedAndStagedEntries(t *testing.T) {
+	idx := newTestStoragePebbleIndex(t, normalConfig("test"))
+	if err := idx.Put([]byte("1"), []byte("alpha")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	batch := idx.storage.Batch()
+	defer func() { _ = batch.Close() }()
+	if err := idx.PutBatch(batch, []byte("2"), []byte("beta")); err != nil {
+		t.Fatalf("PutBatch: %v", err)
+	}
+	if err := idx.ClearBatch(batch); err != nil {
+		t.Fatalf("ClearBatch: %v", err)
+	}
+	if err := batch.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	for _, v := range []string{"alpha", "beta"} {
+		ids, err := idx.Get([]byte(v))
+		if err != nil {
+			t.Fatalf("Get(%s): %v", v, err)
+		}
+		if len(ids) != 0 {
+			t.Errorf("Get(%s) after ClearBatch: got %q, want none", v, ids)
+		}
+	}
+}
+
 func TestStoragePebbleIndex_Clear_DoesNotAffectOtherIndexes(t *testing.T) {
 	s, err := pebbleStorage.New(pebbleStorage.TestConfig(t.TempDir()))
 	if err != nil {

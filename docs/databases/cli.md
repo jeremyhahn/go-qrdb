@@ -22,6 +22,7 @@ There is no `--engine` flag; passing one is an unknown-flag error. Every databas
 | `--data-dir` | string | — | dedicated data directory; **required for a per-database barrier**. Honoured for the system tenant only |
 | `--cluster-mode` | string | unset (server applies `local`) | `local \| distributed` — **raft backend only** |
 | `--replicas` | int | unset (server applies `1`) | replication factor — **raft backend only** |
+| `--state-storage` | string | unset (node `database_defaults`) | `pebble \| file \| memory` — the Raft group state's store; create records the resolved value |
 | `--barrier-enabled` | bool | false | enable a per-database encryption barrier (**non-raft `--data-dir` database, system tenant only**) |
 | `--barrier-strategy` | string | `passphrase` | `passphrase \| shamir`; `shamir` splits the root key to the database's enrolled share holders (see [Share-holder verbs](#share-holder-verbs-shamir-database-barrier)) instead of taking a passphrase |
 | `--barrier-passphrase` | string | — | passphrase, when strategy is `passphrase` |
@@ -65,7 +66,6 @@ These rows are not yet implemented.
 | `--data-dir` | string | under the tenant's data root | the database's store directory; for volume and raft tenants it must lie under the tenant's root |
 | `--cluster-mode` | string | node default | `local \| distributed` — **raft backend only**, refused otherwise |
 | `--replicas` | int | node default | replication factor — **raft backend only**, refused otherwise |
-| `--raft-state-storage` | string | node default | `pebble \| file \| memory` — the raft state machine's local store (OD-8) |
 | `--barrier-*`, `--etcd*` | | | as above; a barrier is refused on `memory`, etcd is refused on anything but `raft` |
 
 ```bash

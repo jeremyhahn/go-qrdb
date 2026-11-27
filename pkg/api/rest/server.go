@@ -117,6 +117,8 @@ type route struct {
 // Server is the HTTP/2+HTTP/3 REST server for QRDB. It routes requests
 // to the service layer using map-based dispatch for O(1) routing.
 type Server struct {
+	// version is the build version GET /status reports (WithVersion).
+	version           string
 	kvSvc             service.KVServicer
 	adminSvc          service.AdminServicer
 	mvccSvc           service.MVCCKVServicer
@@ -375,6 +377,14 @@ const DefaultMaxBodyBytes = 4 << 20
 
 // ServerOption configures optional Server dependencies.
 type ServerOption func(*Server)
+
+// WithVersion sets the build version GET /status reports in its version
+// field: the value the server binary's --version flag prints.
+func WithVersion(version string) ServerOption {
+	return func(s *Server) {
+		s.version = version
+	}
+}
 
 // WithMaxBodyBytes bounds every request body this server reads. n <= 0
 // resolves to DefaultMaxBodyBytes at construction; there is no way to
@@ -2390,6 +2400,11 @@ func (s *Server) registerRoutes() {
 	s.route(http.MethodPut, "/v1/volume-pools/{pool}", permission.VolumePoolUpdate, s.handleVolumePoolByName)
 	s.route(http.MethodDelete, "/v1/volume-pools/{pool}", permission.VolumePoolDelete, s.handleVolumePoolByName)
 	s.route(http.MethodGet, "/v1/volume-pools/{pool}/tenants", permission.VolumePoolRead, s.handleVolumePoolByName)
+	// Tenant moves between pools (docs/decisions/volume-pool-tenant-moves.md):
+	// {pool} is the destination pool.
+	s.route(http.MethodPost, "/v1/volume-pools/{pool}/tenants/{tenant}/move", permission.VolumePoolMove, s.handleVolumePoolMoveTenant)
+	s.route(http.MethodGet, "/v1/tenants/{tenant}/volume-move", permission.VolumePoolRead, s.handleVolumeMove)
+	s.route(http.MethodDelete, "/v1/tenants/{tenant}/volume-move", permission.VolumePoolMove, s.handleVolumeMove)
 
 	// Tenant path-param routes, including the per-tenant barrier plane. The
 	// barrier sub-routes carry tenant-scoped (ScopeTenantOnly) permissions;

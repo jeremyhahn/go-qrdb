@@ -20,6 +20,7 @@ import type {
     TopologyResponse,
     CapabilitiesResponse,
     MintJoinTokenResponse,
+    MetricFamily,
 
     // MVCC
     MVCCKeyValue,
@@ -36,6 +37,7 @@ import type {
     Op,
     BatchResponse,
     ImportOptions,
+    ImportContentOptions,
     ImportResult,
 
     // Watch
@@ -407,6 +409,13 @@ export interface AdminClient {
      * the server's default TTL.
      */
     mintJoinToken(nodeId: string, ttlSeconds?: number): Promise<MintJoinTokenResponse>;
+    /**
+     * Reports whether this connection can mint join tokens: true on every
+     * authenticated remote transport; on the desktop binding, true only
+     * when the active connection is an authenticated external (remote)
+     * one, never the unauthenticated embedded server.
+     */
+    joinTokenMintable(): Promise<boolean>;
 
     /**
      * Adds a new replica to the specified shard.
@@ -440,6 +449,13 @@ export interface AdminClient {
 
     /** Returns the compile-time feature set of the QRDB binary. */
     capabilities(): Promise<CapabilitiesResponse>;
+
+    /**
+     * Returns the node's Prometheus metrics, parsed from the text
+     * exposition format into metric families. Maps to GET /metrics. The
+     * desktop (Wails) binding rejects with NotImplementedError.
+     */
+    metrics(): Promise<MetricFamily[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -565,6 +581,20 @@ export interface BatchClient {
      * @returns Statistics about the import operation.
      */
     importFile(filePath: string, opts: ImportOptions): Promise<ImportResult>;
+
+    /**
+     * Imports a dataset the caller holds in memory (a browser File or bytes)
+     * over the server's chunked import session: begin, append in 1 MiB
+     * chunks numbered from 0, commit. Any failure aborts the session and
+     * rethrows the original error.
+     *
+     * REST only: the desktop transport imports from a path with importFile.
+     *
+     * @param data - The file content.
+     * @param opts - Import configuration; filename lets "auto" detect the format.
+     * @returns Statistics about the import operation.
+     */
+    importContent(data: Uint8Array | Blob, opts: ImportContentOptions): Promise<ImportResult>;
 
     /**
      * Returns the names of all compiled-in codec types.
@@ -1854,6 +1884,12 @@ export interface EmbeddedServerClient {
      */
     restoreEmbedded(): Promise<void>;
 
+    /**
+     * Returns the saved embedded configuration, the one restoreEmbedded
+     * starts. Rejects when no configuration is saved.
+     */
+    savedConfig(): Promise<EmbeddedConfig>;
+
     /** Removes the saved embedded configuration from disk. */
     clearSavedConfig(): Promise<void>;
 }
@@ -2180,6 +2216,84 @@ export interface VolumePoolClient {
      * @returns One page of the pool's assigned tenants.
      */
     listTenants(pool: string, req?: ListVolumePoolTenantsRequest): Promise<ListVolumePoolTenantsResponse>;
+
+    /**
+     * Starts moving a tenant's volume to another pool the tenant is
+     * entitled to. The move runs in the background, one replica at a time;
+     * follow it with getMove. A move from an encrypted pool to an
+     * unencrypted one is refused unless allowUnencryptedDestination is set:
+     * that drops the tenant's at-rest encryption and is audited
+     * (ruling 1234). Requires `volume_pools:move`.
+     *
+     * @param tenant - The tenant ID.
+     * @param toPool - The destination pool.
+     * @param options - allowUnencryptedDestination permits the
+     *   encrypted-to-unencrypted move; it defaults to false.
+     * @returns The admitted move journal.
+     */
+    moveTenant(
+        tenant: string,
+        toPool: string,
+        options?: { allowUnencryptedDestination?: boolean },
+    ): Promise<VolumePoolMove>;
+
+    /**
+     * Returns a tenant's volume move in progress. A tenant with no move
+     * answers not found. Requires `volume_pools:read`.
+     *
+     * @param tenant - The tenant ID.
+     * @returns The move journal.
+     */
+    getMove(tenant: string): Promise<VolumePoolMove>;
+
+    /**
+     * Cancels a tenant's volume move before cut over; the move rolls back
+     * to the source pool. A tenant with no move answers not found.
+     * Requires `volume_pools:move`.
+     *
+     * @param tenant - The tenant ID.
+     * @returns The move journal as cancelled.
+     */
+    cancelMove(tenant: string): Promise<VolumePoolMove>;
+}
+
+/**
+ * A tenant's volume move between pools: the move journal the server keeps
+ * until the move ends (cut over and every source retired, or rolled back).
+ */
+export interface VolumePoolMove {
+    readonly tenantId: string;
+    readonly fromPool: string;
+    readonly toPool: string;
+    /** The move's phase, e.g. copying, cutover, retiring, aborting. */
+    readonly state: string;
+    /** Nodes whose copy into the destination pool is done. */
+    readonly nodesCopied?: string[];
+    /** Nodes still to copy. */
+    readonly nodesPending?: string[];
+    /** Nodes that removed their source copy after cut over. */
+    readonly nodesRetired?: string[];
+    /** The node granted the current step: one replica offline at a time. */
+    readonly stepNode?: string;
+    /** Failed attempts of the current step. */
+    readonly stepAttempts?: number;
+    /** The last step's error, if any. */
+    readonly error?: string;
+    /** The reservation taken on the destination pool, in bytes. */
+    readonly reservedBytes: number;
+    /** The source reservation released once every node retired. */
+    readonly sourceReservedBytes?: number;
+    /** Whether the tenant record already names the destination pool. */
+    readonly tenantRecorded?: boolean;
+    /**
+     * Whether the move drops the tenant's at-rest encryption: an
+     * encrypted-to-unencrypted move started with allowUnencryptedDestination.
+     */
+    readonly encryptionDropped?: boolean;
+    /** RFC 3339 time the move was admitted. */
+    readonly admittedAt: string;
+    /** RFC 3339 time the journal last changed. */
+    readonly updatedAt?: string;
 }
 
 // ---------------------------------------------------------------------------

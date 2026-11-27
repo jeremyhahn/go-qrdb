@@ -102,7 +102,10 @@ func (d *transactionalDAO[E]) BeginTx(_ context.Context) (DAOTransaction[E], err
 // TransactionalDAOWithTxFunc is a helper type for running transactional operations.
 type TransactionalDAOWithTxFunc[E Entity] func(tx DAOTransaction[E]) error
 
-// WithTx executes a function within a transaction.
+// WithTx executes a function within a transaction. The ops fn queues are
+// committed all-or-nothing as one guarded batch (see DAOTransaction.Commit):
+// any refusal, including *AtomicBatchUnsupportedError on a store without
+// kvstore.MultiGuardedBatchKVStore, leaves the store unchanged.
 // If the function returns an error, the transaction is rolled back.
 // If the function returns nil, the transaction is committed.
 //
@@ -136,7 +139,8 @@ func WithTx[E Entity](ctx context.Context, dao TransactionalDAO[E], fn Transacti
 	return tx.Commit(ctx)
 }
 
-// BatchSave saves multiple entities in a single transaction.
+// BatchSave saves multiple entities in a single transaction: all of them
+// or, on any refusal, none (see WithTx).
 // This is a convenience method for atomic batch inserts/updates.
 //
 // Example:
@@ -183,12 +187,12 @@ func BatchDelete[E Entity](ctx context.Context, dao TransactionalDAO[E], entitie
 // SaveWithOptimisticLock saves an entity only if its version matches the
 // expected version.
 //
-// It does NOT implement optimistic concurrency control, whatever the name
-// suggests: it delegates to SaveWithCondition, which evaluates the version with
-// a read followed by a write. Two callers holding the same expectedVersion can
-// both pass and both save. Use it to catch an obviously stale write, not to
-// serialise contested ones — those need a guarded operation on the transaction
-// plane (go-qrdb#59).
+// It delegates to SaveWithCondition, so the commit is guarded on the exact
+// bytes the version was read from: of two callers holding the same
+// expectedVersion, one saves and the other is refused (a changed record
+// refuses the commit with a TransactionCommitError wrapping
+// kvstore.ErrNotApplied). The store must implement
+// kvstore.MultiGuardedBatchKVStore, else *AtomicBatchUnsupportedError.
 //
 // E must implement Versioned; the constraint is Entity for compatibility, so a
 // type that does not carry a version is refused at run time with

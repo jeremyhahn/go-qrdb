@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
@@ -212,12 +213,51 @@ func TestWatchUndoneTenants_OpenFailureIsTyped(t *testing.T) {
 }
 
 func TestStartUndoneWatch_NothingToWatch(t *testing.T) {
-	for name, n := range map[string]*Node{"nil node": nil, "no watch service": {}} {
+	for name, n := range map[string]*Node{
+		"nil node":                nil,
+		"no watch service":        {},
+		"no tenant service":       {Watch: nodeWatches{q: &queueWatchService{}}},
+		"tenant cannot reconcile": {Watch: nodeWatches{q: &queueWatchService{}}, Tenant: plainTenantSvc{}},
+	} {
 		t.Run(name, func(t *testing.T) {
 			if err := startUndoneWatch(context.Background(), n); err != nil {
 				t.Fatalf("startUndoneWatch = %v, want nil", err)
 			}
 		})
+	}
+}
+
+// reconcilingTenants is a tenant service that reconciles undone tenants.
+type reconcilingTenants struct {
+	tenant.TenantServicer
+	*recordingReconciler
+}
+
+func (r reconcilingTenants) ReconcileDeletedTenants(ctx context.Context) (*tenant.ReconcileReport, error) {
+	return r.recordingReconciler.ReconcileDeletedTenants(ctx)
+}
+
+// nodeWatches is a node's watch service whose prefix watches are q's.
+type nodeWatches struct {
+	service.WatchServicer
+	q *queueWatchService
+}
+
+func (w nodeWatches) WatchPrefix(ctx context.Context, prefix string, opts ...watch.WatchOption) (watch.Watcher, error) {
+	return w.q.WatchPrefix(ctx, prefix, opts...)
+}
+
+// TestStartUndoneWatch_OpenFailureIsReturned pins the wired path: a node
+// whose tenant service reconciles starts the watch on its watch service, and
+// a watch that cannot open is returned typed.
+func TestStartUndoneWatch_OpenFailureIsReturned(t *testing.T) {
+	boom := errors.New("no hub")
+	ws := &queueWatchService{errs: []error{boom}}
+	n := &Node{Watch: nodeWatches{q: ws}, Tenant: reconcilingTenants{recordingReconciler: newRecordingReconciler()}}
+	err := startUndoneWatch(context.Background(), n)
+	var typed *UndoneTenantWatchError
+	if !errors.As(err, &typed) || !errors.Is(err, boom) {
+		t.Fatalf("startUndoneWatch = %v, want *UndoneTenantWatchError wrapping %v", err, boom)
 	}
 }
 

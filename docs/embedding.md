@@ -104,7 +104,7 @@ whatever that webview happens to be rendering at the time.
 
 ## Standalone node
 
-A standalone node is engine-direct: writes are applied immediately to an in-memory or on-disk MVCC/KV engine under a `LocalBackend`. No quicraft host is created, no `StartShard` is called, and no Raft WAL or nodehost directory is written.
+A standalone node is engine-direct: writes are applied immediately to an MVCC engine over an in-memory or on-disk storage backend under a `LocalBackend` (`lifecycle.NewLocalEngine`). No quicraft host is created, no `StartShard` is called, and no Raft WAL or nodehost directory is written.
 
 ### Minimal (memory backend)
 
@@ -157,6 +157,97 @@ The example is the fixture of the lean-standalone build gate
 That gate holds such an embedding to a dependency graph without the Raft host,
 PebbleDB, the network API servers or the unused feature packages. The graph
 does not meet that target yet, and the gate keeps it from growing.
+
+### DAO stores over your own storage or the node's services
+
+A DAO (`sdk.NewDAO`, `sdk.NewDAOTransactional`) runs over any `sdk.KVStore`.
+Three constructors give you one:
+
+| Store | Use it when | Indexes it maintains | Guarded batches |
+|---|---|---|---|
+| `sdk.NewEmbeddedKVStore(storage.Storage)` | you own the storage (for example `sdkstorage.NewPebbleStorage`) and want no node at all | single-field and unique indexes, and compound indexes (`sdk.CompoundIndexDef`), updated on every write; a non-JSON or field-less overwrite removes the record's old entries | yes: `PutAllIfAllUnchanged` applies the batch as one KV-engine transaction, all-or-nothing, with the unique check and index updates of the same step (a unique conflict is `ErrConflict`; two writes of one batch sharing a unique compound tuple are refused too), so `NewDAOTransactional` and `sdk.NewDAOUnitOfWork` work over it |
+| `server.NewServiceKVStore(kv, index, txn)` (package `sdk/go/server`) | you run a node and want the DAO over its services, `n.Services().KV`, `.Index` and `.Transaction` | single-field and unique indexes. Compound definitions are refused with `sdk.ErrKVIndexUnsupported`: the query builder (`Find().Where(...)`) answers compound-field lookups by scanning, and a named compound-index query (`QueryByCompoundIndex`) returns that error | yes: `PutAllIfAllUnchanged` applies a batch all-or-nothing, so `NewDAOTransactional` and `sdk.NewDAOUnitOfWork` work over it |
+| `client.KVStore()`, or `sdk.NewKVStoreAdapter(client.KV(), client.Index())` (which returns `(sdk.KVStore, error)`) | your code talks to a node through a client (`n.Client()` or a remote transport), with authorization on every call | the node's single-field and unique indexes, through the client; a named compound-index query returns `sdk.ErrKVIndexUnsupported`, as on the service store | yes: `PutAllIfAllUnchanged` sends the batch to the node as one guarded transaction, all-or-nothing (`kvstore_adapter_guarded_batch_test.go`), so `NewDAOTransactional` and `sdk.NewDAOUnitOfWork` work over it |
+
+On the service and client stores a plain non-JSON overwrite keeps the record's
+old index entries until the owner rules on a versioned plain-put op, so store
+JSON objects through a DAO.
+
+The embedded store refuses to index a nested entity type (an entity type
+containing `/`) with `sdk.ErrKVIndexUnsupported`, so a DAO over it scans for
+that type instead.
+
+All three stores give a DAO the same results for save, get, list, index
+lookup, unique refusal, a unique value moved from one entity to another, and
+delete. In `sdk/go/conformance`, `TestDAOStoreParity` checks the service store
+against the embedded store on a standalone node and on a single-node raft
+group, and `TestDAOStoreParity_ClientStore` runs the same table over the
+client store on REST, gRPC, QUIC, MCP, Unix and the embedded transport. The
+only difference either allows is the named compound-index query: the
+embedded store answers it, and the service and client stores return
+`sdk.ErrKVIndexUnsupported`. The table also runs a unit of work of two saves,
+a guarded batch whose stale guard is refused and writes nothing, and a
+guarded batch refused on a unique conflict that writes nothing, with the same
+outcome on all three stores. Only the embedded store types that refusal as
+`ErrConflict`; the service and client stores refuse it with their own error.
+`TestDAOClientStore_CLI_PerProtocol`
+(`test/integration`) shows that a DAO over each of REST, gRPC, QUIC, MCP and
+Unix and the `qrdb` CLI on the same transport see the same records. A DAO
+save is read by `qrdb kv get`. A `qrdb kv put` is found through the DAO's
+unique index and holds its unique value. A `qrdb kv del` is seen by the DAO
+and frees the value. A unit of work committed through the client store is
+read back by `qrdb kv get`.
+
+A `NewDAOTransactional` transaction is all-or-nothing. `Commit`, and the
+`dao.BatchSave`, `dao.BatchDelete` and `dao.WithTx` helpers built on it,
+apply every queued save and delete as one `PutAllIfAllUnchanged` batch, the
+path `sdk.NewDAOUnitOfWork` uses. Every `SaveWithCondition` is evaluated
+before anything is written and the batch is guarded on the exact bytes (or
+absence) the condition saw, so a record changed after evaluation refuses the
+whole commit. The refusals are: a failed condition (`sdk.IsDAOConditionFailed`),
+a guard that no longer holds (`sdk.IsDAOTransactionCommitError` wrapping
+`sdk.ErrKVNotApplied`), an ID collision (`*sdk.DAOIDCollisionError`), and a
+store without `sdk.MultiGuardedBatchKVStore`
+(`*sdk.DAOAtomicBatchUnsupportedError`; there is no one-op-at-a-time
+fallback). Each leaves the store unchanged. The `TestTransactional_*` cases in
+`sdk/go/conformance` check this over the embedded store and the service
+store on a standalone node and on a single-node raft group.
+
+A DAO with a unique index over your own Pebble storage
+(`ExampleNewEmbeddedKVStore` in `sdk/go/example_dao_stores_test.go`, compiled
+and run by `go test`):
+
+```go
+stg, err := sdkstorage.NewPebbleStorage(sdkstorage.DefaultPebbleConfig(dir))
+if err != nil {
+	return err
+}
+defer stg.Close()
+
+store, err := sdk.NewEmbeddedKVStore(stg)
+if err != nil {
+	return err
+}
+accounts, err := sdk.NewDAO(store, "account", func() *Account { return &Account{} })
+if err != nil {
+	return err
+}
+if err := accounts.Save(ctx, &Account{ID: 1, Email: "ada@example.test"}); err != nil {
+	return err
+}
+found, err := accounts.QueryOneByIndex(ctx, "Email", "ada@example.test")
+```
+
+To build the same DAO over a running node's services:
+
+```go
+svc := n.Services()
+store, err := server.NewServiceKVStore(svc.KV, svc.Index, svc.Transaction)
+if err != nil {
+	return err
+}
+accounts, err := sdk.NewDAOTransactional(store, "account", func() *Account { return &Account{} })
+```
 
 ### Injecting hardware crypto options
 

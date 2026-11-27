@@ -20,12 +20,31 @@ package node
 // must be the union of every caller's.
 
 import (
+	"context"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
+
+// createRaftTenant creates an IsolationRaft tenant with a system-managed
+// auto-unseal barrier and provisions its home group, as onboarding does
+// (bootstrap.ProvisionTenant): TenantService.CreateTenant alone places no home,
+// and the tenant's database catalog records live in it.
+func createRaftTenant(t *testing.T, n *Node, id, name string) {
+	t.Helper()
+	ctx := context.Background()
+	_, err := n.Services().Tenant.CreateTenant(ctx, id, name,
+		tenant.IsolationRaft, tenant.WithBarrierAutoUnseal(true))
+	require.NoError(t, err, "CreateTenant(IsolationRaft) must succeed with raft entitlements")
+	router, ok := n.Services().StoreResolver.(tenant.HomeRouter)
+	require.True(t, ok, "the node's StoreResolver must route tenant homes")
+	require.NoError(t, router.EnsureHome(ctx, id), "EnsureHome(%s)", id)
+}
 
 // raftEntitlements returns the entitlement set that permits creating
 // IsolationRaft tenants with dedicated raft databases and system-managed

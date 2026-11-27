@@ -1019,9 +1019,29 @@ var volumeRules = []rule{
 	as(&volume.TenantAlreadyAssignedError{}, FailedPrecondition),
 	as(&volume.ReservationConflictError{}, Aborted),
 	as(&volume.MoveNotImplementedError{}, Unimplemented),
+	// A node step of a tenant move: the wrapper decides, so it sits before
+	// the rows of its causes (ManifestMismatchError, PoolUnavailableError).
+	moveStepRule,
+	// A tenant move refused by admit, a journal step, cut over, retire,
+	// abort or cancel: a state conflict.
+	as(&volume.MoveConflictError{}, FailedPrecondition),
+	// An encrypted to unencrypted move without the operator's audited
+	// allow_unencrypted_destination flag (Q9, ruling 1234), and a flagged
+	// drop with no audit sink wired.
+	as(&volume.MoveToUnencryptedPoolError{}, FailedPrecondition),
+	as(&volume.MoveEncryptionDropUnauditedError{}, FailedPrecondition),
+	as(&volume.MoveNotFoundError{}, NotFound),
+	as(&volume.InvalidMoveRequestError{}, InvalidArgument),
+	// The move journal changed under every compare-and-swap; nothing was
+	// written and a retry is safe.
+	as(&volume.MoveJournalConflictError{}, Aborted),
+	// A copy's destination manifest differs from the source's: a defect.
+	as(&volume.ManifestMismatchError{}, Internal),
 	// This node cannot open or resolve the pool: a missing mount, an absent
 	// device, or a Lockable volume that failed to unlock (decision D6).
 	as(&volume.PoolUnavailableError{}, Unavailable),
+	// The node barrier is sealed: a write the node would propose is refused.
+	as(&volume.NodeSealedError{}, Unavailable),
 	as(&volume.OpenError{}, Unavailable),
 	as(&volume.ClosedVolumeError{}, Unavailable),
 	as(&volume.UsageError{}, Unavailable),
@@ -1036,6 +1056,33 @@ var volumeRules = []rule{
 	as(&volume.CorruptRecordError{}, Internal),
 	as(&volume.InvalidMasterKeyError{}, Internal),
 	as(&volume.VolumeKeyDerivationError{}, Internal),
+}
+
+// moveStepRule classifies a *volume.MoveStepError by its cause: Unavailable
+// when the chain also carries a *volume.PoolUnavailableError or a
+// *volume.NodeSealedError (the node cannot run the step now, a retry may
+// succeed), else Internal. errclass is first-match-wins over errors.As on
+// the whole chain, so two `as` rows cannot express this: a cause with its
+// own row would decide instead of the wrapper.
+var moveStepRule = rule{
+	name: "volume.MoveStepError",
+	classify: func(err error) (Class, bool) {
+		var mse *volume.MoveStepError
+		if !errors.As(err, &mse) {
+			return Unclassified, false
+		}
+		var pue *volume.PoolUnavailableError
+		var nse *volume.NodeSealedError
+		if errors.As(err, &pue) || errors.As(err, &nse) {
+			return Unavailable, true
+		}
+		return Internal, true
+	},
+	samples: []error{
+		&volume.MoveStepError{Phase: "copy", Err: &volume.PoolUnavailableError{Pool: "p", NodeID: "n1"}},
+		&volume.MoveStepError{Phase: "copy", Err: &volume.NodeSealedError{Op: "move step"}},
+		&volume.MoveStepError{Phase: "verify", Err: &volume.ManifestMismatchError{Path: "a", Reason: "digest"}},
+	},
 }
 
 // onboardingRules are tenant onboarding, certificate enrolment and trust

@@ -163,7 +163,7 @@
 </script>
 
 <div class="flex flex-col gap-5">
-  {#each sortedFields as [name, sqlType]}
+  {#each sortedFields as [name, sqlType] (name)}
     {@const upper = sqlType.toUpperCase()}
     <div class="form-control w-full">
       <div class="flex items-center justify-between">
@@ -193,7 +193,7 @@
             onchange={(e) => handleFieldChange(name, sqlType, e.currentTarget.checked)}
           />
           <span class="label-text text-base-content/60">
-            {Boolean(getDisplayValue(name, sqlType)) ? "true" : "false"}
+            {getDisplayValue(name, sqlType) ? "true" : "false"}
           </span>
         </label>
       {:else if upper === "JSON"}
@@ -279,7 +279,7 @@
           {disabled}
           bind:value={newFieldType}
         >
-          {#each addFieldTypes as t}
+          {#each addFieldTypes as t (t)}
             <option value={t}>{t}</option>
           {/each}
         </select>

@@ -22,7 +22,8 @@ import (
 )
 
 // TransactionBinding exposes atomic compare-and-swap transaction
-// operations to the Wails frontend.
+// operations to the Wails frontend. Execute takes the database it runs in
+// first; empty names the connection's default database.
 type TransactionBinding struct {
 	logger *sdk.ConcreteLogger
 	conn   *ConnectionBinding
@@ -37,9 +38,9 @@ func NewTransactionBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *Tr
 // Execute atomically evaluates compares and executes the corresponding
 // operation set. When all compares succeed, success ops are applied;
 // otherwise failure ops are applied.
-func (b *TransactionBinding) Execute(req *transport.TransactionRequest) (*transport.TransactionResponse, error) {
+func (b *TransactionBinding) Execute(database string, req *transport.TransactionRequest) (*transport.TransactionResponse, error) {
 	b.logger.Debug("Execute called")
-	cl, err := b.conn.loadClient()
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("Execute failed", "error", err)
 		return nil, err

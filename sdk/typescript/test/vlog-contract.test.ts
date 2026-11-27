@@ -307,7 +307,7 @@ describe('VlogClient — Wails binding contract', () => {
             allowExpireBodies: true,
             signingKeyType: 'ed25519',
         });
-        expect(create).toHaveBeenCalledWith({
+        expect(create).toHaveBeenCalledWith('', {
             log: 'events',
             origin: 'example.com/events',
             allow_expire_bodies: true,
@@ -316,12 +316,53 @@ describe('VlogClient — Wails binding contract', () => {
         expect(res).toEqual({ tenantId: 't1', database: 'db', log: 'events', key: { version: 1, publicKey: 'cGs=' } });
     });
 
-    it('list() calls VlogBinding.List with no arguments', async () => {
+    it('list() calls VlogBinding.List with only the database', async () => {
         const list = vi.fn<BindingFn>().mockResolvedValue({ logs: ['a'] });
         installVlogBinding({ List: list });
         const res = await new WailsClient().vlog.list();
-        expect(list).toHaveBeenCalledWith();
+        expect(list).toHaveBeenCalledWith('');
         expect(res.logs).toEqual(['a']);
+    });
+
+    it('a databaseScoped client passes its database first on every vlog call', async () => {
+        const calls: Record<string, unknown[]> = {};
+        const record = (name: string, res: unknown): BindingFn =>
+            vi.fn<BindingFn>().mockImplementation(async (...args: unknown[]) => {
+                calls[name] = args;
+                return res;
+            });
+        const key = { version: 1, public_key: 'cGs=' };
+        const head = { size: 1, root: 'cg==', key_version: 1, signature_type: 'ed25519', signature: 'cw==' };
+        installVlogBinding({
+            Create: record('Create', { log: 'l', key }),
+            List: record('List', { logs: [] }),
+            Append: record('Append', { first_index: 0, count: 1 }),
+            Get: record('Get', { entries: [] }),
+            ProveInclusion: record('ProveInclusion', { index: 0, size: 1, hashes: [] }),
+            ProveConsistency: record('ProveConsistency', { size1: 1, size2: 2, hashes: [] }),
+            Head: record('Head', { size: 1, root: 'cg==', bodies_from: 0, checkpoint_size: 0 }),
+            SignHead: record('SignHead', { head, checkpoint: 'Yw==' }),
+            RotateKey: record('RotateKey', { key }),
+            ExpireBodies: record('ExpireBodies', { expired: 0 }),
+        });
+        const vlog = new WailsClient().databaseScoped('orders').vlog;
+        await vlog.create({ log: 'l', origin: 'o', signingKeyType: 'ed25519' });
+        await vlog.list();
+        await vlog.append({ log: 'l', entries: [] });
+        await vlog.get({ log: 'l', from: 0, limit: 1 });
+        await vlog.proveInclusion({ log: 'l', index: 0, size: 1 });
+        await vlog.proveConsistency({ log: 'l', size1: 1, size2: 2 });
+        await vlog.head('l');
+        await vlog.signHead('l');
+        await vlog.rotateKey({ log: 'l', signingKeyType: 'ed25519' });
+        await vlog.expireBodies({ log: 'l', cutoff: 1 });
+        expect(Object.keys(calls).sort()).toEqual([
+            'Append', 'Create', 'ExpireBodies', 'Get', 'Head', 'List',
+            'ProveConsistency', 'ProveInclusion', 'RotateKey', 'SignHead',
+        ]);
+        for (const [name, args] of Object.entries(calls)) {
+            expect(args[0], name).toBe('orders');
+        }
     });
 
     it('append(), get() and the proofs pass their requests through', async () => {
@@ -333,16 +374,16 @@ describe('VlogClient — Wails binding contract', () => {
         const vlog = new WailsClient().vlog;
 
         expect(await vlog.append({ log: 'l', entries: ['YQ=='] })).toEqual({ firstIndex: 0, count: 1 });
-        expect(append).toHaveBeenCalledWith({ log: 'l', entries: ['YQ=='] });
+        expect(append).toHaveBeenCalledWith('', { log: 'l', entries: ['YQ=='] });
 
         expect((await vlog.get({ log: 'l', from: 0, limit: 1 })).entries).toEqual([{ index: 0, body: 'YQ==' }]);
-        expect(get).toHaveBeenCalledWith({ log: 'l', from: 0, limit: 1 });
+        expect(get).toHaveBeenCalledWith('', { log: 'l', from: 0, limit: 1 });
 
         await vlog.proveInclusion({ log: 'l', index: 0, size: 1 });
-        expect(inc).toHaveBeenCalledWith({ log: 'l', index: 0, size: 1 });
+        expect(inc).toHaveBeenCalledWith('', { log: 'l', index: 0, size: 1 });
 
         expect((await vlog.proveConsistency({ log: 'l', size1: 1, size2: 2 })).hashes).toEqual(['aA==']);
-        expect(con).toHaveBeenCalledWith({ log: 'l', size1: 1, size2: 2 });
+        expect(con).toHaveBeenCalledWith('', { log: 'l', size1: 1, size2: 2 });
     });
 
     it('head() and signHead() send a LogRequest', async () => {
@@ -355,10 +396,10 @@ describe('VlogClient — Wails binding contract', () => {
         const vlog = new WailsClient().vlog;
 
         expect(await vlog.head('l')).toEqual({ size: 1, root: 'cg==', bodiesFrom: 0, checkpointSize: 0 });
-        expect(head).toHaveBeenCalledWith({ log: 'l' });
+        expect(head).toHaveBeenCalledWith('', { log: 'l' });
 
         const signed = await vlog.signHead('l');
-        expect(sign).toHaveBeenCalledWith({ log: 'l' });
+        expect(sign).toHaveBeenCalledWith('', { log: 'l' });
         expect(signed.head.keyVersion).toBe(1);
         expect(signed.head.signatureType).toBe('ed25519');
     });
@@ -370,9 +411,9 @@ describe('VlogClient — Wails binding contract', () => {
         const vlog = new WailsClient().vlog;
 
         expect((await vlog.rotateKey({ log: 'l', signingKeyType: 'ed25519' })).key.publicKey).toBe('cGs=');
-        expect(rotate).toHaveBeenCalledWith({ log: 'l', signing_key_type: 'ed25519' });
+        expect(rotate).toHaveBeenCalledWith('', { log: 'l', signing_key_type: 'ed25519' });
 
         expect((await vlog.expireBodies({ log: 'l', cutoff: 4 })).expired).toBe(4);
-        expect(expire).toHaveBeenCalledWith({ log: 'l', cutoff: 4 });
+        expect(expire).toHaveBeenCalledWith('', { log: 'l', cutoff: 4 });
     });
 });

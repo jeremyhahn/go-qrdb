@@ -521,7 +521,7 @@ pkg/storage/objstore       — rewritten: remote.Storage adapter + encrypting wr
 ```
 
 This is what makes "every engine on every backend" true for `objstore` by
-construction rather than by re-implementation: `pkg/storage/pebble.Engine` is
+construction rather than by re-implementation: `pkg/storage/pebble.PebbleStorage` is
 already composed by `MVCCEngine`, secondary indexes, time series and vector
 storage. An `objstore`-backed database becomes a `*pebble.DB` whose SSTables
 happen to live in a bucket; nothing above `storage.Storage` changes, and
@@ -536,7 +536,7 @@ Composition, conceptually:
 
 ```
                      +-------------------------------+
-                     |   pkg/storage/pebble.Engine    |   storage.Storage
+                     | pkg/storage/pebble.PebbleStorage|   storage.Storage
                      |   (*pebble.DB, unchanged)      |   (Get/Set/Delete/List/
                      +----------------+----------------+   Exists/Batch/Snapshot)
                                       |
@@ -632,7 +632,7 @@ Raft group already pays on local disks today — this design changes *where*
 the bytes are durable, not how many copies of them must exist.
 
 **OS-4 — Encryption at rest: a real gap, not a detail.**
-`pkg/atrest.Encryptor.Apply` wraps `pebble.Options.FS` — a `vfs.FS` — with
+`pkg/atrest.Encryptor.Wrap` wraps `pebble.Options.FS` — a `vfs.FS` — with
 `seal/encfs`. `Options.Experimental.RemoteStorage` is a **different**
 interface; Pebble never routes a remote object through `FS` at all. **The
 existing barrier wiring does not reach remote SSTables, full stop; this is not
@@ -771,7 +771,7 @@ what they already are — backup/archive destinations reached through
 
 | Piece | Package | Owner |
 |---|---|---|
-| `pebble.Engine`, `storage.Storage`, `Batch`, `Iterator`, `Snapshot` | `pkg/storage/pebble` | go-qrdb (unchanged) |
+| `pebble.PebbleStorage`, `storage.Storage`, `Batch`, `Iterator`, `Snapshot` | `pkg/storage/pebble` | go-qrdb (unchanged) |
 | `remote.Storage` adapter over go-objstore, encrypting wrapper (OS-4) | `pkg/storage/objstore` | go-qrdb (rewritten) |
 | `common.Storage` providers (local, memory, s3, gcs, azure) and their build tags | — | **go-objstore** |
 | Ranged/offset reads on `common.Storage` (OS-6, not yet available) | — | **go-objstore** — requested there, not implemented here |
