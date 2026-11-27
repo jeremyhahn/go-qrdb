@@ -1655,7 +1655,11 @@ func (f *RaftBackendFactory) startShardAsMember(plan *shardStartPlan) (*raftShar
 
 	lessor := lease.NewLessor()
 	hub := watch.NewHub(f.watchHubOpts...)
-	createFn := newDataPlaneCreateFunc(tb, lessor, hub, plan.stateStorage)
+	createFn, err := newDataPlaneCreateFunc(tb, lessor, hub, plan.stateStorage)
+	if err != nil {
+		hub.Close()
+		return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "state-storage", Err: err}
+	}
 
 	// 4d Option C: when the database opted into a per-tenant-KEY WAL and the
 	// shared host carries a multiplex LogDB, open a dedicated single-barrier WAL

@@ -17,6 +17,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"time"
@@ -147,7 +148,12 @@ func newTenantHost(ctx context.Context, tenantID, dataRoot string, tb *seal.Tena
 	// tenant DEK.
 	lessor := lease.NewLessor()
 	hub := watch.NewHub(watchHubOpts...)
-	createFn := newDataPlaneCreateFunc(tb, lessor, hub, database.DefaultRaftStateStorage)
+	createFn, err := newDataPlaneCreateFunc(tb, lessor, hub, database.DefaultRaftStateStorage)
+	if err != nil {
+		hub.Close()
+		_ = host.Close()
+		return nil, &TenantHostError{TenantID: tenantID, Op: "state-storage", Err: err}
+	}
 
 	members := map[uint64]string{1: hostCfg.RaftAddress}
 	if err := host.StartShard(members, false, createFn, shardCfg); err != nil {
@@ -562,12 +568,20 @@ func pollShard(ctx context.Context, clock shardLeaderClock, what string, shardID
 // and watches are isolated from the system shard and from other tenants. It is
 // shared by the IsolationVolume per-tenant Host (tenant_host.go) and the
 // IsolationRaft dedicated shards on the shared host (raft_backend_factory.go).
-func newDataPlaneCreateFunc(tb *seal.TenantBarrier, lessor *lease.Lessor, hub *watch.Hub, stateStorage database.BackendType) sm.CreateFunc {
-	enc := atrest.New(tb.Barrier())
+func newDataPlaneCreateFunc(tb *seal.TenantBarrier, lessor *lease.Lessor, hub *watch.Hub, stateStorage database.BackendType) (sm.CreateFunc, error) {
 	var pebbleOpts []store.Option
-	if stateStorage == database.BackendMemory {
+	switch stateStorage {
+	case database.BackendPebble, "":
+		// An empty value is the binding default (database.DefaultRaftStateStorage).
+	case database.BackendMemory:
 		pebbleOpts = append(pebbleOpts, store.WithMemFS())
+	default:
+		// The group's state machine is the Pebble-native MVCC store (leases,
+		// watches, time series); there is no file-backed one, so "file" (or any
+		// other value) is refused rather than silently opened on Pebble.
+		return nil, &UnsupportedRaftStateStorageError{StateStorage: stateStorage}
 	}
+	enc := atrest.New(tb.Barrier())
 	return store.NewMVCCCreateFuncWith(
 		append(pebbleOpts, store.WithEncryptor(enc)),
 		store.WithLessor(lessor),
@@ -576,7 +590,20 @@ func newDataPlaneCreateFunc(tb *seal.TenantBarrier, lessor *lease.Lessor, hub *w
 		store.WithLogs(),
 		store.WithWatchHub(hub),
 		store.WithTimeSeriesEnabled(),
-	)
+	), nil
+}
+
+// UnsupportedRaftStateStorageError is returned when a Raft group's recorded
+// state storage names a store the data-plane state machine cannot open there:
+// it runs on Pebble (on disk, or in memory for "memory"), so "file" is refused
+// instead of being substituted with Pebble.
+type UnsupportedRaftStateStorageError struct {
+	StateStorage database.BackendType
+}
+
+func (e *UnsupportedRaftStateStorageError) Error() string {
+	return fmt.Sprintf("raft state_storage %q is not supported for a Raft group: use %q or %q",
+		string(e.StateStorage), database.BackendPebble, database.BackendMemory)
 }
 
 // buildDataPlaneServices binds the full data-plane service set to a single
