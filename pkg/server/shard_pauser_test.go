@@ -25,8 +25,11 @@ import (
 	"time"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
+	backendraft "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
@@ -516,3 +519,257 @@ func TestShardPauser_WriteRacingTheSealNeverReachesTheLogAfterTheWipe(t *testing
 		t.Fatalf("the log did not advance after the unseal: %d <= %d", got, wiped)
 	}
 }
+
+// TestShardPauser_WriteInFlightAtTheSealCommitsOrIsRefused races writers
+// through the service's propose path (the raft HostAdapter) against a
+// whole-node seal on a real Raft host. A write submitted to Raft when the
+// seal starts must either commit before the shard pauses or be refused as
+// paused: never left submitted on the paused shard until its deadline, which
+// a client sees as a propose timeout (main ci.yml 46040678597, rest and quic).
+func TestShardPauser_WriteInFlightAtTheSealCommitsOrIsRefused(t *testing.T) {
+	c := raftharness.NewCluster(t, 1)
+	host := c.Hosts[0]
+	// A shard whose apply can be stalled: the shape of the state machine's
+	// Pebble sync stalling (CI: "slow storage sync took=1.16s").
+	const stalledShard = 77
+	stall := &applyStall{}
+	if err := host.StartShard(map[uint64]string{1: c.Addrs[0]}, false,
+		sm.NewDiskCreateFunc(func(uint64, uint64) sm.DiskStateMachine { return stall }),
+		quicraftconfig.Config{ShardID: stalledShard, ReplicaID: 1, MemberIdentities: c.Identities}); err != nil {
+		t.Fatalf("StartShard: %v", err)
+	}
+	c.WaitReadable(t, stalledShard, host)
+	reg := newEnforcerRegistry(t)
+	p := NewShardPauser(host, reg, nil)
+	adapter := backendraft.New(host)
+	// Each write gets far less than the harness bound, so a write held on
+	// the paused shard ends at its own deadline well inside the test.
+	const writeDeadline = 3 * time.Second
+	write := func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), writeDeadline)
+		defer cancel()
+		_, err := adapter.SyncPropose(ctx, stalledShard, []byte("put"))
+		return err
+	}
+	if err := write(); err != nil {
+		t.Fatalf("write before the seal: %v", err)
+	}
+
+	const writers = 8
+	ended := make([]error, writers)
+	acked := make([]int, writers)
+	flowing := make(chan struct{}, writers)
+	var wg sync.WaitGroup
+	for w := range writers {
+		wg.Go(func() {
+			for i := 0; ; i++ {
+				if err := write(); err != nil {
+					ended[w] = err
+					if i == 0 {
+						flowing <- struct{}{}
+					}
+					return
+				}
+				acked[w]++
+				if i == 0 {
+					flowing <- struct{}{}
+				}
+			}
+		})
+	}
+	for range writers {
+		<-flowing
+	}
+
+	// The CI timeline: an apply's storage sync stalls with more writes
+	// committed behind it, and the seal's pause lands as the sync returns.
+	// Park the apply, start the seal while it is parked, then let it return.
+	entered, release := stall.arm()
+	defer release()
+	select {
+	case <-entered:
+	case <-time.After(raftharness.Bound):
+		t.Fatal("no apply parked on the stall")
+	}
+	sealed := make(chan error, 1)
+	go func() { sealed <- service.SealWholeNode(context.Background(), p, reg, nil, nil) }()
+	time.Sleep(200 * time.Millisecond) // writes commit behind the parked apply
+	select {
+	case err := <-sealed:
+		t.Fatalf("SealWholeNode returned (%v) while a submitted write was still being applied", err)
+	default:
+	}
+	release()
+	if err := <-sealed; err != nil {
+		t.Fatalf("SealWholeNode: %v", err)
+	}
+	wg.Wait()
+	for w, err := range ended {
+		if !errors.Is(err, quicraft.ErrShardPaused) && !errors.Is(err, seal.ErrSealed) {
+			t.Fatalf("writer %d (%d acknowledged) ended on %v, want the seal's refusal: the seal paused "+
+				"the shard with this write still submitted to Raft, and it was neither applied nor "+
+				"refused (the seal did not wait for the submitted proposal)", w, acked[w], err)
+		}
+	}
+
+	unsealNode(t, reg)
+	c.WaitReadable(t, stalledShard, host)
+	if err := write(); err != nil {
+		t.Fatalf("write after the unseal: %v", err)
+	}
+}
+
+// heldProposer is the raft host behind an adapter whose SyncPropose parks
+// each proposal, once armed, until released: a write submitted to Raft whose
+// result is still outstanding when the seal starts (CI run 46040678597: the
+// state machine's storage sync took 1.16 s, and the seal paused the shard
+// 1 ms after it returned, with writes still submitted behind it).
+type heldProposer struct {
+	*quicraft.Host
+	held    chan struct{}
+	release chan struct{}
+}
+
+func (h *heldProposer) SyncPropose(ctx context.Context, shardID uint64, cmd []byte) (sm.Result, error) {
+	select {
+	case h.held <- struct{}{}:
+		<-h.release
+	default:
+	}
+	return h.Host.SyncPropose(ctx, shardID, cmd)
+}
+
+// A write submitted to Raft before the seal starts must reach its result
+// before the seal pauses the shard: the pause catches a submitted proposal
+// neither applied nor refused, so it ends at the caller's deadline as a
+// propose timeout ("quicraft: timeout (already submitted to raft; it may
+// still commit)", or a client's context deadline). The seal waits for it;
+// a write submitted once the seal has started is refused as shard paused.
+func TestShardPauser_SealWaitsForASubmittedProposal(t *testing.T) {
+	c := raftharness.NewCluster(t, 1)
+	host := c.Hosts[0]
+	reg := newEnforcerRegistry(t)
+	p := NewShardPauser(host, reg, nil)
+	inner := &heldProposer{Host: host, held: make(chan struct{}), release: make(chan struct{})}
+	adapter := backendraft.NewWithInner(host, inner)
+	shardID := uint64(shard.ShardKV)
+	write := func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), raftharness.Bound)
+		defer cancel()
+		_, err := adapter.SyncPropose(ctx, shardID, []byte("put"))
+		return err
+	}
+
+	submitted := make(chan error, 1)
+	go func() { submitted <- write() }()
+	select {
+	case <-inner.held:
+	case <-time.After(raftharness.Bound):
+		t.Fatal("the write never reached the raft host")
+	}
+	sealed := make(chan error, 1)
+	go func() { sealed <- service.SealWholeNode(context.Background(), p, reg, nil, nil) }()
+
+	// While the submitted write is outstanding the seal must not pause the
+	// shard, and a new write must be refused, not queued behind the pause.
+	refused := make(chan error, 1)
+	go func() {
+		for {
+			err := write()
+			if err != nil {
+				refused <- err
+				return
+			}
+		}
+	}()
+	select {
+	case err := <-refused:
+		if !errors.Is(err, quicraft.ErrShardPaused) {
+			t.Fatalf("a write submitted during the seal ended on %v, want the shard-paused refusal", err)
+		}
+	case <-time.After(raftharness.Bound):
+		t.Fatal("a write submitted during the seal was neither refused nor ended")
+	}
+	select {
+	case err := <-sealed:
+		close(inner.release)
+		t.Fatalf("SealWholeNode returned (%v) with a write still submitted to Raft: the seal does not "+
+			"wait for a submitted proposal before it pauses the shard, so the pause strands it until "+
+			"its deadline", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(inner.release)
+	if err := <-submitted; err != nil {
+		t.Fatalf("the write submitted before the seal ended on %v, want it committed: the seal paused "+
+			"the shard without waiting for the submitted proposal", err)
+	}
+	if err := <-sealed; err != nil {
+		t.Fatalf("SealWholeNode: %v", err)
+	}
+
+	unsealNode(t, reg)
+	c.WaitReadable(t, shardID, host)
+	if err := write(); err != nil {
+		t.Fatalf("write after the unseal: %v", err)
+	}
+}
+
+// applyStall is an on-disk state machine, the shape of the Pebble store
+// (pkg/store), whose Update parks while a stall is armed. It keeps no state.
+type applyStall struct {
+	mu      sync.Mutex
+	entered chan struct{}
+	release chan struct{}
+}
+
+// arm parks the next Update until release; entered closes once it parks.
+func (s *applyStall) arm() (entered <-chan struct{}, release func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	en, rel := make(chan struct{}), make(chan struct{})
+	s.entered, s.release = en, rel
+	var once sync.Once
+	return en, func() {
+		once.Do(func() {
+			s.mu.Lock()
+			s.entered, s.release = nil, nil
+			s.mu.Unlock()
+			close(rel)
+		})
+	}
+}
+
+func (s *applyStall) Update(_ context.Context, entries []sm.Entry, results []sm.Result) error {
+	s.mu.Lock()
+	en, rel := s.entered, s.release
+	if en != nil {
+		s.entered = nil
+		close(en)
+	}
+	s.mu.Unlock()
+	if rel != nil {
+		<-rel
+	}
+	for i := range entries {
+		results[i] = sm.Result{Value: entries[i].Index}
+	}
+	return nil
+}
+
+func (s *applyStall) Lookup(context.Context, interface{}) (interface{}, error) { return nil, nil }
+
+func (s *applyStall) Open(context.Context, string, <-chan struct{}) (uint64, error) { return 0, nil }
+
+func (s *applyStall) Sync() error { return nil }
+
+func (s *applyStall) PrepareSnapshot() (interface{}, error) { return nil, nil }
+
+func (s *applyStall) SaveSnapshot(context.Context, interface{}, io.Writer, <-chan struct{}) error {
+	return nil
+}
+
+func (s *applyStall) RecoverFromSnapshot(context.Context, io.Reader, <-chan struct{}) error {
+	return nil
+}
+
+func (s *applyStall) Close(context.Context) error { return nil }
