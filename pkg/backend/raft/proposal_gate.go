@@ -1,7 +1,6 @@
 package raft
 
 import (
-	"errors"
 	"fmt"
 	"runtime"
 	"sync"
@@ -44,11 +43,23 @@ func proposalGateFor(h *quicraft.Host) *proposalGate {
 	}
 	g := &proposalGate{}
 	g.lease = g.gate.Register("raft proposals")
+	if proposalGateStoreHook != nil {
+		proposalGateStoreHook(key)
+	}
 	actual, loaded := proposalGates.LoadOrStore(key, g)
 	if !loaded {
-		runtime.AddCleanup(h, func(k weak.Pointer[quicraft.Host]) { proposalGates.Delete(k) }, key)
+		runtime.AddCleanup(h, forgetProposalGate, key)
 	}
 	return mustProposalGate(actual)
+}
+
+// proposalGateStoreHook is a test seam, nil outside tests: it runs between
+// a first-use miss and the store, where a concurrent first use can win.
+var proposalGateStoreHook func(weak.Pointer[quicraft.Host])
+
+// forgetProposalGate drops a collected host's gate from proposalGates.
+func forgetProposalGate(key weak.Pointer[quicraft.Host]) {
+	proposalGates.Delete(key)
 }
 
 // mustProposalGate asserts a proposalGates value. proposalGates holds only
@@ -69,11 +80,9 @@ func admitProposal(h *quicraft.Host) (release func(), err error) {
 	if g == nil {
 		return func() {}, nil
 	}
-	if err := g.lease.Acquire(); err != nil {
-		if errors.Is(err, quiesce.ErrSealing) {
-			return nil, ErrProposalsSealing
-		}
-		return nil, err
+	// Acquire refuses only with quiesce.ErrSealing: the seal closed the gate.
+	if g.lease.Acquire() != nil {
+		return nil, ErrProposalsSealing
 	}
 	return g.lease.Release, nil
 }
