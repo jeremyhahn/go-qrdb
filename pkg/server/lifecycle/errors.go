@@ -430,19 +430,6 @@ func (e *RemoteObjstoreBindingUnsupportedError) Error() string {
 	return "lifecycle: binding " + e.TenantID + "/" + e.Database + ": objstore provider " + e.Provider + " cannot hold a materialized database (only the local provider can)"
 }
 
-// ObjstoreBindingEncryptionUnsupportedError reports that an objstore
-// database would be materialized with an at-rest encryptor (a barrier tenant
-// or a sealed node). The objstore storage does not encrypt values or
-// metadata, so the binding is refused rather than stored in plaintext.
-type ObjstoreBindingEncryptionUnsupportedError struct {
-	TenantID string
-	Database string
-}
-
-func (e *ObjstoreBindingEncryptionUnsupportedError) Error() string {
-	return "lifecycle: binding " + e.TenantID + "/" + e.Database + ": objstore storage cannot encrypt at rest; refused for an encrypted binding"
-}
-
 // IsolationPolicyUnavailableError reports that a materialized database's
 // vector service was asked for the cluster isolation policy before the
 // tenant service that keeps it exists; the create fails closed.

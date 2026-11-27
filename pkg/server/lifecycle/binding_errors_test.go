@@ -67,7 +67,6 @@ func TestBindingRefusals_NameTheTenant(t *testing.T) {
 		{&BindingBarrierUnavailableError{TenantID: "acme"}, []string{"acme"}},
 		{&BindingBarrierSealedError{TenantID: "acme"}, []string{"acme"}},
 		{&RemoteObjstoreBindingUnsupportedError{TenantID: "acme", Database: "orders", Provider: "s3"}, []string{"orders", "s3"}},
-		{&ObjstoreBindingEncryptionUnsupportedError{TenantID: "acme", Database: "orders"}, []string{"orders"}},
 		{&IsolationPolicyUnavailableError{}, []string{"isolation policy"}},
 		{&ObjstoreBarrierSealedError{}, []string{"sealed"}},
 	}

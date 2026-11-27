@@ -525,9 +525,6 @@ func (f *LocalBindingFactory) open(b *database.Binding) (*MaterializedBinding, e
 	if err != nil {
 		return nil, openErr(err)
 	}
-	if b.Backend == database.BackendObjstore && enc.Encrypts() {
-		return nil, &ObjstoreBindingEncryptionUnsupportedError{TenantID: b.TenantID, Database: b.Database}
-	}
 	storageCfg := bindingStorageConfig(f.storageCfg, b)
 	if bindingHasPebbleWAL(b.Backend) {
 		if err := clearStaleBindingWAL(storageCfg.WALDir, b.DataRoot, b.Backend); err != nil {

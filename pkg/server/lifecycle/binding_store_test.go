@@ -1200,29 +1200,57 @@ func TestLocalBindingFactory_RemoteObjstoreRefused(t *testing.T) {
 // TestLocalBindingFactory_EncryptedObjstoreRefused proves an objstore binding
 // that would carry an at-rest encryptor is refused instead of being stored
 // in plaintext, while an unencrypted prefix-tenant objstore binding opens.
-func TestLocalBindingFactory_EncryptedObjstoreRefused(t *testing.T) {
-	t.Run("barrier tenant", func(t *testing.T) {
+func TestLocalBindingFactory_EncryptedObjstoreBinding(t *testing.T) {
+	ctx := context.Background()
+	t.Run("barrier tenant opens under the tenant barrier", func(t *testing.T) {
 		dir := t.TempDir()
 		tenantEnc := atrest.New(newUnsealedBarrier(t))
 		mgr := newBarrierTenantManager(t, dir, nil, func(string) (*atrest.Encryptor, error) { return tenantEnc, nil })
-		defer func() { _ = mgr.Close() }()
-		_, err := mgr.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "app", Backend: database.BackendObjstore})
-		var refused *lifecycle.ObjstoreBindingEncryptionUnsupportedError
-		if !errors.As(err, &refused) {
-			t.Fatalf("Create: err = %v, want *ObjstoreBindingEncryptionUnsupportedError", err)
+		db, err := mgr.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "app", Backend: database.BackendObjstore})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
 		}
-		if _, statErr := os.Stat(filepath.Join(dir, "tenants", bindingTenant, "databases", "app", "objstore")); !os.IsNotExist(statErr) {
-			t.Fatalf("a refused binding left an objstore root (%v)", statErr)
+		mb := materialized(t, db)
+		root := mb.DataRoot()
+		if err := service.NewKVService(mb.Host(), mb.ShardID()).Put(ctx, "k", []byte("secret-value")); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		if err := mgr.Close(); err != nil {
+			t.Fatalf("Manager.Close: %v", err)
+		}
+		got, err := readBack(t, database.BackendObjstore, root, tenantEnc, "k")
+		if err != nil || !bytes.Equal(got, []byte("secret-value")) {
+			t.Fatalf("read back under the tenant barrier = %q, %v; want secret-value", got, err)
+		}
+		if got, err := readBack(t, database.BackendObjstore, root, atrest.New(newUnsealedBarrier(t)), "k"); err == nil && bytes.Equal(got, []byte("secret-value")) {
+			t.Fatal("an encrypted objstore binding opened under another barrier's key")
+		}
+		if got, err := readBack(t, database.BackendObjstore, root, nil, "k"); err == nil && bytes.Equal(got, []byte("secret-value")) {
+			t.Fatal("an encrypted objstore binding opened without its encryption")
 		}
 	})
-	t.Run("sealed node", func(t *testing.T) {
+	t.Run("sealed tenant barrier refused", func(t *testing.T) {
+		dir := t.TempDir()
+		mgr := newBarrierTenantManager(t, dir, nil, func(id string) (*atrest.Encryptor, error) {
+			return nil, &lifecycle.BindingBarrierSealedError{TenantID: id}
+		})
+		defer func() { _ = mgr.Close() }()
+		_, err := mgr.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "app", Backend: database.BackendObjstore})
+		var sealed *lifecycle.BindingBarrierSealedError
+		if !errors.As(err, &sealed) {
+			t.Fatalf("Create: err = %v, want *BindingBarrierSealedError", err)
+		}
+	})
+	t.Run("encrypting node opens", func(t *testing.T) {
 		dir := t.TempDir()
 		f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, atrest.New(newUnsealedBarrier(t)), qrdbconfig.StorageConfig{}, prefixTenants)
 		defer func() { _ = f.Close() }()
-		_, err := f.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "app", Backend: database.BackendObjstore}, dir)
-		var refused *lifecycle.ObjstoreBindingEncryptionUnsupportedError
-		if !errors.As(err, &refused) {
-			t.Fatalf("Create: err = %v, want *ObjstoreBindingEncryptionUnsupportedError", err)
+		bound, err := f.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "app", Backend: database.BackendObjstore}, dir)
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if bound == nil {
+			t.Fatal("Create returned no binding")
 		}
 	})
 	t.Run("prefix tenant unencrypted opens", func(t *testing.T) {
@@ -1245,10 +1273,9 @@ func TestLocalBindingFactory_PlaintextBarrierAdmitsObjstore(t *testing.T) {
 	cases := []struct {
 		name    string
 		barrier func(*testing.T) *seal.StorageBarrier
-		refused bool
 	}{
-		{name: "strategy none admits", barrier: newNoneStrategyBarrier, refused: false},
-		{name: "passphrase strategy refuses", barrier: newUnsealedBarrier, refused: true},
+		{name: "strategy none admits", barrier: newNoneStrategyBarrier},
+		{name: "passphrase strategy admits", barrier: newUnsealedBarrier},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1256,13 +1283,6 @@ func TestLocalBindingFactory_PlaintextBarrierAdmitsObjstore(t *testing.T) {
 			f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, atrest.New(tc.barrier(t)), qrdbconfig.StorageConfig{}, prefixTenants)
 			defer func() { _ = f.Close() }()
 			bound, err := f.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: "app", Backend: database.BackendObjstore}, dir)
-			var refused *lifecycle.ObjstoreBindingEncryptionUnsupportedError
-			if tc.refused {
-				if !errors.As(err, &refused) {
-					t.Fatalf("Create: err = %v, want *ObjstoreBindingEncryptionUnsupportedError", err)
-				}
-				return
-			}
 			if err != nil {
 				t.Fatalf("Create: %v", err)
 			}

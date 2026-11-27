@@ -618,9 +618,9 @@ func TestDatabaseBinding_CLI_ProvisionedFourBackendsOwnStores_PerProtocol(t *tes
 	for _, b := range backends {
 		extra += "  - name: " + strconv.Quote(b.name) + "\n    backend: " + b.backend + "\n"
 	}
-	// objstore storage cannot encrypt at rest, so an encrypting system
-	// barrier refuses nd-objstore (TestDatabaseBinding_CLI_ObjstoreRefusedUnderEncryptingBarrier):
-	// the four backends provision under a barrier that encrypts nothing.
+	// The four backends provision under a barrier that encrypts nothing; an
+	// objstore database under an encrypting barrier is
+	// TestDatabaseBinding_CLI_ObjstoreUnderEncryptingBarrier_PerProtocol.
 	node := startStandaloneModeNodeUnencrypted(t, "objstore", extra)
 
 	for _, proto := range multiProtocols {
@@ -714,11 +714,11 @@ func TestDatabaseBinding_CLI_ObjstoreJournalRefusedAsDataDir_PerProtocol(t *test
 	}
 }
 
-// TestDatabaseBinding_CLI_ObjstoreRefusedUnderEncryptingBarrier: under an
-// encrypting system barrier, an objstore database is refused on every
-// protocol (lifecycle.ObjstoreBindingEncryptionUnsupportedError) and no
-// store is left for it.
-func TestDatabaseBinding_CLI_ObjstoreRefusedUnderEncryptingBarrier(t *testing.T) {
+// TestDatabaseBinding_CLI_ObjstoreUnderEncryptingBarrier_PerProtocol: under
+// an encrypting system barrier, an objstore database is created on every
+// protocol, its store under its binding root written through the barrier,
+// and it serves its own writes.
+func TestDatabaseBinding_CLI_ObjstoreUnderEncryptingBarrier_PerProtocol(t *testing.T) {
 	shared := t.TempDir()
 	extra := "storage:\n  objstore:\n    provider: local\n    settings:\n      path: " + strconv.Quote(shared) + "\n"
 	node := startStandaloneModeNodeWithConfig(t, "pebble", extra)
@@ -729,18 +729,19 @@ func TestDatabaseBinding_CLI_ObjstoreRefusedUnderEncryptingBarrier(t *testing.T)
 		t.Run(proto.name, func(t *testing.T) {
 			conn := node.cliArgsFor(proto)
 			name := "enc-obj-" + proto.name
-			out, err := runQRDB(t, node.cli, conn, "database", "create", name, "--backend", "objstore")
-			if err == nil {
-				t.Fatalf("[%s] database create %s --backend objstore under an encrypting barrier succeeded:\n%s", proto.name, name, out)
+			value := "enc-obj-value-" + proto.name
+			if out, err := runQRDB(t, node.cli, conn, "database", "create", name, "--backend", "objstore"); err != nil {
+				t.Fatalf("[%s] database create %s --backend objstore under an encrypting barrier: %v\n%s", proto.name, name, err, out)
 			}
-			if !strings.Contains(out, "objstore storage cannot encrypt at rest") {
-				t.Fatalf("[%s] database create %s refused with %q, want the objstore encryption refusal", proto.name, name, out)
+			if _, err := os.Stat(filepath.Join(databases, name, "objstore")); err != nil {
+				t.Fatalf("[%s] the objstore database has no store under its binding root (%v)", proto.name, err)
 			}
-			if _, err := os.Stat(filepath.Join(databases, name, "objstore")); !os.IsNotExist(err) {
-				t.Fatalf("[%s] a refused objstore database left its store behind (%v)", proto.name, err)
+			if out, err := runQRDB(t, node.cli, conn, "--database", name, "kv", "put", "k1", value); err != nil {
+				t.Fatalf("[%s] kv put: %v\n%s", proto.name, err, out)
 			}
-			if out, err := runQRDB(t, node.cli, conn, "--database", name, "kv", "get", "any"); err == nil {
-				t.Fatalf("[%s] the refused database %s serves reads: %q", proto.name, name, out)
+			out, err := runQRDB(t, node.cli, conn, "--database", name, "kv", "get", "k1")
+			if err != nil || !strings.Contains(out, value) {
+				t.Fatalf("[%s] kv get = %q, %v; want %q", proto.name, out, err, value)
 			}
 		})
 	}
