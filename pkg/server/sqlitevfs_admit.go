@@ -17,6 +17,8 @@ package server
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -100,6 +102,11 @@ func metaDatabase(key []byte) (string, bool) {
 func (g *sqliteAdmitGate) admit(ctx context.Context, opSets ...[]service.Op) (map[string]bool, error) {
 	var live map[string]bool
 	for _, ops := range opSets {
+		// Only one branch applies, so each branch's creations are counted
+		// on their own, and together: one transaction creating two
+		// databases needs room for two.
+		var creates []string
+		created := make(map[string]struct{})
 		for _, op := range ops {
 			if op.Type != service.OpPut && op.Type != service.OpDelete {
 				continue
@@ -118,10 +125,21 @@ func (g *sqliteAdmitGate) admit(ctx context.Context, opSets ...[]service.Op) (ma
 				}
 				live[db] = found
 			}
-			if op.Type == service.OpPut && !live[db] {
-				if err := sqlitevfs.Admit(ctx, g.backend, g.tenantID, db, g.adm.ents, g.adm.lim); err != nil {
-					return nil, err
-				}
+			if op.Type != service.OpPut || live[db] {
+				continue
+			}
+			if _, dup := created[db]; dup {
+				continue
+			}
+			if err := sqlitevfs.Admit(ctx, g.backend, g.tenantID, db, g.adm.ents, g.adm.lim); err != nil {
+				return nil, err
+			}
+			created[db] = struct{}{}
+			creates = append(creates, db)
+		}
+		if len(creates) > 1 && !tenantid.IsSystem(g.tenantID) {
+			if err := g.adm.lim.CheckN(ctx, g.tenantID, quota.ResourceSQLiteDatabases, int64(len(creates))); err != nil {
+				return nil, err
 			}
 		}
 	}
@@ -139,12 +157,15 @@ func (g *sqliteAdmitGate) metaLive(ctx context.Context, key []byte) (bool, error
 }
 
 // record counts the creates and drops of the applied ops in the tenant's
-// sqlite_databases usage. The system tenant records nothing. A recorder
-// error is not returned: the write is committed, and the count is soft.
-func (g *sqliteAdmitGate) record(ctx context.Context, live map[string]bool, applied []service.Op) {
+// sqlite_databases usage, one increment of the number created and one
+// decrement of the number dropped. The system tenant records nothing. The
+// write is already committed when record runs, so a recorder error is
+// returned to the caller wrapped as such, never discarded.
+func (g *sqliteAdmitGate) record(ctx context.Context, live map[string]bool, applied []service.Op) error {
 	if len(live) == 0 || g.adm.usage == nil || tenantid.IsSystem(g.tenantID) {
-		return
+		return nil
 	}
+	var created, dropped int64
 	for _, op := range applied {
 		db, ok := metaDatabase(op.Key)
 		if !ok {
@@ -153,12 +174,24 @@ func (g *sqliteAdmitGate) record(ctx context.Context, live map[string]bool, appl
 		switch {
 		case op.Type == service.OpPut && !live[db]:
 			live[db] = true
-			_, _ = g.adm.usage.IncrementQuotaUsage(ctx, g.tenantID, quota.ResourceSQLiteDatabases, 1)
+			created++
 		case op.Type == service.OpDelete && len(op.RangeEnd) == 0 && live[db]:
 			live[db] = false
-			_, _ = g.adm.usage.DecrementQuotaUsage(ctx, g.tenantID, quota.ResourceSQLiteDatabases, 1)
+			dropped++
 		}
 	}
+	var errs []error
+	if created > 0 {
+		if _, err := g.adm.usage.IncrementQuotaUsage(ctx, g.tenantID, quota.ResourceSQLiteDatabases, created); err != nil {
+			errs = append(errs, fmt.Errorf("sqlite admission: committed, but recording %d created database(s) failed: %w", created, err))
+		}
+	}
+	if dropped > 0 {
+		if _, err := g.adm.usage.DecrementQuotaUsage(ctx, g.tenantID, quota.ResourceSQLiteDatabases, dropped); err != nil {
+			errs = append(errs, fmt.Errorf("sqlite admission: committed, but recording %d dropped database(s) failed: %w", dropped, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // sqliteAdmitTxn is the transaction service of a gated scope.
@@ -174,8 +207,7 @@ func (s *sqliteAdmitTxn) Execute(ctx context.Context, compares []service.Compare
 		return nil, err
 	}
 	resp, err := s.TransactionServicer.Execute(ctx, compares, successOps, failureOps)
-	s.recordResponse(ctx, live, resp, err, successOps, failureOps)
-	return resp, err
+	return resp, s.recordResponse(ctx, live, resp, err, successOps, failureOps)
 }
 
 // ExecuteWithMode is Execute with a write durability.
@@ -185,19 +217,17 @@ func (s *sqliteAdmitTxn) ExecuteWithMode(ctx context.Context, compares []service
 		return nil, err
 	}
 	resp, err := s.TransactionServicer.ExecuteWithMode(ctx, compares, successOps, failureOps, mode)
-	s.recordResponse(ctx, live, resp, err, successOps, failureOps)
-	return resp, err
+	return resp, s.recordResponse(ctx, live, resp, err, successOps, failureOps)
 }
 
-func (s *sqliteAdmitTxn) recordResponse(ctx context.Context, live map[string]bool, resp *service.TransactionResponse, err error, successOps, failureOps []service.Op) {
+func (s *sqliteAdmitTxn) recordResponse(ctx context.Context, live map[string]bool, resp *service.TransactionResponse, err error, successOps, failureOps []service.Op) error {
 	if err != nil || resp == nil {
-		return
+		return err
 	}
 	if resp.Succeeded {
-		s.gate.record(ctx, live, successOps)
-		return
+		return s.gate.record(ctx, live, successOps)
 	}
-	s.gate.record(ctx, live, failureOps)
+	return s.gate.record(ctx, live, failureOps)
 }
 
 // sqliteGatedKV is a ServiceKV whose prefix moves pass the admission gate.
@@ -229,12 +259,11 @@ func (s sqliteGatedServiceTxn) Execute(ctx context.Context, compares []service.C
 	if err != nil || resp == nil {
 		return resp, err
 	}
+	applied := failureOps
 	if resp.Succeeded {
-		s.gate.record(ctx, live, successOps)
-	} else {
-		s.gate.record(ctx, live, failureOps)
+		applied = successOps
 	}
-	return resp, nil
+	return resp, s.gate.record(ctx, live, applied)
 }
 
 // withSQLiteAdmission returns svcs with the SQLite creation gate on its

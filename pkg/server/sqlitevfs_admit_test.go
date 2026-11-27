@@ -205,6 +205,81 @@ func TestSQLiteAdmitTxn_CapReachedRefusesCreate(t *testing.T) {
 	}
 }
 
+// TestSQLiteAdmitTxn_OneTxnCreatingTwoPastTheCapIsRefused commits the meta
+// records of two new databases in one transaction under a cap of one: each
+// alone fits, together they do not, so the transaction is refused, writes
+// nothing and leaves the usage at 0.
+func TestSQLiteAdmitTxn_OneTxnCreatingTwoPastTheCapIsRefused(t *testing.T) {
+	for name, build := range lockScenes {
+		t.Run(name, func(t *testing.T) {
+			fakes := &admitFakes{allowed: true, max: 1}
+			svcs := gatedServices(t, build(t).registry, lockTenantA, fakes)
+			metaA, err := sqlitevfs.MetaKey("a.db")
+			if err != nil {
+				t.Fatalf("MetaKey: %v", err)
+			}
+			metaB, err := sqlitevfs.MetaKey("b.db")
+			if err != nil {
+				t.Fatalf("MetaKey: %v", err)
+			}
+			ops := []service.Op{
+				{Type: service.OpPut, Key: metaA, Value: []byte("meta")},
+				{Type: service.OpPut, Key: metaB, Value: []byte("meta")},
+			}
+			_, err = svcs.Transaction.Execute(t.Context(), nil, ops, nil)
+			var exceeded *quota.ExceededError
+			if !errors.As(err, &exceeded) || exceeded.Resource != quota.ResourceSQLiteDatabases {
+				t.Fatalf("two creates under a cap of one = %v, want quota.ExceededError for %s", err, quota.ResourceSQLiteDatabases)
+			}
+			for _, key := range [][]byte{metaA, metaB} {
+				if _, err := svcs.MVCC.Get(t.Context(), string(key)); err == nil {
+					t.Fatalf("meta %q written by a refused transaction", key)
+				}
+			}
+			if usage, _ := fakes.counts(); usage != 0 {
+				t.Fatalf("usage after a refused transaction = %d, want 0", usage)
+			}
+
+			fakes.mu.Lock()
+			fakes.max = 2
+			fakes.mu.Unlock()
+			if _, err := svcs.Transaction.Execute(t.Context(), nil, ops, nil); err != nil {
+				t.Fatalf("two creates under a cap of two: %v", err)
+			}
+			if usage, _ := fakes.counts(); usage != 2 {
+				t.Fatalf("usage after two creates = %d, want 2", usage)
+			}
+		})
+	}
+}
+
+// failingUsage is an admitFakes whose usage recorder fails.
+type failingUsage struct{ *admitFakes }
+
+func (failingUsage) IncrementQuotaUsage(context.Context, string, quota.Resource, int64) (*tenant.TenantInfo, error) {
+	return nil, errRecordUsage
+}
+
+var errRecordUsage = errors.New("record usage failed")
+
+// TestSQLiteAdmitTxn_UsageErrorIsReturned proves a failed usage increment
+// after a committed create reaches the caller instead of being discarded.
+func TestSQLiteAdmitTxn_UsageErrorIsReturned(t *testing.T) {
+	fakes := &admitFakes{allowed: true}
+	gate := &sqliteAdmitGate{
+		adm:      &sqliteAdmission{ents: fakes, lim: fakes, usage: failingUsage{fakes}},
+		tenantID: lockTenantA,
+	}
+	metaKey, err := sqlitevfs.MetaKey("a.db")
+	if err != nil {
+		t.Fatalf("MetaKey: %v", err)
+	}
+	err = gate.record(t.Context(), map[string]bool{"a.db": false}, []service.Op{{Type: service.OpPut, Key: metaKey}})
+	if !errors.Is(err, errRecordUsage) {
+		t.Fatalf("record with a failing recorder = %v, want %v", err, errRecordUsage)
+	}
+}
+
 func TestSQLiteAdmitTxn_ExistingDatabaseOpensWithoutChecks(t *testing.T) {
 	for name, build := range lockScenes {
 		t.Run(name, func(t *testing.T) {
