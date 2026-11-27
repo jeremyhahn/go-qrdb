@@ -18,6 +18,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"maps"
 	"strings"
 	"sync"
 	"testing"
@@ -367,6 +369,148 @@ func TestKVVectorStorage_ReplicaWriteRacingDeleteIsRefused(t *testing.T) {
 	}
 	if _, err := a.GetVector(ctx, "ns", 1); !errors.Is(err, ErrVectorNotFound) {
 		t.Fatalf("old vector 1 after recreate = %v, want ErrVectorNotFound", err)
+	}
+}
+
+// TestKVVectorStorage_CheckedUpsertBindsTheValidatedIncarnation is the
+// Codex P1 at kv.go:228: replica B validates the namespace record, replica
+// A deletes and re-creates the namespace with another dimension before B
+// commits, and B's write must be refused rather than land in the new
+// incarnation it never validated.
+func TestKVVectorStorage_CheckedUpsertBindsTheValidatedIncarnation(t *testing.T) {
+	ctx := context.Background()
+	mem := kvstoretest.NewGuardedMemoryStore()
+	a := newKVStorage(t, mem)
+	b := newKVStorage(t, mem)
+	if err := a.CreateNamespace(ctx, &NamespaceInfo{Name: "ns", Dimension: 2}); err != nil {
+		t.Fatal(err)
+	}
+	checks := 0
+	check := func(info *NamespaceInfo) error {
+		checks++
+		if info.Dimension != 2 {
+			return fmt.Errorf("dimension %d, want 2", info.Dimension)
+		}
+		if checks == 1 {
+			if err := a.DeleteNamespace(ctx, "ns"); err != nil {
+				t.Fatalf("racing delete: %v", err)
+			}
+			if err := a.CreateNamespace(ctx, &NamespaceInfo{Name: "ns", Dimension: 3}); err != nil {
+				t.Fatalf("racing create: %v", err)
+			}
+		}
+		return nil
+	}
+	if err := b.UpsertVectorChecked(ctx, "ns", kvVec(1, nil), check); !errors.Is(err, ErrNamespaceNotFound) {
+		t.Fatalf("checked upsert racing a recreate = %v, want ErrNamespaceNotFound", err)
+	}
+	if vecs, err := a.ScanNamespace(ctx, "ns", nil); err != nil || len(vecs) != 0 {
+		t.Fatalf("recreated namespace = %d vectors, %v; want none", len(vecs), err)
+	}
+
+	// Without a race the checked write lands, and a refusing check refuses.
+	if err := b.UpsertVectorChecked(ctx, "ns", &VectorValue{ID: 2, Embedding: []float32{1, 2, 3}}, func(info *NamespaceInfo) error {
+		if info.Dimension != 3 {
+			return fmt.Errorf("dimension %d, want 3", info.Dimension)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("checked upsert: %v", err)
+	}
+	refused := errors.New("refused")
+	if err := b.UpsertVectorChecked(ctx, "ns", kvVec(3, nil), func(*NamespaceInfo) error { return refused }); !errors.Is(err, refused) {
+		t.Fatalf("refusing check = %v, want its error", err)
+	}
+	if _, err := a.GetVector(ctx, "ns", 3); !errors.Is(err, ErrVectorNotFound) {
+		t.Fatalf("refused vector stored: %v", err)
+	}
+	if err := b.UpsertVectorChecked(ctx, "missing", kvVec(4, nil), nil); !errors.Is(err, ErrNamespaceNotFound) {
+		t.Fatalf("checked upsert into a missing namespace = %v, want ErrNamespaceNotFound", err)
+	}
+	if err := b.UpsertVectorChecked(ctx, "ns", nil, nil); !errors.Is(err, ErrInvalidVector) {
+		t.Fatalf("nil vector = %v, want ErrInvalidVector", err)
+	}
+	if err := b.UpsertVectorChecked(ctx, "ns", &VectorValue{}, nil); !errors.Is(err, ErrInvalidID) {
+		t.Fatalf("zero id = %v, want ErrInvalidID", err)
+	}
+}
+
+// TestKVVectorStorage_UpdateVectorKeepsConcurrentUpdates is the Codex P1
+// at service/vector.go:3623 at the storage seam: two replicas merge
+// metadata into one vector at once, and both updates survive.
+func TestKVVectorStorage_UpdateVectorKeepsConcurrentUpdates(t *testing.T) {
+	ctx := context.Background()
+	mem := kvstoretest.NewGuardedMemoryStore()
+	a := newKVStorage(t, mem)
+	b := newKVStorage(t, mem)
+	if err := a.CreateNamespace(ctx, &NamespaceInfo{Name: "ns", Dimension: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.UpsertVector(ctx, "ns", kvVec(1, map[string]string{"base": "0"})); err != nil {
+		t.Fatal(err)
+	}
+	merge := func(key string) func(*VectorValue) (*VectorValue, error) {
+		return func(old *VectorValue) (*VectorValue, error) {
+			next := *old
+			next.Metadata = maps.Clone(old.Metadata)
+			if next.Metadata == nil {
+				next.Metadata = map[string]string{}
+			}
+			next.Metadata[key] = "1"
+			return &next, nil
+		}
+	}
+
+	// Replica A's update lands between replica B's read and B's write.
+	calls := 0
+	bMerge := merge("b")
+	if _, err := b.UpdateVector(ctx, "ns", 1, func(old *VectorValue) (*VectorValue, error) {
+		calls++
+		if calls == 1 {
+			if _, err := a.UpdateVector(ctx, "ns", 1, merge("a")); err != nil {
+				t.Fatalf("racing update: %v", err)
+			}
+		}
+		return bMerge(old)
+	}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("update ran %d times, want 2 (one retry after the conflict)", calls)
+	}
+
+	// Many concurrent updates across both replicas all survive.
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		st := a
+		if i%2 == 1 {
+			st = b
+		}
+		wg.Add(1)
+		go func(st *KVVectorStorage, key string) {
+			defer wg.Done()
+			if _, err := st.UpdateVector(ctx, "ns", 1, merge(key)); err != nil {
+				t.Errorf("update %s: %v", key, err)
+			}
+		}(st, fmt.Sprintf("k%d", i))
+	}
+	wg.Wait()
+	got, err := a.GetVector(ctx, "ns", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Metadata) != 3+16 || got.Metadata["a"] != "1" || got.Metadata["b"] != "1" || got.Metadata["base"] != "0" {
+		t.Fatalf("metadata = %v, want base, a, b and k0..k15", got.Metadata)
+	}
+
+	if _, err := a.UpdateVector(ctx, "ns", 9, merge("x")); !errors.Is(err, ErrVectorNotFound) {
+		t.Fatalf("update of a missing vector = %v, want ErrVectorNotFound", err)
+	}
+	if _, err := a.UpdateVector(ctx, "ns", 1, func(*VectorValue) (*VectorValue, error) { return &VectorValue{ID: 2}, nil }); !errors.Is(err, ErrInvalidVector) {
+		t.Fatalf("update changing the id = %v, want ErrInvalidVector", err)
+	}
+	if _, err := a.UpdateVector(ctx, "ns", 0, merge("x")); !errors.Is(err, ErrInvalidID) {
+		t.Fatalf("zero id = %v, want ErrInvalidID", err)
 	}
 }
 

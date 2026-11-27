@@ -220,6 +220,19 @@ func (s *KVVectorStorage) readVersion(ctx context.Context, namespace string) (in
 // namespace that is gone (or was recreated under a new incarnation between
 // the caller's read and the batch) is ErrNamespaceNotFound.
 func (s *KVVectorStorage) commit(ctx context.Context, namespace string, build func(inc []byte) ([]kvstore.KV, error)) error {
+	return s.commitGuarded(ctx, namespace, func(inc []byte) ([]kvstore.Guard, []kvstore.KV, error) {
+		writes, err := build(inc)
+		return nil, writes, err
+	})
+}
+
+// commitGuarded is commit whose build also returns guards on the keys it
+// read, so the writes apply only while those keys, the incarnation and the
+// generation are unchanged. A build that validates the namespace record
+// at inc therefore commits to that incarnation and no other: a delete and
+// re-create in between fails the guard and the retry, seeing another
+// incarnation, refuses with ErrNamespaceNotFound.
+func (s *KVVectorStorage) commitGuarded(ctx context.Context, namespace string, build func(inc []byte) ([]kvstore.Guard, []kvstore.KV, error)) error {
 	var first []byte
 	for {
 		if err := ctx.Err(); err != nil {
@@ -233,15 +246,16 @@ func (s *KVVectorStorage) commit(ctx context.Context, namespace string, build fu
 			return ErrNamespaceNotFound
 		}
 		first = inc
-		writes, err := build(inc)
+		guards, writes, err := build(inc)
 		if err != nil {
 			return err
 		}
 		writes = append(writes, kvstore.KV{Key: kvGenKey(namespace), Value: encodeID(gen + 1)})
-		applied, err := s.kv.PutAllIfAllUnchanged(ctx, []kvstore.Guard{
+		guards = append([]kvstore.Guard{
 			{Key: kvIncKey(namespace), Value: inc},
 			{Key: kvGenKey(namespace), Value: genRaw},
-		}, writes)
+		}, guards...)
+		applied, err := s.kv.PutAllIfAllUnchanged(ctx, guards, writes)
 		if err != nil {
 			return err
 		}
@@ -269,6 +283,93 @@ func (s *KVVectorStorage) UpsertVector(ctx context.Context, namespace string, ve
 		}
 		return []kvstore.KV{put}, nil
 	})
+}
+
+// UpsertVectorChecked stores vec as UpsertVector does, after check accepts
+// the namespace record of the incarnation the write commits to. The record
+// is read and the vector written in one guarded commit, so a namespace
+// deleted and re-created (with another dimension or geometry) after the
+// check never receives the write: it fails with ErrNamespaceNotFound.
+func (s *KVVectorStorage) UpsertVectorChecked(ctx context.Context, namespace string, vec *VectorValue, check func(*NamespaceInfo) error) error {
+	if err := s.checkOpenCtx(ctx); err != nil {
+		return err
+	}
+	if vec == nil {
+		return ErrInvalidVector
+	}
+	if vec.ID == 0 {
+		return ErrInvalidID
+	}
+	return s.commitGuarded(ctx, namespace, func(inc []byte) ([]kvstore.Guard, []kvstore.KV, error) {
+		raw, err := s.kv.Get(ctx, kvNamespaceKey(namespace))
+		if err != nil {
+			return nil, nil, err
+		}
+		if raw == nil {
+			return nil, nil, ErrNamespaceNotFound
+		}
+		if check != nil {
+			si, err := schema.DecodeNamespaceInfo(raw)
+			if err != nil {
+				return nil, nil, err
+			}
+			if err := check(fromSchemaNamespaceInfo(si)); err != nil {
+				return nil, nil, err
+			}
+		}
+		put, err := vectorPut(namespace, inc, vec)
+		if err != nil {
+			return nil, nil, err
+		}
+		return []kvstore.Guard{{Key: kvNamespaceKey(namespace), Value: raw}}, []kvstore.KV{put}, nil
+	})
+}
+
+// UpdateVector replaces the stored vector id with what update returns for
+// it, as one read-modify-write: the read and the write are one guarded
+// commit at one namespace generation, so of two concurrent updates (on
+// any replica of a replicated store) each sees the other's result and
+// neither is lost. update may be called more than once; it must not
+// change the ID. The stored result is returned.
+func (s *KVVectorStorage) UpdateVector(ctx context.Context, namespace string, id uint64, update func(*VectorValue) (*VectorValue, error)) (*VectorValue, error) {
+	if err := s.checkOpenCtx(ctx); err != nil {
+		return nil, err
+	}
+	if id == 0 || update == nil {
+		return nil, ErrInvalidID
+	}
+	var stored *VectorValue
+	err := s.commitGuarded(ctx, namespace, func(inc []byte) ([]kvstore.Guard, []kvstore.KV, error) {
+		key := kvVectorKey(namespace, inc, id)
+		raw, err := s.kv.Get(ctx, key)
+		if err != nil {
+			return nil, nil, err
+		}
+		if raw == nil {
+			return nil, nil, ErrVectorNotFound
+		}
+		sv, err := schema.DecodeVectorValue(raw)
+		if err != nil {
+			return nil, nil, err
+		}
+		next, err := update(fromSchemaVectorValue(sv))
+		if err != nil {
+			return nil, nil, err
+		}
+		if next == nil || next.ID != id {
+			return nil, nil, ErrInvalidVector
+		}
+		put, err := vectorPut(namespace, inc, next)
+		if err != nil {
+			return nil, nil, err
+		}
+		stored = next
+		return []kvstore.Guard{{Key: key, Value: raw}}, []kvstore.KV{put}, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return stored, nil
 }
 
 // GetVector retrieves a vector by ID.
