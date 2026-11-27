@@ -109,6 +109,10 @@ func testSQLiteVFSOverProtocol(t *testing.T, node *multiProtoNode, proto multiPr
 	testSQLiteStagedCommit(t, node, proto, db+"-staged")
 	testSQLiteWriterContention(t, node, proto, db+"-contend")
 	testSQLiteRestore(t, node, proto, db+"-restore")
+	// Quota exhaustion is not driven here: the CLI acts as the system
+	// tenant, which no MaxStorageBytes quota limits, and a tenant identity
+	// on this node is refused the page transactions `qrdb sqlite exec`
+	// sends (PermissionDenied with transaction:execute and kv:* granted).
 }
 
 // sqliteSeries is a SELECT of n rows, each a 4 KiB blob: every row puts
