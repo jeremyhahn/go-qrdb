@@ -162,7 +162,7 @@ func newVectorBindingNoConn(t *testing.T) *VectorBinding {
 
 func TestVecBinding_CreateNamespace_NoClient(t *testing.T) {
 	b := newVectorBindingNoConn(t)
-	resp, err := b.CreateNamespace(&transport.CreateNamespaceRequest{})
+	resp, err := b.CreateNamespace("", &transport.CreateNamespaceRequest{})
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -177,7 +177,7 @@ func TestVecBinding_CreateNamespace_NoClient(t *testing.T) {
 
 func TestVecBinding_CreateNamespace_Connected(t *testing.T) {
 	b := newTestVectorBinding(t)
-	resp, err := b.CreateNamespace(&transport.CreateNamespaceRequest{
+	resp, err := b.CreateNamespace("", &transport.CreateNamespaceRequest{
 		Namespace: "embeddings",
 		Dimension: 128,
 	})
@@ -195,7 +195,7 @@ func TestVecBinding_CreateNamespace_Connected(t *testing.T) {
 
 func TestVecBinding_DeleteNamespace_NoClient(t *testing.T) {
 	b := newVectorBindingNoConn(t)
-	resp, err := b.DeleteNamespace(&transport.DeleteNamespaceRequest{})
+	resp, err := b.DeleteNamespace("", &transport.DeleteNamespaceRequest{})
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -210,7 +210,7 @@ func TestVecBinding_DeleteNamespace_NoClient(t *testing.T) {
 
 func TestVecBinding_DeleteNamespace_Connected(t *testing.T) {
 	b := newTestVectorBinding(t)
-	resp, err := b.DeleteNamespace(&transport.DeleteNamespaceRequest{
+	resp, err := b.DeleteNamespace("", &transport.DeleteNamespaceRequest{
 		Namespace: "embeddings",
 	})
 	if err != nil {
@@ -227,7 +227,7 @@ func TestVecBinding_DeleteNamespace_Connected(t *testing.T) {
 
 func TestVecBinding_ListNamespaces_NoClient(t *testing.T) {
 	b := newVectorBindingNoConn(t)
-	resp, err := b.ListNamespaces(&transport.ListNamespacesRequest{})
+	resp, err := b.ListNamespaces("", &transport.ListNamespacesRequest{})
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -242,7 +242,7 @@ func TestVecBinding_ListNamespaces_NoClient(t *testing.T) {
 
 func TestVecBinding_ListNamespaces_Connected(t *testing.T) {
 	b := newTestVectorBinding(t)
-	resp, err := b.ListNamespaces(&transport.ListNamespacesRequest{})
+	resp, err := b.ListNamespaces("", &transport.ListNamespacesRequest{})
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestVecBinding_ListNamespaces_Connected(t *testing.T) {
 
 func TestVecBinding_GetNamespaceInfo_NoClient(t *testing.T) {
 	b := newVectorBindingNoConn(t)
-	resp, err := b.GetNamespaceInfo(&transport.GetNamespaceInfoRequest{})
+	resp, err := b.GetNamespaceInfo("", &transport.GetNamespaceInfoRequest{})
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -272,7 +272,7 @@ func TestVecBinding_GetNamespaceInfo_NoClient(t *testing.T) {
 
 func TestVecBinding_GetNamespaceInfo_Connected(t *testing.T) {
 	b := newTestVectorBinding(t)
-	resp, err := b.GetNamespaceInfo(&transport.GetNamespaceInfoRequest{
+	resp, err := b.GetNamespaceInfo("", &transport.GetNamespaceInfoRequest{
 		Namespace: "embeddings",
 	})
 	if err != nil {
@@ -289,7 +289,7 @@ func TestVecBinding_GetNamespaceInfo_Connected(t *testing.T) {
 
 func TestVecBinding_UpsertVector_NoClient(t *testing.T) {
 	b := newVectorBindingNoConn(t)
-	resp, err := b.UpsertVector(&transport.UpsertVectorRequest{})
+	resp, err := b.UpsertVector("", &transport.UpsertVectorRequest{})
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -304,7 +304,7 @@ func TestVecBinding_UpsertVector_NoClient(t *testing.T) {
 
 func TestVecBinding_UpsertVector_Connected(t *testing.T) {
 	b := newTestVectorBinding(t)
-	resp, err := b.UpsertVector(&transport.UpsertVectorRequest{
+	resp, err := b.UpsertVector("", &transport.UpsertVectorRequest{
 		Namespace: "embeddings",
 		ID:        1,
 		Vector:    []float32{0.1, 0.2, 0.3},
@@ -323,7 +323,7 @@ func TestVecBinding_UpsertVector_Connected(t *testing.T) {
 
 func TestVecBinding_GetVector_NoClient(t *testing.T) {
 	b := newVectorBindingNoConn(t)
-	resp, err := b.GetVector(&transport.GetVectorRequest{})
+	resp, err := b.GetVector("", &transport.GetVectorRequest{})
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -338,7 +338,7 @@ func TestVecBinding_GetVector_NoClient(t *testing.T) {
 
 func TestVecBinding_GetVector_Connected(t *testing.T) {
 	b := newTestVectorBinding(t)
-	resp, err := b.GetVector(&transport.GetVectorRequest{
+	resp, err := b.GetVector("", &transport.GetVectorRequest{
 		Namespace: "embeddings",
 		ID:        1,
 	})
@@ -356,7 +356,7 @@ func TestVecBinding_GetVector_Connected(t *testing.T) {
 
 func TestVecBinding_DeleteVector_NoClient(t *testing.T) {
 	b := newVectorBindingNoConn(t)
-	resp, err := b.DeleteVector(&transport.DeleteVectorRequest{})
+	resp, err := b.DeleteVector("", &transport.DeleteVectorRequest{})
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -371,7 +371,7 @@ func TestVecBinding_DeleteVector_NoClient(t *testing.T) {
 
 func TestVecBinding_DeleteVector_Connected(t *testing.T) {
 	b := newTestVectorBinding(t)
-	resp, err := b.DeleteVector(&transport.DeleteVectorRequest{
+	resp, err := b.DeleteVector("", &transport.DeleteVectorRequest{
 		Namespace: "embeddings",
 		ID:        1,
 	})
@@ -389,7 +389,7 @@ func TestVecBinding_DeleteVector_Connected(t *testing.T) {
 
 func TestVecBinding_BatchUpsert_NoClient(t *testing.T) {
 	b := newVectorBindingNoConn(t)
-	resp, err := b.BatchUpsert(&transport.BatchUpsertRequest{})
+	resp, err := b.BatchUpsert("", &transport.BatchUpsertRequest{})
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -404,7 +404,7 @@ func TestVecBinding_BatchUpsert_NoClient(t *testing.T) {
 
 func TestVecBinding_BatchUpsert_Connected(t *testing.T) {
 	b := newTestVectorBinding(t)
-	resp, err := b.BatchUpsert(&transport.BatchUpsertRequest{
+	resp, err := b.BatchUpsert("", &transport.BatchUpsertRequest{
 		Namespace: "embeddings",
 	})
 	if err != nil {
@@ -421,7 +421,7 @@ func TestVecBinding_BatchUpsert_Connected(t *testing.T) {
 
 func TestVecBinding_BatchDeleteVectors_NoClient(t *testing.T) {
 	b := newVectorBindingNoConn(t)
-	resp, err := b.BatchDeleteVectors(&transport.BatchDeleteVectorsRequest{})
+	resp, err := b.BatchDeleteVectors("", &transport.BatchDeleteVectorsRequest{})
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -436,7 +436,7 @@ func TestVecBinding_BatchDeleteVectors_NoClient(t *testing.T) {
 
 func TestVecBinding_BatchDeleteVectors_Connected(t *testing.T) {
 	b := newTestVectorBinding(t)
-	resp, err := b.BatchDeleteVectors(&transport.BatchDeleteVectorsRequest{
+	resp, err := b.BatchDeleteVectors("", &transport.BatchDeleteVectorsRequest{
 		Namespace: "embeddings",
 		IDs:       []uint64{1, 2},
 	})
@@ -454,7 +454,7 @@ func TestVecBinding_BatchDeleteVectors_Connected(t *testing.T) {
 
 func TestVecBinding_ListVectors_NoClient(t *testing.T) {
 	b := newVectorBindingNoConn(t)
-	resp, err := b.ListVectors(&transport.ListVectorsRequest{})
+	resp, err := b.ListVectors("", &transport.ListVectorsRequest{})
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -469,7 +469,7 @@ func TestVecBinding_ListVectors_NoClient(t *testing.T) {
 
 func TestVecBinding_ListVectors_Connected(t *testing.T) {
 	b := newTestVectorBinding(t)
-	resp, err := b.ListVectors(&transport.ListVectorsRequest{
+	resp, err := b.ListVectors("", &transport.ListVectorsRequest{
 		Namespace: "embeddings",
 	})
 	if err != nil {
@@ -486,7 +486,7 @@ func TestVecBinding_ListVectors_Connected(t *testing.T) {
 
 func TestVecBinding_UpdateMetadata_NoClient(t *testing.T) {
 	b := newVectorBindingNoConn(t)
-	resp, err := b.UpdateMetadata(&transport.UpdateVectorMetadataRequest{})
+	resp, err := b.UpdateMetadata("", &transport.UpdateVectorMetadataRequest{})
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -501,7 +501,7 @@ func TestVecBinding_UpdateMetadata_NoClient(t *testing.T) {
 
 func TestVecBinding_UpdateMetadata_Connected(t *testing.T) {
 	b := newTestVectorBinding(t)
-	resp, err := b.UpdateMetadata(&transport.UpdateVectorMetadataRequest{
+	resp, err := b.UpdateMetadata("", &transport.UpdateVectorMetadataRequest{
 		Namespace: "embeddings",
 		ID:        1,
 	})
@@ -519,7 +519,7 @@ func TestVecBinding_UpdateMetadata_Connected(t *testing.T) {
 
 func TestVecBinding_SearchSimilar_NoClient(t *testing.T) {
 	b := newVectorBindingNoConn(t)
-	resp, err := b.SearchSimilar(&transport.SearchSimilarRequest{})
+	resp, err := b.SearchSimilar("", &transport.SearchSimilarRequest{})
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -534,7 +534,7 @@ func TestVecBinding_SearchSimilar_NoClient(t *testing.T) {
 
 func TestVecBinding_SearchSimilar_Connected(t *testing.T) {
 	b := newTestVectorBinding(t)
-	resp, err := b.SearchSimilar(&transport.SearchSimilarRequest{
+	resp, err := b.SearchSimilar("", &transport.SearchSimilarRequest{
 		Namespace:   "embeddings",
 		QueryVector: []float32{0.1, 0.2, 0.3},
 		K:           5,
@@ -553,7 +553,7 @@ func TestVecBinding_SearchSimilar_Connected(t *testing.T) {
 
 func TestVecBinding_SearchByMetadata_NoClient(t *testing.T) {
 	b := newVectorBindingNoConn(t)
-	resp, err := b.SearchByMetadata(&transport.SearchByMetadataRequest{})
+	resp, err := b.SearchByMetadata("", &transport.SearchByMetadataRequest{})
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -568,7 +568,7 @@ func TestVecBinding_SearchByMetadata_NoClient(t *testing.T) {
 
 func TestVecBinding_SearchByMetadata_Connected(t *testing.T) {
 	b := newTestVectorBinding(t)
-	resp, err := b.SearchByMetadata(&transport.SearchByMetadataRequest{
+	resp, err := b.SearchByMetadata("", &transport.SearchByMetadataRequest{
 		Namespace: "embeddings",
 	})
 	if err != nil {
@@ -585,7 +585,7 @@ func TestVecBinding_SearchByMetadata_Connected(t *testing.T) {
 
 func TestVecBinding_HybridSearch_NoClient(t *testing.T) {
 	b := newVectorBindingNoConn(t)
-	resp, err := b.HybridSearch(&transport.HybridSearchRequest{})
+	resp, err := b.HybridSearch("", &transport.HybridSearchRequest{})
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -600,7 +600,7 @@ func TestVecBinding_HybridSearch_NoClient(t *testing.T) {
 
 func TestVecBinding_HybridSearch_Connected(t *testing.T) {
 	b := newTestVectorBinding(t)
-	resp, err := b.HybridSearch(&transport.HybridSearchRequest{
+	resp, err := b.HybridSearch("", &transport.HybridSearchRequest{
 		Namespace:   "embeddings",
 		QueryVector: []float32{0.1, 0.2, 0.3},
 		K:           5,
@@ -619,7 +619,7 @@ func TestVecBinding_HybridSearch_Connected(t *testing.T) {
 
 func TestVecBinding_SearchByID_NoClient(t *testing.T) {
 	b := newVectorBindingNoConn(t)
-	resp, err := b.SearchByID(&transport.SearchByIDRequest{})
+	resp, err := b.SearchByID("", &transport.SearchByIDRequest{})
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -634,7 +634,7 @@ func TestVecBinding_SearchByID_NoClient(t *testing.T) {
 
 func TestVecBinding_SearchByID_Connected(t *testing.T) {
 	b := newTestVectorBinding(t)
-	resp, err := b.SearchByID(&transport.SearchByIDRequest{
+	resp, err := b.SearchByID("", &transport.SearchByIDRequest{
 		Namespace: "embeddings",
 		ID:        1,
 		K:         5,
@@ -653,7 +653,7 @@ func TestVecBinding_SearchByID_Connected(t *testing.T) {
 
 func TestVecBinding_RebuildIndex_NoClient(t *testing.T) {
 	b := newVectorBindingNoConn(t)
-	resp, err := b.RebuildIndex(&transport.RebuildIndexRequest{})
+	resp, err := b.RebuildIndex("", &transport.RebuildIndexRequest{})
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -668,7 +668,7 @@ func TestVecBinding_RebuildIndex_NoClient(t *testing.T) {
 
 func TestVecBinding_RebuildIndex_Connected(t *testing.T) {
 	b := newTestVectorBinding(t)
-	resp, err := b.RebuildIndex(&transport.RebuildIndexRequest{
+	resp, err := b.RebuildIndex("", &transport.RebuildIndexRequest{
 		Namespace: "embeddings",
 	})
 	if err != nil {
@@ -685,7 +685,7 @@ func TestVecBinding_RebuildIndex_Connected(t *testing.T) {
 
 func TestVecBinding_GetRebuildProgress_NoClient(t *testing.T) {
 	b := newVectorBindingNoConn(t)
-	resp, err := b.GetRebuildProgress(&transport.GetRebuildProgressRequest{})
+	resp, err := b.GetRebuildProgress("", &transport.GetRebuildProgressRequest{})
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -700,7 +700,7 @@ func TestVecBinding_GetRebuildProgress_NoClient(t *testing.T) {
 
 func TestVecBinding_GetRebuildProgress_Connected(t *testing.T) {
 	b := newTestVectorBinding(t)
-	resp, err := b.GetRebuildProgress(&transport.GetRebuildProgressRequest{
+	resp, err := b.GetRebuildProgress("", &transport.GetRebuildProgressRequest{
 		Namespace: "embeddings",
 	})
 	if err != nil {
@@ -717,7 +717,7 @@ func TestVecBinding_GetRebuildProgress_Connected(t *testing.T) {
 
 func TestVecBinding_GetIndexStats_NoClient(t *testing.T) {
 	b := newVectorBindingNoConn(t)
-	resp, err := b.GetIndexStats(&transport.GetIndexStatsRequest{})
+	resp, err := b.GetIndexStats("", &transport.GetIndexStatsRequest{})
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -732,7 +732,7 @@ func TestVecBinding_GetIndexStats_NoClient(t *testing.T) {
 
 func TestVecBinding_GetIndexStats_Connected(t *testing.T) {
 	b := newTestVectorBinding(t)
-	resp, err := b.GetIndexStats(&transport.GetIndexStatsRequest{
+	resp, err := b.GetIndexStats("", &transport.GetIndexStatsRequest{
 		Namespace: "embeddings",
 	})
 	if err != nil {
@@ -749,7 +749,7 @@ func TestVecBinding_GetIndexStats_Connected(t *testing.T) {
 
 func TestVecBinding_CompactNamespace_NoClient(t *testing.T) {
 	b := newVectorBindingNoConn(t)
-	resp, err := b.CompactNamespace(&transport.CompactNamespaceRequest{})
+	resp, err := b.CompactNamespace("", &transport.CompactNamespaceRequest{})
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -764,7 +764,7 @@ func TestVecBinding_CompactNamespace_NoClient(t *testing.T) {
 
 func TestVecBinding_CompactNamespace_Connected(t *testing.T) {
 	b := newTestVectorBinding(t)
-	resp, err := b.CompactNamespace(&transport.CompactNamespaceRequest{
+	resp, err := b.CompactNamespace("", &transport.CompactNamespaceRequest{
 		Namespace: "embeddings",
 	})
 	if err != nil {
@@ -781,7 +781,7 @@ func TestVecBinding_CompactNamespace_Connected(t *testing.T) {
 
 func TestVecBinding_GetCompactionProgress_NoClient(t *testing.T) {
 	b := newVectorBindingNoConn(t)
-	resp, err := b.GetCompactionProgress(&transport.GetCompactionProgressRequest{})
+	resp, err := b.GetCompactionProgress("", &transport.GetCompactionProgressRequest{})
 	if resp != nil {
 		t.Fatalf("expected nil response, got %v", resp)
 	}
@@ -796,7 +796,7 @@ func TestVecBinding_GetCompactionProgress_NoClient(t *testing.T) {
 
 func TestVecBinding_GetCompactionProgress_Connected(t *testing.T) {
 	b := newTestVectorBinding(t)
-	resp, err := b.GetCompactionProgress(&transport.GetCompactionProgressRequest{
+	resp, err := b.GetCompactionProgress("", &transport.GetCompactionProgressRequest{
 		Namespace: "embeddings",
 	})
 	if err != nil {

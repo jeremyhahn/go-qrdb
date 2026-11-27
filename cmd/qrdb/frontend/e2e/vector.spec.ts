@@ -83,7 +83,7 @@ async function injectStatefulVectorBinding(
     };
 
     go.main.VectorBinding = {
-      CreateNamespace: async (req: unknown) => {
+      CreateNamespace: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.CreateNamespace");
         const r = req as { namespace: string; dimension: number; distanceMetric?: number; indexType?: number };
         if (namespaceStore.has(r.namespace)) {
@@ -100,7 +100,7 @@ async function injectStatefulVectorBinding(
         return {};
       },
 
-      DeleteNamespace: async (req: unknown) => {
+      DeleteNamespace: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.DeleteNamespace");
         const r = req as { namespace: string };
         namespaceStore.delete(r.namespace);
@@ -112,7 +112,7 @@ async function injectStatefulVectorBinding(
         return { namespaces: Array.from(namespaceStore.keys()) };
       },
 
-      GetNamespaceInfo: async (req: unknown) => {
+      GetNamespaceInfo: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.GetNamespaceInfo");
         const r = req as { namespace: string };
         const info = namespaceStore.get(r.namespace);
@@ -127,7 +127,7 @@ async function injectStatefulVectorBinding(
         };
       },
 
-      UpsertVector: async (req: unknown) => {
+      UpsertVector: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.UpsertVector");
         const r = req as { namespace: string; id: string; vector: number[]; metadata?: Record<string, unknown> };
         let vecs = vectorStore.get(r.namespace);
@@ -144,7 +144,7 @@ async function injectStatefulVectorBinding(
         return {};
       },
 
-      GetVector: async (req: unknown) => {
+      GetVector: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.GetVector");
         const r = req as { namespace: string; id: string };
         const vecs = vectorStore.get(r.namespace);
@@ -154,7 +154,7 @@ async function injectStatefulVectorBinding(
         return { ...vec };
       },
 
-      DeleteVector: async (req: unknown) => {
+      DeleteVector: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.DeleteVector");
         const r = req as { namespace: string; id: string };
         const vecs = vectorStore.get(r.namespace);
@@ -167,7 +167,7 @@ async function injectStatefulVectorBinding(
         }
       },
 
-      BatchUpsert: async (req: unknown) => {
+      BatchUpsert: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.BatchUpsert");
         const r = req as { namespace: string; vectors: Array<{ id: string; vector: number[]; metadata?: Record<string, unknown> }> };
         let vecs = vectorStore.get(r.namespace);
@@ -182,26 +182,31 @@ async function injectStatefulVectorBinding(
         if (info) {
           info.vectorCount = vecs.size;
         }
-        return { count: r.vectors.length };
+        // The Go BatchUpsertResponse.
+        return { ids: r.vectors.map((v) => v.id), success: true, inserted_count: r.vectors.length };
       },
 
-      BatchDeleteVectors: async (req: unknown) => {
+      BatchDeleteVectors: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.BatchDeleteVectors");
         const r = req as { namespace: string; ids: string[] };
         const vecs = vectorStore.get(r.namespace);
+        let deletedCount = 0;
+        const failedIds: string[] = [];
         if (vecs) {
           for (const id of r.ids) {
-            vecs.delete(id);
+            if (vecs.delete(id)) deletedCount++;
+            else failedIds.push(id);
           }
           const info = namespaceStore.get(r.namespace);
           if (info) {
             info.vectorCount = vecs.size;
           }
         }
-        return { count: (r.ids ?? []).length };
+        // The Go BatchDeleteVectorsResponse: deleted_count and failed_ids.
+        return { deleted_count: deletedCount, failed_ids: failedIds, success: true };
       },
 
-      ListVectors: async (req: unknown) => {
+      ListVectors: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.ListVectors");
         const r = req as { namespace: string };
         const vecs = vectorStore.get(r.namespace);
@@ -209,7 +214,7 @@ async function injectStatefulVectorBinding(
         return { vectors: Array.from(vecs.values()) };
       },
 
-      UpdateMetadata: async (req: unknown) => {
+      UpdateMetadata: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.UpdateMetadata");
         const r = req as { namespace: string; id: string; metadata: Record<string, unknown> };
         const vecs = vectorStore.get(r.namespace);
@@ -219,7 +224,7 @@ async function injectStatefulVectorBinding(
         vec.metadata = { ...vec.metadata, ...r.metadata };
       },
 
-      SearchSimilar: async (req: unknown) => {
+      SearchSimilar: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.SearchSimilar");
         const r = req as { namespace: string; vector: number[]; k: number };
         const vecs = vectorStore.get(r.namespace);
@@ -234,7 +239,7 @@ async function injectStatefulVectorBinding(
         return { results };
       },
 
-      SearchByMetadata: async (req: unknown) => {
+      SearchByMetadata: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.SearchByMetadata");
         const r = req as { namespace: string; filters: Record<string, unknown>; limit: number };
         const vecs = vectorStore.get(r.namespace);
@@ -256,9 +261,13 @@ async function injectStatefulVectorBinding(
         };
       },
 
-      HybridSearch: async (req: unknown) => {
+      HybridSearch: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.HybridSearch");
-        const r = req as { namespace: string; vector?: number[]; filters?: Record<string, unknown>; k?: number };
+        // transport.HybridSearchRequest: query_vector is required.
+        const r = req as { namespace: string; query_vector?: number[]; metadata_filter?: Record<string, unknown>; k?: number };
+        if (!Array.isArray(r.query_vector) || r.query_vector.length === 0) {
+          throw new Error("query vector is required");
+        }
         const vecs = vectorStore.get(r.namespace);
         if (!vecs) return { results: [] };
         const results = Array.from(vecs.values())
@@ -271,7 +280,7 @@ async function injectStatefulVectorBinding(
         return { results };
       },
 
-      SearchByID: async (req: unknown) => {
+      SearchByID: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.SearchByID");
         const r = req as { namespace: string; id: string; k: number };
         const vecs = vectorStore.get(r.namespace);
@@ -287,20 +296,20 @@ async function injectStatefulVectorBinding(
         return { results };
       },
 
-      RebuildIndex: async (req: unknown) => {
+      RebuildIndex: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.RebuildIndex");
         void req;
         rebuildJobCounter++;
         return { jobId: `rebuild-${rebuildJobCounter}` };
       },
 
-      GetRebuildProgress: async (req: unknown) => {
+      GetRebuildProgress: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.GetRebuildProgress");
         void req;
         return { progress: 100, status: "completed" };
       },
 
-      GetIndexStats: async (req: unknown) => {
+      GetIndexStats: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.GetIndexStats");
         const r = req as { namespace: string };
         const vecs = vectorStore.get(r.namespace);
@@ -314,14 +323,14 @@ async function injectStatefulVectorBinding(
         };
       },
 
-      CompactNamespace: async (req: unknown) => {
+      CompactNamespace: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.CompactNamespace");
         void req;
         compactJobCounter++;
         return { jobId: `compact-${compactJobCounter}` };
       },
 
-      GetCompactionProgress: async (req: unknown) => {
+      GetCompactionProgress: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.GetCompactionProgress");
         void req;
         return { progress: 100, status: "completed" };

@@ -41,6 +41,7 @@
     Archive,
     Scale,
     KeyRound,
+    Layers,
     Settings as SettingsIcon,
   } from "lucide-svelte";
   // lucide-svelte icons are legacy Svelte 4 class components.
@@ -48,6 +49,7 @@
   type IconComponent = any;
   import { navStore, navigateToAdmin } from "../../stores/navigation.svelte.ts";
   import type { AdminView } from "../../stores/navigation.svelte.ts";
+  import { adminViewAllowed, hasAdminViews } from "../../stores/connection-manager.svelte.ts";
 
   // ---------------------------------------------------------------------------
   // Props
@@ -91,7 +93,10 @@
     readonly items: readonly AdminItem[];
   }
 
-  const allSections: AdminSection[] = $derived.by(() => [
+  // Each admin view shows only when the server allowed the caller its own
+  // read route (connect-time probe); a refused (403) view is not offered,
+  // and a section left with no view is dropped.
+  const allSections: AdminSection[] = $derived.by(() => ([
     {
       title: 'Overview',
       items: [
@@ -113,6 +118,7 @@
         { id: 'users',         label: 'Users',         icon: Users },
         { id: 'roles',         label: 'Roles',         icon: Shield },
         { id: 'groups',        label: 'Groups',        icon: Users },
+        { id: 'volume-pools',  label: 'Volume Pools',  icon: Layers },
         { id: 'certificates',  label: 'Certificates',  icon: FileText },
         { id: 'credentials' as AdminView, label: 'Credentials', icon: KeyRound },
       ],
@@ -129,7 +135,9 @@
         { id: 'settings' as AdminView,   label: 'Settings',   icon: SettingsIcon },
       ],
     },
-  ]);
+  ] as AdminSection[])
+    .map((s) => ({ ...s, items: s.items.filter((i) => adminViewAllowed(profileId, i.id)) }))
+    .filter((s) => hasAdminViews(profileId) && s.items.length > 0));
 
   // ---------------------------------------------------------------------------
   // Derived

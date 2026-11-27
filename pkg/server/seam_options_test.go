@@ -127,6 +127,15 @@ func TestResolveCryptoOptions_CompositionSeamsAbsentKeepTheDefaults(t *testing.T
 	}
 }
 
+func TestResolveCryptoOptions_BackupSinkSetEvenWhenNil(t *testing.T) {
+	if got := ResolveCryptoOptions(WithBackupSink(nil)); !got.BackupSinkSet || got.BackupSink != nil {
+		t.Fatalf("WithBackupSink(nil): BackupSinkSet=%v BackupSink=%v", got.BackupSinkSet, got.BackupSink)
+	}
+	if ResolveCryptoOptions().BackupSinkSet {
+		t.Fatal("BackupSinkSet is true with no option given")
+	}
+}
+
 // settingsWTEnabled is SETTINGS_WT_ENABLED, draft-ietf-webtrans-http3-16
 // section 9.2.
 const settingsWTEnabled = 0x2c7cf000

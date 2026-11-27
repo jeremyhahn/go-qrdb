@@ -400,6 +400,23 @@ func notFound(err error) bool {
 	return errors.Is(err, objcommon.ErrKeyNotFound)
 }
 
+// missing reports whether a failed read of name from the engine's store means the object is absent.
+func (e *Engine) missing(name string, err error) bool {
+	return missingIn(context.Background(), e.store, name, err)
+}
+
+// missingIn reports whether a failed read of name means the object is absent, asking the provider when its error is not ErrKeyNotFound.
+func missingIn(ctx context.Context, store objcommon.Storage, name string, err error) bool {
+	if err == nil {
+		return false
+	}
+	if notFound(err) {
+		return true
+	}
+	ok, existsErr := store.Exists(ctx, name)
+	return existsErr == nil && !ok
+}
+
 // ensureFormatMarkerFor refuses to open a non-empty store that was not written
 // by this exact object layout (see FormatMarkerMissingError and
 // FormatVersionMismatchError), and marks an empty one as this layout.
@@ -425,7 +442,7 @@ func (e *Engine) ensureFormatMarkerFor(owner string) error {
 		}
 		return nil
 	}
-	if !notFound(err) {
+	if !e.missing(formatMarkerName, err) {
 		return err
 	}
 	names, err := e.store.List("")
@@ -1036,7 +1053,7 @@ func (e *Engine) get(key []byte) ([]byte, error) {
 	if hashed {
 		stored, value, err := e.readHashed(name, true)
 		if err != nil {
-			if notFound(err) {
+			if e.missing(name, err) {
 				return nil, nil
 			}
 			return nil, err
@@ -1048,7 +1065,7 @@ func (e *Engine) get(key []byte) ([]byte, error) {
 	}
 	rc, err := e.store.Get(name)
 	if err != nil {
-		if notFound(err) {
+		if e.missing(name, err) {
 			return nil, nil
 		}
 		return nil, err
@@ -1143,7 +1160,7 @@ func (e *Engine) Delete(key []byte) error {
 // caller holds writeMu.
 func (e *Engine) remove(key []byte) error {
 	name, _ := objectName(key)
-	if err := e.store.Delete(name); err != nil && !notFound(err) {
+	if err := e.store.Delete(name); err != nil && !e.missing(name, err) {
 		return err
 	}
 	return nil
@@ -1259,7 +1276,7 @@ func (e *Engine) scan(prefix []byte, withValues bool) ([]kvEntry, error) {
 		}
 		key, value, err := e.readHashed(name, withValues)
 		if err != nil {
-			if notFound(err) {
+			if e.missing(name, err) {
 				continue
 			}
 			return nil, err

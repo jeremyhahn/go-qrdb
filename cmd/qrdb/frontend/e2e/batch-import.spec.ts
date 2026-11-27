@@ -180,6 +180,20 @@ test.describe("Batch Import Tab", () => {
     await expect(page.getByText("Key Field is required")).toBeVisible({ timeout: 5_000 });
   });
 
+  test("empty collection name shows warning without calling import", async ({ page }) => {
+    await navigateToImport(page);
+
+    await page.locator("#import-file-path").fill("/data/records.csv");
+    await page.locator("#import-key-field").fill("id");
+    await page.getByLabel("Collection").check();
+    await expect(page.locator("#import-collection")).toHaveValue("");
+
+    await page.getByRole("button", { name: "Import" }).click();
+
+    await expect(page.getByText("Collection is required for a Collection import.")).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByText("Import Results")).toHaveCount(0);
+  });
+
   test("Reset button clears the form", async ({ page }) => {
     await navigateToImport(page);
 

@@ -99,9 +99,21 @@ or delete; gRPC, Unix and QUIC carry it as `int64 revision = 2` of
 `BatchResponse`, the embedded client as `transport.BatchResponse.Revision`,
 and MCP `qrdb_batch_execute` answers `{"Revision": N, "Responses": [...]}`.
 
+The TypeScript SDK's `batch.importContent(data, opts)` (REST) runs one
+session over the routes below for content the caller holds in memory, such
+as a file picked in a browser: begin, append in 1 MiB chunks with `seq`
+from 0, commit, and abort on any failure. The browser UI's Import tab uses
+it; the desktop app imports from a path with `importFile`.
+
 `POST /batch/import/begin` — `ImportOptions` (`format`, `filename`,
-`key_field`, `value_mode`, `value_field`, `skip_header`, `transactional`).
-Response:
+`key_field`, `value_mode`, `value_field`, `skip_header`, `transactional`,
+`collection`). Batch import writes the raw KV keyspace only, so a non-empty
+`collection` is refused with `422` (`importing into a collection ... is not
+supported`), the same refusal the desktop binding's `ImportFile` makes; the
+rows are never written to KV in its place. `format` is one of
+`service.ImportFormats` (`auto`, `csv`, `json`, `ndjson`, `yaml`, `archive`:
+the list the desktop binding's `AvailableImportFormats` and the TypeScript
+SDK's `batch.availableImportFormats` report). Response:
 
 ```json
 { "session_id": "a1b2c3d4e5f6a7b8" }

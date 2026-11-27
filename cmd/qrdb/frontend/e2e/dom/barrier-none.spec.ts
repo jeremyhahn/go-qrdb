@@ -57,10 +57,9 @@ test("no barrier: Seal Manager shows 'not configured' and no Seal control", asyn
   // ...and there is no Unseal / submit-share control either.
   await expect(page.getByRole("button", { name: "Unseal", exact: true })).toHaveCount(0);
 
-  // The barrier subsystem reports uninitialized, so the in-place "Configure
-  // Encryption" affordance is offered (configuring it at runtime requires the
-  // seal subsystem to be enabled in server config).
+  // A seal-off daemon has no committed strategy, so encryption is configured in place.
   await expect(page.getByTestId("configure-encryption-btn")).toBeVisible();
+  await expect(page.getByTestId("enable-encryption-submit")).toHaveCount(0);
 });
 
 test("no barrier: footer status badge reads 'Not encrypted'", async ({ page }) => {

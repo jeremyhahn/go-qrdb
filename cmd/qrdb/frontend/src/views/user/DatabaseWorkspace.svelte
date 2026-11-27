@@ -18,7 +18,8 @@
 <!--
   DatabaseWorkspace renders the database workspace with a horizontal tab bar
   at the top and the active tool view below it. Every database exposes every
-  engine; the SQL tab is shown only when SQL protocol configuration is present.
+  engine; the SQL tab is shown only when SQL protocol configuration is present,
+  and the Verifiable Logs tab only when the server has a log service.
 
   Navigation is driven through navStore.selectDbTool.
 -->
@@ -26,6 +27,9 @@
   import type { Client, DatabaseInfo } from "@qrdb/sdk";
   import { navStore, selectDbTool } from "../../stores/navigation.svelte.ts";
   import type { DbTool } from "../../stores/navigation.svelte.ts";
+  import { connManagerStore } from "../../stores/connection-manager.svelte.ts";
+  import { revisionSupportFingerprint, type RevisionSupportScope } from "../../lib/revisionSupportCache.ts";
+  import { probeLogService } from "../../lib/logService.ts";
 
   // Tool view components
   import KVExplorer from "./KVExplorer.svelte";
@@ -34,6 +38,7 @@
   import BatchView from "./BatchView.svelte";
   import TimeSeriesView from "./TimeSeriesView.svelte";
   import VectorView from "./VectorView.svelte";
+  import VlogView from "./VlogView.svelte";
   import SQLBrowserScoped from "./SQLBrowserScoped.svelte";
   import CollectionView from "./CollectionView.svelte";
   import LeaseManager from "./LeaseManager.svelte";
@@ -54,6 +59,19 @@
   // based or explicit prop), so they keep the unscoped client to avoid double
   // scoping; admin/system views elsewhere also keep the unscoped client.
   const dbClient = $derived(client.databaseScoped(database.name));
+
+  // The database the data views read (connection profile, tenant, database)
+  // and the fingerprint of its store: KVExplorer remembers revision support
+  // in the shared revisionSupportCache under both, so a database recreated
+  // under the same name is asked again.
+  const revisionScope = $derived.by(
+    (): RevisionSupportScope => ({
+      profileId: connManagerStore.activeProfileId,
+      tenant: database.tenantId ?? "",
+      database: database.name,
+    }),
+  );
+  const revisionFingerprint = $derived(revisionSupportFingerprint(database));
 
   // ---------------------------------------------------------------------------
   // Tab definitions
@@ -76,6 +94,7 @@
     { id: 'locks',        label: 'Locks' },
     { id: 'timeseries',   label: 'Time Series' },
     { id: 'vector',       label: 'Vectors' },
+    { id: 'vlog',         label: 'Verifiable Logs' },
   ];
 
   /** SQL Browser tab — injected when SQL protocols are enabled. */
@@ -98,8 +117,25 @@
     (database.protocol?.mysql ?? false) || (database.protocol?.postgresql ?? false),
   );
 
+  // Whether the server has a verifiable-log service for this database: null
+  // while the probe runs, false when it answers 501 Not Implemented or, on
+  // the desktop, the embedded NilServiceError. The Verifiable Logs tab and
+  // its view are offered only once the probe finds the service.
+  let logService = $state<boolean | null>(null);
+  $effect(() => {
+    const scoped = dbClient;
+    let current = true;
+    logService = null;
+    void probeLogService(scoped).then((present) => {
+      if (current) logService = present;
+    });
+    return () => {
+      current = false;
+    };
+  });
+
   const visibleTabs = $derived.by((): readonly TabDef[] => {
-    const base: TabDef[] = [...DB_TABS];
+    const base: TabDef[] = DB_TABS.filter((tab) => tab.id !== 'vlog' || logService === true);
     if (hasSql) base.push(SQL_TAB);
     base.push(SETTINGS_TAB);
     return base;
@@ -136,7 +172,7 @@
   <!-- Tool view -->
   <div class="flex-1 overflow-y-auto p-6" id="tabpanel-{activeTool}" role="tabpanel">
     {#if activeTool === 'data'}
-      <KVExplorer client={dbClient} />
+      <KVExplorer client={dbClient} {revisionScope} {revisionFingerprint} />
     {:else if activeTool === 'collections'}
       <CollectionView {client} {database} />
     {:else if activeTool === 'indexes'}
@@ -155,6 +191,14 @@
       <TimeSeriesView client={dbClient} />
     {:else if activeTool === 'vector'}
       <VectorView client={dbClient} />
+    {:else if activeTool === 'vlog'}
+      {#if logService === true}
+        <VlogView client={dbClient} />
+      {:else if logService === false}
+        <p class="text-sm text-base-content/60" data-testid="vlog-absent">
+          This server has no verifiable-log service.
+        </p>
+      {/if}
     {:else if activeTool === 'sql'}
       <SQLBrowserScoped {client} {database} />
     {:else if activeTool === 'db-settings'}

@@ -369,7 +369,7 @@ async function injectSeededVectorBinding(page: Page): Promise<void> {
 
     go.main.VectorBinding = {
       CreateNamespace: async () => ({}),
-      DeleteNamespace: async (req: unknown) => {
+      DeleteNamespace: async (_database: unknown, req: unknown) => {
         const r = req as { namespace: string };
         namespaceStore.delete(r.namespace);
         vectorStore.delete(r.namespace);
@@ -378,7 +378,7 @@ async function injectSeededVectorBinding(page: Page): Promise<void> {
         maybeReject("VectorBinding.ListNamespaces");
         return { namespaces: Array.from(namespaceStore.keys()) };
       },
-      GetNamespaceInfo: async (req: unknown) => {
+      GetNamespaceInfo: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.GetNamespaceInfo");
         const r = req as { namespace: string };
         const info = namespaceStore.get(r.namespace);
@@ -392,7 +392,7 @@ async function injectSeededVectorBinding(page: Page): Promise<void> {
       },
       UpsertVector: async () => ({}),
       GetVector: async () => ({}),
-      DeleteVector: async (req: unknown) => {
+      DeleteVector: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.DeleteVector");
         const r = req as { namespace: string; id: string };
         const vecs = vectorStore.get(r.namespace);
@@ -403,8 +403,22 @@ async function injectSeededVectorBinding(page: Page): Promise<void> {
         }
       },
       BatchUpsert: async () => ({}),
-      BatchDeleteVectors: async () => ({}),
-      ListVectors: async (req: unknown) => {
+      // The Go BatchDeleteVectorsResponse: deleted_count and failed_ids.
+      BatchDeleteVectors: async (_database: unknown, req: unknown) => {
+        maybeReject("VectorBinding.BatchDeleteVectors");
+        const r = req as { namespace: string; ids: string[] };
+        const vecs = vectorStore.get(r.namespace);
+        let deletedCount = 0;
+        const failedIds: string[] = [];
+        for (const id of r.ids ?? []) {
+          if (vecs?.delete(id)) deletedCount++;
+          else failedIds.push(id);
+        }
+        const info = namespaceStore.get(r.namespace);
+        if (info && vecs) info.vectorCount = vecs.size;
+        return { deleted_count: deletedCount, failed_ids: failedIds, timestamp: 0, success: true };
+      },
+      ListVectors: async (_database: unknown, req: unknown) => {
         maybeReject("VectorBinding.ListVectors");
         const r = req as { namespace: string };
         const vecs = vectorStore.get(r.namespace);

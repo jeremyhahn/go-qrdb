@@ -222,15 +222,27 @@ func withQuotaAccountant(acct *quota.Accountant) RESTRegistryOption {
 	}
 }
 
-// withDatabaseManager sets the database.Manager used to resolve a database's
-// own barrier/dedicated-store configuration. When configured, a database that
+// WithRegistryDatabaseManager backs the registry with a database.Manager: the
+// manager is both the registry's DatabaseCatalog and the source of each
+// database's managed record (lifecycle state, drop incarnation, sealed state
+// and own barrier/dedicated-store configuration). When configured, a database that
 // carries its own encryption barrier over its own dedicated store (an
 // explicit --data-dir, or Backend == database.BackendRaft) is routed to that
 // dedicated encrypting store by resolve, independent of the owning tenant's
 // isolation mode. See resolveDedicatedDatabaseBarrier.
-func withDatabaseManager(mgr *database.Manager) RESTRegistryOption {
+//
+// One record lookup decides a resolution, and the record's drop fence guards
+// every write a resolved handle makes, so a write held across DROP DATABASE
+// is refused rather than landing after reclamation or in a same-named
+// replacement. A nil manager leaves the registry unchanged. An option listed
+// after this one may still replace the catalog (tests do).
+func WithRegistryDatabaseManager(mgr *database.Manager) RESTRegistryOption {
 	return func(r *restServiceRegistry) {
+		if mgr == nil {
+			return
+		}
 		r.dbManager = mgr
+		r.catalog = newManagerCatalog(mgr)
 	}
 }
 
@@ -417,6 +429,14 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 	// the named database is used when present (e.g. the default database);
 	// otherwise any database that exists for the tenant resolves to a
 	// namespaced view of the default service set.
+	//
+	// With a database manager the record read above decides: a name the
+	// manager held no record for is not a database here, whatever a later
+	// catalog lookup says, so a database created after that read is never
+	// served through a view its drop fence does not guard.
+	if managed.notFound != nil && !r.implicitDatabase(db) {
+		return nil, &rest.DatabaseNotFoundError{TenantID: tenantID, Database: db}
+	}
 	if r.dbReg.GetOrDefault(db) == nil && !r.databaseExists(tenantID, db) {
 		return nil, &rest.DatabaseNotFoundError{TenantID: tenantID, Database: db}
 	}
@@ -672,6 +692,19 @@ func (r *restServiceRegistry) applyQuota(svcs *DatabaseServices, tenantID string
 // default database always exists. Named databases are resolved through the
 // catalog when configured (which enforces per-tenant ownership); without a
 // catalog, only databases pre-registered in the DatabaseServiceRegistry exist.
+// implicitDatabase reports whether db resolves without a catalog record:
+// the default database, the configured default SQL database, or a database
+// pre-registered in the DatabaseServiceRegistry.
+func (r *restServiceRegistry) implicitDatabase(db string) bool {
+	if db == "" || db == r.dbReg.DefaultName() {
+		return true
+	}
+	if r.sqlDefaultDB != "" && db == r.sqlDefaultDB {
+		return true
+	}
+	return r.dbReg.Get(db) != nil
+}
+
 func (r *restServiceRegistry) databaseExists(tenantID, db string) bool {
 	if db == "" || db == r.dbReg.DefaultName() {
 		return true

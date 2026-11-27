@@ -123,6 +123,8 @@
   // bring-your-own login certificates, and no other tenant's.
   let trustAnchors: TrustAnchor[] = $state([]);
   let trustAnchorsLoading: boolean = $state(true);
+  // Why the list could not be loaded; an unloaded list is not an empty one.
+  let trustAnchorsError: string = $state("");
   let newTrustAnchorsPem: string = $state("");
   let addTrustAnchorLoading: boolean = $state(false);
   let removingFingerprint: string = $state("");
@@ -189,7 +191,7 @@
     maxCertificates = quotas?.maxCertificates ?? 0;
     maxBackups = quotas?.maxBackups ?? 0;
     maxVectorDims = quotas?.maxVectorDims ?? 0;
-    maxTSMetrics = quotas?.maxTSMetrics ?? 0;
+    maxTSMetrics = quotas?.maxTsMetrics ?? 0;
     maxDedicatedWalGroups = quotas?.maxDedicatedWalGroups ?? 0;
     systemBarrierQuota = quotas?.systemBarrierQuota ?? 0;
   }
@@ -217,10 +219,12 @@
   async function loadTrustAnchors(): Promise<void> {
     try {
       trustAnchorsLoading = true;
+      trustAnchorsError = "";
       const resp = await client.tenants.listTrustAnchors(tenantId);
       trustAnchors = [...resp.anchors];
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to load trust anchors";
+      trustAnchorsError = msg;
       showToast("error", msg);
     } finally {
       trustAnchorsLoading = false;
@@ -251,7 +255,7 @@
           maxCertificates,
           maxBackups,
           maxVectorDims,
-          maxTSMetrics,
+          maxTsMetrics: maxTSMetrics,
           maxDedicatedWalGroups,
           systemBarrierQuota,
         },
@@ -308,6 +312,7 @@
       addTrustAnchorLoading = true;
       const resp = await client.tenants.addTrustAnchors(tenantId, newTrustAnchorsPem.trim());
       trustAnchors = [...resp.anchors];
+      trustAnchorsError = "";
       newTrustAnchorsPem = "";
       showToast("success", `Trust anchor(s) added for tenant "${tenantId}".`);
     } catch (err: unknown) {
@@ -812,6 +817,10 @@
           <div class="flex justify-center py-6">
             <span class="loading loading-spinner loading-md"></span>
           </div>
+        {:else if trustAnchorsError !== ""}
+          <p class="text-error text-sm" role="alert" data-testid="trust-anchors-error">
+            Trust anchors could not be loaded: {trustAnchorsError}
+          </p>
         {:else if trustAnchors.length === 0}
           <p class="text-base-content/50 text-sm">No trust anchors registered.</p>
         {:else}

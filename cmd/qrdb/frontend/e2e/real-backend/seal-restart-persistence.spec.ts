@@ -21,7 +21,7 @@
  */
 
 import { test, expect } from "./fixtures/sealed-daemon.ts";
-import { b64, waitForHealthExported, waitForSealedWindow } from "./fixtures/daemon-helpers.ts";
+import { b64, waitForHealthExported } from "./fixtures/daemon-helpers.ts";
 
 function kvKey(label: string): string {
   return `seal-persist-${label}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;

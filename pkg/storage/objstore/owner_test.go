@@ -1,6 +1,7 @@
 package objstore
 
 import (
+	"context"
 	"errors"
 	"io"
 	"strings"
@@ -175,6 +176,16 @@ func (s claimUndoStore) Get(name string) (io.ReadCloser, error) {
 		return nil, errProvider
 	}
 	return s.Storage.Get(name)
+}
+
+// Exists fails on the journal alongside Get: a provider that cannot serve
+// the journal cannot say it is absent either, so the open must not read the
+// fault as a missing journal (missingIn).
+func (s claimUndoStore) Exists(ctx context.Context, name string) (bool, error) {
+	if name == journalName && s.journalGetFails.Load() {
+		return false, errProvider
+	}
+	return s.Storage.Exists(ctx, name)
 }
 
 func (s claimUndoStore) Delete(name string) error {

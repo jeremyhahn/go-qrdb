@@ -495,6 +495,35 @@ func TestConvertFromStringMap(t *testing.T) {
 	})
 }
 
+// TestVectorStateMachine_UpsertReportsCreated: the apply result says whether
+// the upsert created the vector or replaced a stored one.
+func TestVectorStateMachine_UpsertReportsCreated(t *testing.T) {
+	adapter := NewMockStorageAdapter()
+	adapter.vecStor = NewMockVectorStorageWrapper()
+	mockHNSW := NewMockHNSWIndex()
+	vsm, err := newTestVectorStateMachine(adapter, mockHNSW, nil, newTestLogger())
+	require.NoError(t, err)
+	setupTestNamespace(vsm, "test_ns", 4, mockHNSW)
+	require.NoError(t, createTestNamespaceInStorage(adapter, "test_ns", 4))
+
+	apply := func(index uint64, cmd *VectorCommand) sm.Result {
+		data, encErr := cmd.Encode()
+		require.NoError(t, encErr)
+		results := make([]sm.Result, 1)
+		require.NoError(t, vsm.Update(context.Background(), []sm.Entry{{Index: index, Cmd: data}}, results))
+		return results[0]
+	}
+
+	first := &VectorCommand{Op: OpUpsertVector, Namespace: "test_ns", ID: 1, Vector: []float32{1, 0, 0, 0},
+		Version: 1, Timestamp: time.Now().UnixNano()}
+	assert.True(t, UpsertCreated(apply(1, first).Data), "first upsert of a missing ID must report created")
+	_, err = adapter.VectorStorage().GetVector(context.Background(), "test_ns", 1)
+	require.NoError(t, err)
+
+	second := NewUpsertCommand("test_ns", 1, []float32{0, 1, 0, 0}, nil, "n1")
+	assert.False(t, UpsertCreated(apply(2, second).Data), "upsert of an existing ID must not report created")
+}
+
 // =============================================================================
 // buildIndexConfig Tests (15% coverage)
 // =============================================================================

@@ -219,7 +219,7 @@ test.describe("KV Explorer — restore workflow", () => {
     await putEntry(page, "bulk/bravo", "bravo-orig"); // revision 2
     // Delete alpha via the UI (bulk-delete scenario).
     await page.getByText("bulk/alpha").first().click();
-    let detailPanel = page.getByLabel("Details");
+    const detailPanel = page.getByLabel("Details");
     await detailPanel.getByRole("button", { name: "Delete" }).click();
     await page.locator(".modal").getByRole("button", { name: "Delete" }).click();
     await expect(page.getByText('Deleted "bulk/alpha"')).toBeVisible({ timeout: 5_000 });
@@ -305,5 +305,64 @@ test.describe("KV Explorer — restore conflicts", () => {
     await modal.getByRole("button", { name: "Close", exact: true }).click();
     await expect(modal).not.toBeVisible();
     await expect(page.locator("table").getByText("orig").first()).toBeVisible();
+  });
+});
+
+test.describe("KV Explorer — restore across a database switch", () => {
+  test.use({
+    mockState: {
+      ...kvState,
+      databases: [
+        { name: "kv-restore", backend: "pebble", status: "open" },
+        { name: "kv-other", backend: "pebble", status: "open" },
+      ],
+    },
+  });
+
+  test("a previewed restore open at a switch is dropped and restores nothing", async ({ page }) => {
+    // kv-other holds the same key name at two revisions.
+    await page.goto("/");
+    await page.locator("aside").getByText("kv-other").click();
+    await expect(page.locator(".breadcrumbs").getByText("kv-other", { exact: false })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await putEntry(page, "restore-switch", "other-orig");
+    await putEntry(page, "restore-switch", "other-changed");
+
+    // No reload between databases: the mock's store lives in the page.
+    await page.locator("aside").getByText("kv-restore").click();
+    await expect(page.locator(".breadcrumbs").getByText("kv-restore", { exact: false })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await putEntry(page, "restore-switch", "orig"); // revision 1
+    await putEntry(page, "restore-switch", "changed"); // revision 2
+
+    // The plan for kv-restore is previewed and awaits confirmation.
+    await page.getByRole("button", { name: "Restore...", exact: true }).click();
+    const modal = restoreModal(page);
+    await modal.locator('input[type="number"]').first().fill("1");
+    await modal.getByRole("button", { name: "By Keys" }).click();
+    await modal.locator("textarea").fill("restore-switch");
+    await modal.getByRole("button", { name: "Preview", exact: true }).click();
+    await expect(modal.getByText("Confirm Restore Plan")).toBeVisible({ timeout: LOAD_TIMEOUT });
+
+    // The database changes under the open preview (dispatched on the sidebar
+    // entry: the modal's backdrop covers it for a pointer click).
+    await page.locator("aside").getByText("kv-other").dispatchEvent("click");
+    await expect(page.locator(".breadcrumbs").getByText("kv-other", { exact: false })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+
+    // The preview went with kv-restore: nothing is left to confirm, and
+    // neither database was restored.
+    await expect(modal.getByText("Confirm Restore Plan")).toHaveCount(0);
+    await expect(page.locator("table").getByText("other-changed").first()).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await expect(page.locator("table").getByText("other-orig")).toHaveCount(0);
+    await page.locator("aside").getByText("kv-restore").click();
+    await expect(page.locator(".breadcrumbs").getByText("kv-restore", { exact: false })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await expect(page.locator("table").getByText("changed", { exact: true })).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await expect(page.locator("table").getByText("orig", { exact: true })).toHaveCount(0);
   });
 });

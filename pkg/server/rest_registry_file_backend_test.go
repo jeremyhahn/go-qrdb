@@ -51,8 +51,7 @@ func TestRESTServiceRegistry_FileBackendDatabaseServedFromNodeStore(t *testing.T
 	}
 	nodeStore := newFilledRegistry()
 	reg := NewRESTServiceRegistry(nodeStore, nil, tenantid.System,
-		WithDatabaseCatalog(newManagerCatalog(mgr)),
-		setRegistryDatabaseManager(mgr),
+		WithRegistryDatabaseManager(mgr),
 	)
 
 	kv, err := reg.KVService(tenantid.System, "files")

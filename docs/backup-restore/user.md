@@ -17,7 +17,9 @@ This is disaster recovery. For undoing a handful of keys, use
   permissions. Note `backup:restore` is a separate grant from `backup:create` —
   restore overwrites shard state.
 - For backups that outlive the daemon process, start `qrdbd` with
-  `--backup-dir <dir>`. Without it, backups are held in memory only.
+  `--backup-dir <dir>` or a `backup.destination` block in its configuration
+  (object storage, see [Backups on object storage](#backups-on-object-storage)).
+  Without either, backups are held in memory only.
 
 ## Encryption is the default
 
@@ -40,6 +42,14 @@ openssl rand -out /etc/qrdb/keys/backup.key 32 && chmod 600 /etc/qrdb/keys/backu
 qrdbd start --backup-key-dir /etc/qrdb/keys --backup-dir /var/lib/qrdb/backups ...
 ```
 
+Or, for backups on object storage, leave `--backup-dir` off and name a
+`backup.destination` in the configuration file instead (see
+[Backups on object storage](#backups-on-object-storage)):
+
+```bash
+qrdbd start --backup-key-dir /etc/qrdb/keys --config /etc/qrdb/qrdbd.yaml ...
+```
+
 From the CLI, naming the file by NAME, not path:
 
 ```bash
@@ -57,8 +67,10 @@ Record the `id`. You will need it to verify or restore.
 qrdb backup create --destination /backups/nightly --encryption-key-file backup.key
 ```
 
-The backup lands in the server's `--backup-dir`; `--destination` is a label
-recorded with it. Copy that directory off the machine with your usual tooling.
+The backup lands in the server's `--backup-dir` or `backup.destination`;
+`--destination` is a label recorded with it. Copy a `--backup-dir` directory
+off the machine with your usual tooling; a `backup.destination` on S3, Azure
+or GCS is already off it.
 
 Keep `/etc/qrdb/keys/backup.key` somewhere you will still have it when the
 machine you are backing up is gone. A backup you cannot decrypt is not a
@@ -128,7 +140,93 @@ qrdb backup delete a91d04e6-52c3-4f0b-8e7a-6b3c9f1d2e85
 ```
 
 There is no built-in scheduler and no retention policy: running `create`,
-`verify` and `delete` is your scheduler's job.
+`verify` and `delete` is your scheduler's job. Deleting an ID the repository
+does not hold is refused as not found, never reported as done.
+
+## Backups on object storage
+
+`backup.destination` names the go-objstore provider backups are written to
+and restored from. It is the only route to object storage; `--backup-dir`
+stays the local file repository. The two are exclusive: set both and
+`qrdbd start` refuses to boot with an error naming `--backup-dir` and
+`backup.destination` (never a setting value). The provider is required and
+has no default path: a backup kept under the data directory dies with it.
+
+```yaml
+# A directory outside the data directory (another disk, an NFS mount).
+backup:
+  destination:
+    provider: local
+    settings:
+      path: /mnt/backups/qrdb
+```
+
+```yaml
+# Amazon S3.
+backup:
+  destination:
+    provider: s3
+    settings:
+      bucket: qrdb-backups
+      region: us-east-1
+    credentials:
+      key_file: /etc/qrdb/backup-s3.key-id
+      secret_file: /etc/qrdb/backup-s3.secret
+```
+
+```yaml
+# MinIO (or any S3-compatible store) is provider s3 with an endpoint.
+backup:
+  destination:
+    provider: s3
+    settings:
+      bucket: qrdb-backups
+      region: us-east-1
+      endpoint: https://minio.example.com:9000
+      forcePathStyle: "true"
+    credentials:
+      key_file: /etc/qrdb/backup-minio.key-id
+      secret_file: /etc/qrdb/backup-minio.secret
+```
+
+```yaml
+# Azure Blob Storage: settings are the go-objstore azure provider's keys (accountName, containerName, optional endpoint for an Azure-compatible service); the account key is the one credential.
+backup:
+  destination:
+    provider: azure
+    settings:
+      accountName: qrdbbackups
+      containerName: qrdb-backups
+    credentials:
+      secret_file: /etc/qrdb/backup-azure.account-key
+```
+
+```yaml
+# Google Cloud Storage: application default credentials, no files.
+backup:
+  destination:
+    provider: gcs
+    settings:
+      bucket: qrdb-backups
+```
+
+- `settings` keys pass to the provider exactly as written: go-objstore's
+  `forcePathStyle` stays camelCase.
+- An Azure-compatible endpoint (for example Azurite) is set with
+  `settings.endpoint`; GCS reaches an emulator through the
+  `STORAGE_EMULATOR_HOST` environment variable of the `qrdbd` process.
+- A credential is only ever referenced by file (`credentials.key_file`,
+  `credentials.secret_file`, readable only by the `qrdbd` user). A credential
+  pasted under `settings` is refused at startup with an error naming the key,
+  not the value. Leave `credentials` out to use the provider's default chain.
+- The `s3`, `azure` and `gcs` providers are compiled in only with their
+  go-objstore build tags; a provider the binary does not carry is refused at
+  startup.
+- `qrdbd start --restore-backup-id <id>` reads from whichever source is
+  configured.
+- An embedding application gets the same behaviour from `sdk/go/node`: set
+  `cfg.Backup.Destination` and the node opens it; it cannot be combined with
+  `WithBackupSink`.
 
 ## Troubleshooting
 
@@ -188,6 +286,11 @@ flat layout
 and does not migrate a directory without its format marker. Restore that
 backup with the binary that wrote it. A backup made with
 `sm_storage: pebble`/`BackendPebble`/`BackendMemory` is unaffected.
+
+**`qrdbd start --restore-backup-id` says it needs a source.** The restore
+reads from `--backup-dir` or `backup.destination`; name one. Naming both
+refuses the boot with the conflict error naming `--backup-dir` and
+`backup.destination`; keep one.
 
 **You want to migrate data to a database with a different engine or backend.**
 Backup and restore is the usual route, but note the shard snapshot format is the

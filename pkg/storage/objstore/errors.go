@@ -14,7 +14,10 @@
 
 package objstore
 
-import "strconv"
+import (
+	"io/fs"
+	"strconv"
+)
 
 // UnsupportedProviderError indicates the requested go-objstore provider is not
 // registered in this build. Cloud providers are compiled in only when
@@ -271,6 +274,21 @@ func (e *JournalWriteError) Error() string {
 // Unwrap returns the underlying error.
 func (e *JournalWriteError) Unwrap() error {
 	return e.Err
+}
+
+// GroupAccessibleRootError refuses a filesystem store root, opened with
+// WithOwnerOnlyTree, that its group or other users can access.
+type GroupAccessibleRootError struct {
+	// Path is the refused root.
+	Path string
+	// Mode is the root's permission bits.
+	Mode fs.FileMode
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *GroupAccessibleRootError) Error() string {
+	return "objstore: store root " + strconv.Quote(e.Path) + " has mode " + e.Mode.String() +
+		"; it must be accessible to its owner only (0700)"
 }
 
 // Error returns a human-readable description of the mismatch.

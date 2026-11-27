@@ -40,6 +40,11 @@ type providerMapsFile struct {
 			Settings map[string]any `yaml:"settings"`
 		} `yaml:"objstore"`
 	} `yaml:"databases"`
+	Backup struct {
+		Destination struct {
+			Settings map[string]any `yaml:"settings"`
+		} `yaml:"destination"`
+	} `yaml:"backup"`
 }
 
 // restoreProviderKeyCase gives storage.objstore.settings and each
@@ -56,6 +61,13 @@ func restoreProviderKeyCase(cfg *Config, data []byte) error {
 		return err
 	}
 	cfg.Storage.Objstore.Settings = settings
+	if d := cfg.Backup.Destination; d != nil {
+		settings, err := restoreKeyCase("backup.destination.settings", file.Backup.Destination.Settings, d.Settings)
+		if err != nil {
+			return err
+		}
+		d.Settings = settings
+	}
 	for i, pool := range file.Storage.VolumePools {
 		if i >= len(cfg.Storage.VolumePools) {
 			break

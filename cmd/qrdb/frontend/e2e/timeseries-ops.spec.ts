@@ -1,0 +1,664 @@
+/**
+ * Copyright 2026 Jeremy Hahn
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Mocked e2e for the time series operations the TimeSeries view reaches
+ * beyond list/query/delete: write, writeBatch, aggregate, richQuery,
+ * getRetention and setRetention.
+ *
+ * The binding double below follows the Go TimeSeriesBinding: every request
+ * arrives as one snake_case object (the SDK's Wails adapter runs toSnake),
+ * and every response has the SDK's camelCase shape.
+ */
+
+import {
+  test,
+  expect,
+  secondLaunchEmbeddedState,
+  injectError,
+  clearError,
+} from "./fixtures/wails-mock.ts";
+
+const LOAD_TIMEOUT = 10_000;
+
+const tsState = {
+  ...secondLaunchEmbeddedState,
+  databases: [
+    { name: "ts-ops", backend: "pebble", status: "open" },
+  ],
+};
+
+/**
+ * Inject a stateful in-memory time series store that replaces the default
+ * TimeSeriesBinding mock. Records each binding method called in
+ * window.__TS_CALLS__. Must be called before `page.goto()`.
+ */
+async function injectStatefulTimeSeriesBinding(
+  page: import("@playwright/test").Page,
+): Promise<void> {
+  await page.addInitScript(() => {
+    interface Tag {
+      key: string;
+      value: string;
+    }
+    interface Point {
+      metric: string;
+      value: number;
+      timestampNs: number;
+      tags: Tag[];
+    }
+    interface Policy {
+      durationNs: number;
+      resolutionNs?: number;
+      aggregation?: number;
+    }
+    type Req = Record<string, unknown>;
+
+    const tsPoints: Point[] = [];
+    const retentionStore = new Map<string, Policy>();
+    const w = window as unknown as Record<string, unknown>;
+    const calls: string[] = [];
+    w.__TS_CALLS__ = calls;
+
+    // A test holds a method (holdTs) to keep its calls in flight until it
+    // releases them (releaseTs), e.g. across a metric switch.
+    const holds: Record<string, { gate: Promise<void>; release: () => void; arrived: number }> = {};
+    w.__TS_HOLDS__ = holds;
+    async function maybeHold(method: string): Promise<void> {
+      const h = holds[method];
+      if (!h) return;
+      h.arrived++;
+      await h.gate;
+    }
+
+    function maybeReject(method: string): void {
+      calls.push(method);
+      const s = w.__QRDB_MOCK_STATE__ as { errors: Record<string, string> };
+      if (s.errors[`TimeSeriesBinding.${method}`]) {
+        throw new Error(s.errors[`TimeSeriesBinding.${method}`]);
+      }
+    }
+
+    function toPoint(p: Req): Point {
+      return {
+        metric: p["metric"] as string,
+        value: p["value"] as number,
+        timestampNs: (p["timestamp_ns"] ?? Date.now() * 1_000_000) as number,
+        tags: ((p["tags"] as Tag[] | undefined) ?? []).map((t) => ({ key: t.key, value: t.value })),
+      };
+    }
+
+    function inRange(req: Req): Point[] {
+      const startNs = req["start_ns"] as number;
+      const endNs = req["end_ns"] as number;
+      return tsPoints
+        .filter((p) => p.metric === req["metric"] && p.timestampNs >= startNs && p.timestampNs <= endNs)
+        .sort((a, b) => a.timestampNs - b.timestampNs);
+    }
+
+    // AggFunc: 0 None, 1 Avg, 2 Sum, 3 Min, 4 Max, 5 Count, 6 Percentile, 7 First, 8 Last.
+    function apply(fn: number, values: number[], percentile = 50): number {
+      if (values.length === 0) return 0;
+      switch (fn) {
+        case 1: return values.reduce((a, b) => a + b, 0) / values.length;
+        case 2: return values.reduce((a, b) => a + b, 0);
+        case 3: return Math.min(...values);
+        case 4: return Math.max(...values);
+        case 5: return values.length;
+        case 6: {
+          const sorted = [...values].sort((a, b) => a - b);
+          const rank = Math.max(1, Math.ceil((percentile / 100) * sorted.length));
+          return sorted[rank - 1] as number;
+        }
+        case 7: return values[0] as number;
+        default: return values[values.length - 1] as number;
+      }
+    }
+
+    function bucket(
+      points: Point[],
+      startNs: number,
+      intervalNs: number,
+      fn: number,
+      percentile?: number,
+    ): { timestampNs: number; value: number; count: number }[] {
+      const buckets = new Map<number, number[]>();
+      for (const p of points) {
+        const key = intervalNs > 0 ? p.timestampNs - (p.timestampNs % intervalNs) : startNs;
+        const vals = buckets.get(key) ?? [];
+        vals.push(p.value);
+        buckets.set(key, vals);
+      }
+      return [...buckets.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([ts, vals]) => ({ timestampNs: ts, value: apply(fn, vals, percentile), count: vals.length }));
+    }
+
+    const waitForGo = setInterval(() => {
+      const go = w.go as Record<string, Record<string, Record<string, unknown>>> | undefined;
+      if (!go?.main?.TimeSeriesBinding) return;
+      clearInterval(waitForGo);
+
+      go.main.TimeSeriesBinding = {
+        Write: async (_database: string, point: Req) => {
+          maybeReject("Write");
+          tsPoints.push(toPoint(point));
+        },
+        WriteBatch: async (_database: string, points: Req[]) => {
+          maybeReject("WriteBatch");
+          // The raw request text, as the transport serializes it.
+          (w as unknown as { __TS_BATCH_WIRE__: string }).__TS_BATCH_WIRE__ = JSON.stringify(points);
+          for (const p of points) tsPoints.push(toPoint(p));
+        },
+        WritePoint: async (_database: string, point: Req) => {
+          maybeReject("WritePoint");
+          tsPoints.push(toPoint(point));
+        },
+        Query: async (_database: string, req: Req) => {
+          maybeReject("Query");
+          return { points: inRange(req) };
+        },
+        Aggregate: async (_database: string, req: Req) => {
+          await maybeHold("Aggregate");
+          maybeReject("Aggregate");
+          return {
+            results: bucket(
+              inRange(req),
+              req["start_ns"] as number,
+              (req["interval_ns"] as number | undefined) ?? 0,
+              req["function"] as number,
+            ),
+          };
+        },
+        RichQuery: async (_database: string, req: Req) => {
+          await maybeHold("RichQuery");
+          maybeReject("RichQuery");
+          const filterTags = (req["tags"] as Tag[] | undefined) ?? [];
+          let points = inRange(req).filter((p) =>
+            filterTags.every((f) => p.tags.some((t) => t.key === f.key && t.value === f.value)),
+          );
+          const limit = req["limit"] as number | undefined;
+          if (limit !== undefined && limit > 0) points = points.slice(0, limit);
+          const fn = (req["aggregation"] as number | undefined) ?? 0;
+          const percentile = req["percentile"] as number | undefined;
+          const intervalNs = (req["interval_ns"] as number | undefined) ?? 0;
+          const shape = (ps: Point[]): Point[] =>
+            fn !== 0 && intervalNs > 0
+              ? bucket(ps, req["start_ns"] as number, intervalNs, fn, percentile).map((b) => ({
+                  metric: req["metric"] as string,
+                  value: b.value,
+                  timestampNs: b.timestampNs,
+                  tags: [],
+                }))
+              : ps;
+          const agg = (ps: Point[]): { aggregatedValue?: number } =>
+            fn !== 0 ? { aggregatedValue: apply(fn, ps.map((p) => p.value), percentile) } : {};
+          const groupBy = (req["group_by"] as string[] | undefined) ?? [];
+          const resp: Record<string, unknown> = {
+            metric: req["metric"],
+            points: shape(points),
+            ...agg(points),
+          };
+          if (groupBy.length > 0) {
+            const groups = new Map<string, { tags: Tag[]; points: Point[] }>();
+            for (const p of points) {
+              const tags = groupBy.map((k) => ({ key: k, value: p.tags.find((t) => t.key === k)?.value ?? "" }));
+              const id = JSON.stringify(tags);
+              const g = groups.get(id) ?? { tags, points: [] };
+              g.points.push(p);
+              groups.set(id, g);
+            }
+            resp.groupedResults = [...groups.values()].map((g) => ({
+              tags: g.tags,
+              points: shape(g.points),
+              ...agg(g.points),
+            }));
+          }
+          return resp;
+        },
+        DeleteSeries: async (_database: string, req: Req) => {
+          maybeReject("DeleteSeries");
+          let deleted = 0;
+          for (let i = tsPoints.length - 1; i >= 0; i--) {
+            if (tsPoints[i]!.metric === req["metric"]) {
+              tsPoints.splice(i, 1);
+              deleted++;
+            }
+          }
+          retentionStore.delete(req["metric"] as string);
+          return { deleted };
+        },
+        GetRetention: async (_database: string, req: Req) => {
+          await maybeHold("GetRetention");
+          maybeReject("GetRetention");
+          // The Go binding passes the engine's answer through: an unset
+          // policy is a non-nil empty one (duration 0), never null.
+          return { policy: retentionStore.get(req["metric"] as string) ?? { durationNs: 0 } };
+        },
+        SetRetention: async (_database: string, req: Req) => {
+          maybeReject("SetRetention");
+          const p = req["policy"] as Req;
+          retentionStore.set(req["metric"] as string, {
+            durationNs: p["duration_ns"] as number,
+            ...(p["resolution_ns"] !== undefined ? { resolutionNs: p["resolution_ns"] as number } : {}),
+            ...(p["aggregation"] !== undefined ? { aggregation: p["aggregation"] as number } : {}),
+          });
+        },
+        ListMetrics: async (_database: string, req: Req) => {
+          maybeReject("ListMetrics");
+          let metrics = [...new Set(tsPoints.map((p) => p.metric))];
+          const prefix = req["prefix"] as string | undefined;
+          if (prefix) metrics = metrics.filter((m) => m.startsWith(prefix));
+          return { metrics };
+        },
+      };
+    }, 0);
+  });
+}
+
+type Page = import("@playwright/test").Page;
+
+/** Navigate to the timeseries database workspace. */
+async function navigateToTimeSeries(page: Page): Promise<void> {
+  await page.goto("/");
+  await page.locator("aside").getByText("ts-ops").click();
+  await expect(page.locator(".breadcrumbs").getByText("ts-ops", { exact: false })).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
+  await page.getByRole("tab", { name: "Time Series", exact: true }).click();
+}
+
+function writePanel(page: Page) {
+  return page.getByRole("dialog", { name: "Write Data Point" });
+}
+
+/** Write one data point through the slide panel's single mode. */
+async function writePointViaUI(page: Page, metric: string, value: string, timestamp?: string): Promise<void> {
+  await page.getByRole("button", { name: "Write", exact: true }).first().click();
+  await expect(writePanel(page)).toBeVisible();
+  await writePanel(page).locator("input[placeholder='cpu.usage']").fill(metric);
+  await writePanel(page).locator("input[placeholder='42.5']").fill(value);
+  if (timestamp) {
+    await writePanel(page).locator("input[placeholder='Leave empty for now']").fill(timestamp);
+  }
+  await writePanel(page).getByRole("button", { name: "Write" }).click();
+}
+
+/** Write `timestamp,value[,k=v;k=v]` lines through the slide panel's batch mode. */
+async function writeBatchViaUI(page: Page, metric: string, lines: string[]): Promise<void> {
+  await page.getByRole("button", { name: "Write", exact: true }).first().click();
+  await expect(writePanel(page)).toBeVisible();
+  await writePanel(page).getByTestId("ts-write-mode-batch").click();
+  await writePanel(page).locator("input[placeholder='cpu.usage']").fill(metric);
+  await writePanel(page).getByTestId("ts-write-batch").fill(lines.join("\n"));
+  await writePanel(page).getByRole("button", { name: "Write" }).click();
+  await expect(page.getByText(`${lines.length} data points written for "${metric}"`)).toBeVisible({
+    timeout: 5_000,
+  });
+}
+
+async function openMetric(page: Page, metric: string): Promise<void> {
+  await page.locator("[role='button']", { hasText: metric }).first().click();
+  await expect(page.getByRole("button", { name: "Back to Metrics" })).toBeVisible({ timeout: LOAD_TIMEOUT });
+}
+
+type TsHolds = Record<string, { gate: Promise<void>; release: () => void; arrived: number }>;
+
+/** Keeps every later call of a TimeSeriesBinding method in flight. */
+async function holdTs(page: Page, method: string): Promise<void> {
+  await page.evaluate((m) => {
+    const holds = (window as unknown as { __TS_HOLDS__: TsHolds }).__TS_HOLDS__;
+    let release = (): void => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    holds[m] = { gate, release, arrived: 0 };
+  }, method);
+}
+
+/** How many calls of a held method are in flight. */
+async function heldCalls(page: Page, method: string): Promise<number> {
+  return page.evaluate(
+    (m) => (window as unknown as { __TS_HOLDS__: TsHolds }).__TS_HOLDS__[m]?.arrived ?? 0,
+    method,
+  );
+}
+
+/** Releases the calls holdTs kept in flight. */
+async function releaseTs(page: Page, method: string): Promise<void> {
+  await page.evaluate((m) => {
+    const holds = (window as unknown as { __TS_HOLDS__: TsHolds }).__TS_HOLDS__;
+    const h = holds[m];
+    delete holds[m];
+    h?.release();
+  }, method);
+}
+
+/** Counts the settled calls of a TimeSeriesBinding method so far. */
+async function callCount(page: Page, method: string): Promise<number> {
+  return (await bindingCalls(page)).filter((c) => c === method).length;
+}
+
+async function bindingCalls(page: Page): Promise<string[]> {
+  return page.evaluate(() => (window as unknown as { __TS_CALLS__: string[] }).__TS_CALLS__);
+}
+
+/** Exact nanosecond timestamp string for a millisecond instant. */
+function ns(ms: number): string {
+  return (BigInt(ms) * 1_000_000n).toString();
+}
+
+/** A minute-aligned instant 30 minutes ago, inside the detail view's default 1h range. */
+function minuteBase(): number {
+  const ms = Date.now() - 30 * 60_000;
+  return ms - (ms % 60_000);
+}
+
+/** Points for the aggregate and rich query tests: two hosts, two minutes. */
+function seriesLines(base: number): string[] {
+  return [
+    `${ns(base)},1,host=a`,
+    `${ns(base + 10_000)},3,host=a`,
+    `${ns(base + 70_000)},5,host=b`,
+  ];
+}
+
+test.describe("TimeSeries operations", () => {
+  test.use({ mockState: tsState });
+
+  test("single write saves through writePoint", async ({ page }) => {
+    await injectStatefulTimeSeriesBinding(page);
+    await navigateToTimeSeries(page);
+
+    await writePointViaUI(page, "ops.single", "12.5", ns(minuteBase()));
+    await expect(page.getByText('Data point written for "ops.single"')).toBeVisible({ timeout: 5_000 });
+    expect(await bindingCalls(page)).toContain("WritePoint");
+    expect(await bindingCalls(page)).not.toContain("Write");
+
+    await openMetric(page, "ops.single");
+    await expect(page.getByText("1 data points")).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByText("12.5").first()).toBeVisible();
+  });
+
+  test("batch write saves every line through writeBatch", async ({ page }) => {
+    await injectStatefulTimeSeriesBinding(page);
+    await navigateToTimeSeries(page);
+
+    await writeBatchViaUI(page, "ops.batch", seriesLines(minuteBase()));
+    expect(await bindingCalls(page)).toContain("WriteBatch");
+
+    await openMetric(page, "ops.batch");
+    await expect(page.getByText("3 data points", { exact: true })).toBeVisible({ timeout: 5_000 });
+  });
+
+  test("batch write rejects a malformed line", async ({ page }) => {
+    await injectStatefulTimeSeriesBinding(page);
+    await navigateToTimeSeries(page);
+
+    await page.getByRole("button", { name: "Write", exact: true }).first().click();
+    await writePanel(page).getByTestId("ts-write-mode-batch").click();
+    await writePanel(page).locator("input[placeholder='cpu.usage']").fill("ops.bad");
+    await writePanel(page).getByTestId("ts-write-batch").fill(`${ns(minuteBase())},1\nnot-a-line`);
+    await writePanel(page).getByRole("button", { name: "Write" }).click();
+    await expect(page.getByText("Line 2: expected timestamp,value[,k=v;k=v].")).toBeVisible();
+    expect(await bindingCalls(page)).not.toContain("WriteBatch");
+  });
+
+  // parseFloat would read "12oops" as 12 and "1e309" as Infinity (which JSON
+  // turns into null, stored as 0): the whole value must be a finite number.
+  for (const bad of ["12oops", "1e309"]) {
+    test(`batch write rejects the value ${bad}`, async ({ page }) => {
+      await injectStatefulTimeSeriesBinding(page);
+      await navigateToTimeSeries(page);
+
+      await page.getByRole("button", { name: "Write", exact: true }).first().click();
+      await writePanel(page).getByTestId("ts-write-mode-batch").click();
+      await writePanel(page).locator("input[placeholder='cpu.usage']").fill("ops.bad");
+      await writePanel(page).getByTestId("ts-write-batch").fill(`${ns(minuteBase())},1\n${ns(minuteBase())},${bad}`);
+      await writePanel(page).getByRole("button", { name: "Write" }).click();
+      await expect(page.getByText("Line 2: value must be a valid number.")).toBeVisible();
+      expect(await bindingCalls(page)).not.toContain("WriteBatch");
+    });
+  }
+
+  // A JavaScript number holds integers exactly only up to 2^53-1: the
+  // adjacent nanoseconds 1700000000000000000 and 1700000000000000001 both
+  // become 1700000000000000000, share one storage key and the second write
+  // overwrites the first while the UI reports both written.
+  test("batch write rejects a timestamp a number cannot hold exactly", async ({ page }) => {
+    await injectStatefulTimeSeriesBinding(page);
+    await navigateToTimeSeries(page);
+
+    await page.getByRole("button", { name: "Write", exact: true }).first().click();
+    await writePanel(page).getByTestId("ts-write-mode-batch").click();
+    await writePanel(page).locator("input[placeholder='cpu.usage']").fill("ops.bad");
+    await writePanel(page)
+      .getByTestId("ts-write-batch")
+      .fill("1700000000000000000,1\n1700000000000000001,2");
+    await writePanel(page).getByRole("button", { name: "Write" }).click();
+    await expect(
+      page.getByText("Line 2: timestamp 1700000000000000001 cannot be represented exactly (nearest is 1700000000000000000)."),
+    ).toBeVisible();
+    expect(await bindingCalls(page)).not.toContain("WriteBatch");
+  });
+
+  // 1700000000000000256 is exact as a binary double, but JSON writes its
+  // shortest decimal, 1700000000000000300: the server would store the point
+  // 44 ns late. The wire text, not the parsed-back number, must match.
+  test("batch write rejects a timestamp whose JSON decimal differs from the input", async ({ page }) => {
+    await injectStatefulTimeSeriesBinding(page);
+    await navigateToTimeSeries(page);
+
+    await page.getByRole("button", { name: "Write", exact: true }).first().click();
+    await writePanel(page).getByTestId("ts-write-mode-batch").click();
+    await writePanel(page).locator("input[placeholder='cpu.usage']").fill("ops.wire");
+    await writePanel(page).getByTestId("ts-write-batch").fill("1700000000000000256,1");
+    await writePanel(page).getByRole("button", { name: "Write" }).click();
+    await expect(
+      page.getByText("Line 1: timestamp 1700000000000000256 cannot be represented exactly (nearest is 1700000000000000300)."),
+    ).toBeVisible();
+    expect(await bindingCalls(page)).not.toContain("WriteBatch");
+  });
+
+  test("batch write carries the input timestamp text unchanged on the wire", async ({ page }) => {
+    await injectStatefulTimeSeriesBinding(page);
+    await navigateToTimeSeries(page);
+
+    await page.getByRole("button", { name: "Write", exact: true }).first().click();
+    await writePanel(page).getByTestId("ts-write-mode-batch").click();
+    await writePanel(page).locator("input[placeholder='cpu.usage']").fill("ops.wire");
+    await writePanel(page).getByTestId("ts-write-batch").fill("1700000000000000000,1");
+    await writePanel(page).getByRole("button", { name: "Write" }).click();
+    await expect.poll(() => bindingCalls(page)).toContain("WriteBatch");
+    const wire = await page.evaluate(
+      () => (window as unknown as { __TS_BATCH_WIRE__: string }).__TS_BATCH_WIRE__,
+    );
+    expect(wire).toMatch(/:1700000000000000000[,}]/);
+  });
+
+  test("aggregation menus offer only the functions the REST server accepts", async ({ page }) => {
+    await injectStatefulTimeSeriesBinding(page);
+    await navigateToTimeSeries(page);
+    await writeBatchViaUI(page, "ops.menus", seriesLines(minuteBase()));
+    await openMetric(page, "ops.menus");
+
+    // pkg/api/rest/handlers_timeseries.go aggFuncMap: avg, sum, min, max,
+    // count, percentile. The aggregate card needs a function; the rich query
+    // and retention cards may also run without one ("None" omits it).
+    const supported = ["Avg", "Sum", "Min", "Max", "Count", "Percentile"];
+    await expect(
+      page.getByTestId("ts-aggregate-card").getByTestId("ts-agg-function").locator("option"),
+    ).toHaveText(supported);
+    await expect(
+      page.getByTestId("ts-rich-card").getByTestId("ts-rich-aggregation").locator("option"),
+    ).toHaveText(["None", ...supported]);
+    await expect(
+      page.getByTestId("ts-retention-card").getByTestId("ts-retention-aggregation-input").locator("option"),
+    ).toHaveText(["None", ...supported]);
+  });
+
+  test("aggregate buckets by interval and applies the function", async ({ page }) => {
+    await injectStatefulTimeSeriesBinding(page);
+    await navigateToTimeSeries(page);
+    await writeBatchViaUI(page, "ops.agg", seriesLines(minuteBase()));
+    await openMetric(page, "ops.agg");
+
+    const card = page.getByTestId("ts-aggregate-card");
+    await card.getByTestId("ts-agg-function").selectOption({ label: "Sum" });
+    await card.getByTestId("ts-agg-interval").fill("1m");
+    await expect(card.getByText("1 minute", { exact: true })).toBeVisible();
+    await card.getByTestId("ts-agg-run").click();
+
+    const values = card.getByTestId("ts-agg-value");
+    await expect(values).toHaveText(["4", "5"]);
+    await expect(card.getByTestId("ts-agg-results").locator("tbody tr").first()).toContainText("2");
+
+    await card.getByTestId("ts-agg-function").selectOption({ label: "Max" });
+    await card.getByTestId("ts-agg-interval").fill("");
+    await card.getByTestId("ts-agg-run").click();
+    await expect(values).toHaveText(["5"]);
+    expect(await bindingCalls(page)).toContain("Aggregate");
+  });
+
+  test("rich query filters by tag, aggregates and groups", async ({ page }) => {
+    await injectStatefulTimeSeriesBinding(page);
+    await navigateToTimeSeries(page);
+    await writeBatchViaUI(page, "ops.rich", seriesLines(minuteBase()));
+    await openMetric(page, "ops.rich");
+
+    const card = page.getByTestId("ts-rich-card");
+    await expect(card.getByTestId("ts-rich-percentile")).toHaveCount(0);
+
+    await card.getByTestId("ts-rich-tags").fill("host=a");
+    await card.getByTestId("ts-rich-aggregation").selectOption({ label: "Sum" });
+    await card.getByTestId("ts-rich-run").click();
+    await expect(card.getByTestId("ts-rich-point-count")).toHaveText("2 points");
+    await expect(card.getByTestId("ts-rich-aggregated")).toHaveText("4");
+
+    await card.getByTestId("ts-rich-tags").fill("");
+    await card.getByTestId("ts-rich-aggregation").selectOption({ label: "Max" });
+    await card.getByTestId("ts-rich-groupby").fill("host");
+    await card.getByTestId("ts-rich-run").click();
+    const groups = card.getByTestId("ts-rich-group-row");
+    await expect(groups).toHaveCount(2);
+    await expect(groups.nth(0)).toContainText("host=a");
+    await expect(groups.nth(0)).toContainText("3");
+    await expect(groups.nth(1)).toContainText("host=b");
+    await expect(groups.nth(1)).toContainText("5");
+
+    await card.getByTestId("ts-rich-groupby").fill("");
+    await card.getByTestId("ts-rich-limit").fill("2");
+    await card.getByTestId("ts-rich-aggregation").selectOption({ label: "Percentile" });
+    await card.getByTestId("ts-rich-percentile").fill("100");
+    await card.getByTestId("ts-rich-run").click();
+    await expect(card.getByTestId("ts-rich-point-count")).toHaveText("2 points");
+    await expect(card.getByTestId("ts-rich-aggregated")).toHaveText("3");
+    expect(await bindingCalls(page)).toContain("RichQuery");
+  });
+
+  test("retention reads none, sets a policy and re-reads it", async ({ page }) => {
+    await injectStatefulTimeSeriesBinding(page);
+    await navigateToTimeSeries(page);
+    await writePointViaUI(page, "ops.retention", "1", ns(minuteBase()));
+    await expect(page.getByText('Data point written for "ops.retention"')).toBeVisible({ timeout: 5_000 });
+    await openMetric(page, "ops.retention");
+
+    const card = page.getByTestId("ts-retention-card");
+    await expect(card.getByTestId("ts-retention-none")).toHaveText("Current policy: none");
+
+    await card.getByTestId("ts-retention-duration-input").fill("2d");
+    await card.getByTestId("ts-retention-resolution-input").fill("1h");
+    await card.getByTestId("ts-retention-aggregation-input").selectOption({ label: "Avg" });
+    await card.getByTestId("ts-retention-save").click();
+
+    await expect(page.getByText('Retention set for "ops.retention".')).toBeVisible({ timeout: 5_000 });
+    await expect(card.getByTestId("ts-retention-duration")).toHaveText("2 days");
+    await expect(card.getByText("172800000000000 ns").first()).toBeVisible();
+    await expect(card.getByTestId("ts-retention-resolution")).toHaveText("1 hour");
+    await expect(card.getByTestId("ts-retention-aggregation")).toHaveText("Avg");
+
+    const calls = await bindingCalls(page);
+    expect(calls.filter((c) => c === "GetRetention").length).toBeGreaterThanOrEqual(2);
+    expect(calls).toContain("SetRetention");
+  });
+
+  test("desktop: the binding's empty zero-duration policy reads as none", async ({ page }) => {
+    // Codex #1612 round 2, P2: GetRetentionPolicy answers an unset policy
+    // with {policy: {durationNs: 0}}, which the binding keeps. The card must
+    // show "none", not a 0 ns duration.
+    await injectStatefulTimeSeriesBinding(page);
+    await navigateToTimeSeries(page);
+    await writePointViaUI(page, "ops.retzero", "1", ns(minuteBase()));
+    await expect(page.getByText('Data point written for "ops.retzero"')).toBeVisible({ timeout: 5_000 });
+    await openMetric(page, "ops.retzero");
+
+    const card = page.getByTestId("ts-retention-card");
+    await expect(card.getByTestId("ts-retention-none")).toHaveText("Current policy: none", { timeout: LOAD_TIMEOUT });
+    await expect(card.getByTestId("ts-retention-duration")).toHaveCount(0);
+    expect(await bindingCalls(page)).toContain("GetRetention");
+  });
+
+  test("aggregate and set retention errors show error toasts", async ({ page }) => {
+    await injectStatefulTimeSeriesBinding(page);
+    await navigateToTimeSeries(page);
+    await writePointViaUI(page, "ops.err", "1", ns(minuteBase()));
+    await expect(page.getByText('Data point written for "ops.err"')).toBeVisible({ timeout: 5_000 });
+    await openMetric(page, "ops.err");
+
+    await injectError(page, "TimeSeriesBinding.Aggregate", "aggregate backend down");
+    await page.getByTestId("ts-agg-run").click();
+    await expect(page.getByText("aggregate backend down")).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByTestId("ts-agg-results")).toHaveCount(0);
+    await clearError(page, "TimeSeriesBinding.Aggregate");
+
+    await injectError(page, "TimeSeriesBinding.SetRetention", "retention denied");
+    await page.getByTestId("ts-retention-save").click();
+    await expect(page.getByText("retention denied")).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByTestId("ts-retention-none")).toBeVisible();
+    await clearError(page, "TimeSeriesBinding.SetRetention");
+  });
+
+  test("an aggregate answered after switching metric is dropped", async ({ page }) => {
+    await injectStatefulTimeSeriesBinding(page);
+    await navigateToTimeSeries(page);
+    await writePointViaUI(page, "ops.stale.a", "1", ns(minuteBase()));
+    await expect(page.getByText('Data point written for "ops.stale.a"')).toBeVisible({ timeout: 5_000 });
+    await writePointViaUI(page, "ops.stale.b", "2", ns(minuteBase()));
+    await expect(page.getByText('Data point written for "ops.stale.b"')).toBeVisible({ timeout: 5_000 });
+    await openMetric(page, "ops.stale.a");
+
+    await holdTs(page, "Aggregate");
+    await page.getByTestId("ts-agg-run").click();
+    await expect.poll(() => heldCalls(page, "Aggregate"), { timeout: 5_000 }).toBe(1);
+
+    await page.getByRole("button", { name: "Back to Metrics" }).click();
+    await openMetric(page, "ops.stale.b");
+    await releaseTs(page, "Aggregate");
+    await expect.poll(() => callCount(page, "Aggregate"), { timeout: 5_000 }).toBe(1);
+
+    // Metric A's answer settled while B is shown: B's card stays empty, and
+    // its run button is not left loading.
+    await expect(page.getByTestId("ts-agg-results")).toHaveCount(0);
+    await expect(page.getByTestId("ts-agg-run")).toBeEnabled();
+  });
+
+  test("a failed retention lookup shows an error with retry, not 'none'", async ({ page }) => {
+    await injectStatefulTimeSeriesBinding(page);
+    await navigateToTimeSeries(page);
+    await writePointViaUI(page, "ops.reterr", "1", ns(minuteBase()));
+    await expect(page.getByText('Data point written for "ops.reterr"')).toBeVisible({ timeout: 5_000 });
+
+    await injectError(page, "TimeSeriesBinding.GetRetention", "retention backend down");
+    await openMetric(page, "ops.reterr");
+    const card = page.getByTestId("ts-retention-card");
+    await expect(card.getByTestId("ts-retention-error")).toContainText("retention backend down", {
+      timeout: LOAD_TIMEOUT,
+    });
+    await expect(card.getByTestId("ts-retention-none")).toHaveCount(0);
+
+    await clearError(page, "TimeSeriesBinding.GetRetention");
+    await card.getByTestId("ts-retention-retry").click();
+    await expect(card.getByTestId("ts-retention-none")).toHaveText("Current policy: none", { timeout: LOAD_TIMEOUT });
+    await expect(card.getByTestId("ts-retention-error")).toHaveCount(0);
+  });
+});

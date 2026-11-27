@@ -85,6 +85,7 @@ type Option func(*options)
 type options struct {
 	credentials CredentialFiles
 	owner       string
+	ownerOnly   bool
 }
 
 // WithCredentialFiles has New authenticate the provider with the credential
@@ -112,6 +113,15 @@ func WithOwner(owner string) Option {
 // is a variable so a test can observe each handle openCredentials opens,
 // including one a later failure must destroy.
 var readFileHandle = secure.ReadFileHandle
+
+// WithOwnerOnlyTree has New keep a filesystem provider's tree, the data root
+// and its journal sibling, owner-only: each root is created 0700 and refused
+// with a *GroupAccessibleRootError when group or other users can access it,
+// and every directory and object the store writes is made 0700 and 0600. A
+// provider with no filesystem root is unaffected.
+func WithOwnerOnlyTree() Option {
+	return func(o *options) { o.ownerOnly = true }
+}
 
 // openCredentials reads the referenced files into handles. The returned
 // release destroys them and is never nil, also on error; a file that cannot

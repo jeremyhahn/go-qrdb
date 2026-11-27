@@ -181,14 +181,41 @@ func (s *Sink) List(ctx context.Context) ([]service.BackupInfo, error) {
 
 // Delete removes a persisted backup's metadata, payloads, and envelope (if
 // any -- deleting an absent envelope key is a no-op for every
-// storage.Storage implementation this sink is used with).
+// storage.Storage implementation this sink is used with). A retry after a
+// partial failure removes the remaining objects.
 func (s *Sink) Delete(_ context.Context, id string) error {
-	// Delete metadata first so a partially-deleted backup is not listed.
-	if err := s.store.Delete([]byte(metaPrefix + id)); err != nil {
+	present, err := s.store.Exists([]byte(metaPrefix + id))
+	if err != nil {
 		return err
+	}
+	if present {
+		// Delete metadata first so a partially-deleted backup is not listed.
+		if err := s.store.Delete([]byte(metaPrefix + id)); err != nil {
+			return err
+		}
+	} else {
+		// Metadata is gone: an ID with no envelope or payload left is unknown.
+		remaining, probeErr := s.hasArtifacts(id)
+		if probeErr != nil {
+			return probeErr
+		}
+		if !remaining {
+			return &service.BackupNotFoundError{ID: id}
+		}
 	}
 	if err := s.store.Delete([]byte(envelopePrefix + id)); err != nil {
 		return err
 	}
 	return s.store.Delete([]byte(dataPrefix + id))
+}
+
+// hasArtifacts reports whether an envelope or payload object exists for id.
+func (s *Sink) hasArtifacts(id string) (bool, error) {
+	for _, key := range []string{envelopePrefix + id, dataPrefix + id} {
+		ok, err := s.store.Exists([]byte(key))
+		if err != nil || ok {
+			return ok, err
+		}
+	}
+	return false, nil
 }
