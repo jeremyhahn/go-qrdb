@@ -95,6 +95,8 @@ func (v *vectorService) storageFor(ctx context.Context, tenantID string) (vector
 	v.homeMu.Lock()
 	defer v.homeMu.Unlock()
 	if cached, ok := v.homeStores[tenantID]; ok && cacheable && cached.kv == resolved {
+		// A seed that failed when the store was opened is retried here.
+		v.seedHomeMetrics(ctx, tenantID, cached.st)
 		return cached.st, nil
 	}
 	scoped, err := kvstore.NewNamespacedKVStore(resolved, tenantVectorHomePrefix)
@@ -237,6 +239,61 @@ func (v *vectorService) noteHomeWrite(ctx context.Context, st vector.Storage, sc
 		seen.ver = ver
 		v.homeGens[scoped] = seen
 	}
+}
+
+// guardedVectorWriter is a vector store whose writes are guarded commits
+// against the stored namespace incarnation and generation
+// (vector.KVVectorStorage: every tenant home store), so a write can be
+// bound to what it validated or read, on whichever replica it runs.
+type guardedVectorWriter interface {
+	UpsertVectorChecked(ctx context.Context, namespace string, vec *vector.VectorValue, check func(*vector.NamespaceInfo) error) error
+	UpdateVector(ctx context.Context, namespace string, id uint64, update func(*vector.VectorValue) (*vector.VectorValue, error)) (*vector.VectorValue, error)
+}
+
+// upsertVectorChecked writes vec to the namespace's store. On a guarded
+// store check runs on the namespace record of the incarnation the write
+// commits to, in the same commit, so a delete and re-create after the
+// caller's validation cannot receive the write. Another store has only
+// this node's writers, whom the caller's writeMu already orders after its
+// validation.
+func (v *vectorService) upsertVectorChecked(ctx context.Context, scoped string, vec *vector.VectorValue, check func(*vector.NamespaceInfo) error) error {
+	st, err := v.storageForNamespace(ctx, scoped)
+	if err != nil {
+		return err
+	}
+	if g, ok := st.(guardedVectorWriter); ok {
+		err = g.UpsertVectorChecked(ctx, scoped, vec, check)
+	} else {
+		err = st.UpsertVector(ctx, scoped, vec)
+	}
+	if err != nil {
+		return err
+	}
+	v.noteHomeWrite(ctx, st, scoped)
+	return nil
+}
+
+// updateStoredVector runs update as one read-modify-write of the stored
+// vector id when the namespace's store is guarded, so concurrent updates
+// on different replicas of a home store all survive. guarded is false,
+// and nothing is written, on another store.
+func (v *vectorService) updateStoredVector(ctx context.Context, scoped string, id uint64, update func(*vector.VectorValue) (*vector.VectorValue, error)) (stored *vector.VectorValue, guarded bool, err error) {
+	st, err := v.storageForNamespace(ctx, scoped)
+	if err != nil {
+		return nil, true, err
+	}
+	g, ok := st.(guardedVectorWriter)
+	// The node-local store under Raft is written by the state machine, in
+	// log order, never directly.
+	if !ok || (v.raftNode != nil && st == v.storage) {
+		return nil, false, nil
+	}
+	stored, err = g.UpdateVector(ctx, scoped, id, update)
+	if err != nil {
+		return nil, true, err
+	}
+	v.noteHomeWrite(ctx, st, scoped)
+	return stored, true, nil
 }
 
 // tenantRoutedVectorStorage is the vector.Storage the service's request paths

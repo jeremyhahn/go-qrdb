@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -517,4 +518,34 @@ func TestVectorCountMetric_HomeBackedRestartSeedsTheStoredCount(t *testing.T) {
 	require.NoError(t, err)
 	assert.Greater(t, tenantGauge(t, reg, "qrdb_vector_index_size_bytes", "acme"), 0.0,
 		"the rebuilt home index sets the index-size gauge")
+}
+
+// TestVectorCountMetric_FailedHomeSeedIsRetried is the Codex P2 at
+// vector_home.go:97: a home store whose metric seed failed when it was
+// opened (and cached) is seeded on a later access.
+func TestVectorCountMetric_FailedHomeSeedIsRetried(t *testing.T) {
+	fh := &failingHome{GuardedMemoryStore: kvstoretest.NewGuardedMemoryStore()}
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	ns := tenant.ComposeNamespace("acme", tenant.DefaultDatabase) + "docs"
+
+	isolatedRegistry(t)
+	svc1, _ := newHomedVectorService(t, sharedHome{kv: fh})
+	_, err := svc1.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: ns, Dimension: 2})
+	require.NoError(t, err)
+	for id := uint64(1); id <= 2; id++ {
+		_, err = svc1.UpsertVector(ctx, &UpsertVectorRequest{Namespace: ns, ID: id, Vector: []float32{1, float32(id)}})
+		require.NoError(t, err)
+	}
+
+	reg := isolatedRegistry(t)
+	svc2, _ := newHomedVectorService(t, sharedHome{kv: fh})
+	fh.arm("", tenantVectorHomePrefix+"ns/")
+	_, err = svc2.GetVector(ctx, &GetVectorRequest{Namespace: ns, ID: 1})
+	require.NoError(t, err, "a failed seed does not fail the read")
+
+	fh.arm("", "")
+	_, err = svc2.GetVector(ctx, &GetVectorRequest{Namespace: ns, ID: 1})
+	require.NoError(t, err)
+	assert.Equal(t, 2.0, tenantGauge(t, reg, "qrdb_vector_vector_count", "acme"),
+		"the next access to the cached home seeds the stored count")
 }

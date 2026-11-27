@@ -20,6 +20,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -30,6 +31,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -2458,7 +2460,7 @@ func exerciseVectorNamespace(t *testing.T, ctx context.Context, svc VectorServic
 	_, err = svc.UpsertVector(ctx, &UpsertVectorRequest{Namespace: "docs", ID: 2, Vector: []float32{0, 1}})
 	require.NoError(t, err)
 
-	got, err := svc.GetVector(ctx, &GetVectorRequest{Namespace: "docs", ID: 1})
+	got, err := svc.GetVector(ctx, &GetVectorRequest{Namespace: "docs", ID: 1, IncludeVector: true, IncludeMetadata: true})
 	require.NoError(t, err)
 	require.True(t, got.Found)
 
@@ -2563,6 +2565,111 @@ func TestVectorHome_ReplicaSearchSeesWritesFromAnotherNode(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, res.Results, 1)
 	require.Equal(t, uint64(3), res.Results[0].ID, "node A sees the vector node B wrote")
+}
+
+// sharedHome places every tenant in one home store, kv: two services on
+// one sharedHome are two replicas of that tenant's home.
+type sharedHome struct{ kv kvstore.KVStore }
+
+func (h sharedHome) InHome(context.Context, string) (bool, error) { return true, nil }
+
+func (h sharedHome) Resolve(context.Context, string) (kvstore.KVStore, error) { return h.kv, nil }
+
+// vectorReadHookKV runs onVectorRead once, at the first read of a stored
+// vector key of the home's vector view.
+type vectorReadHookKV struct {
+	*kvstoretest.GuardedMemoryStore
+	onVectorRead func()
+}
+
+func (k *vectorReadHookKV) Get(ctx context.Context, key string) ([]byte, error) {
+	if hook := k.onVectorRead; hook != nil && strings.HasPrefix(key, tenantVectorHomePrefix+"v/") {
+		k.onVectorRead = nil
+		hook()
+	}
+	return k.GuardedMemoryStore.Get(ctx, key)
+}
+
+// TestVectorHome_ConcurrentMetadataMergesAcrossReplicasAllSurvive is the
+// Codex P1 at vector.go:3623: merges of one vector's metadata on two
+// replicas of a home store, at once, each keep the other's keys.
+func TestVectorHome_ConcurrentMetadataMergesAcrossReplicasAllSurvive(t *testing.T) {
+	home := sharedHome{kv: kvstoretest.NewGuardedMemoryStore()}
+	nodeA, _ := newHomedVectorService(t, home)
+	nodeB, _ := newHomedVectorService(t, home)
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+
+	_, err := nodeA.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: "docs", Dimension: 2, DistanceMetric: "cosine"})
+	require.NoError(t, err)
+	_, err = nodeA.UpsertVector(ctx, &UpsertVectorRequest{Namespace: "docs", ID: 1, Vector: []float32{0, 1}, Metadata: map[string]interface{}{"base": "0", "drop": "x"}})
+	require.NoError(t, err)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		node := nodeA
+		if i%2 == 1 {
+			node = nodeB
+		}
+		wg.Add(1)
+		go func(node VectorService, key string) {
+			defer wg.Done()
+			_, err := node.UpdateMetadata(ctx, &UpdateVectorMetadataRequest{
+				Namespace: "docs", ID: 1, MergeMetadata: true,
+				Metadata: map[string]interface{}{key: "1"}, DeleteKeys: []string{"drop"},
+			})
+			assert.NoError(t, err)
+		}(node, fmt.Sprintf("k%d", i))
+	}
+	wg.Wait()
+
+	got, err := nodeB.GetVector(ctx, &GetVectorRequest{Namespace: "docs", ID: 1, IncludeVector: true, IncludeMetadata: true})
+	require.NoError(t, err)
+	require.Len(t, got.Metadata, 17, "base and k0..k15, drop deleted: %v", got.Metadata)
+	require.Equal(t, "0", got.Metadata["base"])
+	for i := 0; i < 16; i++ {
+		require.Equal(t, "1", got.Metadata[fmt.Sprintf("k%d", i)])
+	}
+	require.Equal(t, []float32{0, 1}, got.Vector, "a metadata update keeps the embedding")
+
+	// A replace (no merge) leaves only the request's metadata.
+	_, err = nodeA.UpdateMetadata(ctx, &UpdateVectorMetadataRequest{Namespace: "docs", ID: 1, Metadata: map[string]interface{}{"only": "y"}})
+	require.NoError(t, err)
+	got, err = nodeB.GetVector(ctx, &GetVectorRequest{Namespace: "docs", ID: 1, IncludeVector: true, IncludeMetadata: true})
+	require.NoError(t, err)
+	require.Equal(t, map[string]interface{}{"only": "y"}, got.Metadata)
+
+	_, err = nodeB.UpdateMetadata(ctx, &UpdateVectorMetadataRequest{Namespace: "docs", ID: 9, Metadata: map[string]interface{}{"a": "b"}})
+	require.Error(t, err, "an update of a missing vector is refused")
+}
+
+// TestVectorHome_UpsertRacingRecreateIsRefused is the Codex P1 at
+// storage/vector/kv.go:228: node B validates a 2-dimension namespace,
+// node A deletes and re-creates it with 3 dimensions before B commits, and
+// B's 2-dimension vector must not land in the new namespace.
+func TestVectorHome_UpsertRacingRecreateIsRefused(t *testing.T) {
+	mem := kvstoretest.NewGuardedMemoryStore()
+	hook := &vectorReadHookKV{GuardedMemoryStore: mem}
+	nodeA, _ := newHomedVectorService(t, sharedHome{kv: mem})
+	nodeB, _ := newHomedVectorService(t, sharedHome{kv: hook})
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+
+	_, err := nodeA.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: "docs", Dimension: 2, DistanceMetric: "cosine"})
+	require.NoError(t, err)
+	hook.onVectorRead = func() {
+		_, err := nodeA.DeleteNamespace(ctx, &DeleteNamespaceRequest{Namespace: "docs"})
+		require.NoError(t, err)
+		_, err = nodeA.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: "docs", Dimension: 3, DistanceMetric: "cosine"})
+		require.NoError(t, err)
+	}
+	_, err = nodeB.UpsertVector(ctx, &UpsertVectorRequest{Namespace: "docs", ID: 1, Vector: []float32{0, 1}})
+	var mismatch *DimensionMismatchError
+	require.ErrorAs(t, err, &mismatch, "the write validated the old incarnation")
+	require.Nil(t, hook.onVectorRead, "the recreate ran between validation and commit")
+
+	_, err = nodeA.GetVector(ctx, &GetVectorRequest{Namespace: "docs", ID: 1, IncludeVector: true, IncludeMetadata: true})
+	require.Error(t, err, "the recreated namespace holds no vector of the old dimension")
+	_, err = nodeB.UpsertVector(ctx, &UpsertVectorRequest{Namespace: "docs", ID: 1, Vector: []float32{0, 1, 2}})
+	require.NoError(t, err, "a write validated against the new incarnation lands")
 }
 
 func TestVectorService_PrefixTenantStaysNodeWide(t *testing.T) {

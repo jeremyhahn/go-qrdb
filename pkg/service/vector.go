@@ -1729,7 +1729,18 @@ func (v *vectorService) upsertVectorLocked(ctx context.Context, scoped string, r
 	// one reports created and a concurrent delete of the ID cannot land
 	// between write and index.
 	created := v.vectorIsNew(ctx, scoped, req.ID)
-	if err := v.routed.UpsertVector(ctx, scoped, vecValue); err != nil {
+	// The write re-validates the namespace record it commits to, so a
+	// namespace deleted and re-created since the check above (another
+	// replica's, or another dimension) refuses it.
+	if err := v.upsertVectorChecked(ctx, scoped, vecValue, func(info *vector.NamespaceInfo) error {
+		return checkUpsertNamespace(scoped, info, len(req.Vector))
+	}); err != nil {
+		if mismatch, ok := errors.AsType[*DimensionMismatchError](err); ok {
+			return nil, mismatch
+		}
+		if geometry, ok := errors.AsType[*UnsupportedNamespaceGeometryError](err); ok {
+			return nil, geometry
+		}
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("upsert_vector", "storage_error").Inc()
 		}
@@ -3620,28 +3631,48 @@ func (v *vectorService) UpdateMetadata(ctx context.Context, req *UpdateVectorMet
 	v.writeMu.Lock()
 	defer v.writeMu.Unlock()
 
+	// On a guarded store (a tenant home, replicated across its group) the
+	// read and the write are one guarded commit, so a concurrent update on
+	// another replica is merged rather than overwritten.
+	stored, guarded, err := v.updateStoredVector(ctx, scoped, req.ID, func(old *vector.VectorValue) (*vector.VectorValue, error) {
+		next := *old
+		next.Metadata = convertToStringMap(mergeVectorMetadata(old.Metadata, req))
+		next.UpdatedAt = time.Now().UnixNano()
+		if err := v.validateUpsertVectorRequest(&UpsertVectorRequest{
+			Namespace: req.Namespace,
+			ID:        req.ID,
+			Vector:    old.Embedding,
+			Metadata:  mergeVectorMetadata(old.Metadata, req),
+			ShardID:   req.ShardID,
+		}); err != nil {
+			return nil, err
+		}
+		return &next, nil
+	})
+	if guarded {
+		if err != nil {
+			if invalid, ok := errors.AsType[*InvalidVectorError](err); ok {
+				return nil, invalid
+			}
+			return nil, vectorStorageError("update vector metadata", req.Namespace, req.ID, err)
+		}
+		if v.metrics != nil {
+			v.metrics.operationDuration.With("update_metadata").Observe(time.Since(start).Seconds())
+		}
+		return &UpdateVectorMetadataResponse{
+			ID:        req.ID,
+			Version:   stored.Version,
+			Timestamp: stored.UpdatedAt,
+			Success:   true,
+		}, nil
+	}
+
 	existingVector, err := v.routed.GetVector(ctx, scoped, req.ID)
 	if err != nil {
 		return nil, vectorStorageError("find vector", req.Namespace, req.ID, err)
 	}
 
-	var newMetadata map[string]interface{}
-	if req.MergeMetadata {
-		newMetadata = make(map[string]interface{})
-		if existingVector.Metadata != nil {
-			for k, val := range existingVector.Metadata {
-				newMetadata[k] = val
-			}
-		}
-		for k, val := range req.Metadata {
-			newMetadata[k] = val
-		}
-		for _, key := range req.DeleteKeys {
-			delete(newMetadata, key)
-		}
-	} else {
-		newMetadata = req.Metadata
-	}
+	newMetadata := mergeVectorMetadata(existingVector.Metadata, req)
 
 	upsertReq := &UpsertVectorRequest{
 		Namespace: req.Namespace,
@@ -3669,6 +3700,26 @@ func (v *vectorService) UpdateMetadata(ctx context.Context, req *UpdateVectorMet
 		Timestamp: resp.Timestamp,
 		Success:   true,
 	}, nil
+}
+
+// mergeVectorMetadata is the metadata req leaves on a vector that holds
+// stored: req.Metadata over stored less req.DeleteKeys on a merge, else
+// req.Metadata alone.
+func mergeVectorMetadata(stored map[string]string, req *UpdateVectorMetadataRequest) map[string]interface{} {
+	if !req.MergeMetadata {
+		return req.Metadata
+	}
+	merged := make(map[string]interface{}, len(stored)+len(req.Metadata))
+	for k, val := range stored {
+		merged[k] = val
+	}
+	for k, val := range req.Metadata {
+		merged[k] = val
+	}
+	for _, key := range req.DeleteKeys {
+		delete(merged, key)
+	}
+	return merged
 }
 
 // SearchByID finds similar vectors using an existing vector's ID as the query.
