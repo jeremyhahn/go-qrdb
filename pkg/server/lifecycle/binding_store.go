@@ -529,8 +529,8 @@ func (f *LocalBindingFactory) open(b *database.Binding) (*MaterializedBinding, e
 		return nil, &ObjstoreBindingEncryptionUnsupportedError{TenantID: b.TenantID, Database: b.Database}
 	}
 	storageCfg := bindingStorageConfig(f.storageCfg, b)
-	if b.Backend == database.BackendPebble {
-		if err := clearStaleBindingWAL(storageCfg.WALDir, b.DataRoot); err != nil {
+	if bindingHasPebbleWAL(b.Backend) {
+		if err := clearStaleBindingWAL(storageCfg.WALDir, b.DataRoot, b.Backend); err != nil {
 			return nil, openErr(err)
 		}
 	}
@@ -552,7 +552,7 @@ func (f *LocalBindingFactory) open(b *database.Binding) (*MaterializedBinding, e
 		}}
 	}
 	m := &MaterializedBinding{binding: b, hub: watch.NewHub(f.hubOpts...)}
-	if b.Backend == database.BackendPebble {
+	if bindingHasPebbleWAL(b.Backend) {
 		m.walDir = storageCfg.WALDir
 	}
 	if b.DatabaseBarrier {
@@ -763,8 +763,9 @@ func (it *sealGatedIterator) Error() error       { return it.err }
 func bindingStorageConfig(cfg qrdbconfig.StorageConfig, b *database.Binding) qrdbconfig.StorageConfig {
 	// A configured wal_dir is the node store's: every binding writes its
 	// write-ahead log in a subdirectory of its own (BindingWALDir), so no
-	// two Pebble databases replay or recycle one directory's logs.
-	if b.Backend == database.BackendPebble && cfg.WALDir != "" {
+	// two Pebble LSMs (a Pebble database's store or an objstore database's
+	// local LSM) replay or recycle one directory's logs.
+	if bindingHasPebbleWAL(b.Backend) && cfg.WALDir != "" {
 		cfg.WALDir = BindingWALDir(cfg.WALDir, b.DataRoot)
 	}
 	if b.Backend != database.BackendObjstore {
@@ -781,7 +782,7 @@ func bindingStorageConfig(cfg qrdbconfig.StorageConfig, b *database.Binding) qrd
 }
 
 // BindingWALDir returns the write-ahead log directory of the Pebble binding
-// store rooted at dataRoot when the node's storage.wal_dir is walDir: a
+// store, or an objstore binding's local LSM, rooted at dataRoot when the node's storage.wal_dir is walDir: a
 // subdirectory of walDir named for the binding root, which no two live
 // bindings share (database.Manager refuses a root another record claims).
 // An empty walDir keeps the log beside the data, under dataRoot, and returns
@@ -795,14 +796,15 @@ func BindingWALDir(walDir, dataRoot string) string {
 }
 
 // clearStaleBindingWAL removes a binding's WAL directory when its store has
-// no Pebble data yet. A drop removes the WAL directory (ExternalDirs) after
+// no Pebble data yet (no "pebble" directory, or objstoreLSMDir for an
+// objstore binding). A drop removes the WAL directory (ExternalDirs) after
 // the binding root, so a crash between the two leaves a log with no store;
 // a database opened again under the same root must not replay it.
-func clearStaleBindingWAL(walDir, dataRoot string) error {
+func clearStaleBindingWAL(walDir, dataRoot string, backend database.BackendType) error {
 	if walDir == "" {
 		return nil
 	}
-	_, err := os.Stat(filepath.Join(dataRoot, "pebble"))
+	_, err := os.Stat(filepath.Join(dataRoot, bindingWALStoreDir(backend)))
 	if err == nil {
 		return nil
 	}
@@ -810,6 +812,22 @@ func clearStaleBindingWAL(walDir, dataRoot string) error {
 		return err
 	}
 	return os.RemoveAll(walDir)
+}
+
+// bindingHasPebbleWAL reports whether backend's store is a Pebble LSM that
+// writes a write-ahead log: a Pebble database, and an objstore database's
+// local LSM (objstoreLSMDir).
+func bindingHasPebbleWAL(backend database.BackendType) bool {
+	return backend == database.BackendPebble || backend == database.BackendObjstore
+}
+
+// bindingWALStoreDir is the directory under a binding root holding the LSM
+// whose write-ahead log BindingWALDir relocates.
+func bindingWALStoreDir(backend database.BackendType) string {
+	if backend == database.BackendObjstore {
+		return objstoreLSMDir
+	}
+	return "pebble"
 }
 
 // MaterializedBinding is a database's own store, engine and service host.
@@ -822,7 +840,8 @@ type MaterializedBinding struct {
 	stg     storage.Storage
 	hub     *watch.Hub
 	binding *database.Binding
-	// walDir is the Pebble store's write-ahead log directory outside its
+	// walDir is the Pebble store's (or the objstore LSM's) write-ahead log
+	// directory outside its
 	// root (BindingWALDir), "" when the log lives under the root.
 	walDir string
 	// vector is the database's own vector service; closeVector stops it

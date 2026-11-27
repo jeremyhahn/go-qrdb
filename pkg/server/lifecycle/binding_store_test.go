@@ -464,6 +464,60 @@ func TestLocalBindingFactory_WALDirPerBinding(t *testing.T) {
 	}
 }
 
+// TestLocalBindingFactory_ObjstoreWALDirPerBinding pins that an objstore
+// binding's local LSM writes its write-ahead log in a BindingWALDir of its
+// own under storage.wal_dir, never into wal_dir itself beside the node store
+// and every other objstore database, and that the drop removes it.
+func TestLocalBindingFactory_ObjstoreWALDirPerBinding(t *testing.T) {
+	dir := t.TempDir()
+	walDir := filepath.Join(t.TempDir(), "wal")
+	cat, err := database.NewKVCatalog(kvstore.NewMemoryKVStore(), nil)
+	if err != nil {
+		t.Fatalf("NewKVCatalog: %v", err)
+	}
+	f := lifecycle.NewLocalBindingFactory(database.BindingNode{DataDir: dir}, nil, qrdbconfig.StorageConfig{WALDir: walDir}, prefixTenants)
+	mgr := database.NewManager(slog.Default(), dir, database.WithBackendFactory(f))
+	mgr.SetCatalog(cat)
+	defer func() { _ = mgr.Close() }()
+	ctx := context.Background()
+	wals := map[string]string{}
+	for _, name := range []string{"alpha", "beta"} {
+		db, err := mgr.Create(database.DatabaseConfig{TenantID: bindingTenant, Name: name, Backend: database.BackendObjstore})
+		if err != nil {
+			t.Fatalf("Create %s: %v", name, err)
+		}
+		mb := materialized(t, db)
+		if err := service.NewKVService(mb.Host(), mb.ShardID()).Put(ctx, name+"-key", []byte(name)); err != nil {
+			t.Fatalf("Put %s: %v", name, err)
+		}
+		wals[name] = lifecycle.BindingWALDir(walDir, mb.DataRoot())
+		if got := mb.ExternalDirs(); len(got) != 1 || got[0] != wals[name] {
+			t.Fatalf("%s ExternalDirs = %v, want [%s]", name, got, wals[name])
+		}
+	}
+	if wals["alpha"] == wals["beta"] || wals["alpha"] == walDir || wals["beta"] == walDir {
+		t.Fatalf("binding WAL dirs %q and %q, want two distinct subdirectories of %q", wals["alpha"], wals["beta"], walDir)
+	}
+	for name, d := range wals {
+		if got := walFiles(t, d); len(got) == 0 {
+			t.Errorf("%s: no WAL file in its binding WAL dir %s", name, d)
+		}
+	}
+	if got := walFiles(t, walDir); len(got) != 0 {
+		t.Fatalf("storage.wal_dir itself holds WAL files %v; want each binding's under its own subdirectory", got)
+	}
+
+	if err := mgr.DropForTenant(tenant.WithTenantID(ctx, bindingTenant), "alpha"); err != nil {
+		t.Fatalf("DropForTenant: %v", err)
+	}
+	if _, err := os.Stat(wals["alpha"]); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("dropped binding's WAL dir %s after the drop: stat err = %v, want not exist", wals["alpha"], err)
+	}
+	if got := walFiles(t, wals["beta"]); len(got) == 0 {
+		t.Fatalf("live binding's WAL dir %s lost its files on the other's drop", wals["beta"])
+	}
+}
+
 // TestLocalBindingFactory_VectorsInBindingStore proves a materialized
 // database keeps its vectors in its binding store, through the apply host,
 // on every backend: a restarted binding reads them back, and nothing is
