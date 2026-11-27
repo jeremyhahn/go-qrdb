@@ -98,7 +98,9 @@ type pendingJoinRecord struct {
 	Features  []string `json:"features,omitempty"`
 	// ReleaseVersion is the joiner's announced release, already checked by
 	// checkJoinerRelease, carried to the pre-membership record an approval
-	// advertises so the feature gate judges the joiner's release.
+	// advertises so the feature gate judges the joiner's release. A poll
+	// announcing a different release is refused (handleTokenlessJoin), so
+	// admission only uses a release checkJoinerRelease checked on that poll.
 	ReleaseVersion string            `json:"release_version,omitempty"`
 	Status         pendingJoinStatus `json:"status"`
 
@@ -410,11 +412,24 @@ func RejectJoinRequest(ctx context.Context, store kvstore.AtomicKVStore, id, rea
 // re-reads) the pending request and reports its current state -- still
 // pending, a terminal rejection, or an approval this call signs and
 // delivers (caching the result for an idempotent re-poll).
+//
+// A re-poll reuses the queued record by CSR digest, so a poll whose
+// announced release differs from the release the record was queued with
+// is refused for every non-rejected state (pending, approved, delivered):
+// checkJoinerRelease judged this poll's release, and admission advertises
+// the record's, so the two must match or the joiner would be admitted
+// under a release it no longer runs. The joiner submits a new CSR instead.
 func handleTokenlessJoin(ctx context.Context, provider cakey.Provider, store kvstore.AtomicKVStore, csr *x509.CertificateRequest, req *JoinRequest, advertiser FeatureAdvertiser) *JoinResponse {
 	record, err := SubmitPendingJoinRequest(ctx, store, req, 0)
 	if err != nil {
 		slog.ErrorContext(ctx, "member-side CSR join: could not queue a tokenless join request for approval", "error", err)
 		return &JoinResponse{Error: "join request could not be processed"}
+	}
+
+	if record.Status != pendingStatusRejected && record.ReleaseVersion != req.ReleaseVersion {
+		slog.WarnContext(ctx, "member-side CSR join: refused a poll whose release differs from the queued request",
+			"request_id", record.ID, "queued_release", record.ReleaseVersion, "polled_release", req.ReleaseVersion)
+		return &JoinResponse{Error: "join request refused: the announced release changed since the request was queued; submit a new CSR"}
 	}
 
 	switch record.Status {
