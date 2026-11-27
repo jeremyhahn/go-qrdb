@@ -89,31 +89,31 @@ func TestUpdateRaft_StateStorageIsKept(t *testing.T) {
 	t.Cleanup(func() { _ = m.Close() })
 	if _, err := m.Create(DatabaseConfig{
 		Name: "storage", Backend: BackendRaft,
-		Raft: &DatabaseRaftConfig{ClusterMode: RaftNone, StateStorage: BackendFile},
+		Raft: &DatabaseRaftConfig{ClusterMode: RaftNone, StateStorage: BackendMemory},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	// Omitted or restating the recorded store: kept.
 	for _, update := range []*DatabaseRaftConfig{
 		{ClusterMode: RaftNone, RaftAddress: "db.example.com:63002"},
-		{ClusterMode: RaftNone, StateStorage: BackendFile},
+		{ClusterMode: RaftNone, StateStorage: BackendMemory},
 	} {
 		if err := m.UpdateRaft("storage", update); err != nil {
 			t.Fatalf("UpdateRaft(%+v): %v", update, err)
 		}
-		if got := storedRaft(t, m, "storage").StateStorage; got != BackendFile {
-			t.Fatalf("state storage after UpdateRaft(%+v) = %q, want %q", update, got, BackendFile)
+		if got := storedRaft(t, m, "storage").StateStorage; got != BackendMemory {
+			t.Fatalf("state storage after UpdateRaft(%+v) = %q, want %q", update, got, BackendMemory)
 		}
 	}
 	// Naming another store: refused, and the record is untouched.
-	err := m.UpdateRaft("storage", &DatabaseRaftConfig{ClusterMode: RaftNone, StateStorage: BackendMemory})
+	err := m.UpdateRaft("storage", &DatabaseRaftConfig{ClusterMode: RaftNone, StateStorage: BackendPebble})
 	var refused *StateStorageUpdateError
 	if !errors.As(err, &refused) || refused.Name != "storage" ||
-		refused.Recorded != BackendFile || refused.Requested != BackendMemory || refused.Error() == "" {
+		refused.Recorded != BackendMemory || refused.Requested != BackendPebble || refused.Error() == "" {
 		t.Fatalf("UpdateRaft changing the state storage = %v, want *StateStorageUpdateError", err)
 	}
-	if got := storedRaft(t, m, "storage").StateStorage; got != BackendFile {
-		t.Fatalf("state storage after a refused update = %q, want %q", got, BackendFile)
+	if got := storedRaft(t, m, "storage").StateStorage; got != BackendMemory {
+		t.Fatalf("state storage after a refused update = %q, want %q", got, BackendMemory)
 	}
 }
 

@@ -1915,8 +1915,9 @@ provider also places data outside the tenant's data root.
 **OD-8 — State machine of a database's Raft group.**
 - A: one canonical database state machine — the MVCC engine over
   `storage.Storage` — for every database group, with its state storage chosen
-  per database (`raft.state_storage: pebble | file | memory`, defaulted from
-  the node). The node's `sm_type` applies to the control-plane group only.
+  per database (`raft.state_storage: pebble | memory`, defaulted from
+  the node; `file` is refused at create and update, since no file-backed
+  data-plane state machine exists). The node's `sm_type` applies to the control-plane group only.
 - B: a per-database `sm_type`, which requires every state-machine family to
   implement every engine, vector and time series included.
 - **Chosen: A.**

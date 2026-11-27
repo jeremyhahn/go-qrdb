@@ -1132,10 +1132,10 @@ How a claim works:
 | Target: etcd on a non-raft backend | `database.EtcdRequiresRaftBackendError` | **yes** |
 | Target: `data_dir` outside a volume/raft tenant's root | `database.DataDirOutsideTenantRootError` | **yes** |
 | Target: `data_dir` equal to, inside or above a node store (control-plane engine stores, the node objstore root and its `.journal` sibling, `storage.wal_dir`, each resolved as storage opens it: relative paths against the working directory) | `database.DataDirReservedPathError` | **yes** |
-| Target: `file`/`objstore` for a volume/raft tenant, as backend or raft state storage | `database.BackendIsolationConflictError` | **yes** |
+| Target: `file`/`objstore` for a volume/raft tenant as backend | `database.BackendIsolationConflictError` | **yes** |
 | Target: a tenant isolation mode the binding table does not know | `database.InvalidTenantIsolationError` | **yes** |
 | Target: the store's directory cannot be placed (volume/raft tenant without a data root on this node, node without a data directory) | `database.BindingRootUnresolvedError` | **yes** |
-| Target: a raft state storage other than `pebble`, `file`, `memory` | `database.InvalidRaftStateStorageError` | **yes** |
+| Target: a raft state storage other than `pebble`, `memory` (`file` included: no file-backed data-plane state machine exists), at create and update | `database.InvalidRaftStateStorageError` | **yes** |
 | Target: the owning node of a local-binding database is unreachable | a typed error naming the owner; 503 / `UNAVAILABLE` | **yes** |
 | Target: a binding cannot be materialized (store will not open, shard will not start) | a typed error wrapping the cause; 503 / `UNAVAILABLE` | **yes** |
 | A range delete or time-series retention command in a group where `featuregate.RangeDelete` or `featuregate.TimeSeriesRetention` is not active cluster-wide | `*feature.NotActiveError`; nothing is proposed | **yes** |
@@ -1447,8 +1447,9 @@ Each requirement lands with the tests named here.
   `database.Defaults` (in `BindingNode`) fills only a field the record left
   empty: the backend from the node default, else `raft` in raft mode and
   `pebble` standalone; for a raft binding the replicas (else 1), cluster mode
-  and state storage (else `pebble`). The refusal of `file` covers a raft
-  group's state storage as well as the backend. An explicit `data_dir` of a
+  and state storage (else `pebble`). A raft group's state storage is
+  `pebble` or `memory`; `file` is refused for every tenant
+  (`InvalidRaftStateStorageError`), before the isolation check. An explicit `data_dir` of a
   volume/raft tenant lies strictly beneath the tenant root, which itself holds
   the tenant's other state. `TestResolveBinding_IsolationByBackend` covers every
   isolation mode × backend cell, asserting the binding or the typed refusal.

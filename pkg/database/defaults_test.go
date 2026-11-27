@@ -25,7 +25,7 @@ func TestDefaultsFromConfig(t *testing.T) {
 }
 
 func TestDefaultsFill(t *testing.T) {
-	d := Defaults{Backend: BackendRaft, Replicas: 3, RaftClusterMode: RaftDistributed, RaftStateStorage: BackendFile}
+	d := Defaults{Backend: BackendRaft, Replicas: 3, RaftClusterMode: RaftDistributed, RaftStateStorage: BackendMemory}
 	tests := []struct {
 		name string
 		d    Defaults
@@ -37,7 +37,7 @@ func TestDefaultsFill(t *testing.T) {
 			d:    d,
 			cfg:  DatabaseConfig{Name: "app", Raft: &DatabaseRaftConfig{}},
 			want: DatabaseConfig{Name: "app", Backend: BackendRaft, Replicas: 3,
-				Raft: &DatabaseRaftConfig{ClusterMode: RaftDistributed, StateStorage: BackendFile}},
+				Raft: &DatabaseRaftConfig{ClusterMode: RaftDistributed, StateStorage: BackendMemory}},
 		},
 		{
 			name: "recorded state storage kept",
@@ -52,14 +52,14 @@ func TestDefaultsFill(t *testing.T) {
 			cfg: DatabaseConfig{Name: "app", Backend: BackendRaft, Replicas: 5,
 				Raft: &DatabaseRaftConfig{ClusterMode: RaftLocal}},
 			want: DatabaseConfig{Name: "app", Backend: BackendRaft, Replicas: 5,
-				Raft: &DatabaseRaftConfig{ClusterMode: RaftLocal, StateStorage: BackendFile}},
+				Raft: &DatabaseRaftConfig{ClusterMode: RaftLocal, StateStorage: BackendMemory}},
 		},
 		{
 			name: "raft block added for a raft backend",
 			d:    d,
 			cfg:  DatabaseConfig{Name: "app"},
 			want: DatabaseConfig{Name: "app", Backend: BackendRaft, Replicas: 3,
-				Raft: &DatabaseRaftConfig{ClusterMode: RaftDistributed, StateStorage: BackendFile}},
+				Raft: &DatabaseRaftConfig{ClusterMode: RaftDistributed, StateStorage: BackendMemory}},
 		},
 		{
 			name: "added raft block falls back to cluster mode none",
@@ -69,16 +69,16 @@ func TestDefaultsFill(t *testing.T) {
 		},
 		{
 			name: "supplied state-storage-only block falls back to cluster mode none",
-			cfg:  DatabaseConfig{Name: "app", Backend: BackendRaft, Raft: &DatabaseRaftConfig{StateStorage: BackendFile}},
+			cfg:  DatabaseConfig{Name: "app", Backend: BackendRaft, Raft: &DatabaseRaftConfig{StateStorage: BackendMemory}},
 			want: DatabaseConfig{Name: "app", Backend: BackendRaft,
-				Raft: &DatabaseRaftConfig{ClusterMode: RaftNone, StateStorage: BackendFile}},
+				Raft: &DatabaseRaftConfig{ClusterMode: RaftNone, StateStorage: BackendMemory}},
 		},
 		{
 			name: "supplied state-storage-only block takes the node cluster mode",
 			d:    Defaults{RaftClusterMode: RaftLocal},
-			cfg:  DatabaseConfig{Name: "app", Backend: BackendRaft, Raft: &DatabaseRaftConfig{StateStorage: BackendFile}},
+			cfg:  DatabaseConfig{Name: "app", Backend: BackendRaft, Raft: &DatabaseRaftConfig{StateStorage: BackendMemory}},
 			want: DatabaseConfig{Name: "app", Backend: BackendRaft,
-				Raft: &DatabaseRaftConfig{ClusterMode: RaftLocal, StateStorage: BackendFile}},
+				Raft: &DatabaseRaftConfig{ClusterMode: RaftLocal, StateStorage: BackendMemory}},
 		},
 		{
 			name: "raft defaults skip a non-raft backend",
@@ -123,15 +123,37 @@ func TestDefaultsFill(t *testing.T) {
 }
 
 func TestDatabaseRaftConfigValidateStateStorage(t *testing.T) {
-	for _, s := range []BackendType{"", BackendPebble, BackendFile, BackendMemory} {
+	for _, s := range []BackendType{"", BackendPebble, BackendMemory} {
 		if err := (&DatabaseRaftConfig{ClusterMode: RaftNone, StateStorage: s}).Validate(); err != nil {
 			t.Fatalf("Validate(state storage %q) = %v, want nil", s, err)
 		}
 	}
-	err := (&DatabaseRaftConfig{ClusterMode: RaftNone, StateStorage: BackendObjstore}).Validate()
+	// No file-backed data-plane state machine exists, so file is refused
+	// at the boundary like any other store a group cannot run over.
+	for _, s := range []BackendType{BackendFile, BackendObjstore} {
+		err := (&DatabaseRaftConfig{ClusterMode: RaftNone, StateStorage: s}).Validate()
+		var target *InvalidRaftStateStorageError
+		if !errors.As(err, &target) || target.StateStorage != s {
+			t.Fatalf("Validate(%s) = %v, want *InvalidRaftStateStorageError", s, err)
+		}
+	}
+}
+
+func TestManagerCreateRefusesFileRaftStateStorage(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	m := newCatalogManager(logger, t.TempDir())
+	t.Cleanup(func() { _ = m.Close() })
+
+	_, err := m.Create(DatabaseConfig{
+		Name: "filestate", Backend: BackendRaft,
+		Raft: &DatabaseRaftConfig{ClusterMode: RaftNone, StateStorage: BackendFile},
+	})
 	var target *InvalidRaftStateStorageError
-	if !errors.As(err, &target) || target.StateStorage != BackendObjstore {
-		t.Fatalf("Validate(objstore) = %v, want *InvalidRaftStateStorageError", err)
+	if !errors.As(err, &target) || target.StateStorage != BackendFile {
+		t.Fatalf("Provision(state storage file) = %v, want *InvalidRaftStateStorageError", err)
+	}
+	if _, gerr := m.Get("filestate"); gerr == nil {
+		t.Fatal("a refused create left a database behind")
 	}
 }
 
@@ -231,13 +253,13 @@ func TestManagerCreateStateStorageOnlyRaftBlock(t *testing.T) {
 	t.Cleanup(func() { _ = m.Close() })
 
 	db, err := m.CreateWithCredentials(context.Background(),
-		DatabaseConfig{Name: "stateonly", Backend: BackendRaft, Raft: &DatabaseRaftConfig{StateStorage: BackendFile}},
+		DatabaseConfig{Name: "stateonly", Backend: BackendRaft, Raft: &DatabaseRaftConfig{StateStorage: BackendMemory}},
 		seal.Credentials{})
 	if err != nil {
 		t.Fatalf("CreateWithCredentials() = %v", err)
 	}
 	raft := db.Config().Raft
-	if raft == nil || raft.StateStorage != BackendFile || raft.ClusterMode != RaftNone {
+	if raft == nil || raft.StateStorage != BackendMemory || raft.ClusterMode != RaftNone {
 		t.Fatalf("recorded raft = %+v, want state storage %q and cluster mode %q", raft, BackendFile, RaftNone)
 	}
 }

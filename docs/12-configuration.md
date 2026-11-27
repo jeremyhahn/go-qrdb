@@ -547,7 +547,7 @@ database_defaults:
 - `backend`, when non-empty, must be one of: `memory`, `file`, `pebble`, `raft`, `objstore`.
 - `replicas` must not be negative (>= 0).
 - `raft.clusterMode`, when non-empty, must be one of: `none`, `local`, `distributed`.
-- `raft.state_storage`, when non-empty, must be one of: `pebble`, `file`, `memory`. A database Raft group's state machine runs on Pebble (on disk for `pebble`, in memory for `memory`); `file` passes validation but the group refuses to start on it (`server.UnsupportedRaftStateStorageError`) rather than run it on Pebble.
+- `raft.state_storage`, when non-empty, must be one of: `pebble`, `file`, `memory`. A database Raft group's state machine runs on Pebble (on disk for `pebble`, in memory for `memory`); `file` passes node config validation, but a database create or update that records it is refused (`database.InvalidRaftStateStorageError`), and a group already recorded with it refuses to start (`server.UnsupportedRaftStateStorageError`) rather than run it on Pebble.
 - `replicas` and `raft.*` apply only to a database whose backend is `raft`.
 
 ---

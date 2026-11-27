@@ -223,7 +223,7 @@ func TestResolveBinding_Refusals(t *testing.T) {
 		},
 		{
 			name:    "state storage on pebble",
-			cfg:     &DatabaseConfig{Name: "app", Backend: BackendPebble, Raft: &DatabaseRaftConfig{StateStorage: BackendFile}},
+			cfg:     &DatabaseConfig{Name: "app", Backend: BackendPebble, Raft: &DatabaseRaftConfig{StateStorage: BackendMemory}},
 			tenant:  bindTenant(tenant.IsolationPrefix),
 			node:    raftNode,
 			wantErr: &RaftOptionsRequireRaftBackendError{Name: "app", Backend: BackendPebble, Option: "raft.stateStorage"},
@@ -275,7 +275,7 @@ func TestResolveBinding_Refusals(t *testing.T) {
 			cfg:     &DatabaseConfig{Name: "app", Backend: BackendRaft},
 			tenant:  bindTenant(tenant.IsolationRaft),
 			node:    BindingNode{DataDir: bindNodeDir, RaftMode: true, Defaults: Defaults{RaftStateStorage: BackendFile}},
-			wantErr: &BackendIsolationConflictError{Name: "app", Backend: BackendFile, Isolation: string(tenant.IsolationRaft)},
+			wantErr: &InvalidRaftStateStorageError{Name: "app", StateStorage: BackendFile},
 		},
 		{
 			name:    "objstore state storage",
@@ -389,7 +389,7 @@ func TestResolveBinding_Defaults(t *testing.T) {
 			cfg: &DatabaseConfig{Name: "app", Backend: BackendRaft,
 				Raft: &DatabaseRaftConfig{ClusterMode: RaftLocal, StateStorage: BackendMemory}},
 			node: BindingNode{DataDir: bindNodeDir, RaftMode: true, Defaults: Defaults{
-				RaftStateStorage: BackendFile,
+				RaftStateStorage: BackendMemory,
 			}},
 			wantBackend: BackendRaft,
 			wantRaft:    &RaftBinding{Host: RaftHostSystem, Replicas: 1, ClusterMode: RaftLocal, StateStorage: BackendMemory},

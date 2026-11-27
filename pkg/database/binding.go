@@ -101,10 +101,11 @@ var nameVisibleBackends = map[BackendType]struct{}{
 }
 
 // raftStateStorages are the stores a raft binding's state machine may run
-// over (OD-8, ruled A).
+// over (OD-8, ruled A). The data-plane state machine is the Pebble-native
+// MVCC store and no file-backed one exists, so `file` is refused at create
+// and update rather than when the group starts.
 var raftStateStorages = map[BackendType]struct{}{
 	BackendPebble: {},
-	BackendFile:   {},
 	BackendMemory: {},
 }
 
