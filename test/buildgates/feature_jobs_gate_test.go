@@ -244,11 +244,16 @@ func featureJobProblems(body []byte, want []string) []string {
 	return problems
 }
 
+// featureClusterFeatures is exactly the feature set featureClusterJob runs
+// (#1752): the suites that form a multi-node Raft cluster. Any other
+// feature belongs in a shard of featureJob, and each of these in none.
+var featureClusterFeatures = []string{"clustering", "cluster-verification"}
+
 // featureClusterProblems checks the one-leg integration-cluster job: the
-// code tier, a literal feature list whose every name is a mapped feature that
-// no shard of integration-features also runs, and the shard's step layout,
-// image hand-off, teardown and project-name rules. It records each feature it
-// runs in legOf.
+// code tier, a literal feature list that is exactly featureClusterFeatures,
+// each a mapped feature that no shard of integration-features also runs, and
+// the shard's step layout, image hand-off, teardown and project-name rules.
+// It records each feature it runs in legOf.
 func featureClusterProblems(job featureJobSpec, want []string, legOf map[string]string) []string {
 	var problems []string
 	if got := strings.TrimSpace(withoutDraftSkip(job.If)); got != codeTierIf {
@@ -274,9 +279,19 @@ func featureClusterProblems(job featureJobSpec, want []string, legOf map[string]
 			continue
 		}
 		legOf[f] = featureClusterJob
-		if !slices.Contains(want, f) {
+		switch {
+		case !slices.Contains(want, f):
 			problems = append(problems, featureClusterJob+" lists "+strconv.Quote(f)+
 				", which `make -s print-integration-features` does not print; fix: delete it from "+featureClusterJob)
+		case !slices.Contains(featureClusterFeatures, f):
+			problems = append(problems, featureClusterJob+" runs "+f+", which is not a cluster feature (want exactly "+
+				strings.Join(featureClusterFeatures, " ")+"); fix: move it to a shard of "+featureJob)
+		}
+	}
+	for _, f := range featureClusterFeatures {
+		if !slices.Contains(strings.Fields(list), f) {
+			problems = append(problems, featureClusterJob+" does not run the cluster feature "+f+
+				"; fix: add it to "+featureClusterJob+"'s IT_FEATURES and delete it from any shard of "+featureJob)
 		}
 	}
 	return append(problems, featureLegProblems(featureClusterJob, job, featureClusterProjectSuffix)...)
@@ -674,7 +689,7 @@ jobs:
     timeout-minutes: 120
     env:
       IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-cluster
-      IT_FEATURES: clustering
+      IT_FEATURES: clustering cluster-verification
     steps:
       - uses: actions/checkout@0000000000000000000000000000000000000000 # v6
       - name: Mask the forge credentials
@@ -700,7 +715,7 @@ jobs:
         run: make docker-down-it IT_PROJECT="$IT_PROJECT"
 `
 
-var featureFixtureWant = []string{"audit", "clustering", "key-value", "sql"}
+var featureFixtureWant = []string{"audit", "cluster-verification", "clustering", "key-value", "sql"}
 
 func TestIntegrationFeatureCoverage_JobProblemsValidFixture(t *testing.T) {
 	if p := featureJobProblems([]byte(featureJobFixture), featureFixtureWant); len(p) != 0 {
@@ -747,6 +762,10 @@ func TestIntegrationFeatureCoverage_JobProblemsCanFail(t *testing.T) {
 		name     string
 		old, new string
 		want     []string
+		// then is a second old/new replacement applied after the first;
+		// text lists substrings the joined problems must contain.
+		then [2]string
+		text []string
 	}{
 		{name: "job missing", old: "  integration-features:\n", new: "  integration-other:\n"},
 		{name: "a mapped feature in no shard", old: "features: audit sql", new: "features: audit"},
@@ -806,15 +825,25 @@ func TestIntegrationFeatureCoverage_JobProblemsCanFail(t *testing.T) {
 		{name: "no names", old: "      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}\n", new: ""},
 		{name: "no push trigger", old: "  push:\n    branches: [main]\n", new: ""},
 		{name: "no pull_request trigger", old: "  pull_request:\n    types: [opened, synchronize, reopened]\n", new: ""},
-		{name: "want grew", want: []string{"audit", "clustering", "key-value", "sql", "watch"}},
+		{name: "want grew", want: []string{"audit", "cluster-verification", "clustering", "key-value", "sql", "watch"}},
 		// #1749: the one-leg cluster job.
 		{name: "cluster job missing", old: "  integration-cluster:\n", new: "  integration-other:\n"},
 		{name: "a feature in a shard and the cluster job", old: "features: key-value", new: "features: key-value clustering"},
 		{name: "a feature twice in the cluster job", old: "IT_FEATURES: clustering", new: "IT_FEATURES: clustering clustering"},
-		{name: "an empty cluster list", old: "      IT_FEATURES: clustering\n", new: ""},
+		{name: "an empty cluster list", old: "      IT_FEATURES: clustering cluster-verification\n", new: ""},
+		// #1752: the cluster job runs exactly the cluster features.
+		{name: "a cluster feature swapped for a shard feature",
+			old: "features: key-value", new: "features: cluster-verification",
+			then: [2]string{"IT_FEATURES: clustering cluster-verification", "IT_FEATURES: clustering key-value"},
+			text: []string{
+				"integration-cluster runs key-value, which is not a cluster feature (want exactly clustering cluster-verification); fix: move it to a shard of integration-features",
+				"integration-cluster does not run the cluster feature cluster-verification; fix: add it to integration-cluster's IT_FEATURES and delete it from any shard of integration-features",
+			}},
+		{name: "a cluster feature dropped", old: "IT_FEATURES: clustering cluster-verification", new: "IT_FEATURES: clustering",
+			text: []string{"integration-cluster does not run the cluster feature cluster-verification"}},
 		{name: "a cluster list that is an expression", old: "IT_FEATURES: clustering", new: "IT_FEATURES: ${{ vars.CLUSTER }}"},
 		{name: "cluster job in the full tier", old: "    name: Integration (cluster)\n    if: ", new: "    name: Integration (cluster)\n    if: (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && "},
-		{name: "cluster job sharded", old: "      IT_FEATURES: clustering\n    steps:", new: "      IT_FEATURES: clustering\n    strategy:\n      matrix:\n        include:\n          - shard: c\n    steps:"},
+		{name: "cluster job sharded", old: "      IT_FEATURES: clustering cluster-verification\n    steps:", new: "      IT_FEATURES: clustering cluster-verification\n    strategy:\n      matrix:\n        include:\n          - shard: c\n    steps:"},
 		{name: "cluster project shared with a shard", old: "github.run_attempt }}-cluster", new: "github.run_attempt }}"},
 		{name: "cluster job without a limit", old: "    timeout-minutes: 120\n    env:\n      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-cluster", new: "    env:\n      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-cluster"},
 		{name: "cluster job with no teardown", old: "      - name: Tear down (cluster)\n        if: always()\n", new: "      - name: Tear down (cluster)\n"},
@@ -830,11 +859,25 @@ func TestIntegrationFeatureCoverage_JobProblemsCanFail(t *testing.T) {
 					t.Fatal("the mutation did not apply: the case tests the valid fixture")
 				}
 			}
+			if tc.then[0] != "" {
+				before := body
+				body = strings.Replace(body, tc.then[0], tc.then[1], 1)
+				if body == before {
+					t.Fatal("the second mutation did not apply")
+				}
+			}
 			if tc.want != nil {
 				want = tc.want
 			}
-			if p := featureJobProblems([]byte(body), want); len(p) == 0 {
+			p := featureJobProblems([]byte(body), want)
+			if len(p) == 0 {
 				t.Fatal("expected at least one problem, got none")
+			}
+			got := strings.Join(p, "\n")
+			for _, w := range tc.text {
+				if !strings.Contains(got, w) {
+					t.Errorf("problems %q do not contain %q", got, w)
+				}
 			}
 		})
 	}
