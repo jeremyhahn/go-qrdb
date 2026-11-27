@@ -245,6 +245,64 @@ test.describe("Database Wizard - Cluster Mode selector (raft server)", () => {
       )
       .toBe("distributed");
   });
+
+  test("a create with a Raft group is a raft database on the chosen state storage", async ({
+    page,
+  }) => {
+    await installRaftAndCapture(page);
+    await openWizardToRaftStep(page, "raft-backed-create");
+
+    await advanceRaftToSummary(page);
+    await page.getByRole("button", { name: "Create Database" }).click();
+
+    await expect
+      .poll(
+        () =>
+          page.evaluate(
+            () =>
+              (window as unknown as { __dbCreateReq?: { name?: string } }).__dbCreateReq?.name ??
+              null,
+          ),
+        { timeout: STEP_TIMEOUT },
+      )
+      .toBe("raft-backed-create");
+    const req = await page.evaluate(
+      () =>
+        (
+          window as unknown as {
+            __dbCreateReq?: { backend?: string; raft?: { stateStorage?: string } };
+          }
+        ).__dbCreateReq,
+    );
+    expect(req?.backend).toBe("raft");
+    expect(req?.raft?.stateStorage).toBe("pebble");
+  });
+
+  test("cluster mode 'none' creates a local database with no raft options", async ({ page }) => {
+    await installRaftAndCapture(page);
+    await openWizardToRaftStep(page, "raft-server-local-create");
+
+    await page.locator("main").getByTestId("db-cluster-mode-select").selectOption("none");
+    await advanceRaftToSummary(page);
+    await page.getByRole("button", { name: "Create Database" }).click();
+
+    await expect
+      .poll(
+        () =>
+          page.evaluate(
+            () =>
+              (window as unknown as { __dbCreateReq?: { name?: string } }).__dbCreateReq?.name ??
+              null,
+          ),
+        { timeout: STEP_TIMEOUT },
+      )
+      .toBe("raft-server-local-create");
+    const req = await page.evaluate(
+      () => (window as unknown as { __dbCreateReq?: Record<string, unknown> }).__dbCreateReq,
+    );
+    expect(req).not.toHaveProperty("raft");
+    expect(req?.backend).toBe("pebble");
+  });
 });
 
 test.describe("Database Wizard - raft options (standalone server)", () => {
