@@ -509,7 +509,15 @@ func (t *Transport) isClosed() bool {
 // Request dispatches a generic request to the appropriate service method
 // based on the method name. This is provided for interface compliance;
 // callers should prefer the typed KVClient and AdminClient methods.
+//
+// Request consumes the PIN buffers of any request that implements
+// WipePINs on every return: a refusal before dispatch (closed transport,
+// rejecting ContextBinder, unknown method) wipes them as the dispatched
+// typed method does.
 func (t *Transport) Request(ctx context.Context, method string, req, resp any) error {
+	if w, ok := req.(interface{ WipePINs() }); ok {
+		defer w.WipePINs()
+	}
 	ctx, err := t.admit(ctx, "Request")
 	if err != nil {
 		return err
