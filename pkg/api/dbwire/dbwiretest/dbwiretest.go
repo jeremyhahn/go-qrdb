@@ -94,7 +94,7 @@ func Seed(t testing.TB, svc service.DatabaseServicer) {
 	// keeps it.
 	if _, err := svc.Create(database.DatabaseConfig{
 		Name:    Name,
-		Backend: database.BackendMemory,
+		Backend: database.BackendRaft,
 		Raft: &database.DatabaseRaftConfig{
 			ClusterMode:  RaftConfig().ClusterMode,
 			StateStorage: RaftConfig().StateStorage,

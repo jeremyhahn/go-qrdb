@@ -420,7 +420,7 @@ func TestManager_UpdateRaftForTenant(t *testing.T) {
 	defer func() { _ = mgr.Close() }()
 
 	ctx := tenantContext("tenant-a")
-	cfg := validMemoryConfig("raft-tenant-db")
+	cfg := DatabaseConfig{Name: "raft-tenant-db", Backend: BackendRaft}
 	if _, err := mgr.CreateForTenant(ctx, cfg); err != nil {
 		t.Fatalf("CreateForTenant() error = %v", err)
 	}

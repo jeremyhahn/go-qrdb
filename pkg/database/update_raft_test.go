@@ -15,6 +15,7 @@
 package database
 
 import (
+	"context"
 	"errors"
 	"testing"
 )
@@ -57,7 +58,7 @@ func storedRaft(t *testing.T, m *Manager, name string) *DatabaseRaftConfig {
 func TestUpdateRaft_OmittedSecretsAreKept(t *testing.T) {
 	m := newTestManager(t)
 	t.Cleanup(func() { _ = m.Close() })
-	if _, err := m.Create(DatabaseConfig{Name: "kept", Backend: BackendMemory}); err != nil {
+	if _, err := m.Create(DatabaseConfig{Name: "kept", Backend: BackendRaft}); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.UpdateRaft("kept", secretsRaft()); err != nil {
@@ -87,7 +88,7 @@ func TestUpdateRaft_StateStorageIsKept(t *testing.T) {
 	m := newTestManager(t)
 	t.Cleanup(func() { _ = m.Close() })
 	if _, err := m.Create(DatabaseConfig{
-		Name: "storage", Backend: BackendMemory,
+		Name: "storage", Backend: BackendRaft,
 		Raft: &DatabaseRaftConfig{ClusterMode: RaftNone, StateStorage: BackendFile},
 	}); err != nil {
 		t.Fatal(err)
@@ -121,7 +122,7 @@ func TestUpdateRaft_StateStorageIsKept(t *testing.T) {
 func TestUpdateRaft_SecretsRotateAndBlocksRemove(t *testing.T) {
 	m := newTestManager(t)
 	t.Cleanup(func() { _ = m.Close() })
-	if _, err := m.Create(DatabaseConfig{Name: "rotated", Backend: BackendMemory}); err != nil {
+	if _, err := m.Create(DatabaseConfig{Name: "rotated", Backend: BackendRaft}); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.UpdateRaft("rotated", secretsRaft()); err != nil {
@@ -169,5 +170,43 @@ func TestUpdateRaft_NilRefusedOnARaftBackend(t *testing.T) {
 	}
 	if err := m.UpdateRaft("memdb", nil); err != nil {
 		t.Fatalf("UpdateRaft(nil) on a memory backend: %v", err)
+	}
+}
+
+// TestUpdateRaft_ConfigRefusedOnANonRaftBackend: a Raft configuration on a
+// database whose backend is not raft is refused before memory or the catalog
+// changes, so the database keeps opening as it was created.
+func TestUpdateRaft_ConfigRefusedOnANonRaftBackend(t *testing.T) {
+	dataDir := t.TempDir()
+	mgr := newCatalogManager(nil, dataDir)
+	if _, err := mgr.Create(DatabaseConfig{Name: "pebbledb", Backend: BackendPebble}); err != nil {
+		t.Fatal(err)
+	}
+	err := mgr.UpdateRaft("pebbledb", validRaftConfig(0))
+	var refused *RaftOptionsRequireRaftBackendError
+	if !errors.As(err, &refused) {
+		t.Fatalf("UpdateRaft(config) on a pebble backend = %v, want *RaftOptionsRequireRaftBackendError", err)
+	}
+	if refused.Name != "pebbledb" || refused.Backend != BackendPebble || refused.Option != "raft" {
+		t.Fatalf("refusal = %+v, want pebbledb/pebble/raft", refused)
+	}
+	if got := storedRaft(t, mgr, "pebbledb"); got != nil {
+		t.Fatalf("in-memory Raft config after a refused update = %+v, want nil", got)
+	}
+	if err := mgr.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened := newCatalogManager(nil, dataDir)
+	defer func() { _ = reopened.Close() }()
+	db, err := reopened.Open(context.Background(), "", "pebbledb")
+	if err != nil {
+		t.Fatalf("reopen after a refused update: %v", err)
+	}
+	if got := db.Config().Raft; got != nil {
+		t.Fatalf("catalog Raft config after a refused update = %+v, want nil", got)
+	}
+	if got := db.BackendType(); got != BackendPebble {
+		t.Fatalf("reopened backend = %q, want %q", got, BackendPebble)
 	}
 }

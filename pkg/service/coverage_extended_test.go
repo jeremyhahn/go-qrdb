@@ -480,7 +480,7 @@ func TestDatabaseService_UpdateRaftForTenant_Success(t *testing.T) {
 	svc := newTestDatabaseService(t)
 	ctx := tenantCtx("tenant-raft")
 
-	if _, err := svc.CreateForTenant(ctx, testDBConfig("t-raft-db")); err != nil {
+	if _, err := svc.CreateForTenant(ctx, testRaftDBConfig("t-raft-db")); err != nil {
 		t.Fatalf("CreateForTenant() error: %v", err)
 	}
 
@@ -500,7 +500,7 @@ func TestDatabaseService_UpdateRaftForTenant_Success(t *testing.T) {
 func TestDatabaseService_UpdateRaftForTenant_SystemTenantRoutesToAdmin(t *testing.T) {
 	svc := newTestDatabaseService(t)
 
-	if _, err := svc.CreateForTenant(context.Background(), testDBConfig("sys-raft-db")); err != nil {
+	if _, err := svc.CreateForTenant(context.Background(), testRaftDBConfig("sys-raft-db")); err != nil {
 		t.Fatalf("CreateForTenant() as system error: %v", err)
 	}
 	info, err := svc.UpdateRaftForTenant(context.Background(), "sys-raft-db", &database.DatabaseRaftConfig{

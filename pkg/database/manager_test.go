@@ -1046,7 +1046,7 @@ func TestManager_UpdateRaft_InvalidConfig(t *testing.T) {
 	mgr := newTestManager(t)
 	defer func() { _ = mgr.Close() }()
 
-	cfg := validMemoryConfig("raft-invalid-db")
+	cfg := DatabaseConfig{Name: "raft-invalid-db", Backend: BackendRaft}
 	if _, err := mgr.Create(cfg); err != nil {
 		t.Fatalf("Create() returned unexpected error: %v", err)
 	}

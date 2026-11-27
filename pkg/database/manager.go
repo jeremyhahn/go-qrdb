@@ -1325,6 +1325,12 @@ func (m *Manager) updateRaft(db *Database, raft *DatabaseRaftConfig) error {
 		db.updateRaft(nil)
 		return m.rewriteMeta(db, func(meta *DatabaseMeta) { meta.Raft = nil })
 	}
+	// A Raft configuration means nothing to a database on another backend:
+	// it is refused here exactly as ResolveBinding refuses raft-only options
+	// at create, before memory or the catalog changes.
+	if db.BackendType() != BackendRaft {
+		return &RaftOptionsRequireRaftBackendError{Name: name, Backend: db.BackendType(), Option: "raft"}
+	}
 	issued := db.ShardID()
 	if raft.ShardID != 0 && raft.ShardID != issued {
 		return &CallerShardIDError{Name: name, ShardID: raft.ShardID}

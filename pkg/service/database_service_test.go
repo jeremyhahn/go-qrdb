@@ -51,6 +51,15 @@ func testDBConfig(name string) database.DatabaseConfig {
 	}
 }
 
+// testRaftDBConfig returns a raft-backend database configuration: only a
+// raft-backend database takes a Raft configuration update.
+func testRaftDBConfig(name string) database.DatabaseConfig {
+	return database.DatabaseConfig{
+		Name:    name,
+		Backend: database.BackendRaft,
+	}
+}
+
 // testEtcdDBConfig returns a raft-backend database configuration: etcd needs
 // a replicated log, so only a raft-backend database may enable it.
 func testEtcdDBConfig(name string) database.DatabaseConfig {
@@ -294,7 +303,7 @@ func TestDatabaseService_UpdateRaft_Success(t *testing.T) {
 	svc := newTestDatabaseService(t)
 
 	// Create a database first.
-	cfg := testDBConfig("raft-db")
+	cfg := testRaftDBConfig("raft-db")
 	if _, err := svc.Create(cfg); err != nil {
 		t.Fatalf("Create() returned unexpected error: %v", err)
 	}
@@ -363,7 +372,7 @@ func TestDatabaseService_UpdateRaft_InvalidClusterMode(t *testing.T) {
 	svc := newTestDatabaseService(t)
 
 	// Create a database first.
-	cfg := testDBConfig("raft-invalid-db")
+	cfg := testRaftDBConfig("raft-invalid-db")
 	if _, err := svc.Create(cfg); err != nil {
 		t.Fatalf("Create() returned unexpected error: %v", err)
 	}
