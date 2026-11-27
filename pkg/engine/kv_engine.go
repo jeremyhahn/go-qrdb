@@ -322,6 +322,12 @@ func (e *KVEngine) Lookup(_ context.Context, query interface{}) (interface{}, er
 		}
 		return results, nil
 
+	case service.VectorRebuildQuery:
+		if e.indexMgr == nil {
+			return nil, &InvalidQueryError{Reason: "vector index not configured"}
+		}
+		return nil, e.indexMgr.RebuildNamespace(e.stg, q.Namespace)
+
 	case service.VectorNamespaceQuery:
 		return lookupVectorNamespace(e.stg, q.Namespace)
 

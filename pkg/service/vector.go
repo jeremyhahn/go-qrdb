@@ -2434,6 +2434,23 @@ func (v *vectorService) performIndexRebuild(ctx context.Context, jobID, namespac
 		job.mu.Unlock()
 	}()
 
+	if v.applyHost != nil {
+		if err := v.rebuildHostIndex(ctx, namespace, info, indexConfig); err != nil {
+			job.mu.Lock()
+			job.Error = err
+			job.mu.Unlock()
+			return err
+		}
+		job.mu.Lock()
+		job.VectorsProcessed = info.VectorCount
+		job.mu.Unlock()
+		v.logger.WithFields(map[string]interface{}{
+			"namespace": namespace,
+			"job_id":    jobID,
+		}).Info("index rebuild completed successfully")
+		return nil
+	}
+
 	newIndex, err := v.newNamespaceIndex(info, indexConfig)
 	if err != nil {
 		job.mu.Lock()
@@ -2499,6 +2516,25 @@ func (v *vectorService) performIndexRebuild(ctx context.Context, jobID, namespac
 		"job_id":    jobID,
 	}).Info("index rebuild completed successfully")
 
+	return nil
+}
+
+// rebuildHostIndex rebuilds the index an apply host's searches read: the
+// engine's ANN index on v.applyShardID, not the service-local index, which
+// that mode never searches. Index parameters that differ from the stored
+// record are proposed as a reconfigure, after which every replica rebuilds
+// its own index under them; otherwise the rebuild is node-local on the
+// answering node.
+func (v *vectorService) rebuildHostIndex(ctx context.Context, namespace string, info *vector.NamespaceInfo, indexConfig map[string]string) error {
+	if update, changed := vector.MergeNamespaceUpdate(info, indexConfig, nil, time.Now().UnixNano()); changed {
+		if err := v.storage.UpdateNamespace(ctx, namespace, update); err != nil {
+			return vectorStorageError("reconfigure index", namespace, 0, err)
+		}
+		return nil
+	}
+	if _, err := v.applyHost.SyncRead(ctx, v.applyShardID, VectorRebuildQuery{Namespace: hostNamespace(namespace)}); err != nil {
+		return &VectorOperationError{Op: "rebuild index", Err: translateVectorSealed(err)}
+	}
 	return nil
 }
 

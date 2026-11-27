@@ -936,6 +936,12 @@ func (e *MVCCEngine) LookupAt(_ context.Context, r storage.Reader, rev int64, qu
 		}
 		return results, nil
 
+	case service.VectorRebuildQuery:
+		if e.indexMgr == nil {
+			return nil, &InvalidQueryError{Reason: "vector index not configured"}
+		}
+		return nil, e.indexMgr.RebuildNamespace(e.stg, q.Namespace)
+
 	case service.VectorNamespaceQuery:
 		return lookupVectorNamespace(r, q.Namespace)
 

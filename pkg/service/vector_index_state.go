@@ -53,6 +53,16 @@ type VectorSearchQuery struct {
 	K         int
 }
 
+// VectorRebuildQuery is an engine.Lookup request that rebuilds Namespace's
+// in-memory ANN index on the answering node from the vectors in its store,
+// under the namespace record's own parameters: the index VectorSearchQuery
+// reads. The index is node-local derived state, so the rebuild changes no
+// replicated data. It answers nil once the rebuilt index serves searches; a
+// namespace with no record has its index dropped.
+type VectorRebuildQuery struct {
+	Namespace string
+}
+
 // VectorSearchHit is one ranked result of a VectorSearchQuery.
 type VectorSearchHit struct {
 	ID       uint64
