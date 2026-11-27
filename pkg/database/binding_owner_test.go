@@ -170,6 +170,20 @@ func TestManager_OwnerFor_RaftPlacedHaveNoOwner(t *testing.T) {
 	assert.Equal(t, ownerNodeA, mgr.ownerFor(DatabaseConfig{Backend: BackendPebble}))
 }
 
+// A database the binding factory leaves to the replicated fallback store (the
+// system database on a raft-mode node) has no owner, so every replica serves
+// it; one the factory materializes locally is held by the creating node.
+func TestManager_OwnerFor_FallbackStoreHasNoOwner(t *testing.T) {
+	mgr := NewManager(nil, t.TempDir())
+	mgr.SetLocalNode(ownerNodeA)
+	defer func() { _ = mgr.Close() }()
+	f := &recordBindingFactory{bindings: map[string]*Binding{"local": {Kind: BindingLocal}}}
+	require.NoError(t, mgr.SetBackendFactory(f))
+
+	assert.Empty(t, mgr.ownerFor(DatabaseConfig{TenantID: "system", Name: "system", Backend: BackendPebble}))
+	assert.Equal(t, ownerNodeA, mgr.ownerFor(DatabaseConfig{TenantID: "acme", Name: "local", Backend: BackendPebble}))
+}
+
 func TestManager_OwnerRefusal_RecordWithoutOwnerOpensAnywhere(t *testing.T) {
 	mgr := NewManager(nil, t.TempDir())
 	mgr.SetLocalNode(ownerNodeB)

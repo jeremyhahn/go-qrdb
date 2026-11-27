@@ -56,6 +56,16 @@ func (m *Manager) ownerFor(cfg DatabaseConfig) string {
 	if cfg.Backend == BackendRaft || cfg.Raft != nil {
 		return ""
 	}
+	// A database the node's binding factory does not materialize in a store
+	// of its own (the system database, a tenant home, a database of a
+	// tenant the factory leaves to the fallback store) is served from the
+	// replicated fallback store, which every node holds: pinning it to the
+	// creating node would refuse it on every other replica.
+	if resolver, ok := m.factory.(RecordBindingResolver); ok {
+		if b, err := resolver.RecordBinding(cfg); err == nil && b == nil {
+			return ""
+		}
+	}
 	return m.LocalNode()
 }
 
