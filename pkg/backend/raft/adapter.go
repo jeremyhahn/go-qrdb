@@ -174,6 +174,13 @@ func NewWithInner(host *quicraft.Host, inner QuicraftHost) *HostAdapter {
 // applied, holding through a moment in which this node knows no leader for
 // shardID rather than refusing at once (see throughElection).
 func (a *HostAdapter) SyncPropose(ctx context.Context, shardID uint64, cmd []byte) (sm.Result, error) {
+	// Hold the host's proposal gate from submit until the result, so a seal
+	// waits for this proposal before it pauses the shard (DrainProposals).
+	release, err := admitProposal(a.Host)
+	if err != nil {
+		return sm.Result{}, err
+	}
+	defer release()
 	return throughElection(ctx, a.inner, shardID, a.leaderWait, func() (sm.Result, error) {
 		return a.inner.SyncPropose(ctx, shardID, cmd)
 	})
