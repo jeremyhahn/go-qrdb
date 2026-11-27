@@ -463,6 +463,57 @@ func TestSQLiteVFSRestore_CommitAfterPlanIsConflict(t *testing.T) {
 	}
 }
 
+// TestSQLiteVFSRestore_SQLiteWriteAfterEmptyPlanIsNotRestoredKeyByKey
+// commits a SQLite write between a plan with no SQLite change and the
+// restore: the restore delegates only the planned plain key, so the
+// database keeps that write whole and is never restored page by page.
+func TestSQLiteVFSRestore_SQLiteWriteAfterEmptyPlanIsNotRestoredKeyByKey(t *testing.T) {
+	for name, build := range lockScenes {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			reg := build(t).registry
+			mvccSvc, err := reg.MVCCService(lockTenantA, lockTestDB)
+			if err != nil {
+				t.Fatalf("MVCCService: %v", err)
+			}
+			txnSvc, err := reg.TransactionService(lockTenantA, lockTestDB)
+			if err != nil {
+				t.Fatalf("TransactionService: %v", err)
+			}
+			if err := mvccSvc.Put(ctx, "s/plain", []byte("old")); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			r := newRestoreStore(t, reg, lockTenantA).restoreCommit(t, 0x11)
+			if err := mvccSvc.Put(ctx, "s/plain", []byte("new")); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			hook := &planHookMVCC{MVCCKVServicer: mvccSvc}
+			hook.onPlan = func() {
+				newRestoreStore(t, reg, lockTenantA).restoreCommit(t, 0x22, 0x33)
+			}
+			w := sqlitevfs.NewGuardedMVCC(hook, mvccSvc.(sqlitevfs.ServiceKV), txnSvc.(sqlitevfs.ServiceTxn),
+				sqlitevfs.LockResolver(restoreLocks(t, reg, lockTenantA)))
+
+			res, err := w.RestoreToRevision(ctx, &service.RestoreRevisionRequest{Revision: r, Prefix: "s"})
+			if err != nil {
+				t.Fatalf("RestoreToRevision: %v", err)
+			}
+			for _, c := range append(append([]service.RestoreKeyChange(nil), res.Changes...), res.Conflicts...) {
+				if _, ok := sqlitevfs.DatabaseOfKey([]byte(c.Key)); ok {
+					t.Fatalf("restore touched database key %q, want only the planned plain key", c.Key)
+				}
+			}
+			if res.Applied != 1 || res.Conflicted != 0 {
+				t.Fatalf("restore result = %+v, want the plain key applied", res)
+			}
+			if got, err := mvccSvc.Get(ctx, "s/plain"); err != nil || string(got) != "old" {
+				t.Fatalf("s/plain after the restore = %q, %v, want old", got, err)
+			}
+			newRestoreStore(t, reg, lockTenantA).assertPages(t, 0x22, 0x33)
+		})
+	}
+}
+
 func TestSQLiteVFSRestore_MixedKeysRestoresBoth(t *testing.T) {
 	for name, build := range lockScenes {
 		t.Run(name, func(t *testing.T) {

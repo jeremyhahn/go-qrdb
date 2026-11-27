@@ -116,7 +116,16 @@ func (g *GuardedMVCC) Restore(ctx context.Context, req *service.RestoreRevisionR
 	}
 	dbs := restoredDatabases(plan.Changes)
 	if len(dbs) == 0 {
-		return g.MVCCKVServicer.RestoreToRevision(ctx, req)
+		// The plan holds no SQLite change, but a SQLite write may have
+		// landed since it was computed: delegate only the keys the plan
+		// inspected, so the inner restore never recomputes a plan that
+		// restores a database's pages key by key.
+		result := &service.RestoreRevisionResult{Revision: plan.Revision, Changes: plan.Changes, Skipped: plan.Skipped}
+		if err := g.restoreOtherKeys(ctx, req, plan.Changes, result); err != nil {
+			return nil, err
+		}
+		result.Conflicted = len(result.Conflicts)
+		return result, nil
 	}
 	changes, err := g.imageChanges(ctx, plan.Changes, dbs, req.Revision)
 	if err != nil {
@@ -127,24 +136,8 @@ func (g *GuardedMVCC) Restore(ctx context.Context, req *service.RestoreRevisionR
 		Changes:  changes,
 		Skipped:  plan.Skipped,
 	}
-	var otherKeys []string
-	for _, c := range plan.Changes {
-		if _, ok := DatabaseOfKey([]byte(c.Key)); !ok {
-			otherKeys = append(otherKeys, c.Key)
-		}
-	}
-	if len(otherKeys) > 0 {
-		keysReq := *req
-		keysReq.Prefix = ""
-		keysReq.Keys = otherKeys
-		other, err := g.MVCCKVServicer.RestoreToRevision(ctx, &keysReq)
-		if err != nil {
-			return nil, err
-		}
-		if other != nil {
-			result.Applied += other.Applied
-			result.Conflicts = append(result.Conflicts, other.Conflicts...)
-		}
+	if err := g.restoreOtherKeys(ctx, req, plan.Changes, result); err != nil {
+		return nil, err
 	}
 	backend, err := NewServiceBackend(commitKV, commitTxn)
 	if err != nil {
@@ -212,7 +205,41 @@ func (g *GuardedMVCC) restoreWithoutDatabases(ctx context.Context, req *service.
 	if dbs := restoredDatabases(plan.Changes); len(dbs) > 0 {
 		return nil, fmt.Errorf("sqlitevfs restore: database %q: %w", dbs[0], ErrRestoreUnsupported)
 	}
-	return g.MVCCKVServicer.RestoreToRevision(ctx, req)
+	result := &service.RestoreRevisionResult{Revision: plan.Revision, Changes: plan.Changes, Skipped: plan.Skipped}
+	if err := g.restoreOtherKeys(ctx, req, plan.Changes, result); err != nil {
+		return nil, err
+	}
+	result.Conflicted = len(result.Conflicts)
+	return result, nil
+}
+
+// restoreOtherKeys restores, through the wrapped service, exactly the keys
+// outside sqlite/ that the plan's changes name, and adds the outcome to
+// result. It never hands the inner restore a prefix: a prefix would be
+// planned afresh and could pick up SQLite keys written after the plan.
+func (g *GuardedMVCC) restoreOtherKeys(ctx context.Context, req *service.RestoreRevisionRequest, changes []service.RestoreKeyChange, result *service.RestoreRevisionResult) error {
+	var keys []string
+	for _, c := range changes {
+		if _, ok := DatabaseOfKey([]byte(c.Key)); !ok {
+			keys = append(keys, c.Key)
+		}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	keysReq := *req
+	keysReq.Prefix = ""
+	keysReq.Keys = keys
+	keysReq.DryRun = false
+	other, err := g.MVCCKVServicer.RestoreToRevision(ctx, &keysReq)
+	if err != nil {
+		return err
+	}
+	if other != nil {
+		result.Applied += other.Applied
+		result.Conflicts = append(result.Conflicts, other.Conflicts...)
+	}
+	return nil
 }
 
 // ErrRestoreUnsupported refuses a restore that touches a SQLite database on
