@@ -492,9 +492,11 @@ the same status.
 > `<dataDir>/objstore-lsm` and the read cache under
 > `<dataDir>/objstore-lsm-cache`, all encrypted under the seal barrier when seal
 > is on; a sealed barrier is refused with `ObjstoreBarrierSealedError`. Not
-> built: deleting the flat engine package (its code still exists), lifting the
-> per-database `backend: objstore` refusal (still refused, OS-7 open), and
-> OS-1/OS-3; no configuration key named below exists yet.
+> A database's `backend: objstore` opens the same way as its own binding, under
+> an encrypting barrier with its key, and is refused while the tenant's barrier
+> is sealed. Not built: deleting the flat engine package (its code still
+> exists), objstore as a Raft hot apply path (OS-7 open), and OS-1/OS-3; no
+> configuration key named below exists yet.
 
 ### Exported surface (target)
 

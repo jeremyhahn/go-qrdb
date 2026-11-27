@@ -11,10 +11,12 @@ an engine; none of them expose the engine itself.
 
 What is observable over the wire is a database's configured backend, through
 [../databases/api.md](../databases/api.md): `DatabaseInfo.Backend`
-(`pebble | memory | file | raft`) and `DatabaseInfo.DataDir`. A per-database
-`objstore` backend passes config validation but is refused when the database
-opens (`database.InvalidBackendError`); `objstore` serves only as the
-standalone node's `storage.backend`.
+(`pebble | memory | file | raft | objstore`) and `DatabaseInfo.DataDir`. A
+per-database `objstore` backend opens as a non-replicated binding: the Pebble
+engine with its SSTables in the bucket. Under an encrypting seal barrier it
+opens with the barrier's key (its WAL, MANIFEST and read cache through the
+encrypting file system, every bucket object sealed by the encrypting remote),
+and it is refused with the sealed error while the tenant's barrier is sealed.
 
 ### Optional `GuardedStorage`
 
@@ -172,11 +174,11 @@ The wire surface does not change shape:
 
 Shipped: the capability report's `unencryptedAtRest` list no longer names a
 standalone `objstore` store under the seal, because every remote object is
-encrypted through the barrier (OS-4). Two things a caller observes today
-would change:
+encrypted through the barrier (OS-4). Also shipped: a database's
+`backend: objstore` opens (phase 2 of the design), under an encrypting
+barrier with its key, and is refused while the tenant's barrier is sealed.
+One thing a caller observes today does not change:
 
-- **A database's `backend: objstore`** stops being refused when the database
-  opens (`database.InvalidBackendError`), in phase 2 of the design.
 - **`raft.sm_storage`/`state_storage: objstore`** stays refused (see
   [engineering.md](engineering.md)'s error table). Lifting the Raft
   hot-apply-path refusal is OS-7, deferred to a gated phase 3, and is called
