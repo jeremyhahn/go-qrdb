@@ -220,6 +220,8 @@ var goldenOperatorPermissions = []permission.Permission{
 	permission.WatchWatch, permission.WatchWatchPrefix,
 	permission.LeaseGrant, permission.LeaseRevoke,
 	permission.LeaseKeepAlive, permission.LeaseTTL, permission.LeaseList,
+	permission.LocksAcquire, permission.LocksRelease, permission.LocksExtend,
+	permission.LocksStatus, permission.LocksList,
 	permission.IndexCreate, permission.IndexDrop,
 	permission.IndexQuery, permission.IndexScan,
 	permission.TSWrite, permission.TSWriteBatch,

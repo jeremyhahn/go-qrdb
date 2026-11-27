@@ -18,7 +18,9 @@ package integration_test
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -109,10 +111,77 @@ func testSQLiteVFSOverProtocol(t *testing.T, node *multiProtoNode, proto multiPr
 	testSQLiteStagedCommit(t, node, proto, db+"-staged")
 	testSQLiteWriterContention(t, node, proto, db+"-contend")
 	testSQLiteRestore(t, node, proto, db+"-restore")
-	// Quota exhaustion is not driven here: the CLI acts as the system
-	// tenant, which no MaxStorageBytes quota limits, and a tenant identity
-	// on this node is refused the page transactions `qrdb sqlite exec`
-	// sends (PermissionDenied with transaction:execute and kv:* granted).
+	testSQLiteTenantQuota(t, node, proto, db+"-quota")
+}
+
+// sqliteTenantPermissions is what a tenant identity needs to drive `qrdb
+// sqlite`: the RPCs the CLI's page backend, writer lock and restore send
+// (Transaction, CurrentRevision, GetAtRevision, Range, GetRevision,
+// MovePrefix, RestoreToRevision and the lock RPCs), the KV operations its
+// page transactions carry, and admin:health to open a gRPC, QUIC or Unix
+// connection (see dataPlanePermissions).
+var sqliteTenantPermissions = []string{
+	"transaction:execute",
+	"mvcc:current_revision", "mvcc:get_at_revision", "mvcc:range", "mvcc:get_revision",
+	"mvcc:move_prefix", "mvcc:restore",
+	"locks:acquire", "locks:release", "locks:extend", "locks:status", "locks:list",
+	"kv:put", "kv:get", "kv:delete",
+	"admin:health",
+}
+
+// sqliteQuotaBytes caps the quota tenant's storage: room for a small table,
+// not for the 256 KiB blob the exhaustion step inserts.
+const sqliteQuotaBytes = 131072
+
+// testSQLiteTenantQuota drives quota exhaustion as a tenant: an entitled
+// tenant capped at sqliteQuotaBytes writes a small table, then a commit past
+// the quota exits with SQLITE_FULL (13), and the database keeps its rows and
+// passes integrity_check.
+func testSQLiteTenantQuota(t *testing.T, node *multiProtoNode, proto multiProtocol, db string) {
+	t.Helper()
+	tenantID := "sqlq-" + proto.name
+	createTenant(t, node, proto, tenantID, tenantID, "prefix", false)
+	for _, args := range [][]string{
+		{"tenant", "set-entitlement", tenantID, "--isolation-modes", "prefix", "--allow-sqlite-vfs"},
+		{"tenant", "update-quotas", tenantID, "--max-sqlite-databases", "1", "--max-storage-bytes", strconv.Itoa(sqliteQuotaBytes)},
+	} {
+		if out, err := runCLIProto(t, node, proto, args...); err != nil {
+			t.Fatalf("[%s] qrdb %s: %v\n%s", proto.name, strings.Join(args, " "), err, out)
+		}
+	}
+	cert, key := provisionTenantIdentity(t, node, tenantID, "sqlite-rw", sqliteTenantPermissions)
+	conn := tenantCLIArgsForProto(node, proto, cert, key)
+	run := func(args ...string) (string, error) { return runQRDB(t, node.cli, conn, args...) }
+
+	for _, stmt := range []string{
+		"CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, data BLOB)",
+		"INSERT INTO t (name) VALUES ('alice'), ('bob')",
+	} {
+		if out, err := run("sqlite", "exec", db, stmt); err != nil {
+			t.Fatalf("[%s] tenant sqlite exec %q: %v\n%s", proto.name, stmt, err, out)
+		}
+	}
+
+	out, err := run("sqlite", "exec", db, "INSERT INTO t (name, data) VALUES ('big', zeroblob(262144))")
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 13 {
+		t.Fatalf("[%s] commit past the tenant quota: err = %v (%s), want exit status 13 (SQLITE_FULL)", proto.name, err, out)
+	}
+
+	query := func(stmt string) []map[string]any {
+		t.Helper()
+		out, err := run("--output", "json", "sqlite", "query", db, stmt)
+		if err != nil {
+			t.Fatalf("[%s] tenant sqlite query %q: %v\n%s", proto.name, stmt, err, out)
+		}
+		return sqliteDecodeRows(t, proto, out)
+	}
+	if rows := query("SELECT name FROM t ORDER BY id"); len(rows) != 2 || rows[0]["name"] != "alice" || rows[1]["name"] != "bob" {
+		t.Fatalf("[%s] rows after SQLITE_FULL = %v, want alice,bob", proto.name, rows)
+	}
+	if rows := query("PRAGMA integrity_check"); len(rows) != 1 || rows[0]["integrity_check"] != "ok" {
+		t.Fatalf("[%s] integrity_check after SQLITE_FULL = %v, want ok", proto.name, rows)
+	}
 }
 
 // sqliteSeries is a SELECT of n rows, each a 4 KiB blob: every row puts
@@ -266,6 +335,13 @@ func sqliteQueryJSON(t *testing.T, node *multiProtoNode, proto multiProtocol, db
 	if err != nil {
 		t.Fatalf("[%s] sqlite query %q: %v\n%s", proto.name, query, err, out)
 	}
+	return sqliteDecodeRows(t, proto, out)
+}
+
+// sqliteDecodeRows decodes the JSON row array `qrdb --output json sqlite
+// query` prints, skipping any output before it.
+func sqliteDecodeRows(t *testing.T, proto multiProtocol, out string) []map[string]any {
+	t.Helper()
 	start := strings.Index(out, "[")
 	if start < 0 {
 		t.Fatalf("[%s] sqlite query output carries no JSON array: %s", proto.name, out)

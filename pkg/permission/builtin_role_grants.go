@@ -445,6 +445,11 @@ func registerOperatorGrants() {
 		// Lease
 		LeaseGrant, LeaseRevoke,
 		LeaseKeepAlive, LeaseTTL, LeaseList,
+		// Distributed locks. They are tenant-scoped like leases; without
+		// them no tenant role can be granted the lock verbs, so a tenant
+		// cannot take the sqlite-vfs writer lock `qrdb sqlite` holds for
+		// every page transaction.
+		LocksAcquire, LocksRelease, LocksExtend, LocksStatus, LocksList,
 		// Index
 		IndexCreate, IndexDrop,
 		IndexQuery, IndexScan,
