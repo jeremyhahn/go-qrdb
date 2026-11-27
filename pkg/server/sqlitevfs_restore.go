@@ -128,10 +128,12 @@ func (s *sqliteRestoreMVCC) MovePrefix(ctx context.Context, req *service.MovePre
 	bound := *req
 	bound.Compares = append(append(make([]service.Compare, 0, len(req.Compares)+len(pinned)), req.Compares...), pinned...)
 	rev, err := mover.MovePrefix(ctx, &bound)
-	if err == nil {
-		s.gate.record(ctx, live, append(moved, req.Ops...))
+	if err != nil {
+		return rev, err
 	}
-	return rev, err
+	// The move is committed; a usage record failure is returned with the
+	// committed revision, never dropped.
+	return rev, s.gate.record(ctx, live, append(moved, req.Ops...))
 }
 
 // movedMeta returns the meta-record writes the move itself makes: a delete

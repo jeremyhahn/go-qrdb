@@ -101,6 +101,12 @@ func (f *admitFakes) admission() *sqliteAdmission {
 // of fakes on them, built over the registry's ungated services.
 func gatedServices(t *testing.T, reg service.Registry, tenantID string, fakes *admitFakes) *DatabaseServices {
 	t.Helper()
+	return gatedServicesWith(t, reg, tenantID, fakes.admission())
+}
+
+// gatedServicesWith is gatedServices over the given admission.
+func gatedServicesWith(t *testing.T, reg service.Registry, tenantID string, adm *sqliteAdmission) *DatabaseServices {
+	t.Helper()
 	mvccSvc, err := reg.MVCCService(tenantID, lockTestDB)
 	if err != nil {
 		t.Fatalf("MVCCService(%s): %v", tenantID, err)
@@ -116,7 +122,7 @@ func gatedServices(t *testing.T, reg service.Registry, tenantID string, fakes *a
 		mvccSvc = rm.MVCCKVServicer
 	}
 	svcs := withSQLiteRestoreHook(&DatabaseServices{MVCC: mvccSvc, Transaction: txnSvc}, restoreLocks(t, reg, tenantID))
-	gated := withSQLiteAdmission(svcs, tenantID, fakes.admission())
+	gated := withSQLiteAdmission(svcs, tenantID, adm)
 	if _, ok := gated.Transaction.(*sqliteAdmitTxn); !ok {
 		t.Fatalf("withSQLiteAdmission left transaction servicer %T ungated", gated.Transaction)
 	}
@@ -437,6 +443,24 @@ func TestSQLiteAdmitMovePrefix_MovedMetaIsGated(t *testing.T) {
 				t.Fatalf("usage after the move out = %d, want 0", usage)
 			}
 		})
+	}
+}
+
+// TestSQLiteAdmitMovePrefix_UsageErrorIsReturned proves a committed move
+// whose usage record fails returns that error to the caller instead of
+// dropping it.
+func TestSQLiteAdmitMovePrefix_UsageErrorIsReturned(t *testing.T) {
+	fakes := &admitFakes{allowed: true, max: 1}
+	adm := &sqliteAdmission{ents: fakes, lim: fakes, usage: failingUsage{fakes}}
+	svcs := gatedServicesWith(t, lockScenes["prefix"](t).registry, lockTenantA, adm)
+	seed := []service.Op{{Type: service.OpPut, Key: []byte("seed/" + wiringDB + "/meta"), Value: []byte("staged")}}
+	if resp, err := svcs.Transaction.Execute(t.Context(), nil, seed, nil); err != nil || resp == nil || !resp.Succeeded {
+		t.Fatalf("seed: %+v, %v", resp, err)
+	}
+	mover := svcs.MVCC.(service.PrefixMover)
+	_, err := mover.MovePrefix(t.Context(), &service.MovePrefixRequest{Src: "seed/", Dst: "sqlite/", ExpectedKeys: 1})
+	if !errors.Is(err, errRecordUsage) {
+		t.Fatalf("move with a failing usage recorder = %v, want %v", err, errRecordUsage)
 	}
 }
 
