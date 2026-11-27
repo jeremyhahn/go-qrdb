@@ -253,6 +253,12 @@ func (t *Transport) Healthy(ctx context.Context) bool {
 // is primarily used for extensibility; callers should prefer the typed
 // KVClient and AdminClient methods.
 func (t *Transport) Request(ctx context.Context, method string, req, resp any) error {
+	// The request's PIN buffers are consumed by this call: wipe them on
+	// every return path (closed, transport and server errors and success),
+	// matching the typed methods and the other generic dispatchers.
+	if w, ok := req.(interface{ WipePINs() }); ok {
+		defer w.WipePINs()
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
