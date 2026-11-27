@@ -1011,7 +1011,7 @@ func releaseOwnerMarker(store objcommon.Storage, owner string) error {
 	if err != nil || !owned {
 		return err
 	}
-	if err := store.Delete(ownerMarkerName); err != nil && !notFound(err) {
+	if err := store.Delete(ownerMarkerName); err != nil && !missingIn(context.Background(), store, ownerMarkerName, err) {
 		return err
 	}
 	return nil
@@ -1424,15 +1424,18 @@ func (e *Engine) reclaimLocked() error {
 		if _, direct := decodeDirectName(name); !direct && !isHashedName(name) {
 			continue
 		}
-		if err := e.store.Delete(name); err != nil && !notFound(err) {
+		if err := e.store.Delete(name); err != nil && !missingIn(context.Background(), e.store, name, err) {
 			return err
 		}
 	}
-	if err := e.journal.Delete(journalName); err != nil && !notFound(err) {
+	// A provider-native not-found answer (GCS, Azure) is not
+	// common.ErrKeyNotFound: missingIn probes the object, so a settled
+	// engine with no journal reclaims cleanly instead of staying fenced.
+	if err := e.journal.Delete(journalName); err != nil && !missingIn(context.Background(), e.journal, journalName, err) {
 		return err
 	}
 	e.journalPending.Store(false)
-	if err := e.store.Delete(formatMarkerName); err != nil && !notFound(err) {
+	if err := e.store.Delete(formatMarkerName); err != nil && !missingIn(context.Background(), e.store, formatMarkerName, err) {
 		return err
 	}
 	return nil

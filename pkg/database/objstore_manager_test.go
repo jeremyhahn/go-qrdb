@@ -481,6 +481,9 @@ func (s releaseFaultStore) Delete(name string) error {
 		if err := s.Storage.Delete(name); err != nil {
 			return err
 		}
+		// The connection that lost the answer is down for the caller's
+		// existence probe too, so the release cannot tell it landed.
+		lostProbeFails.Store(true)
 		return errReleaseFault
 	}
 	return s.Storage.Delete(name)
@@ -508,8 +511,15 @@ func (s releaseFaultStore) Exists(ctx context.Context, name string) (bool, error
 	if name == "qrdb-objstore-journal" && journalReadFails.Load() {
 		return false, errReleaseFault
 	}
+	if name == "qrdb-objstore-owner" && lostProbeFails.CompareAndSwap(true, false) {
+		return false, errReleaseFault
+	}
 	return s.Storage.Exists(ctx, name)
 }
+
+// lostProbeFails fails the owner-marker existence probe that follows a
+// delete whose answer was lost (releaseLostArmed).
+var lostProbeFails atomic.Bool
 
 // TestManager_FailedCreateClaimUndoIsRetried: a create whose open claimed
 // the namespace, failed, and could not give the claim back records a release
