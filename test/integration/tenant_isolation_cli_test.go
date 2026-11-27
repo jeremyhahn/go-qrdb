@@ -151,7 +151,13 @@ func createTenantWithAdminCert(t *testing.T, node *multiProtoNode, proto multiPr
 		args = append(args, "--out", certDir)
 		certPath = filepath.Join(certDir, "admin-cert.pem")
 	}
-	out, err := runCLIProto(t, node, proto, args...)
+	// The create answers within the service's onboarding deadline
+	// (tenantCreateResponseBound), which a raft tenant's shard start and
+	// first commits can need in full under an fsync stall: the harness's
+	// 20 s request timeout would cancel it first. The later --timeout wins.
+	args = append(args, "--timeout", tenantCreateResponseBound.String())
+	full := append(append([]string{}, node.cliArgsFor(proto)...), args...)
+	out, err := runCLIWithin(t, tenantCreateResponseBound+cliWaitDelay, node.cli, full...)
 	if err != nil {
 		t.Fatalf("[%s] tenant create %s (isolation=%s): %v\noutput: %s", proto.name, id, isolationType, err, out)
 	}

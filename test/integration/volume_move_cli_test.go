@@ -614,7 +614,19 @@ func volumeMoveIsPermissionDenied(out string) bool {
 // tenantID.
 func volumeMoveTenantPool(t *testing.T, node *multiProtoNode, proto multiProtocol, tenantID string) string {
 	t.Helper()
-	out, err := runCLIProto(t, node, proto, "--output", "json", "tenant", "get", tenantID)
+	// A replica that restarted, or that applies the move's end, can hold its
+	// listener without answering the SDK's connect-time Health probe within
+	// the probe's own budget while its disk stalls; the gRPC and Unix SDKs
+	// report that as Unavailable "health check failed", the documented
+	// not-yet-serving result. Only that is retried, inside the readiness
+	// budget a restarted node gets (startAgain's waitForCLIProtoReady);
+	// every other error fails at once.
+	var out string
+	var err error
+	pollUntil(volumeMoveReadyWait, 500*time.Millisecond, func() bool {
+		out, err = runCLIProto(t, node, proto, "--output", "json", "tenant", "get", tenantID)
+		return err == nil || !volumeMoveNotYetServing(out)
+	})
 	if err != nil {
 		t.Fatalf("[%s] tenant get %s: %v\noutput: %s", proto.name, tenantID, err, out)
 	}
@@ -625,6 +637,17 @@ func volumeMoveTenantPool(t *testing.T, node *multiProtoNode, proto multiProtoco
 		t.Fatalf("[%s] decode tenant get JSON: %v\noutput: %s", proto.name, jerr, out)
 	}
 	return info.VolumePool
+}
+
+// volumeMoveReadyWait bounds the wait for a node to answer the connect-time
+// Health probe: the 60 s readiness budget startAgain gives every transport.
+const volumeMoveReadyWait = 60 * time.Second
+
+// volumeMoveNotYetServing reports whether a failed CLI call is the SDK's
+// connect-time Health probe going unanswered (Unavailable "health check
+// failed"), the only not-yet-serving result the three-node moves wait out.
+func volumeMoveNotYetServing(out string) bool {
+	return strings.Contains(strings.ToLower(out), "code = unavailable desc = health check failed")
 }
 
 // volumeMoveYAML is startVolumeMoveNode's qrdbd configuration: a passphrase
