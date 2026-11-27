@@ -42,8 +42,14 @@ const (
 	kvIDPrefix        = "id/"
 	kvGenPrefix       = "gen/"
 	kvIncPrefix       = "inc/"
-	kvIncLen          = 16
-	kvIDHexLen        = 16
+	// kvRetiredPrefix keys a deleted incarnation whose vectors are not all
+	// swept yet: DeleteNamespace writes it in the batch that retires the
+	// incarnation and removes it once the sweep is done, so a failed or
+	// interrupted sweep is finished by a retry, Compact or
+	// CleanupTombstones.
+	kvRetiredPrefix = "ret/"
+	kvIncLen        = 16
+	kvIDHexLen      = 16
 )
 
 // KVVectorStorage implements Storage over a kvstore.KVStore, so a store that
@@ -102,6 +108,26 @@ func kvIDKey(namespace string) string { return kvIDPrefix + namespace }
 func kvGenKey(namespace string) string { return kvGenPrefix + namespace }
 
 func kvIncKey(namespace string) string { return kvIncPrefix + namespace }
+
+// kvRetiredKey is the pending-sweep key of namespace's retired incarnation
+// inc. The incarnation is the fixed-length hex suffix, so the namespace,
+// which may itself hold "/", is everything between the prefix and it.
+func kvRetiredKey(namespace string, inc []byte) string {
+	return kvRetiredPrefix + namespace + "/" + hex.EncodeToString(inc)
+}
+
+// kvParseRetiredKey reverses kvRetiredKey.
+func kvParseRetiredKey(key string) (namespace string, inc []byte, ok bool) {
+	rest, found := strings.CutPrefix(key, kvRetiredPrefix)
+	if !found || len(rest) < 2*kvIncLen+1 || rest[len(rest)-2*kvIncLen-1] != '/' {
+		return "", nil, false
+	}
+	inc, err := hex.DecodeString(rest[len(rest)-2*kvIncLen:])
+	if err != nil {
+		return "", nil, false
+	}
+	return rest[:len(rest)-2*kvIncLen-1], inc, true
+}
 
 // kvVectorNSPrefix is the key prefix of one incarnation's vectors: a
 // recreated namespace gets a new incarnation, so a vector a replica wrote
@@ -589,7 +615,15 @@ func (s *KVVectorStorage) DeleteNamespace(ctx context.Context, namespace string)
 			return err
 		}
 		if cur == nil {
-			return ErrNamespaceNotFound
+			// A sweep an earlier delete left unfinished is finished here.
+			swept, err := s.drainRetired(ctx, kvRetiredPrefix+namespace+"/", namespace)
+			if err != nil {
+				return err
+			}
+			if swept == 0 {
+				return ErrNamespaceNotFound
+			}
+			return nil
 		}
 		// One batch retires the incarnation with its record, counter and
 		// generation: a replica write racing this delete is refused by its
@@ -603,6 +637,7 @@ func (s *KVVectorStorage) DeleteNamespace(ctx context.Context, namespace string)
 			{Key: kvIncKey(namespace), Delete: true},
 			{Key: kvIDKey(namespace), Delete: true},
 			{Key: kvGenKey(namespace), Delete: true},
+			{Key: kvRetiredKey(namespace, cur), Value: []byte(namespace)},
 		})
 		if err != nil {
 			return err
@@ -613,6 +648,13 @@ func (s *KVVectorStorage) DeleteNamespace(ctx context.Context, namespace string)
 		}
 	}
 	// The retired incarnation is unreachable now; sweep its vectors.
+	return s.sweepRetired(ctx, namespace, inc)
+}
+
+// sweepRetired deletes every vector of namespace's retired incarnation inc,
+// then its pending-sweep key: a sweep that fails part-way keeps the key, so
+// the next DeleteNamespace, Compact or CleanupTombstones finishes it.
+func (s *KVVectorStorage) sweepRetired(ctx context.Context, namespace string, inc []byte) error {
 	prefix := kvVectorNSPrefix(namespace, inc)
 	keys, err := s.kv.List(ctx, prefix)
 	if err != nil {
@@ -626,7 +668,28 @@ func (s *KVVectorStorage) DeleteNamespace(ctx context.Context, namespace string)
 			return err
 		}
 	}
-	return nil
+	return s.kv.Delete(ctx, kvRetiredKey(namespace, inc))
+}
+
+// drainRetired finishes every pending sweep under prefix, limited to
+// namespace when it is not empty, and returns how many it found.
+func (s *KVVectorStorage) drainRetired(ctx context.Context, prefix, namespace string) (int, error) {
+	keys, err := s.kv.List(ctx, prefix)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, key := range keys {
+		ns, inc, ok := kvParseRetiredKey(key)
+		if !ok || (namespace != "" && ns != namespace) {
+			continue
+		}
+		n++
+		if err := s.sweepRetired(ctx, ns, inc); err != nil {
+			return n, err
+		}
+	}
+	return n, nil
 }
 
 // ListNamespaces lists every registered namespace.
@@ -779,14 +842,25 @@ func (s *KVVectorStorage) BatchAllocateIDs(namespace string, count int) ([]uint6
 	return ids, nil
 }
 
-// Compact is a no-op: the KV store owns its own compaction.
+// Compact finishes every pending namespace-delete sweep; the KV store owns
+// its own compaction.
 func (s *KVVectorStorage) Compact(ctx context.Context, namespace string) error {
-	return s.checkOpen()
+	return s.drainAllRetired(ctx)
 }
 
-// CleanupTombstones is a no-op: deletion is immediate.
+// drainAllRetired finishes every pending namespace-delete sweep.
+func (s *KVVectorStorage) drainAllRetired(ctx context.Context) error {
+	if err := s.checkOpen(); err != nil {
+		return err
+	}
+	_, err := s.drainRetired(ctx, kvRetiredPrefix, "")
+	return err
+}
+
+// CleanupTombstones finishes every pending namespace-delete sweep; vector
+// deletion is otherwise immediate.
 func (s *KVVectorStorage) CleanupTombstones(ctx context.Context, olderThan time.Duration) error {
-	return s.checkOpen()
+	return s.drainAllRetired(ctx)
 }
 
 // Close marks the store closed; the KV store is not owned and stays open.
