@@ -352,6 +352,30 @@ func TestProvisionDatabases_SkipsADatabaseHeldByAnotherNode(t *testing.T) {
 	require.NoError(t, provisionDatabases(context.Background(), f, failingProvisioner{err: held}, electedLeader{}))
 }
 
+// A --sql-database this node has never seen, whose provision another node
+// already holds, is skipped the same way: boot neither fails nor creates it.
+func TestProvisionDatabases_SkipsASQLDatabaseHeldByAnotherNode(t *testing.T) {
+	held := &placement.NotAReplicaError{TenantID: "system", Database: "shop", NodeID: "node-b"}
+	f := &startFlags{sqlDatabase: "shop", enablePgSQL: true, smType: "memory"}
+	dbs := heldOnProvision{held: held}
+	require.NoError(t, provisionDatabases(context.Background(), f, dbs, electedLeader{}))
+}
+
+// heldOnProvision has no database of any name, and refuses each provision
+// as a database another node holds.
+type heldOnProvision struct {
+	failingProvisioner
+	held error
+}
+
+func (p heldOnProvision) GetOwned(name, _ string) (*database.Database, error) {
+	return nil, &database.NotFoundError{Name: name}
+}
+
+func (p heldOnProvision) Provision(context.Context, database.DatabaseConfig) (*database.Database, error) {
+	return nil, p.held
+}
+
 // failingProvisioner fails every lookup, standing in for a catalog read
 // error no real manager produces on demand.
 type failingProvisioner struct{ err error }
