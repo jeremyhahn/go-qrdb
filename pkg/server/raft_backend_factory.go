@@ -1910,6 +1910,14 @@ func (f *RaftBackendFactory) purgeShard(key raftShardKey, rs *raftShard) error {
 	if err := f.stopShard(rs); err != nil {
 		return err
 	}
+	// The replica's log entries, raft state and bootstrap record live in
+	// the host's LogDB, not under rs.dataDir: remove them, which also retires
+	// the replica ID (a re-added node rejoins under a new one, as Raft
+	// requires). A dedicated WAL is unregistered by stopShard and lives under
+	// rs.dataDir, so the RemoveAll below takes it.
+	if err := f.host.RemoveData(rs.shardID, rs.replicaID); err != nil {
+		return &RaftBackendError{TenantID: tenantID, Database: db, Op: "purge-log", Err: err}
+	}
 	// Delete only inside this node's own volume pool or its node group root:
 	// a shard directory is resolved locally, so anything else is a path this
 	// node does not own, and is refused however the shard came to name it.
