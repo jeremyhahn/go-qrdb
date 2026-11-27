@@ -2260,25 +2260,22 @@ func runStart(f *startFlags) (err error) {
 				}
 			}
 
-			// Provision the configured databases now that BuildServices has
-			// attached the keyspace reclaimer (see provisionDatabases). It is
-			// idempotent, so the in-process migration recycle that re-runs
-			// this body finds every database already present.
-			if err := provisionDatabases(bootCtx, f, dbManager, rnode); err != nil {
+			// Wait for the system shard's leader, which the feature gate's
+			// activation read and every provisioning write need.
+			if err := server.AwaitShardLeader(bootCtx, rnode, leaderWaitBudget(f), shard.ShardKV); err != nil {
 				_ = shutdownNode(nodeCloser)
-				// A shutdown signal during the leader wait is a clean
-				// shutdown, as it is during the auth bootstrap below.
 				if sigCtx.Err() != nil {
-					slog.Info("database provisioning canceled by shutdown signal")
+					slog.Info("leader wait canceled by shutdown signal")
 					return nil
 				}
-				return err
+				return &DatabaseProvisionError{Step: "wait for leader", Err: err}
 			}
 
 			// Refuse to run under a cluster that has activated a feature this
 			// binary lacks, then advertise this binary's features and start
-			// the gate. Provisioning above has already waited for the system
-			// shard's leader, which the activation read needs.
+			// the gate. It starts before provisioning: a provisioned raft
+			// database claims its own group's shard ID, and the claim waits
+			// for cluster-shard-ids, which only the started gate activates.
 			//
 			// gateCloser withdraws the advertisement. Every shutdown path closes
 			// it explicitly while the host is still up (see withdrawFeatures):
@@ -2297,6 +2294,23 @@ func runStart(f *startFlags) (err error) {
 					return err
 				}
 				defer func() { _ = gateCloser.Close() }()
+			}
+
+			// Provision the configured databases now that BuildServices has
+			// attached the keyspace reclaimer and the gate has started (see
+			// provisionDatabases). It is idempotent, so the in-process
+			// migration recycle that re-runs this body finds every database
+			// already present.
+			if err := provisionDatabases(bootCtx, f, dbManager, rnode); err != nil {
+				_ = gateCloser.Close()
+				_ = shutdownNode(nodeCloser)
+				// A shutdown signal during the leader wait is a clean
+				// shutdown, as it is during the auth bootstrap below.
+				if sigCtx.Err() != nil {
+					slog.Info("database provisioning canceled by shutdown signal")
+					return nil
+				}
+				return err
 			}
 
 			// Unpack the services that the rest of this function references by name.

@@ -19,8 +19,11 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -77,13 +80,15 @@ func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisio
 	// retry races it.
 	for _, cfg := range configuredDatabases(f) {
 		held := false
-		if err := server.WhileSystemShardSettling(ctx, node, "provision database "+cfg.Name, func(context.Context) error {
-			_, err := dbs.Provision(ctx, cfg)
-			if heldElsewhere(err) {
-				held = true
-				return nil
-			}
-			return err
+		if err := whileShardIDsActivate(ctx, leaderWaitBudget(f), shardIDsActivationPoll, func() error {
+			return server.WhileSystemShardSettling(ctx, node, "provision database "+cfg.Name, func(context.Context) error {
+				_, err := dbs.Provision(ctx, cfg)
+				if heldElsewhere(err) {
+					held = true
+					return nil
+				}
+				return err
+			})
 		}); err != nil {
 			return err
 		}
@@ -140,6 +145,37 @@ func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisio
 		return nil
 	default:
 		return err
+	}
+}
+
+// shardIDsActivationPoll is how often whileShardIDsActivate retries.
+const shardIDsActivationPoll = 250 * time.Millisecond
+
+// whileShardIDsActivate runs provision until it returns anything but the
+// cluster-shard-ids NotActiveError. A provisioned raft database claims its
+// group's shard ID, and the claim is refused until the feature gate (started
+// before provisioning) has activated cluster-shard-ids, which on a fresh
+// cluster waits for every member's advertisement. The wait is bounded by
+// budget: past it boot fails with a *DatabaseProvisionError naming the step,
+// never waits forever.
+func whileShardIDsActivate(ctx context.Context, budget, poll time.Duration, provision func() error) error {
+	deadline := time.Now().Add(budget)
+	ticker := time.NewTicker(poll)
+	defer ticker.Stop()
+	for {
+		err := provision()
+		var notActive *feature.NotActiveError
+		if !errors.As(err, &notActive) || notActive.Feature != featuregate.ClusterShardIDs {
+			return err
+		}
+		if !time.Now().Before(deadline) {
+			return &DatabaseProvisionError{Step: "wait for cluster-shard-ids to activate", Err: err}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
 	}
 }
 

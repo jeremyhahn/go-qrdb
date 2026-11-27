@@ -270,10 +270,13 @@ func TestManagerCreateStateStorageOnlyRaftBlock(t *testing.T) {
 // group: boot neither synthesizes a block nor allocates a shard.
 func TestManagerProvisionConfiguredRaftBackendOnFreshNode(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	// No SetShardIDClaimer: the feature gate has not started.
+	// qrdbd starts the feature gate before it provisions, so the claimer
+	// issues the provisioned database its own group's shard.
 	m := newCatalogManager(logger, t.TempDir(),
 		WithDefaults(Defaults{RunMode: RunModeRaft, RaftClusterMode: RaftDistributed}))
+	m.SetShardIDClaimer(testShardClaimer(t))
 	t.Cleanup(func() { _ = m.Close() })
+	seen := map[uint64]string{}
 
 	for _, cfg := range []DatabaseConfig{
 		{Name: "configured", Backend: BackendRaft},
@@ -284,9 +287,16 @@ func TestManagerProvisionConfiguredRaftBackendOnFreshNode(t *testing.T) {
 			t.Fatalf("Provision(%s) on a fresh node = %v", cfg.Name, err)
 		}
 		got := db.Config()
-		if got.Backend != BackendRaft || got.Raft != nil {
-			t.Fatalf("Provision(%s) recorded backend %q raft %+v, want raft on the shared group", cfg.Name, got.Backend, got.Raft)
+		if got.Backend != BackendRaft || got.Raft == nil || got.Raft.ShardID == 0 {
+			t.Fatalf("Provision(%s) recorded backend %q raft %+v, want raft on its own group", cfg.Name, got.Backend, got.Raft)
 		}
+		if got.Raft.ClusterMode != RaftDistributed || got.Raft.StateStorage != DefaultRaftStateStorage {
+			t.Fatalf("Provision(%s) raft block %+v, want the node's defaults", cfg.Name, got.Raft)
+		}
+		if other, dup := seen[got.Raft.ShardID]; dup {
+			t.Fatalf("Provision(%s) shard %d already issued to %s", cfg.Name, got.Raft.ShardID, other)
+		}
+		seen[got.Raft.ShardID] = cfg.Name
 	}
 }
 

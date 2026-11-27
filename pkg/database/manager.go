@@ -380,8 +380,9 @@ func (m *Manager) Provision(ctx context.Context, cfg DatabaseConfig) (*Database,
 func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Credentials, shared bool) (*Database, error) {
 	// The node's defaults are filled in once, here, and recorded with the
 	// rest of the config; opening the database never consults them again.
-	// Boot provisioning (shared) never synthesizes a raft block: see fillFor.
-	m.defaults.fillFor(&cfg, !shared)
+	// A raft database always records a raft block (see fill), boot
+	// provisioning included, so it runs its own group.
+	m.defaults.fill(&cfg)
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}

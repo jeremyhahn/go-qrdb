@@ -19,14 +19,17 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -489,6 +492,54 @@ func TestProvisionDatabases_NonLeaderErrorsDoNotRetry(t *testing.T) {
 	boom := errors.New("disk full")
 	err := provisionDatabases(context.Background(), provisionFlags(""), failingProvisioner{err: boom}, electedLeader{})
 	assert.ErrorIs(t, err, boom)
+}
+
+// A raft database's shard-ID claim is refused until cluster-shard-ids
+// activates, which happens in the background after the feature gate starts.
+// Boot retries that refusal, and only that one, within a bounded budget, and
+// past it fails with a clear step rather than hanging.
+func TestWhileShardIDsActivate(t *testing.T) {
+	notActive := &feature.NotActiveError{Feature: featuregate.ClusterShardIDs}
+
+	t.Run("retries until active", func(t *testing.T) {
+		calls := 0
+		err := whileShardIDsActivate(context.Background(), time.Minute, time.Millisecond, func() error {
+			calls++
+			if calls < 3 {
+				return notActive
+			}
+			return nil
+		})
+		require.NoError(t, err)
+		assert.Equal(t, 3, calls)
+	})
+
+	t.Run("other errors return at once", func(t *testing.T) {
+		boom := errors.New("disk full")
+		calls := 0
+		err := whileShardIDsActivate(context.Background(), time.Minute, time.Millisecond, func() error {
+			calls++
+			return boom
+		})
+		assert.ErrorIs(t, err, boom)
+		assert.Equal(t, 1, calls)
+	})
+
+	t.Run("bounded by the budget", func(t *testing.T) {
+		err := whileShardIDsActivate(context.Background(), 0, time.Millisecond, func() error { return notActive })
+		var provErr *DatabaseProvisionError
+		require.ErrorAs(t, err, &provErr)
+		assert.Equal(t, "wait for cluster-shard-ids to activate", provErr.Step)
+		var got *feature.NotActiveError
+		assert.ErrorAs(t, err, &got)
+	})
+
+	t.Run("cancelled context stops the wait", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		err := whileShardIDsActivate(ctx, time.Minute, time.Hour, func() error { return notActive })
+		assert.ErrorIs(t, err, context.Canceled)
+	})
 }
 
 // An invalid configured database is rejected up front, with the typed
