@@ -1499,10 +1499,13 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		var probeOpts []service.NodeKeyLogProbeOption
 		if n.KV != nil {
 			var readerOpts []service.KVSharedNamespaceReaderOption
-			if n.Vector != nil {
+			if vectorStorage != nil {
 				// Vectors are not KV keys: a tenant holding only embeddings in a
-				// shared database is still on the node-keyed log.
-				readerOpts = append(readerOpts, service.WithSharedVectorNamespaces(n.Vector))
+				// shared database is still on the node-keyed log. The probe reads
+				// the node-local vector store itself, never the service's tenant
+				// router: an isolated tenant's vectors live in its tenant-keyed
+				// home, not on the node-keyed log.
+				readerOpts = append(readerOpts, service.WithSharedVectorNamespaces(vectorStorage))
 			}
 			probeOpts = append(probeOpts, service.WithSharedNamespaces(service.NewKVSharedNamespaceReader(n.KV, readerOpts...), SystemDatabase))
 			if infra.SharedDatabaseNames != nil {

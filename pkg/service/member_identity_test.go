@@ -29,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -361,23 +362,23 @@ func TestNodeKeyLogDatabases_IgnoresEmptyDefaultNamespace(t *testing.T) {
 	}
 }
 
-// sharedVectorNamespaces is a fake of the system shard's vector service: it
-// answers ListNamespaces with fixed names, ignoring the request's prefix so
-// the reader's own filter is what is tested.
+// sharedVectorNamespaces is a fake of the node-local vector store: it
+// answers ListNamespaces with fixed names, so the reader's own filter is
+// what is tested.
 type sharedVectorNamespaces struct {
 	names []string
 	err   error
 }
 
-func (v sharedVectorNamespaces) ListNamespaces(context.Context, *ListNamespacesRequest) (*ListNamespacesResponse, error) {
+func (v sharedVectorNamespaces) ListNamespaces(context.Context) ([]vector.NamespaceInfo, error) {
 	if v.err != nil {
 		return nil, v.err
 	}
-	resp := &ListNamespacesResponse{}
+	var infos []vector.NamespaceInfo
 	for _, n := range v.names {
-		resp.Namespaces = append(resp.Namespaces, &NamespaceInfo{Namespace: n})
+		infos = append(infos, vector.NamespaceInfo{Name: n})
 	}
-	return resp, nil
+	return infos, nil
 }
 
 // TestNodeKeyLogProbe_VectorOnlyTenantRefusesStrict: a barrier tenant whose
@@ -417,6 +418,10 @@ func TestNodeKeyLogProbe_VectorOnlyTenantRefusesStrict(t *testing.T) {
 	}
 }
 
+// TestNodeKeyLogProbe_HomeBackedVectorsAreNotNodeKeyed: the probe reads the
+// node-local vector store, so an isolated tenant whose vectors live in its
+// tenant-keyed home is not reported (its tightening may proceed), while a
+// tenant whose vectors are node-local still is.
 // TestCreateForTenant_BarrierPebbleBlocksTightening: a barrier tenant's
 // pebble database is served from the shared system shard, so once created
 // the probe a tightening consults lists it.

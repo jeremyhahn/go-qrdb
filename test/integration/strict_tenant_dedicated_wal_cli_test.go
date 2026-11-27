@@ -120,13 +120,13 @@ var vectorOnlyPermissions = []string{
 	"admin:health",
 }
 
-// TestStrictTenant_VectorOnlyTenantTighteningRefused_PerProtocol proves,
-// over every transport, that a barrier tenant whose only data in the shared
-// default store is a vector namespace cannot be tightened to strict: the
-// node-key log probe counts the tenant's vector namespaces as well as its
-// keys, so the shared store's node-keyed WAL is seen to hold the tenant's
-// data and the tightening is refused, leaving the tenant's policy as it was.
-func TestStrictTenant_VectorOnlyTenantTighteningRefused_PerProtocol(t *testing.T) {
+// TestStrictTenant_VectorOnlyHomeTenantTighteningSucceeds_PerProtocol proves,
+// over every transport, that a barrier tenant whose only data is a vector
+// namespace can be tightened to strict: a barrier tenant's vectors live in
+// its tenant-keyed home, not on the node-keyed WAL, and the node-key log
+// probe reads only the node-local vector store, so it reports nothing and
+// the tenant's policy becomes strict.
+func TestStrictTenant_VectorOnlyHomeTenantTighteningSucceeds_PerProtocol(t *testing.T) {
 	t.Parallel()
 	node := startTenantEntitlementNode(t)
 	for _, proto := range multiProtocols {
@@ -149,24 +149,18 @@ func testStrictTenantVectorOnlyTighteningOverProtocol(t *testing.T, node *multiP
 	ns := "embeddings-" + suffix
 	if out, err := runQRDB(t, node.cli, conn, "vector", "namespace", "create",
 		"--namespace", ns, "--dimension", "2", "--distance-metric", "cosine"); err != nil {
-		t.Fatalf("[%s] vector namespace create in the shared default store: %v\noutput: %s", proto.name, err, out)
+		t.Fatalf("[%s] vector namespace create in the tenant's home: %v\noutput: %s", proto.name, err, out)
 	}
 
-	out, err := runQRDB(t, node.cli, sys, "tenant", "update", tenantID, "--isolation-policy", "strict")
-	if err == nil {
-		t.Fatalf("[%s] tightening a tenant with a vector namespace on the node-keyed WAL to strict succeeded\noutput: %s", proto.name, out)
-	}
-	for _, want := range []string{tenantID, "node-keyed WAL"} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("[%s] tightening refusal output lacks %q:\n%s", proto.name, want, out)
-		}
+	if out, err := runQRDB(t, node.cli, sys, "tenant", "update", tenantID, "--isolation-policy", "strict"); err != nil {
+		t.Fatalf("[%s] tightening a tenant whose vectors are in its home to strict: %v\noutput: %s", proto.name, err, out)
 	}
 	got, err := runQRDB(t, node.cli, sys, "tenant", "get", tenantID)
 	if err != nil {
-		t.Fatalf("[%s] tenant get after the refusal: %v\noutput: %s", proto.name, err, got)
+		t.Fatalf("[%s] tenant get after the tightening: %v\noutput: %s", proto.name, err, got)
 	}
-	if strings.Contains(got, "Isolation policy: strict") {
-		t.Fatalf("[%s] tenant policy is strict after a refused tightening\noutput: %s", proto.name, got)
+	if !strings.Contains(got, "Isolation policy: strict") {
+		t.Fatalf("[%s] tenant policy is not strict after the tightening\noutput: %s", proto.name, got)
 	}
 }
 

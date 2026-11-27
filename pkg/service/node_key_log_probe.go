@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -145,12 +146,15 @@ type SharedNamespaceKV interface {
 	ListAll(ctx context.Context, prefix string) ([]string, error)
 }
 
-// SharedVectorNamespaces is the part of the system shard's vector service a
+// SharedVectorNamespaces is the part of the node-local vector store a
 // KVSharedNamespaceReader needs: the vector namespaces it holds. Vectors are
 // not KV keys, so a tenant holding only embeddings in a shared database has
-// no key under the database's KV prefixes.
+// no key under the database's KV prefixes. It is the node-local
+// vector.Storage itself, never the vector service: the service routes an
+// isolated tenant to its tenant-keyed home, whose vectors are not on the
+// node-keyed log.
 type SharedVectorNamespaces interface {
-	ListNamespaces(ctx context.Context, req *ListNamespacesRequest) (*ListNamespacesResponse, error)
+	ListNamespaces(ctx context.Context) ([]vector.NamespaceInfo, error)
 }
 
 // KVSharedNamespaceReader is a SharedNamespaceReader over the system shard's
@@ -207,15 +211,15 @@ func (r *KVSharedNamespaceReader) hasVectors(ctx context.Context, tenantID, db s
 	if ns == "" {
 		return false, nil
 	}
-	resp, err := r.vector.ListNamespaces(ctx, &ListNamespacesRequest{Prefix: ns})
+	infos, err := r.vector.ListNamespaces(ctx)
 	if err != nil {
 		return false, err
 	}
-	if resp == nil {
-		return false, nil
-	}
-	for _, info := range resp.Namespaces {
-		if info != nil && strings.HasPrefix(info.Namespace, ns) {
+	for _, info := range infos {
+		// The store holds tenant-scoped names; the composite namespace
+		// names the tenant itself, so the scope owner is not consulted.
+		_, logical := unscopedNamespace(info.Name)
+		if strings.HasPrefix(logical, ns) {
 			return true, nil
 		}
 	}
