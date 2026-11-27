@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
@@ -1179,5 +1180,36 @@ func TestLeaseService_translateReadError_LeaseNotFound(t *testing.T) {
 	var re *ReadError
 	if errors.As(err, &re) {
 		t.Fatalf("expected a bare *LeaseNotFoundError, not one wrapped in *ReadError: %v", err)
+	}
+}
+
+func TestLeaseExpiryOptions_DefaultsYieldCheckpointAndGrace(t *testing.T) {
+	opts, err := LeaseExpiryOptions(&mockHost{}, 1, config.LeaseConfig{})
+	if err != nil {
+		t.Fatalf("LeaseExpiryOptions: %v", err)
+	}
+	if len(opts) != 2 {
+		t.Fatalf("options = %d, want 2 (checkpoint and failover grace)", len(opts))
+	}
+}
+
+func TestLeaseExpiryOptions_ExplicitValues(t *testing.T) {
+	cfg := config.LeaseConfig{CheckpointInterval: "250ms", FailoverGrace: "2s"}
+	if _, err := LeaseExpiryOptions(&mockHost{}, 1, cfg); err != nil {
+		t.Fatalf("LeaseExpiryOptions: %v", err)
+	}
+}
+
+func TestLeaseExpiryOptions_RejectsUnparsableInterval(t *testing.T) {
+	cfg := config.LeaseConfig{CheckpointInterval: "soon"}
+	if _, err := LeaseExpiryOptions(&mockHost{}, 1, cfg); err == nil {
+		t.Fatal("expected an error for an unparsable checkpoint interval")
+	}
+}
+
+func TestLeaseExpiryOptions_RejectsUnparsableGrace(t *testing.T) {
+	cfg := config.LeaseConfig{FailoverGrace: "later"}
+	if _, err := LeaseExpiryOptions(&mockHost{}, 1, cfg); err == nil {
+		t.Fatal("expected an error for an unparsable failover grace")
 	}
 }

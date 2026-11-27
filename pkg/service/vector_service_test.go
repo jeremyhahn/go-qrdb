@@ -20,16 +20,19 @@ package service
 import (
 	"context"
 	"errors"
+	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // testScopedNS returns the physical (scoped) storage key for a logical
@@ -2438,4 +2441,317 @@ func TestVectorService_CompactNamespace_MultipleOperations(t *testing.T) {
 	resp, err := svc.GetCompactionProgress(ctx, req)
 	require.NoError(t, err)
 	assert.Equal(t, operationIDs[2], resp.OperationID)
+}
+
+// These tests create namespaces and store vectors, which needs the vector
+// engine; without the qrdb_vector tag the engine stubs refuse with "vector
+// support not compiled". The home fakes they use live in vector_home_test.go,
+// which builds in every tag set.
+
+func exerciseVectorNamespace(t *testing.T, ctx context.Context, svc VectorService) {
+	t.Helper()
+	_, err := svc.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: "docs", Dimension: 2, DistanceMetric: "cosine"})
+	require.NoError(t, err)
+	_, err = svc.UpsertVector(ctx, &UpsertVectorRequest{Namespace: "docs", ID: 1, Vector: []float32{1, 0}})
+	require.NoError(t, err)
+	_, err = svc.UpsertVector(ctx, &UpsertVectorRequest{Namespace: "docs", ID: 2, Vector: []float32{0, 1}})
+	require.NoError(t, err)
+
+	got, err := svc.GetVector(ctx, &GetVectorRequest{Namespace: "docs", ID: 1})
+	require.NoError(t, err)
+	require.True(t, got.Found)
+
+	res, err := svc.SearchSimilar(ctx, &SearchSimilarRequest{Namespace: "docs", QueryVector: []float32{1, 0}, K: 1})
+	require.NoError(t, err)
+	require.Len(t, res.Results, 1)
+	require.Equal(t, uint64(1), res.Results[0].ID)
+
+	list, err := svc.ListNamespaces(ctx, &ListNamespacesRequest{})
+	require.NoError(t, err)
+	require.Len(t, list.Namespaces, 1)
+	require.Equal(t, "docs", list.Namespaces[0].Namespace)
+}
+
+func TestVectorService_IsolatedTenantVectorsLiveInHomeStore(t *testing.T) {
+	homes := newFakeVectorHomes()
+	svc, nodeWide := newHomedVectorService(t, homes)
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+
+	exerciseVectorNamespace(t, ctx, svc)
+
+	home := homes.home("acme")
+	require.NotNil(t, home, "acme's home store was resolved")
+	keys := vectorHomeKeys(t, home)
+	require.NotEmpty(t, keys)
+	for _, k := range keys {
+		require.True(t, strings.HasPrefix(k, tenantVectorHomePrefix), "key %q outside the vector keyspace", k)
+	}
+	nodeNS, err := nodeWide.ListNamespaces(context.Background())
+	require.NoError(t, err)
+	require.Empty(t, nodeNS, "the node-wide store holds no namespace of an isolated tenant")
+
+	_, err = svc.DeleteVector(ctx, &DeleteVectorRequest{Namespace: "docs", ID: 2})
+	require.NoError(t, err)
+	_, err = svc.DeleteNamespace(ctx, &DeleteNamespaceRequest{Namespace: "docs"})
+	require.NoError(t, err)
+	require.Empty(t, vectorHomeKeys(t, home), "deleting the namespace leaves no vector key in the home store")
+}
+
+// TestVectorService_CachedSearchRunsTheHomeCheck: once a namespace's index is
+// cached, a search for a tenant its home refuses is refused, as the first
+// search would be.
+func TestVectorService_CachedSearchRunsTheHomeCheck(t *testing.T) {
+	homes := newFakeVectorHomes()
+	svc, _ := newHomedVectorService(t, homes)
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+
+	exerciseVectorNamespace(t, ctx, svc)
+
+	homes.mu.Lock()
+	homes.resolveErr = errors.New("home unavailable")
+	homes.mu.Unlock()
+	search := &SearchSimilarRequest{Namespace: "docs", QueryVector: []float32{1, 0}, K: 1}
+	_, err := svc.SearchSimilar(ctx, search)
+	var homeErr *TenantVectorHomeError
+	require.ErrorAs(t, err, &homeErr, "a cached search for a refused tenant")
+	_, err = svc.SearchByID(ctx, &SearchByIDRequest{Namespace: "docs", ID: 1, K: 1})
+	require.ErrorAs(t, err, &homeErr, "a cached search by ID for a refused tenant")
+}
+
+// TestVectorHome_ReplicaSearchSeesWritesFromAnotherNode: two nodes serve one
+// replicated home; a search on one node, after it cached the namespace's
+// index, sees the vectors the other node wrote and not those it deleted.
+func TestVectorHome_ReplicaSearchSeesWritesFromAnotherNode(t *testing.T) {
+	homes := newFakeVectorHomes()
+	nodeA, _ := newHomedVectorService(t, homes)
+	nodeB, _ := newHomedVectorService(t, homes)
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+
+	_, err := nodeA.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: "docs", Dimension: 2, DistanceMetric: "cosine"})
+	require.NoError(t, err)
+	_, err = nodeA.UpsertVector(ctx, &UpsertVectorRequest{Namespace: "docs", ID: 1, Vector: []float32{0, 1}})
+	require.NoError(t, err)
+
+	search := &SearchSimilarRequest{Namespace: "docs", QueryVector: []float32{1, 0}, K: 1}
+	res, err := nodeB.SearchSimilar(ctx, search)
+	require.NoError(t, err)
+	require.Len(t, res.Results, 1)
+	require.Equal(t, uint64(1), res.Results[0].ID)
+
+	_, err = nodeA.UpsertVector(ctx, &UpsertVectorRequest{Namespace: "docs", ID: 2, Vector: []float32{1, 0}})
+	require.NoError(t, err)
+	res, err = nodeB.SearchSimilar(ctx, search)
+	require.NoError(t, err)
+	require.Len(t, res.Results, 1)
+	require.Equal(t, uint64(2), res.Results[0].ID, "node B sees the vector node A wrote")
+
+	_, err = nodeA.DeleteVector(ctx, &DeleteVectorRequest{Namespace: "docs", ID: 2})
+	require.NoError(t, err)
+	res, err = nodeB.SearchSimilar(ctx, search)
+	require.NoError(t, err)
+	require.Len(t, res.Results, 1)
+	require.Equal(t, uint64(1), res.Results[0].ID, "node B no longer finds the vector node A deleted")
+
+	_, err = nodeB.UpsertVector(ctx, &UpsertVectorRequest{Namespace: "docs", ID: 3, Vector: []float32{1, 0.1}})
+	require.NoError(t, err)
+	res, err = nodeB.SearchSimilar(ctx, search)
+	require.NoError(t, err)
+	require.Len(t, res.Results, 1)
+	require.Equal(t, uint64(3), res.Results[0].ID, "a node sees its own write")
+	res, err = nodeA.SearchSimilar(ctx, search)
+	require.NoError(t, err)
+	require.Len(t, res.Results, 1)
+	require.Equal(t, uint64(3), res.Results[0].ID, "node A sees the vector node B wrote")
+}
+
+func TestVectorService_PrefixTenantStaysNodeWide(t *testing.T) {
+	homes := newFakeVectorHomes()
+	svc, nodeWide := newHomedVectorService(t, homes)
+
+	exerciseVectorNamespace(t, tenant.WithTenantID(context.Background(), "beta"), svc)
+	exerciseVectorNamespace(t, tenant.WithTenantID(context.Background(), tenantid.System), svc)
+
+	nodeNS, err := nodeWide.ListNamespaces(context.Background())
+	require.NoError(t, err)
+	names := map[string]bool{}
+	for _, ns := range nodeNS {
+		names[ns.Name] = true
+	}
+	require.True(t, names[scopedNamespace("beta", "docs")], "beta keeps its prefix-scoped namespace node-wide")
+	require.True(t, names[scopedNamespace(tenantid.System, "docs")], "the system tenant stays node-wide")
+	require.Nil(t, homes.home("beta"), "a prefix tenant's home is never resolved")
+}
+
+func TestKeyspaceReclaim_IsolatedTenantDropLeavesNoHomeVectorKey(t *testing.T) {
+	homes := newFakeVectorHomes()
+	vecSvc, nodeWide := newHomedVectorService(t, homes)
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	dropped := tenant.ComposeNamespace("acme", "reports")
+	kept := tenant.ComposeNamespace("acme", "ledger") + "docs"
+	for _, name := range []string{dropped + "docs", dropped + "images", kept} {
+		_, err := vecSvc.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: name, Dimension: 2, DistanceMetric: "cosine"})
+		require.NoError(t, err)
+		_, err = vecSvc.UpsertVector(ctx, &UpsertVectorRequest{Namespace: name, ID: 1, Vector: []float32{1, 0}})
+		require.NoError(t, err)
+	}
+	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: newMemoryKVSvc(), Vector: vecSvc})
+
+	require.NoError(t, fenceThenReclaim(ctx, svc, "acme", "reports", ""))
+
+	for _, k := range vectorHomeKeys(t, homes.home("acme")) {
+		assert.NotContains(t, k, dropped, "the dropped database left vector key %q in the home store", k)
+	}
+	list, err := vecSvc.ListNamespaces(ctx, &ListNamespacesRequest{})
+	require.NoError(t, err)
+	require.Len(t, list.Namespaces, 1)
+	assert.Equal(t, kept, list.Namespaces[0].Namespace)
+	nodeNS, err := nodeWide.ListNamespaces(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, nodeNS, "the node-wide store never held the tenant's vectors")
+}
+
+// homeSearchIDs searches namespace docs through svc and returns the result
+// IDs in ascending order.
+func homeSearchIDs(t *testing.T, svc *vectorService, ctx context.Context) []uint64 {
+	t.Helper()
+	res, err := svc.SearchSimilar(ctx, &SearchSimilarRequest{Namespace: "docs", QueryVector: []float32{1, 1}, K: 10})
+	require.NoError(t, err)
+	ids := make([]uint64, 0, len(res.Results))
+	for _, r := range res.Results {
+		ids = append(ids, r.ID)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
+}
+
+func upsertHomeIDs(t *testing.T, svc *vectorService, ctx context.Context, ids ...uint64) {
+	t.Helper()
+	for _, id := range ids {
+		_, err := svc.UpsertVector(ctx, &UpsertVectorRequest{Namespace: "docs", ID: id, Vector: []float32{float32(id), 1}})
+		require.NoError(t, err)
+	}
+}
+
+// TestVectorService_ReplicaSeesRecreatedHomeNamespace runs two services --
+// two replicas -- over one tenant home store. Replica B caches its index of
+// docs; replica A then deletes docs, recreates it and fills it with other
+// IDs. B must search the new incarnation, not its cached index, whether the
+// recreated namespace's generation count equals the cached one or is lower.
+func TestVectorService_ReplicaSeesRecreatedHomeNamespace(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		before []uint64
+		after  []uint64
+	}{
+		{name: "equal generation", before: []uint64{1, 2}, after: []uint64{10, 11}},
+		{name: "lower generation", before: []uint64{1, 2, 3}, after: []uint64{10}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			homes := &routedHomes{inHome: true, store: kvstoretest.NewGuardedMemoryStore()}
+			_, a := newRoutedStorage(t, homes)
+			_, b := newRoutedStorage(t, homes)
+			ctx := tenant.WithTenantID(context.Background(), "acme")
+
+			_, err := a.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: "docs", Dimension: 2})
+			require.NoError(t, err)
+			upsertHomeIDs(t, a, ctx, tc.before...)
+			require.Equal(t, tc.before, homeSearchIDs(t, b, ctx), "replica B indexes the first incarnation")
+
+			_, err = a.DeleteNamespace(ctx, &DeleteNamespaceRequest{Namespace: "docs"})
+			require.NoError(t, err)
+			_, err = a.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: "docs", Dimension: 2})
+			require.NoError(t, err)
+			upsertHomeIDs(t, a, ctx, tc.after...)
+
+			require.Equal(t, tc.after, homeSearchIDs(t, b, ctx),
+				"replica B searches the recreated namespace, not its cached index of the deleted one")
+			require.Equal(t, tc.after, homeSearchIDs(t, a, ctx))
+		})
+	}
+}
+
+var errHomeRead = errors.New("home store read failed")
+
+// failingHome is a guarded home store that fails, while armed, only the Get
+// of a key or the Scan of a prefix containing the named segment; every other
+// call, and every call while disarmed, is the real store's.
+type failingHome struct {
+	*kvstoretest.GuardedMemoryStore
+	mu       sync.Mutex
+	failGet  string
+	failScan string
+}
+
+func (f *failingHome) arm(get, scan string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failGet, f.failScan = get, scan
+}
+
+func (f *failingHome) Get(ctx context.Context, key string) ([]byte, error) {
+	f.mu.Lock()
+	fail := f.failGet != "" && strings.Contains(key, f.failGet)
+	f.mu.Unlock()
+	if fail {
+		return nil, errHomeRead
+	}
+	return f.GuardedMemoryStore.Get(ctx, key)
+}
+
+func (f *failingHome) Scan(ctx context.Context, prefix string, fn func(key string, value []byte) error) error {
+	f.mu.Lock()
+	fail := f.failScan != "" && strings.Contains(prefix, f.failScan)
+	f.mu.Unlock()
+	if fail {
+		return errHomeRead
+	}
+	return f.GuardedMemoryStore.Scan(ctx, prefix, fn)
+}
+
+func requireHomeReadError(t *testing.T, svc *vectorService, ctx context.Context) {
+	t.Helper()
+	res, err := svc.SearchSimilar(ctx, &SearchSimilarRequest{Namespace: "docs", QueryVector: []float32{1, 1}, K: 10})
+	require.Nil(t, res, "a failed home read is not an empty result")
+	homeErr, ok := errors.AsType[*TenantVectorHomeError](err)
+	require.True(t, ok, "got %v", err)
+	require.Equal(t, "acme", homeErr.TenantID)
+	require.ErrorIs(t, err, errHomeRead)
+}
+
+// TestVectorService_HomeReadFailureFailsTheSearch: a search whose home store
+// read fails after the home resolved -- the generation read, cold or over a
+// cached index, or the vector scan of a rebuild -- returns the tenant's
+// TenantVectorHomeError instead of an empty result, and the same search
+// answers once the store reads again.
+func TestVectorService_HomeReadFailureFailsTheSearch(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		warm      bool
+		get, scan string
+	}{
+		{name: "generation read, cold", get: "/gen/"},
+		{name: "generation read, cached index", warm: true, get: "/gen/"},
+		{name: "vector scan during rebuild", scan: "/v/"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &failingHome{GuardedMemoryStore: kvstoretest.NewGuardedMemoryStore()}
+			homes := &routedHomes{inHome: true, store: store}
+			_, svc := newRoutedStorage(t, homes)
+			ctx := tenant.WithTenantID(context.Background(), "acme")
+			_, err := svc.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: "docs", Dimension: 2})
+			require.NoError(t, err)
+			upsertHomeIDs(t, svc, ctx, 1, 2)
+			if tc.warm {
+				require.Equal(t, []uint64{1, 2}, homeSearchIDs(t, svc, ctx))
+			} else {
+				_, svc = newRoutedStorage(t, homes)
+			}
+
+			store.arm(tc.get, tc.scan)
+			requireHomeReadError(t, svc, ctx)
+
+			store.arm("", "")
+			require.Equal(t, []uint64{1, 2}, homeSearchIDs(t, svc, ctx), "the healthy home answers")
+		})
+	}
 }
