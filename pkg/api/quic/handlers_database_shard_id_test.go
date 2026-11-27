@@ -52,7 +52,7 @@ func TestHandleDatabase_RequestsCarryNoShardID(t *testing.T) {
 	ctx := context.Background()
 
 	create, _ := json.Marshal(map[string]any{
-		"name": "picked", "backend": "memory",
+		"name": "picked", "backend": "raft",
 		"raft": map[string]any{"clusterMode": "local", "replicaId": 1, "localNodeCount": 1},
 	})
 	resp, err := srv.handleDatabaseCreate(ctx, create)
