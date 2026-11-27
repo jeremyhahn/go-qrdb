@@ -32,6 +32,14 @@ func TestWipePINs_ZeroesEveryRequestPIN(t *testing.T) {
 			nilReq: (*BarrierInitializeRequest)(nil),
 		},
 		{
+			name: "BarrierSealRequest",
+			build: func() (interface{ WipePINs() }, [][]byte) {
+				so := []byte("so-pin-8")
+				return &BarrierSealRequest{SOPin: so}, [][]byte{so}
+			},
+			nilReq: (*BarrierSealRequest)(nil),
+		},
+		{
 			name: "BarrierInitializeShamirRequest",
 			build: func() (interface{ WipePINs() }, [][]byte) {
 				so, user := []byte("so-pin-2"), []byte("user-pin")

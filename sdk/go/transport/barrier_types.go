@@ -181,6 +181,15 @@ type BarrierSealRequest struct {
 	SOPin Secret `json:"so_pin,omitempty"`
 }
 
+// WipePINs zeroes SOPin; see BarrierInitializeRequest. The generic Request
+// dispatch of every transport defers it, so the SO PIN of a seal request is
+// wiped on success and on every refusal. It is a no-op on a nil request.
+func (r *BarrierSealRequest) WipePINs() {
+	if r != nil {
+		r.SOPin.Wipe()
+	}
+}
+
 // BarrierInitializeShamirRequest initializes the barrier under Shamir custody.
 // The server generates the root key and an independent unseal key, splits
 // the unseal key Threshold-of-TotalShares to the share holders already

@@ -58,6 +58,12 @@ func TestRequestPINWipe(t *testing.T) {
 			r := &transport.BarrierInitializeRequest{SOPin: transport.Secret("123456"), UserPin: transport.Secret("654321")}
 			return r, []transport.Secret{r.SOPin, r.UserPin}
 		},
+		// The REST generic dispatch posts to baseURL+"/"+method, so the
+		// method is the seal route itself.
+		"v1/barrier/seal": func() (any, []transport.Secret) {
+			r := &transport.BarrierSealRequest{SOPin: transport.Secret("123456")}
+			return r, []transport.Secret{r.SOPin}
+		},
 	}
 	for name, tc := range cases {
 		for method, mk := range requests {
