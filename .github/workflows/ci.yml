@@ -1,4 +1,4 @@
-# ci-template: v1.56 + v1.59 runner selection + go-qrdb CUSTOMIZE blocks — canonical CI for all first-party Go repos.
+# ci-template: v1.61 + go-qrdb CUSTOMIZE blocks — canonical CI for all first-party Go repos.
 # v1.56: the lint job's step "SPEC and ROADMAP agree (roadmap.md §2a)" runs scripts/spec-roadmap-check.py.
 # v1.55 (2026-11-22, the Tenant Agent's 12:47Z order, owner: the Software
 # plan links every project's ROADMAP, SPEC and docs, and every piece of work
@@ -189,8 +189,9 @@ on:
 # group, so a PR's newer run cancels the older. v1.29.3: a schedule run's
 # group is `schedule-{repository}`, so a repository has one schedule run at a
 # time. cancel-in-progress stays a literal `true` (Company Agent m695, m701).
+# v1.61 (handbook #144): each push to main runs in its own group main-push-<sha>
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && format('schedule-{0}', github.repository) || github.ref == 'refs/heads/main' && format('main-{0}', github.event_name) || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && format('schedule-{0}', github.repository) || github.ref == 'refs/heads/main' && github.event_name == 'push' && format('main-push-{0}', github.sha) || github.ref == 'refs/heads/main' && format('main-{0}', github.event_name) || github.ref }}
   cancel-in-progress: true
 
 permissions:
