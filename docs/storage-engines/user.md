@@ -31,6 +31,9 @@ storage:
   max_open_files: 0
 ```
 
+Backups to object storage do not use a storage backend: they use
+`backup.destination` (see [../backup-restore/user.md](../backup-restore/user.md#backups-on-object-storage)).
+
 An `objstore` backend's cloud credential is never written into the YAML. Put
 the access key ID and the secret in two files only the `qrdbd` user can read
 (`chmod 600`) and reference them under `storage.objstore.credentials` as
