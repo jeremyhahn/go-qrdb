@@ -304,8 +304,12 @@ func TestDatabaseService_UpdateRaft_Success(t *testing.T) {
 
 	// Create a database first.
 	cfg := testRaftDBConfig("raft-db")
-	if _, err := svc.Create(cfg); err != nil {
+	created, err := svc.Create(cfg)
+	if err != nil {
 		t.Fatalf("Create() returned unexpected error: %v", err)
+	}
+	if created.Raft == nil || created.Raft.ShardID == 0 {
+		t.Fatalf("Create().Raft = %+v, want an issued shard", created.Raft)
 	}
 
 	// Update Raft config via service.
@@ -327,10 +331,9 @@ func TestDatabaseService_UpdateRaft_Success(t *testing.T) {
 	if info.Raft.ClusterMode != database.RaftLocal {
 		t.Errorf("UpdateRaft().Raft.ClusterMode = %q, want %q", info.Raft.ClusterMode, database.RaftLocal)
 	}
-	// The database was created with no Raft configuration, so it was issued
-	// no shard, and an update cannot give it one.
-	if info.Raft.ShardID != 0 {
-		t.Errorf("UpdateRaft().Raft.ShardID = %d, want 0", info.Raft.ShardID)
+	// The shard is issued at create; an update keeps it.
+	if info.Raft.ShardID != created.Raft.ShardID {
+		t.Errorf("UpdateRaft().Raft.ShardID = %d, want %d", info.Raft.ShardID, created.Raft.ShardID)
 	}
 	if info.Raft.ReplicaID != 1 {
 		t.Errorf("UpdateRaft().Raft.ReplicaID = %d, want 1", info.Raft.ReplicaID)

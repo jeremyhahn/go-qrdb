@@ -89,14 +89,16 @@ func ClaimShards(t testing.TB, mgr *database.Manager) {
 // shard ID claimer (ClaimShards).
 func Seed(t testing.TB, svc service.DatabaseServicer) {
 	t.Helper()
-	// The Raft state storage is recorded at create and immutable after it,
-	// so the create records the one RaftConfig names and the update below
-	// keeps it.
+	// A Raft configuration is only accepted on a raft-backed database. The
+	// Raft state storage is recorded at create and immutable after it, so
+	// the create records the one RaftConfig names and the update below
+	// keeps it. The create asks for a local group: a distributed one needs
+	// the placement subsystem, which these services do not wire.
 	if _, err := svc.Create(database.DatabaseConfig{
 		Name:    Name,
 		Backend: database.BackendRaft,
 		Raft: &database.DatabaseRaftConfig{
-			ClusterMode:  RaftConfig().ClusterMode,
+			ClusterMode:  database.RaftLocal,
 			StateStorage: RaftConfig().StateStorage,
 		},
 	}); err != nil {
