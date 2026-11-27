@@ -53,7 +53,7 @@ func EnsureLSMFormat(ctx context.Context, store objcommon.Storage) error {
 		}
 		return nil
 	}
-	if !notFound(err) {
+	if !missingIn(ctx, store, formatMarkerName, err) {
 		return err
 	}
 	names, err := store.ListWithContext(ctx, "")
