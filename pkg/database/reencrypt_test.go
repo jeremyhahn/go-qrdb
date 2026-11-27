@@ -111,6 +111,28 @@ func readAll(t *testing.T, dir string, enc *atrest.Encryptor) map[string]string 
 	return out
 }
 
+// formatOf returns the on-disk format major version of the store in dir.
+func formatOf(t *testing.T, dir string, enc *atrest.Encryptor) pebble.FormatMajorVersion {
+	t.Helper()
+	opts := &pebble.Options{ReadOnly: true}
+	opts.FS = pebblestore.WrapVFS(opts.FS, enc.Wrap)
+	db, err := pebble.Open(dir, opts)
+	if err != nil {
+		t.Fatalf("open store %s: %v", dir, err)
+	}
+	defer func() { _ = db.Close() }()
+	return db.FormatMajorVersion()
+}
+
+// assertPinnedFormat fails the test unless the store in dir is at the pinned
+// Pebble format, whatever format its source was written at.
+func assertPinnedFormat(t *testing.T, dir string, enc *atrest.Encryptor) {
+	t.Helper()
+	if got := formatOf(t, dir, enc); got != pebblestore.FormatMajorVersion {
+		t.Fatalf("re-encrypted store format = %s, want pin %s", got, pebblestore.FormatMajorVersion)
+	}
+}
+
 // TestReencryptPebbleStore_NoneToKeyed is the core proof of the enable-
 // encryption feature: data written to a none (unencrypted) store is faithfully
 // re-encrypted into a keyed store with no loss, and the result is genuinely
@@ -145,6 +167,7 @@ func TestReencryptPebbleStore_NoneToKeyed(t *testing.T) {
 	if err := VerifyReencryptedStore(ctx, srcDir, noneEnc, dstDir, keyedEnc); err != nil {
 		t.Fatalf("VerifyReencryptedStore: %v", err)
 	}
+	assertPinnedFormat(t, dstDir, keyedEnc)
 
 	// 4. The keyed store reads back identical plaintext through the keyed encryptor.
 	got := readAll(t, dstDir, keyedEnc)
@@ -210,6 +233,7 @@ func TestReencryptPebbleStore_KeyedToNone(t *testing.T) {
 	if err := VerifyReencryptedStore(ctx, srcDir, keyedEnc, dstDir, noneEnc); err != nil {
 		t.Fatalf("verify: %v", err)
 	}
+	assertPinnedFormat(t, dstDir, noneEnc)
 	got := readAll(t, dstDir, noneEnc)
 	for k, v := range pairs {
 		if got[k] != v {

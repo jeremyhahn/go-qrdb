@@ -200,3 +200,22 @@ func TestBackupSink_GetMissing(t *testing.T) {
 	var nf *service.BackupNotFoundError
 	assert.ErrorAs(t, err, &nf)
 }
+
+func TestSink_Delete_UndecodableMetadata(t *testing.T) {
+	ctx := context.Background()
+	store, err := objstore.New("memory", map[string]string{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	sink := backupsink.New(store)
+
+	envelope := &service.BackupEnvelope{FormatVersion: 1, ProviderID: "software", KeyRef: "k", WrappedDEK: []byte("x")}
+	require.NoError(t, sink.Write(ctx, service.BackupInfo{ID: "corrupt"}, map[uint64][]byte{1: []byte("x")}, envelope))
+	require.NoError(t, store.Set([]byte("meta/corrupt"), []byte("{not json")))
+
+	require.NoError(t, sink.Delete(ctx, "corrupt"))
+	for _, key := range []string{"meta/corrupt", "envelope/corrupt", "data/corrupt"} {
+		ok, err := store.Exists([]byte(key))
+		require.NoError(t, err)
+		require.False(t, ok, "%s must be gone", key)
+	}
+}

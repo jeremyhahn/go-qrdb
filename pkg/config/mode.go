@@ -173,36 +173,5 @@ func (c *Config) EffectiveCapabilities() capabilities.Capabilities {
 		MySQL:      capabilities.Has("mysql"),
 		PostgreSQL: capabilities.Has("pgsql"),
 		FTS:        capabilities.Has("fts"),
-
-		UnencryptedAtRest: c.unencryptedAtRest(raft),
 	}
-}
-
-// unencryptedLocalBackends are the standalone storage backends that keep
-// data without the barrier's encrypting file system. Pebble and file write
-// their files through it; objstore keeps its objects in a bucket, which has
-// no file system to encrypt. The memory backend keeps nothing at rest.
-var unencryptedLocalBackends = map[string]struct{}{
-	"objstore": {},
-}
-
-// unencryptedAtRest reports where, with seal enabled, the node's data plane
-// keeps data unencrypted: a standalone node's objstore store (the node's
-// storage.backend, pebble when empty; a databases entry's backend records
-// that database only and never picks the node store). A raft node
-// reports nothing: every state machine storage it will start under the
-// barrier (pebble, file) is encrypted at rest, or persists nothing (memory).
-// It returns nil when seal is disabled.
-func (c *Config) unencryptedAtRest(raft bool) []string {
-	if !c.Seal.Enabled || raft {
-		return nil
-	}
-	backend := "pebble"
-	if c.Storage.Backend != "" {
-		backend = c.Storage.Backend
-	}
-	if _, ok := unencryptedLocalBackends[backend]; ok {
-		return []string{`standalone backend "` + backend + `" stores its data without the seal barrier's at-rest encryption; use backend "pebble" or "file"`}
-	}
-	return nil
 }

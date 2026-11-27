@@ -312,13 +312,26 @@ func (ep *sealEpisode) err() error {
 // sealed at-rest barrier under opts.FS is a typed, terminal error with bounded
 // logging rather than a flush that never returns. isSealed classifies a
 // background error as the barrier's; it may be nil (see NewSealWatch). opts is
-// cloned, not modified; a nil opts opens with Pebble's defaults, and a nil
-// Logger is the package's slog logger.
+// cloned, not modified; a nil opts opens with Pebble's defaults except the
+// format, and a nil Logger is the package's slog logger.
+//
+// Every store opens at the pinned FormatMajorVersion, never at Pebble's
+// default: a new store is created at it and an older store is raised to it.
+// An opts.FormatMajorVersion above the pin is a *ConfigError, and a store
+// whose on-disk format is above the pin (a newer build wrote it) is refused
+// with a *FormatVersionError.
 func Open(dir string, opts *pebble.Options, isSealed func(error) bool) (*pebble.DB, *SealWatch, error) {
 	o := &pebble.Options{}
 	if opts != nil {
 		o = opts.Clone()
 	}
+	if o.FormatMajorVersion > formatPin {
+		return nil, nil, &ConfigError{
+			Field:   "FormatMajorVersion",
+			Message: o.FormatMajorVersion.String() + " is above the pinned format " + formatPin.String(),
+		}
+	}
+	o.FormatMajorVersion = formatPin
 	if o.Logger == nil {
 		o.Logger = NewLogger(nil)
 	}
@@ -336,6 +349,11 @@ func Open(dir string, opts *pebble.Options, isSealed func(error) bool) (*pebble.
 	if err != nil {
 		unregisterLease(dir, lease)
 		return nil, nil, err
+	}
+	if onDisk := db.FormatMajorVersion(); onDisk > formatPin {
+		_ = db.Close()
+		unregisterLease(dir, lease)
+		return nil, nil, &FormatVersionError{Dir: dir, OnDisk: onDisk, Pinned: formatPin}
 	}
 	seals.lease = lease
 	seals.dir = dir

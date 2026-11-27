@@ -31,6 +31,9 @@ storage:
   max_open_files: 0
 ```
 
+Backups to object storage do not use a storage backend: they use
+`backup.destination` (see [../backup-restore/user.md](../backup-restore/user.md#backups-on-object-storage)).
+
 An `objstore` backend's cloud credential is never written into the YAML. Put
 the access key ID and the secret in two files only the `qrdbd` user can read
 (`chmod 600`) and reference them under `storage.objstore.credentials` as
@@ -83,8 +86,8 @@ migration.
 ## At-rest encryption
 
 With the seal enabled, the barrier encrypts what each backend leaves on disk.
-The guarantee differs by backend: `pebble` and `file` are encrypted at rest,
-`objstore` and `memory` are not. What each one still leaves visible on disk
+`pebble`, `file` and a standalone node's `objstore` are encrypted at rest;
+`memory` keeps nothing at rest. What each one still leaves visible on disk
 is in the table in
 [architecture.md](architecture.md#at-rest-encryption-one-mechanism-for-every-on-disk-backend).
 
@@ -172,29 +175,37 @@ the typed value, which means the same thing: retry, or try another node.
 **You want to change a database's backend.** Not possible in place. Create a new
 database and migrate — see [../backup-restore/user.md](../backup-restore/user.md).
 
-## Target design: `objstore` as an LSM in a bucket (not yet shipped)
+## Target design: `objstore` as an LSM in a bucket
 
 See [architecture.md](architecture.md#target-design-object-storage-lsm-segment-layout)
-for the full design — **nothing in this section is implemented yet**, and
-nothing here is a setting you can use today.
+for the full design. Part of it is shipped for a standalone node; the rest is
+not built yet.
 
-Today a standalone node's `storage.backend: objstore` stores one object per
-key, and a database created with `backend: objstore` is refused when it opens
-(see [../databases/user.md](../databases/user.md)). The target design moves
-`objstore` to the same sorted-segment layout the `pebble` engine uses, with
-the segments living in an object-storage bucket rather than on local disk.
-If it ships:
+Shipped: a standalone node with `storage.backend: objstore` runs the same
+sorted-segment layout the `pebble` engine uses, with the segments (SSTables)
+in the object-storage bucket under the prefix `lsm`:
 
-- You would pick `objstore` when you want a database's durable data in S3,
-  GCS, Azure or a local object-store directory, with capacity that is not
-  bounded by the node's attached disk, encrypted under the seal like every
-  other engine.
-- A small local directory would still be required (WAL, manifest, block
-  cache) — object storage replaces the *bulk* of the data, not every byte on
-  the node.
-- A store written by today's `objstore` engine would not open under the new
-  layout; you would move its data by backup and restore
-  ([../backup-restore/user.md](../backup-restore/user.md)).
+- The WAL and manifest stay in a small local directory,
+  `<dataDir>/objstore-lsm`, and a read cache in `<dataDir>/objstore-lsm-cache`;
+  object storage holds the *bulk* of the data, not every byte on the node.
+- With the seal enabled, the local files and every bucket object are
+  encrypted under the seal barrier.
+- A store written by the earlier one-object-per-key `objstore` layout is
+  refused at open. Backup and restore does not apply here: it is Raft mode
+  only ([../backup-restore/user.md](../backup-restore/user.md)), and these
+  stores are standalone. Move the data by a logical export with the previous
+  release: run that release over the old bucket and read the data out with
+  `qrdb kv range` (SQL data with SQL), then start this release on an empty
+  bucket and data directory and write the data back with `qrdb kv put` (SQL
+  data with SQL). See [../key-value/user.md](../key-value/user.md).
+
+Not built yet: a database created with `backend: objstore` is still refused
+when it opens (see [../databases/user.md](../databases/user.md)); lifting that
+is an open question. If it ships:
+
+- You would pick `objstore` for a database when you want its durable data in
+  S3, GCS, Azure or a local object-store directory, with capacity that is not
+  bounded by the node's attached disk.
 - `glacier` and `azurearchive` would remain backup and archive destinations
   reached through `qrdb backup create`, never a live `objstore` provider —
   their retrieval delays are measured in hours, which is incompatible with

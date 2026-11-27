@@ -64,10 +64,8 @@ const objstoreLSMCacheDir = "objstore-lsm-cache"
 // holds only the stored bytes: each SSTable is fetched from the store at most
 // once, and a freshly created one is written through and never fetched.
 //
-// It is the composition NewLocalStorage's objstore case will call once the
-// flat engine is replaced (object-storage-lsm slice 4b); nothing calls it yet.
-// Neither it nor the returned storage closes the go-objstore store, matching
-// the flat Engine's Close. The local object cache it builds is closed on any
+// NewLocalStorage's objstore case calls it. Neither it nor the returned
+// storage closes the go-objstore store. The local object cache it builds is closed on any
 // failure after it is built and by the returned storage's Close: Pebble
 // never closes a remote.Storage it is given.
 func newObjstoreLSMStorage(dataDir string, enc *atrest.Encryptor, storageCfg qrdbconfig.StorageConfig) (*objstoreLSMStorage, error) {

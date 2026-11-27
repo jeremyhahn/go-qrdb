@@ -25,6 +25,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
@@ -74,18 +76,149 @@ func TestEngineConformance(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = eng.Close(context.Background()) })
 
-			t.Run("kv", func(t *testing.T) { conformanceKV(t, eng) })
-			t.Run("mvcc", func(t *testing.T) { conformanceMVCC(t, eng) })
-			t.Run("compare_and_swap", func(t *testing.T) { conformanceCompareAndSwap(t, eng) })
-			t.Run("compare_and_delete", func(t *testing.T) { conformanceCompareAndDelete(t, eng) })
-			t.Run("transaction", func(t *testing.T) { conformanceTransaction(t, eng) })
-			t.Run("secondary_index", func(t *testing.T) { conformanceSecondaryIndex(t, eng) })
-			t.Run("collections", func(t *testing.T) { conformanceCollections(t, eng) })
-			t.Run("relational_smoke", func(t *testing.T) { conformanceRelationalSmoke(t, eng) })
-			t.Run("leases", func(t *testing.T) { conformanceLeases(t, eng) })
-			t.Run("watches", func(t *testing.T) { conformanceWatch(t, eng, hub) })
-			t.Run("time_series", func(t *testing.T) { conformanceTimeSeries(t, eng) })
+			// ran records the scenarios that executed and passed (a -run
+			// filter skips some), so remote_sstables re-reads only their
+			// state after its Flush.
+			ran := map[string]bool{}
+			run := func(name string, f func(t *testing.T)) {
+				ran[name] = t.Run(name, func(t *testing.T) {
+					ran[name] = true
+					f(t)
+				}) && ran[name]
+			}
+			run("kv", func(t *testing.T) { conformanceKV(t, eng) })
+			run("mvcc", func(t *testing.T) { conformanceMVCC(t, eng) })
+			run("compare_and_swap", func(t *testing.T) { conformanceCompareAndSwap(t, eng) })
+			run("compare_and_delete", func(t *testing.T) { conformanceCompareAndDelete(t, eng) })
+			run("transaction", func(t *testing.T) { conformanceTransaction(t, eng) })
+			run("secondary_index", func(t *testing.T) { conformanceSecondaryIndex(t, eng) })
+			run("collections", func(t *testing.T) { conformanceCollections(t, eng) })
+			run("relational_smoke", func(t *testing.T) { conformanceRelationalSmoke(t, eng) })
+			run("leases", func(t *testing.T) { conformanceLeases(t, eng) })
+			run("watches", func(t *testing.T) { conformanceWatch(t, eng, hub) })
+			run("time_series", func(t *testing.T) { conformanceTimeSeries(t, eng) })
+			if fl, ok := stg.(conformanceFlusher); ok {
+				t.Run("remote_sstables", func(t *testing.T) { conformanceRemoteSSTables(t, eng, stg, fl, ran) })
+			}
 		})
+	}
+}
+
+// conformanceFlusher is a storage that can flush its memtable to SSTables.
+type conformanceFlusher interface {
+	Flush() error
+}
+
+// conformanceRemoteLister is a storage whose SSTables live in an object
+// store it can list (the object-storage-lsm composition).
+type conformanceRemoteLister interface {
+	RemoteObjects(prefix string) ([]string, error)
+}
+
+// conformanceRemoteSSTables runs after every other scenario on a storage
+// that flushes. It writes KV keys, a transaction and an indexed row, flushes
+// the memtable, and, when the SSTables live in an object store, requires at
+// least one object under its "lsm/" prefix. It then reads back what it wrote
+// and what the earlier scenarios wrote, iterates in key order and queries the
+// secondary indexes, so every read is served from flushed SSTables (remote
+// ones on the object-storage-lsm composition) and not from the memtable.
+func conformanceRemoteSSTables(t *testing.T, eng *MVCCEngine, stg storage.Storage, fl conformanceFlusher, ran map[string]bool) {
+	ctx := context.Background()
+	applyMVCCEntries(t, eng, []sm.Entry{
+		kvPutEntry(1000, "conf:remote:kv", "remote-value"),
+		mvccPutEntry(1001, []byte("conf:remote:range:a"), []byte("a"), 0),
+		mvccPutEntry(1002, []byte("conf:remote:range:b"), []byte("b"), 0),
+		mvccPutEntry(1003, []byte("conf:remote:range:c"), []byte("c"), 0),
+		kvPutEntry(1004, "conf:remote:txn:guard", "expected"),
+	})
+	applyMVCCEntries(t, eng, []sm.Entry{
+		guardedTxnEntry(1005, "conf:remote:txn:guard", "expected", "conf:remote:txn:success", "conf:remote:txn:failure"),
+	})
+	applyMVCCEntries(t, eng, []sm.Entry{
+		indexCreateEntry(t, 1006, "conf_remote_by_owner", "owner", protocol.IndexCreateOptions{}),
+	})
+	applyMVCCEntries(t, eng, []sm.Entry{
+		mvccPutEntry(1007, []byte("conf:remote:row:1"), []byte(`{"owner":"remote@example.com"}`), 0),
+	})
+
+	if err := fl.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if rl, ok := stg.(conformanceRemoteLister); ok {
+		objects, err := rl.RemoteObjects(objstoreLSMTestPrefix + "/")
+		if err != nil {
+			t.Fatalf("list %s/: %v", objstoreLSMTestPrefix, err)
+		}
+		if len(objects) == 0 {
+			t.Fatalf("no object under %s/ after Flush: the SSTables were not created on the object store", objstoreLSMTestPrefix)
+		}
+	}
+
+	want := map[string]string{
+		"conf:remote:kv":          "remote-value",
+		"conf:remote:range:b":     "b",
+		"conf:remote:txn:success": "",
+	}
+	if ran["kv"] {
+		want["conf:kv:a"] = "1"
+	}
+	if ran["transaction"] {
+		want["conf:txn:success"] = ""
+	}
+	for key, want := range want {
+		val, err := eng.Lookup(ctx, key)
+		if err != nil {
+			t.Fatalf("Lookup(%q) after Flush: %v", key, err)
+		}
+		got, _ := val.([]byte)
+		if got == nil {
+			t.Fatalf("Lookup(%q) after Flush: key missing", key)
+		}
+		if want != "" && string(got) != want {
+			t.Fatalf("Lookup(%q) after Flush = %q, want %q", key, got, want)
+		}
+	}
+	if val, _ := eng.Lookup(ctx, "conf:remote:txn:failure"); val != nil {
+		t.Error("transaction with a matching guard ran its failure branch after Flush")
+	}
+
+	got, err := eng.Lookup(ctx, &statemachine.PrefixQuery{Prefix: []byte("conf:remote:range:"), Limit: 2})
+	if err != nil {
+		t.Fatalf("PrefixQuery after Flush: %v", err)
+	}
+	firstTwo := got.(map[string][]byte)
+	if len(firstTwo) != 2 || string(firstTwo["conf:remote:range:a"]) != "a" || string(firstTwo["conf:remote:range:b"]) != "b" {
+		t.Fatalf("PrefixQuery limit 2 after Flush = %q, want the first two keys in order (a, b)", firstTwo)
+	}
+
+	it := stg.NewIterator(&storage.IteratorOptions{})
+	var prev []byte
+	n := 0
+	for ok := it.SeekToFirst(); ok; ok = it.Next() {
+		key := it.Key()
+		if prev != nil && bytes.Compare(prev, key) >= 0 {
+			t.Fatalf("storage iterator after Flush out of order: %q then %q", prev, key)
+		}
+		prev = append(prev[:0], key...)
+		n++
+	}
+	if err := it.Error(); err != nil {
+		t.Fatalf("storage iterator after Flush: %v", err)
+	}
+	_ = it.Close()
+	if n == 0 {
+		t.Fatal("storage iterator after Flush saw no keys")
+	}
+
+	keys := indexQueryKeys(t, eng, "conf_remote_by_owner", []byte("remote@example.com"))
+	if len(keys) != 1 || !bytes.Equal(keys[0], []byte("conf:remote:row:1")) {
+		t.Fatalf("index query after Flush = %q, want exactly conf:remote:row:1", keys)
+	}
+	if ran["secondary_index"] {
+		keys = indexQueryKeys(t, eng, "conf_by_email", []byte("a@example.com"))
+		if len(keys) != 1 || !bytes.Equal(keys[0], []byte("conf:idx:1")) {
+			t.Fatalf("secondary_index scenario's index query after Flush = %q, want exactly conf:idx:1", keys)
+		}
 	}
 }
 

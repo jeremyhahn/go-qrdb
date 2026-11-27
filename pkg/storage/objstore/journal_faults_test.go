@@ -297,6 +297,7 @@ func TestPendingJournal_UnresolvableRefusesTheWrite(t *testing.T) {
 func TestRecoverJournal_Faults(t *testing.T) {
 	t.Run("journal read fails", func(t *testing.T) {
 		e, fs := newFaultEngine(t)
+		require.NoError(t, fs.Storage.Put(journalName, bytes.NewReader([]byte("x"))))
 		fs.getFails[journalName] = true
 		assert.ErrorIs(t, e.recoverJournal(), errProvider)
 	})
@@ -325,6 +326,7 @@ func TestRecoverJournal_Faults(t *testing.T) {
 func TestRefuseInTreeJournal(t *testing.T) {
 	t.Run("get fault", func(t *testing.T) {
 		_, fs := newFaultEngine(t)
+		require.NoError(t, fs.Storage.Put(journalName, bytes.NewReader([]byte("x"))))
 		fs.getFails[journalName] = true
 		assert.ErrorIs(t, refuseInTreeJournal("local", fs), errProvider)
 	})
