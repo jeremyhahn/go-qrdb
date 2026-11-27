@@ -144,8 +144,8 @@ Two things reach a caller:
   [../barrier-seal/api.md](../barrier-seal/api.md).
 - **The capability report's `unencryptedAtRest` list** (`unencrypted_at_rest`
   in the protobuf) names each store that keeps data outside the barrier while
-  the seal is on. A standalone `storage.backend: objstore` is the one entry
-  this feature can produce; `pebble` and `file` never appear in it.
+  the seal is on. This feature currently produces no entry: `pebble`, `file`
+  and a standalone `storage.backend: objstore` are all encrypted at rest.
 
 ## Error semantics
 
@@ -162,7 +162,7 @@ Not applicable — there are no versioned routes in this feature.
 
 See [architecture.md](architecture.md#target-design-object-storage-lsm-segment-layout)
 for the full design, work in progress under the SPEC row `object-storage-lsm`.
-**Not implemented.** The wire surface does not change shape:
+The wire surface does not change shape:
 
 - The backend enum stays `objstore` — `DatabaseInfo.Backend` does not gain or
   rename a value. The LSM segment layout is an internal rebuild of what
@@ -170,11 +170,11 @@ for the full design, work in progress under the SPEC row `object-storage-lsm`.
 - There is still no wire API for storage engines (this feature has none
   today, per "Storage engines" above), and this design does not add one.
 
-Three things a caller observes today would change:
+Shipped: the capability report's `unencryptedAtRest` list no longer names a
+standalone `objstore` store under the seal, because every remote object is
+encrypted through the barrier (OS-4). Two things a caller observes today
+would change:
 
-- **The capability report's `unencryptedAtRest` list** stops naming a
-  standalone `objstore` store under the seal, because the design encrypts
-  every remote object through the barrier (OS-4).
 - **A database's `backend: objstore`** stops being refused when the database
   opens (`database.InvalidBackendError`), in phase 2 of the design.
 - **`raft.sm_storage`/`state_storage: objstore`** stays refused (see

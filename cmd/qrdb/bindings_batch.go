@@ -102,7 +102,7 @@ func (e *CollectionImportUnsupportedError) Error() string {
 // Collection and Database are accepted (rather than removed) purely so
 // ImportFile can detect and reject them with CollectionImportUnsupportedError
 // instead of the frontend's values being silently dropped: Database is
-// redundant with the connection's already-selected database scope, and
+// redundant with ImportFile's database argument, and
 // Collection has no supported server-side import path (see
 // CollectionImportUnsupportedError).
 type WailsImportOptions struct {
@@ -128,12 +128,13 @@ func NewBatchBinding(log *sdk.ConcreteLogger, conn *ConnectionBinding) *BatchBin
 	return &BatchBinding{logger: log, conn: conn}
 }
 
-// Execute applies the given operations atomically. All operations
+// Execute applies the given operations atomically in database (empty for
+// the connection's default). All operations
 // succeed or fail together. It accepts WailsOp values with string
 // fields to avoid Wails base64 deserialization issues with []byte.
-func (b *BatchBinding) Execute(ops []WailsOp) (*transport.BatchResponse, error) {
+func (b *BatchBinding) Execute(database string, ops []WailsOp) (*transport.BatchResponse, error) {
 	b.logger.Debug("Execute called", "opCount", len(ops))
-	cl, err := b.conn.loadClient()
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("Execute failed", "error", err)
 		return nil, err
@@ -148,11 +149,12 @@ func (b *BatchBinding) Execute(ops []WailsOp) (*transport.BatchResponse, error) 
 }
 
 // ImportFile opens the file at the given path and imports its records
-// into the KV store. The opts parameter controls format detection, key
+// into the KV store of database (empty for the connection's default). The
+// opts parameter controls format detection, key
 // and value extraction, and transactional behavior. Returns
 // *CollectionImportUnsupportedError if opts.Collection is set -- see that
 // type's documentation.
-func (b *BatchBinding) ImportFile(filePath string, opts WailsImportOptions) (*transport.ImportResult, error) {
+func (b *BatchBinding) ImportFile(database string, filePath string, opts WailsImportOptions) (*transport.ImportResult, error) {
 	b.logger.Debug("ImportFile called", "path", filePath)
 
 	if opts.Collection != "" {
@@ -160,7 +162,7 @@ func (b *BatchBinding) ImportFile(filePath string, opts WailsImportOptions) (*tr
 		return nil, &CollectionImportUnsupportedError{Collection: opts.Collection}
 	}
 
-	cl, err := b.conn.loadClient()
+	cl, err := scopedClient(b.conn, database)
 	if err != nil {
 		b.logger.Error("ImportFile: load client failed", "error", err)
 		return nil, err
@@ -200,5 +202,5 @@ func (b *BatchBinding) AvailableCodecs() []string {
 
 // AvailableImportFormats returns the supported import file formats.
 func (b *BatchBinding) AvailableImportFormats() []string {
-	return []string{"auto", "csv", "json", "ndjson", "yaml", "archive"}
+	return sdk.ImportFormats()
 }

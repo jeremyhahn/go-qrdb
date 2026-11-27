@@ -39,6 +39,7 @@ export type AdminView =
     | 'users'
     | 'roles'
     | 'groups'
+    | 'volume-pools'
     | 'certificates'
     | 'databases'
     | 'backups'
@@ -65,6 +66,7 @@ export type DbTool =
     | 'locks'
     | 'timeseries'
     | 'vector'
+    | 'vlog'
     | 'sql'
     | 'db-settings';
 
@@ -94,6 +96,7 @@ export const ADMIN_VIEW_LABELS: Readonly<Record<AdminView, string>> = {
     'users': 'Users',
     'roles': 'Roles',
     'groups': 'Groups',
+    'volume-pools': 'Volume Pools',
     'certificates': 'Certificates',
     'databases': 'Databases',
     'backups': 'Backups',
@@ -116,6 +119,7 @@ export const DB_TOOL_LABELS: Readonly<Record<DbTool, string>> = {
     'locks': 'Locks',
     'timeseries': 'Time Series',
     'vector': 'Vectors',
+    'vlog': 'Verifiable Logs',
     'sql': 'SQL Browser',
     'db-settings': 'Settings',
 } as const;

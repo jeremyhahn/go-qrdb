@@ -35,6 +35,8 @@
   let loading: boolean = $state(true);
   let selectedBackup: BackupInfo | null = $state(null);
   let lastVerifyResult: VerifyResult | null = $state(null);
+  let detailLoading: boolean = $state(false);
+  let detailError: string | null = $state(null);
 
   // Create-backup form
   let showCreateModal: boolean = $state(false);
@@ -58,6 +60,34 @@
   let restoreLoading: boolean = $state(false);
   let restoreValidateFirst: boolean = $state(true);
   let restoreDecryptionKeyRef: string = $state("");
+  // A plaintext backup is refused unless the restore allows it explicitly.
+  let restoreAllowPlaintext: boolean = $state(false);
+  // Comma-separated shard IDs; blank restores every shard.
+  let restoreTargetShards: string = $state("");
+
+  /** Opens the restore modal with its per-restore options cleared. */
+  function openRestoreModal(): void {
+    restoreAllowPlaintext = false;
+    restoreTargetShards = "";
+    showRestoreModal = true;
+  }
+
+  /**
+   * Parses the Target Shards field: comma-separated non-negative shard IDs,
+   * blanks dropped. Returns null when any entry is not such an ID.
+   */
+  function parseTargetShards(text: string): number[] | null {
+    const shards: number[] = [];
+    for (const part of text.split(",")) {
+      const entry = part.trim();
+      if (entry === "") continue;
+      if (!/^\d+$/.test(entry)) return null;
+      const id = Number(entry);
+      if (!Number.isSafeInteger(id)) return null;
+      shards.push(id);
+    }
+    return shards;
+  }
 
   // Delete confirmation
   let showDeleteConfirm: boolean = $state(false);
@@ -88,6 +118,19 @@
       unitIndex += 1;
     }
     return `${value.toFixed(1)} ${units[unitIndex]}`;
+  }
+
+  // formatDurationMs renders the SDK's millisecond duration the way the
+  // server's duration string read before (e.g. "850ms", "1.5s", "2m3.4s").
+  function formatDurationMs(ms: number): string {
+    if (!Number.isFinite(ms) || ms <= 0) return "0s";
+    if (ms < 1000) return `${Math.round(ms)}ms`;
+    const totalSeconds = ms / 1000;
+    if (totalSeconds < 60) return `${Number(totalSeconds.toFixed(3))}s`;
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = Number((totalSeconds - minutes * 60).toFixed(3));
+    if (minutes < 60) return `${minutes}m${seconds}s`;
+    return `${Math.floor(minutes / 60)}h${minutes % 60}m${seconds}s`;
   }
 
   function resetCreateForm(): void {
@@ -166,20 +209,29 @@
 
   async function handleRestore(): Promise<void> {
     if (selectedBackup === null) return;
+    const shards = parseTargetShards(restoreTargetShards);
+    if (shards === null) {
+      showToast("error", "Target shards must be comma-separated shard IDs");
+      return;
+    }
     restoreLoading = true;
     try {
       const result = await client.backups.restore({
         backupId: selectedBackup.id,
         validateFirst: restoreValidateFirst,
         ...(restoreDecryptionKeyRef.trim() !== "" ? { decryptionKeyRef: restoreDecryptionKeyRef.trim() } : {}),
+        ...(restoreAllowPlaintext ? { allowPlaintext: true } : {}),
+        ...(shards.length > 0 ? { targetShards: shards } : {}),
       });
       const errorCount = (result.errors ?? []).length;
       showToast(
         errorCount === 0 ? "success" : "warning",
-        `Restore completed: ${result.shardsRestored} shard(s) restored in ${result.duration}${errorCount > 0 ? `, ${errorCount} error(s)` : ""}.`,
+        `Restore completed: ${result.shardsRestored} shard(s) restored in ${formatDurationMs(result.durationMs)}${errorCount > 0 ? `, ${errorCount} error(s)` : ""}.`,
       );
       showRestoreModal = false;
       restoreDecryptionKeyRef = "";
+      restoreAllowPlaintext = false;
+      restoreTargetShards = "";
     } catch (err: unknown) {
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
@@ -201,9 +253,31 @@
     }
   }
 
+  // loadDetail fetches the authoritative BackupInfo for one backup through
+  // backups.get, so the detail panel shows what the server holds now (not
+  // the possibly stale list row). detailToken drops a response that a
+  // later row click has superseded.
+  let detailToken = 0;
+  async function loadDetail(id: string): Promise<void> {
+    const token = ++detailToken;
+    detailLoading = true;
+    detailError = null;
+    try {
+      const info = await client.backups.get(id);
+      if (token !== detailToken) return;
+      selectedBackup = info;
+    } catch (err: unknown) {
+      if (token !== detailToken) return;
+      detailError = err instanceof Error ? err.message : String(err);
+    } finally {
+      if (token === detailToken) detailLoading = false;
+    }
+  }
+
   function handleRowClick(event: RowClickEvent<BackupInfo>): void {
     selectedBackup = event.row;
     lastVerifyResult = null;
+    void loadDetail(event.row.id);
   }
 
   // ---------------------------------------------------------------------------
@@ -253,7 +327,18 @@
         <h3 class="card-title text-base font-semibold">Backup Detail</h3>
         {#if selectedBackup !== null}
           <div class="flex flex-col gap-3">
-            <div class="bg-base-300 rounded p-3">
+            {#if detailLoading}
+              <div class="flex items-center gap-2 text-xs" data-testid="backup-detail-loading">
+                <span class="loading loading-spinner loading-xs"></span>
+                Loading backup detail...
+              </div>
+            {/if}
+            {#if detailError !== null}
+              <div class="alert alert-error py-2 text-xs" data-testid="backup-detail-error">
+                <span>Could not load backup detail: {detailError}</span>
+              </div>
+            {/if}
+            <div class="bg-base-300 rounded p-3" data-testid="backup-detail">
               <table class="table table-sm">
                 <tbody>
                   <tr><th class="w-24">ID</th><td class="font-mono text-xs break-all">{selectedBackup.id}</td></tr>
@@ -262,6 +347,20 @@
                   <tr><th>Size</th><td>{formatBytes(selectedBackup.size)}</td></tr>
                   <tr><th>Status</th><td>{selectedBackup.status}</td></tr>
                   <tr><th>Checksum</th><td class="font-mono text-xs break-all">{selectedBackup.checksum}</td></tr>
+                  <tr><th>Destination</th><td class="font-mono text-xs break-all">{selectedBackup.destination}</td></tr>
+                  <tr><th>Compression</th><td>{selectedBackup.compression}</td></tr>
+                  <tr><th>Encryption</th><td>{selectedBackup.encryption}</td></tr>
+                  <tr><th>Key Provider</th><td class="font-mono text-xs break-all">{selectedBackup.keyProviderId ?? ""}</td></tr>
+                  <tr><th>Duration</th><td>{formatDurationMs(selectedBackup.durationMs)}</td></tr>
+                  <tr><th>Error</th><td class="text-xs break-all">{selectedBackup.errorMessage}</td></tr>
+                  <tr>
+                    <th>Metadata</th>
+                    <td class="font-mono text-xs break-all">
+                      {#each Object.entries(selectedBackup.metadata ?? {}) as [k, v] (k)}
+                        <div>{k}={v}</div>
+                      {/each}
+                    </td>
+                  </tr>
                 </tbody>
               </table>
             </div>
@@ -282,7 +381,7 @@
               <button class="btn btn-outline btn-xs flex-1" onclick={() => void handleVerify(selectedBackup!)}>
                 Verify
               </button>
-              <button class="btn btn-outline btn-xs flex-1" onclick={() => (showRestoreModal = true)}>
+              <button class="btn btn-outline btn-xs flex-1" onclick={openRestoreModal}>
                 Restore
               </button>
               <button class="btn btn-error btn-xs flex-1" onclick={() => (showDeleteConfirm = true)}>
@@ -382,6 +481,19 @@
       <label class="label cursor-pointer justify-start gap-2">
         <input type="checkbox" class="checkbox checkbox-sm" bind:checked={restoreValidateFirst} />
         <span class="label-text">Validate backup integrity before restoring</span>
+      </label>
+      <label class="label cursor-pointer justify-start gap-2">
+        <input type="checkbox" class="checkbox checkbox-sm" bind:checked={restoreAllowPlaintext} />
+        <span class="label-text">Allow restoring a plaintext (unencrypted) backup</span>
+      </label>
+      <label class="form-control w-full">
+        <div class="label"><span class="label-text">Target Shards (optional)</span></div>
+        <input
+          type="text"
+          class="input input-bordered w-full font-mono text-xs"
+          placeholder="Comma-separated shard IDs; blank restores every shard"
+          bind:value={restoreTargetShards}
+        />
       </label>
       <label class="form-control w-full">
         <div class="label"><span class="label-text">Key File Name Override (optional)</span></div>

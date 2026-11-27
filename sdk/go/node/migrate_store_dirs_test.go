@@ -103,6 +103,35 @@ func TestNodeMigrationProvider_StoreDirs_WALDirWithoutAnExternalPebbleWAL(t *tes
 	})
 }
 
+// TestNodeMigrationProvider_StoreDirs_RefusesAnObjstoreLSMStore: an objstore
+// node store keeps its SSTables in the bucket, which the copy-verify-swap
+// mechanisms cannot re-encrypt, so StoreDirs refuses the system scope whether
+// the config selects the objstore backend or only its local directory exists.
+func TestNodeMigrationProvider_StoreDirs_RefusesAnObjstoreLSMStore(t *testing.T) {
+	t.Run("config selects objstore", func(t *testing.T) {
+		dataDir := t.TempDir()
+		cfg := qrdbconfig.DefaultConfig()
+		cfg.Raft.DataDir = dataDir
+		cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendObjstore)}}
+
+		p := &nodeMigrationProvider{node: &Node{retainedStandalone: &pendingStandaloneBoot{dataDir: dataDir, cfg: cfg}}}
+		_, err := p.StoreDirs(context.Background(), service.BarrierScope{Kind: service.ScopeSystem})
+		var notSupported *MigrationNotSupportedError
+		require.ErrorAs(t, err, &notSupported)
+		require.Contains(t, notSupported.Reason, "bucket SSTables")
+	})
+	t.Run("objstore-lsm directory exists", func(t *testing.T) {
+		dataDir := t.TempDir()
+		require.NoError(t, os.Mkdir(filepath.Join(dataDir, "objstore-lsm"), 0o700))
+		cfg := qrdbconfig.DefaultConfig()
+
+		p := &nodeMigrationProvider{node: &Node{retainedStandalone: &pendingStandaloneBoot{dataDir: dataDir, cfg: cfg}}}
+		_, err := p.StoreDirs(context.Background(), service.BarrierScope{Kind: service.ScopeSystem})
+		var notSupported *MigrationNotSupportedError
+		require.ErrorAs(t, err, &notSupported)
+	})
+}
+
 // TestNode_EnableEncryption_ExternalPebbleWALRefusedAndIntact drives the
 // combination end to end: a Pebble node with storage.wal_dir outside its
 // data directory acknowledges writes, the system migration is refused
@@ -144,6 +173,66 @@ func TestNode_EnableEncryption_ExternalPebbleWALRefusedAndIntact(t *testing.T) {
 		Mechanism:      seal.MechanismSwap,
 		Availability:   seal.AvailabilityQuiesced,
 		Credentials:    seal.MustCredentials(ctx, []byte("external-wal-pass")),
+	})
+	var notSupported *MigrationNotSupportedError
+	require.ErrorAs(t, err, &notSupported)
+	for k, v := range want {
+		got, gerr := n.KVService().Get(ctx, k)
+		require.NoErrorf(t, gerr, "Get(%q) after the refused migration", k)
+		require.Equal(t, v, string(got))
+	}
+	require.NoError(t, n.Close())
+
+	n2, err := NewStandaloneNode(ctx, newConfig(), nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = n2.Close() })
+	for k, v := range want {
+		got, gerr := n2.KVService().Get(ctx, k)
+		require.NoErrorf(t, gerr, "Get(%q) after restart", k)
+		require.Equal(t, v, string(got))
+	}
+}
+
+// TestNode_EnableEncryption_ObjstoreLSMRefusedAndIntact: a none -> keyed
+// migration of an objstore node is refused before a barrier is minted, every
+// acknowledged write is still served, and served again after a restart under
+// the unchanged none barrier from the same local-provider bucket.
+func TestNode_EnableEncryption_ObjstoreLSMRefusedAndIntact(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	bucket := filepath.Join(t.TempDir(), "bucket")
+	newConfig := func() *qrdbconfig.Config {
+		cfg := qrdbconfig.DefaultConfig()
+		cfg.Auth.Enabled = qrdbconfig.BoolPtr(false) // not an authorization test; see testhelpers_test.go
+		cfg.Raft.DataDir = dataDir
+		cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendObjstore)}}
+		cfg.Storage.Objstore = qrdbconfig.ObjstoreConfig{Provider: "local", Settings: map[string]string{"path": bucket}}
+		cfg.Seal.Enabled = true
+		cfg.Seal.Strategy = "none"
+		cfg.Protocols.REST = false
+		cfg.Protocols.GRPC = false
+		cfg.Protocols.QUIC = false
+		cfg.Protocols.Unix = false
+		cfg.Protocols.MCP = false
+		return cfg
+	}
+
+	n, err := NewStandaloneNode(ctx, newConfig(), nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = n.Close() })
+
+	want := map[string]string{}
+	for i := 0; i < 20; i++ {
+		k, v := fmt.Sprintf("key/%02d", i), fmt.Sprintf("value-%d", i)
+		require.NoError(t, n.KVService().Put(ctx, k, []byte(v)))
+		want[k] = v
+	}
+
+	err = n.EnableEncryption(ctx, service.BarrierScope{Kind: service.ScopeSystem}, seal.MigrationOptions{
+		TargetStrategy: seal.StrategyPassphrase,
+		Mechanism:      seal.MechanismSwap,
+		Availability:   seal.AvailabilityQuiesced,
+		Credentials:    seal.MustCredentials(ctx, []byte("objstore-lsm-pass")),
 	})
 	var notSupported *MigrationNotSupportedError
 	require.ErrorAs(t, err, &notSupported)

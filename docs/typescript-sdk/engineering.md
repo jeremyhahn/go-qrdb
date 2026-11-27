@@ -1,6 +1,6 @@
 # TypeScript SDK — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-11-25
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported Surface
@@ -17,10 +17,10 @@ the same runtime test.
 
 The client contract is `Client` in `interfaces.ts`. It exposes connection, KV,
 admin, MVCC, transactions, batches, watches, leases, locks, indexes, optional
-time-series and vector clients, users, invitations, roles, certificates,
-databases, SQL, seal, ceremony, officers, embedded server, daemon, collections,
-tenants, volume pools, server config, backup, rebalance, credentials, audit,
-and connection-manager clients. `databaseScoped(name)` returns a `Client`
+time-series and vector clients, users, invitations, roles, groups,
+certificates, databases, SQL, seal, ceremony, officers, embedded server,
+daemon, collections, tenants, volume pools, backups, rebalance, credentials,
+audit, verifiable logs (`vlog`), server config and connection-manager clients. `databaseScoped(name)` returns a `Client`
 whose data-plane calls target the named database.
 
 ## Invariants
@@ -43,6 +43,7 @@ and `WailsClient` raise these:
 |---|---|
 | `TransportError` | `RestClient`, for every failed request; carries the HTTP status |
 | `KeyNotFoundError` | `RestClient` `kv.get`, on a 404 |
+| `ConfigError` | `RestClient`, for a secret-bearing call on a base URL that is not `https://` ([api.md](api.md#secret-bearing-calls)) |
 | `NotConnectedError` | `RestClient`, on a call before `connection.connect` |
 | `DesktopOnlyError` | `RestClient`, for desktop-only operations |
 | `ShamirSplitMissingError`, `ShamirSplitMismatchError` | `RestClient` `tenants.barrierInit`, Shamir split rounds |

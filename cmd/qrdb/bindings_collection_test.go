@@ -29,6 +29,11 @@ func newTestCollectionBinding(t *testing.T) (*CollectionBinding, *EmbeddedServer
 	t.Helper()
 	esb, conn := startEmbeddedLocal(t, "pebble")
 	log := testLogger(t)
+	// The embedded transport resolves databases through the node's service
+	// registry, so the "default" database the tests use must exist first.
+	if _, err := NewDatabaseBinding(log, conn).Create(&transport.CreateDatabaseRequest{Name: "default"}); err != nil {
+		t.Fatalf("create database default: %v", err)
+	}
 	b := NewCollectionBinding(log, conn)
 	return b, esb
 }

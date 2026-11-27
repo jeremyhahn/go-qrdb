@@ -45,6 +45,13 @@
   // State
   // ---------------------------------------------------------------------------
 
+  /**
+   * Events per server page. The server sets no default page size, so without
+   * a limit every event arrives in one response and no next-page cursor is
+   * ever returned.
+   */
+  const AUDIT_PAGE_SIZE = 100;
+
   let events: AuditEvent[] = $state([]);
   let loading: boolean = $state(true);
   let total: number = $state(0);
@@ -71,7 +78,7 @@
 
   /** Builds the AuditFilter from the current filter inputs. */
   function buildFilter(cursor: string = ""): AuditFilter {
-    const f: AuditFilter = {};
+    const f: AuditFilter = { limit: AUDIT_PAGE_SIZE };
     if (filterTenant.trim() !== "") f.tenantId = filterTenant.trim();
     if (filterActor.trim() !== "") f.actor = filterActor.trim();
     if (filterResource.trim() !== "") f.resource = filterResource.trim();
@@ -124,8 +131,11 @@
     loading = true;
     try {
       const page = await client.audit.query(buildFilter(nextCursor));
+      // A cursor page's total counts the events from the cursor onward, so
+      // the overall total is what is already shown plus that count (-1 means
+      // the server does not know it).
+      total = page.total >= 0 ? events.length + page.total : page.total;
       events = [...events, ...page.events];
-      total = page.total;
       nextCursor = page.next ?? "";
     } catch (err: unknown) {
       showToast("error", err instanceof Error ? err.message : String(err));
@@ -301,7 +311,6 @@
 
 <!-- Event detail panel -->
 <SlidePanel open={showDetail} title="Audit Event" onclose={() => (showDetail = false)}>
-  {#snippet children()}
     {#if selectedEvent !== null}
       <div class="flex flex-col gap-3">
         <table class="table table-sm">
@@ -336,5 +345,4 @@
         {/if}
       </div>
     {/if}
-  {/snippet}
 </SlidePanel>

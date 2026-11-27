@@ -6,18 +6,19 @@
 > [../storage-engines/architecture.md](../storage-engines/architecture.md),
 > "Target design: object-storage LSM segment layout". Each question below has
 > its options, a recommendation and the reason, and the lower-project API each
-> option needs. On main and not yet wired: the go-objstore adapter, the
-> encrypting wrapper, `remotelsm.WithRemote`, the composition and the cache
-> (SPEC row #924). Not built: the engine switch (the flat engine deleted, the
-> per-database refusal lifted).
+> option needs. Built and wired: a standalone `storage.backend: objstore` node
+> opens the Pebble engine with its SSTables in the bucket through the
+> go-objstore adapter, the encrypting wrapper, `remotelsm.WithRemote` and the
+> cache (SPEC row #924). Not built: the flat engine deleted (its package code
+> still exists) and the per-database refusal lifted (OS-7).
 
 ## Problem
 
-`pkg/storage/objstore` stores one object per key under an encoded name. It is
-correct for every key, but its write and listing cost scale with key count, a
-batch needs a journal object to be atomic, it sits outside the barrier (a
-standalone store starts with a WARN and an `unencryptedAtRest` capability
-entry), and it is refused as a per-database backend and as a Raft hot apply
+The flat engine in `pkg/storage/objstore` stored one object per key under an
+encoded name. It was correct for every key, but its write and listing cost
+scale with key count, a batch needs a journal object to be atomic, it sat
+outside the barrier (a standalone store started with a WARN and an
+`unencryptedAtRest` capability entry), and it is refused as a per-database backend and as a Raft hot apply
 path.
 
 The design proposes an LSM segment layout instead: compose Pebble v2's remote

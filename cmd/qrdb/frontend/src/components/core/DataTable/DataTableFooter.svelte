@@ -178,7 +178,7 @@
         value={pagination.pageSize}
         onchange={handlePageSizeChange}
       >
-        {#each pageSizeOptions as size}
+        {#each pageSizeOptions as size (size)}
           <option value={size}>{getPageSizeLabel(size)}</option>
         {/each}
       </select>
@@ -238,7 +238,7 @@
       </button>
 
       <!-- Page numbers -->
-      {#each visiblePages as pageNum}
+      {#each visiblePages as pageNum, pi (pi)}
         {#if pageNum === "..."}
           <button type="button" class="btn btn-sm join-item btn-disabled">
             ...

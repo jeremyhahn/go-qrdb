@@ -147,21 +147,14 @@ func (c *Config) EffectiveCapabilities() capabilities.Capabilities {
 		// daemon's gated registry serve it would make the capability report
 		// the lie instead of the gate.
 		//
-		// Like MVCC and the other engine-shaped rows, this is a MODE-level
-		// statement. The file and objstore backends compose the plain KV
-		// engine and cannot execute a transaction on any mode; that is the
-		// engine boundary (docs/run-modes.md), reported per operation as a
-		// typed engine.UnsupportedOperationError, not per node here.
+		// Every local backend composes the MVCC engine (lifecycle.NewLocalEngine).
 		Transaction: true,
 
 		// The coordination families are served in EVERY mode too
 		// (go-qrdb#582): a standalone node composes them over the same
 		// engine, lessor and watch hub as raft mode's MVCC state machine,
 		// applying commands in process instead of through the log. Config
-		// toggles narrow them in either mode. Like Transaction these are
-		// MODE-level statements: the file and objstore backends compose the
-		// plain KV engine, which keeps no revisions and no leases, and refuse
-		// those operations per call with a typed capability error.
+		// toggles narrow them in either mode.
 		MVCC:  enabled(c.MVCC.Enabled),
 		Watch: enabled(c.Watch.Enabled),
 		Lease: enabled(c.Lease.Enabled),
@@ -180,35 +173,5 @@ func (c *Config) EffectiveCapabilities() capabilities.Capabilities {
 		MySQL:      capabilities.Has("mysql"),
 		PostgreSQL: capabilities.Has("pgsql"),
 		FTS:        capabilities.Has("fts"),
-
-		UnencryptedAtRest: c.unencryptedAtRest(raft),
 	}
-}
-
-// unencryptedLocalBackends are the standalone storage backends that keep
-// data without the barrier's encrypting file system. Pebble and file write
-// their files through it; objstore keeps its objects in a bucket, which has
-// no file system to encrypt. The memory backend keeps nothing at rest.
-var unencryptedLocalBackends = map[string]struct{}{
-	"objstore": {},
-}
-
-// unencryptedAtRest reports where, with seal enabled, the node's data plane
-// keeps data unencrypted: a standalone node's objstore backend (the backend
-// of the first configured database, pebble when none is set). A raft node
-// reports nothing: every state machine storage it will start under the
-// barrier (pebble, file) is encrypted at rest, or persists nothing (memory).
-// It returns nil when seal is disabled.
-func (c *Config) unencryptedAtRest(raft bool) []string {
-	if !c.Seal.Enabled || raft {
-		return nil
-	}
-	backend := "pebble"
-	if len(c.Databases) > 0 && c.Databases[0].Backend != "" {
-		backend = c.Databases[0].Backend
-	}
-	if _, ok := unencryptedLocalBackends[backend]; ok {
-		return []string{`standalone backend "` + backend + `" stores its data without the seal barrier's at-rest encryption; use backend "pebble" or "file"`}
-	}
-	return nil
 }

@@ -34,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/wiring"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
+	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -49,6 +50,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/store"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
@@ -87,8 +89,12 @@ type EmbeddedServerBinding struct {
 	localBackend *backend.LocalBackend
 	storage      storage.Storage // underlying storage (pebble/file/memory) that must be closed on stop
 	watchHub     *watch.Hub
-	svcNode      *lifecycle.Node      // owns all service lifecycle (vector, db, etc.)
-	sealBarrier  *seal.StorageBarrier // owns the persistent seal store; closed on stop to release its file lock
+	svcNode      *lifecycle.Node // owns all service lifecycle (vector, db, etc.)
+	// dbManager is the node's one database manager: the lifecycle node's
+	// database service and the service registry's catalog and drop fence
+	// both read it. Closed on stop, after the node.
+	dbManager   *database.Manager
+	sealBarrier *seal.StorageBarrier // owns the persistent seal store; closed on stop to release its file lock
 	// auditTrail is the compliance audit trail, when EmbeddedConfig.Audit
 	// enables one; closed on stop.
 	auditTrail audit.AuditLogger
@@ -188,11 +194,27 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 		return &EmbeddedServerError{Op: "start", Err: &AlreadyRunningError{}}
 	}
 
-	// The compliance trail, when enabled, is opened before anything else --
-	// before the node and before the seal barrier -- so it records from the
-	// first sealed moment, and a trail that cannot be opened stops the start
-	// with nothing running (openEmbeddedAudit). A start that fails later
-	// closes it again.
+	// The data directory belongs to one run mode. Claim it before anything
+	// writes under it -- the audit trail included -- so a start in the
+	// other mode is refused with the directory untouched (#658).
+	dataDir, dirErr := b.resolveDataDir(cfg)
+	if dirErr != nil {
+		return &EmbeddedServerError{Op: "start", Err: dirErr}
+	}
+	runMode := capabilities.ModeStandalone
+	if cfg.RaftEnabled {
+		runMode = capabilities.ModeRaft
+	}
+	if err := lifecycle.ClaimRunMode(dataDir, runMode); err != nil {
+		b.logger.Error("StartEmbedded failed", "error", err)
+		return &EmbeddedServerError{Op: "start", Err: err}
+	}
+
+	// The compliance trail, when enabled, is opened before anything else
+	// that writes -- before the node and before the seal barrier -- so it
+	// records from the first sealed moment, and a trail that cannot be
+	// opened stops the start with nothing running (openEmbeddedAudit). A
+	// start that fails later closes it again.
 	trail, auditErr := b.openEmbeddedAudit(cfg)
 	if auditErr != nil {
 		b.logger.Error("StartEmbedded failed", "error", auditErr)
@@ -233,14 +255,6 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 		b.localBackend = lb
 	}
 
-	// Resolve the data directory once; it is used for service construction
-	// (vector, database) and optional embedded seal barrier init.
-	dataDir, dirErr := b.resolveDataDir(cfg)
-	if dirErr != nil {
-		hub.Close()
-		return &EmbeddedServerError{Op: "start", Err: dirErr}
-	}
-
 	// Initialize the in-process seal barrier so that all seal-gated
 	// services (tenant, ceremony, credential, cert) are available in
 	// embedded mode. The barrier is backed by a persistent on-disk pebble
@@ -259,6 +273,16 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 		b.sealBarrier = embeddedBarrier
 	}
 
+	// One database manager serves the node, as in qrdbd: the lifecycle
+	// node's database service creates and drops through it, and the
+	// service registry resolves each named database's record, sealed state
+	// and drop fence from it, so a write resolved before DROP DATABASE is
+	// refused rather than landing after reclamation or in a same-named
+	// replacement.
+	dbManager := database.NewManager(slog.Default(), dataDir,
+		database.WithDefaults(database.Defaults{RunMode: database.RunModeStandalone}))
+	b.dbManager = dbManager
+
 	// Build all services via the shared lifecycle package.
 	//
 	// SealEnabled is unconditionally true: unlike seal.enabled in the daemon
@@ -274,6 +298,7 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 		Host:                   svcHost,
 		WatchHub:               hub,
 		DataDir:                dataDir,
+		DatabaseManager:        dbManager,
 		SealBarrier:            embeddedBarrier,
 		SealEnabled:            true,
 		BarrierRegistry:        embeddedRegistry,
@@ -290,6 +315,7 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 	})
 	if svcErr != nil {
 		hub.Close()
+		b.closeDatabaseManager()
 		if b.sealBarrier != nil {
 			_ = b.sealBarrier.Close()
 			b.sealBarrier = nil
@@ -352,6 +378,16 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 		opts = append(opts, embedded.WithLogService(svcNode.Log))
 	}
 
+	// The node's per-(tenant, database) service registry, which every
+	// network transport resolves requests through: without it the embedded
+	// transport cannot scope a connection to a named database.
+	opts = append(opts, embedded.WithServiceRegistry(embeddedServiceRegistry(svcNode, dbManager, embeddedRegistry, cfg.RaftEnabled)))
+	// The default ("system") database is served through that registry as
+	// well, so it sees only its own keyspace: without this its data plane
+	// was the node's raw store, where a Scan, Get or Delete reached every
+	// named database's physical keys.
+	opts = append(opts, embedded.WithRegistryDefaultDatabase())
+
 	// Collection service uses KV + index from the node.
 	opts = append(opts, embedded.WithCollectionService(svcNode.Collection))
 	if trail != nil {
@@ -398,6 +434,7 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 			_ = b.svcNode.Stop(context.Background())
 			b.svcNode = nil
 		}
+		b.closeDatabaseManager()
 		if b.host != nil {
 			_ = b.host.Close()
 			b.host = nil
@@ -432,6 +469,43 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 	started = true
 	b.logger.Debug("StartEmbedded completed")
 	return nil
+}
+
+// embeddedServiceRegistry builds the embedded node's per-(tenant, database)
+// service registry the way qrdbd's does: the system database is registered
+// over the node's service graph, and any other database resolves through
+// dbManager, the node's database manager. One record lookup decides each
+// resolution: a lookup error fails closed, a name with no record is not
+// found, a sealed database is refused, a database with its own barrier over
+// its own store is served from that store, and every other database is a
+// namespaced view of the graph whose writes carry the database's drop fence,
+// so a handle resolved before DROP DATABASE is refused after it. barrierReg
+// is the embedded barrier registry the node was built with (nil when the
+// barrier is unavailable); raftEnabled selects the shard the graph is served
+// by (zero for the engine-direct local backend).
+func embeddedServiceRegistry(svcNode *lifecycle.Node, dbManager *database.Manager, barrierReg *seal.BarrierRegistry, raftEnabled bool) service.Registry {
+	var shardID uint64
+	if raftEnabled {
+		shardID = defaultShardID
+	}
+	dbReg := server.NewDatabaseServiceRegistry(lifecycle.SystemDatabase)
+	dbReg.Register(lifecycle.SystemDatabase, svcNode.DatabaseServices(lifecycle.SystemDatabase, shardID))
+	regOpts := []server.RESTRegistryOption{server.WithRegistryDatabaseManager(dbManager)}
+	if svcNode.Tenant != nil {
+		regOpts = append(regOpts, server.WithTenantServicer(svcNode.Tenant))
+	}
+	return server.NewRESTServiceRegistry(dbReg, barrierReg, tenantid.System, regOpts...)
+}
+
+// closeDatabaseManager closes the node's database manager, once.
+func (b *EmbeddedServerBinding) closeDatabaseManager() {
+	if b.dbManager == nil {
+		return
+	}
+	if err := b.dbManager.Close(); err != nil {
+		b.logger.Warn("embedded: database manager close failed", "error", err)
+	}
+	b.dbManager = nil
 }
 
 // embeddedClusterTrustDomain is the trust domain the embedded node issues
@@ -498,6 +572,7 @@ func (b *EmbeddedServerBinding) StopEmbedded() error {
 		_ = b.svcNode.Stop(context.Background())
 		b.svcNode = nil
 	}
+	b.closeDatabaseManager()
 	if b.host != nil {
 		_ = b.host.Close()
 		b.host = nil
@@ -564,7 +639,21 @@ func (b *EmbeddedServerBinding) RestoreEmbedded() error {
 	if err != nil {
 		return err
 	}
+	// In the desktop app every binding resolves its client from the
+	// connection manager's active profile; a standalone server started here
+	// would be invisible to them. Connect the saved config as an embedded
+	// profile instead.
+	if b.conn != nil && b.conn.manager != nil {
+		return b.conn.manager.restoreEmbedded(cfg)
+	}
 	return b.StartEmbedded(cfg)
+}
+
+// SavedConfig returns the saved embedded configuration, the one
+// RestoreEmbedded would start, so the frontend can match it to a profile.
+// Returns NoSavedConfigError when no config file exists.
+func (b *EmbeddedServerBinding) SavedConfig() (*EmbeddedConfig, error) {
+	return b.loadConfig()
 }
 
 // ClearSavedConfig removes the saved embedded configuration from disk.

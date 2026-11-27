@@ -198,8 +198,8 @@ skips the code tier, and the nightly tier carries the soak:
 | Tier | When | Jobs |
 |---|---|---|
 | PR | every run | `preflight` (the changed-file diff, then the architecture gates), `docker-build` (the devcontainer images), `lint` (`make lint`, then `make deps-check`), `lint-gates` (`make lint-gates`), `ci-gate` |
-| Code | every run but a docs-only pull request | `image` (the build), the unit-suite jobs `coverage` (`make coverage-leg`, a matrix over `COVER_LEGS`) and `coverage-merge` (`make coverage-merge`, the repo-wide gate), `test-clusterproof`, `coverage-fts`, `test-tags` and `test-sdk` (a matrix over `TEST_SDK_LEGS`), `test-typescript` |
-| Full | every event but a `workflow_dispatch` off main: a push to `main`, the schedule, and every non-draft pull request that is not docs-only (ci-template v1.41, ruling 742 (2)) | the PR and code tiers, plus the linux/arm64 release cross-build (plain and FIPS), security and the trivy image scan in `image`, `integration-standalone`, `integration-features` (six shards of features) and `fips` (both unit suites under FIPS 140-3, as parallel legs) |
+| Code | every run but a docs-only pull request | `image` (the build), the unit-suite jobs `coverage` (`make coverage-leg`, a matrix over `COVER_LEGS`) and `coverage-merge` (`make coverage-merge`, the repo-wide gate), `test-clusterproof`, `coverage-fts`, `test-tags` and `test-sdk` (a matrix over `TEST_SDK_LEGS`), `test-typescript`, `integration-cluster` (the multi-node suites `clustering` and `cluster-verification`, three self-spawned nodes forming a Raft cluster, #1749) |
+| Full | every event but a `workflow_dispatch` off main: a push to `main`, the schedule, and every non-draft pull request that is not docs-only (ci-template v1.41, ruling 742 (2)) | the PR and code tiers, plus the linux/arm64 release cross-build (plain and FIPS), security and the trivy image scan in `image`, `integration-standalone`, `integration-features` (six shards of the features `integration-cluster` does not run) and `fips` (both unit suites under FIPS 140-3, as parallel legs) |
 | Nightly | `workflow_dispatch` | the full tier, plus `soak` and `clusterproof-soak` |
 
 ci.yml evaluates the full tier's event condition once, into its
@@ -424,7 +424,9 @@ carrying a literal list of features: each shard runs
 `make integration-test IT_FEATURE=<feature>` in that `integration` image for
 every feature in its list, goes on past a failing one, prints a PASS/FAIL line
 with seconds per feature and fails the shard if any failed. The lists together
-name every feature of `make -s print-integration-features` once, balanced to
+with `integration-cluster`'s one list (the code-tier leg that runs the
+multi-node suites on every pull request, #1749) name every feature of
+`make -s print-integration-features` once, balanced to
 about nine minutes a shard on the fleet; each shard has its own 120-minute
 limit, four times the longest shard's measured 21.2 minutes with room, and the
 shards run in parallel. Sharding pays the per-job setup once per shard rather

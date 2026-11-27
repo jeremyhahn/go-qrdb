@@ -106,6 +106,35 @@ func TestClearSavedConfig_NoFileIsNoOp(t *testing.T) {
 	}
 }
 
+func TestSavedConfig_NoFileReturnsNoSavedConfigError(t *testing.T) {
+	esb := newTestEmbeddedServerBinding(t)
+
+	cfg, err := esb.SavedConfig()
+	if cfg != nil {
+		t.Fatalf("expected nil config, got %+v", cfg)
+	}
+	var nsce *NoSavedConfigError
+	if !errors.As(err, &nsce) {
+		t.Fatalf("expected NoSavedConfigError, got %T: %v", err, err)
+	}
+}
+
+func TestSavedConfig_ReturnsPersistedConfig(t *testing.T) {
+	esb := newTestEmbeddedServerBinding(t)
+
+	want := &EmbeddedConfig{StorageBackend: "disk", StoreEngine: "pebble", DataDir: t.TempDir()}
+	if err := esb.saveConfig(want); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+	got, err := esb.SavedConfig()
+	if err != nil {
+		t.Fatalf("SavedConfig: %v", err)
+	}
+	if got.StorageBackend != want.StorageBackend || got.StoreEngine != want.StoreEngine || got.DataDir != want.DataDir {
+		t.Fatalf("SavedConfig = %+v, want %+v", got, want)
+	}
+}
+
 func TestClearSavedConfig_RemovesExistingFile(t *testing.T) {
 	esb := newTestEmbeddedServerBinding(t)
 

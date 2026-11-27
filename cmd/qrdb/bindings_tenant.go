@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"errors"
 
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -99,6 +100,67 @@ func (b *TenantBinding) Delete(id string) error {
 	}
 	b.logger.Debug("Delete completed", "id", id)
 	return nil
+}
+
+// Update applies a partial update to the tenant's name, isolation type,
+// description or metadata. The tenantID argument wins over req.TenantID,
+// as the CLI tenant update builds the request; the caller's req is not
+// modified.
+func (b *TenantBinding) Update(tenantID string, req *transport.UpdateTenantRequest) (*transport.UpdateTenantResponse, error) {
+	b.logger.Debug("Update called", "id", tenantID)
+	if req == nil {
+		err := errors.New("update tenant: request is required")
+		b.logger.Error("Update failed", "id", tenantID, "error", err)
+		return nil, err
+	}
+	cl, err := b.conn.loadClient()
+	if err != nil {
+		b.logger.Error("Update failed", "error", err)
+		return nil, err
+	}
+	patch := *req
+	patch.TenantID = tenantID
+	resp, err := cl.Tenants().UpdateTenant(context.Background(), &patch)
+	if err != nil {
+		b.logger.Error("Update failed", "id", tenantID, "error", err)
+		return nil, err
+	}
+	b.logger.Debug("Update completed", "id", tenantID)
+	return resp, nil
+}
+
+// UpdateQuotas replaces the tenant's resource quotas.
+func (b *TenantBinding) UpdateQuotas(req *transport.UpdateTenantQuotasRequest) (*transport.UpdateTenantQuotasResponse, error) {
+	b.logger.Debug("UpdateQuotas called")
+	cl, err := b.conn.loadClient()
+	if err != nil {
+		b.logger.Error("UpdateQuotas failed", "error", err)
+		return nil, err
+	}
+	resp, err := cl.Tenants().UpdateTenantQuotas(context.Background(), req)
+	if err != nil {
+		b.logger.Error("UpdateQuotas failed", "error", err)
+		return nil, err
+	}
+	b.logger.Debug("UpdateQuotas completed", "id", resp.Tenant.ID)
+	return resp, nil
+}
+
+// UpdateEntitlements replaces the tenant's feature entitlements.
+func (b *TenantBinding) UpdateEntitlements(req *transport.UpdateTenantEntitlementsRequest) (*transport.UpdateTenantEntitlementsResponse, error) {
+	b.logger.Debug("UpdateEntitlements called")
+	cl, err := b.conn.loadClient()
+	if err != nil {
+		b.logger.Error("UpdateEntitlements failed", "error", err)
+		return nil, err
+	}
+	resp, err := cl.Tenants().UpdateTenantEntitlements(context.Background(), req)
+	if err != nil {
+		b.logger.Error("UpdateEntitlements failed", "error", err)
+		return nil, err
+	}
+	b.logger.Debug("UpdateEntitlements completed", "id", resp.Tenant.ID)
+	return resp, nil
 }
 
 // BarrierInit initializes the per-tenant cryptographic barrier, proving

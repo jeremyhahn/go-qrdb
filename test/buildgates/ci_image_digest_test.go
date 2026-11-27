@@ -89,7 +89,7 @@ const (
 // Discovery must find each one, and each must load its image from the
 // artifact, so a job the parse stops seeing fails the gate.
 var digestConsumersWant = []string{
-	"coverage", "coverage-fts", "coverage-merge", "fips", "image", "integration-features",
+	"coverage", "coverage-fts", "coverage-merge", "fips", "image", "integration-cluster", "integration-features",
 	"lint", "lint-gates", "soak", "test-clusterproof", "test-sdk", "test-tags",
 }
 

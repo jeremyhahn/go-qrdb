@@ -221,7 +221,7 @@ var scheduleAllowed = map[string]bool{
 // preflight selects, whose skip the gate must not excuse.
 var (
 	prTierJobs           = []string{changesJob, "lint", "lint-gates"}
-	codeTierJobs         = []string{"test-typescript", "image", "coverage", "coverage-merge", "test-clusterproof", "coverage-fts", "test-tags", "test-sdk"}
+	codeTierJobs         = []string{"test-typescript", "image", "coverage", "coverage-merge", "test-clusterproof", "coverage-fts", "test-tags", "test-sdk", featureClusterJob}
 	fullTierJobs         = []string{"integration-standalone", featureJob, fipsJob}
 	nightlyTierJobs      = []string{"soak"}
 	clusterproofTierJobs = []string{"clusterproof-soak"}
@@ -237,6 +237,11 @@ const fipsJob = "fips"
 // and so is fips: it reruns both unit suites under the FIPS module, which no
 // pull request's budget holds.
 func fullTierJob(name string) bool {
+	// integration-cluster (#1749) is the one integration job in the code
+	// tier: every pull request forms a Raft cluster before it merges.
+	if name == featureClusterJob {
+		return false
+	}
 	return strings.HasPrefix(name, "integration") || name == "trivy" || name == fipsJob
 }
 

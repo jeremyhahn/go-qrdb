@@ -96,9 +96,13 @@ func openStore(provider string, settings map[string]string, o options) (store ob
 	if err != nil {
 		return nil, nil, objcommon.Credentials{}, release, err
 	}
-	store, err = resolved.creator(settings, creds)
+	creator = resolved.creator
+	if o.ownerOnly {
+		creator = ownerOnlyCreator(provider, creator)
+	}
+	store, err = creator(settings, creds)
 	if err != nil {
 		return nil, nil, objcommon.Credentials{}, release, credentialOpenError(o.credentials, err)
 	}
-	return store, resolved.creator, creds, release, nil
+	return store, creator, creds, release, nil
 }

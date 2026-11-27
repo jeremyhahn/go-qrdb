@@ -267,6 +267,9 @@ func (e *errorKVService) ExistsWithConsistency(_ context.Context, _ string, _ co
 type mockAdminService struct {
 	drainErr    error
 	snapshotErr error
+	// topology, when set, is what GetTopology returns; nil keeps the
+	// empty default response.
+	topology *service.TopologyResponse
 }
 
 func newMockAdminService() *mockAdminService {
@@ -344,6 +347,9 @@ func (m *mockAdminService) GetShardState(_ context.Context, _ uint64) (*service.
 }
 
 func (m *mockAdminService) GetTopology(_ context.Context) (*service.TopologyResponse, error) {
+	if m.topology != nil {
+		return m.topology, nil
+	}
 	return &service.TopologyResponse{}, nil
 }
 

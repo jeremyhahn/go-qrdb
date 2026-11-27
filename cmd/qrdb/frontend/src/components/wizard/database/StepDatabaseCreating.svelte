@@ -122,13 +122,16 @@
     // server can build the barrier at all is its answer to this request; the
     // wizard withholds no mode itself.
     const barrierSecret = takeBarrierPassphrase();
+    // The engine is a UI choice only: a database serves every engine, and the
+    // server's strict decoder refuses a field it does not define.
     const req = {
       name: dbWizardStore.name,
-      engine: dbWizardStore.engine,
-      mode: dbWizardStore.mode,
       backend: dbWizardStore.backend || "pebble",
-      ...(dbWizardStore.mode === "embedded" && dbWizardStore.dataDir
-        ? { dataDir: dbWizardStore.dataDir }
+      // The storage step offers a data directory in every mode; it is a path
+      // on the server, and an explicit one gives the database a dedicated
+      // store (which a per-database barrier requires).
+      ...(dbWizardStore.backend !== "memory" && dbWizardStore.dataDir.trim() !== ""
+        ? { dataDir: dbWizardStore.dataDir.trim() }
         : {}),
       // Replication factor and dedicated WAL for a dedicated-raft database.
       // Both are only meaningful on a Raft-mode server; the backend ignores
@@ -191,7 +194,7 @@
     // Never log the request itself: it carries the barrier passphrase.
     console.debug("[StepDatabaseCreating] assembled request", {
       name: req.name,
-      engine: req.engine,
+      engine: dbWizardStore.engine,
       backend: req.backend,
       barrier: dbWizardStore.barrierEnabled ? dbWizardStore.sealMode : "none",
     });

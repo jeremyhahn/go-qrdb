@@ -20,6 +20,8 @@ import (
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector/schema"
 )
 
 func TestVectorBatch_UpsertVector(t *testing.T) {
@@ -327,6 +329,77 @@ func TestVectorBatch_MultipleVersions(t *testing.T) {
 
 	err = batch.Commit()
 	assert.NoError(t, err)
+}
+
+// countPrefix reports how many keys the DB holds under prefix.
+func countPrefix(t *testing.T, db *pebble.DB, prefix []byte) int {
+	t.Helper()
+	iter, err := db.NewIter(&pebble.IterOptions{
+		LowerBound: prefix,
+		UpperBound: schema.PrefixSuccessor(prefix),
+	})
+	require.NoError(t, err)
+	defer func() { _ = iter.Close() }()
+	n := 0
+	for iter.First(); iter.Valid(); iter.Next() {
+		n++
+	}
+	require.NoError(t, iter.Error())
+	return n
+}
+
+// TestVectorBatch_RepeatedIDKeepsLastIndex pins Codex round 2 P1 on #1478:
+// a batch that upserts one ID twice at the same version (the Raft apply
+// writes Version 1 for every vector) keeps only the last write's metadata
+// index, and an upsert then a delete of one ID leaves no index key.
+func TestVectorBatch_RepeatedIDKeepsLastIndex(t *testing.T) {
+	db, err := pebble.Open(t.TempDir(), &pebble.Options{})
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	metrics := newVectorMetrics()
+	const ns = "test_ns"
+
+	t.Run("upsert twice", func(t *testing.T) {
+		batch := newVectorBatch(db, metrics)
+		defer func() { _ = batch.Close() }()
+		require.NoError(t, batch.UpsertVector(ns, &VectorValue{ID: 7, Embedding: []float32{1}, Metadata: map[string]string{"tag": "red"}, Version: 1}))
+		require.NoError(t, batch.UpsertVector(ns, &VectorValue{ID: 7, Embedding: []float32{2}, Metadata: map[string]string{"tag": "blue"}, Version: 1}))
+		require.NoError(t, batch.Commit())
+
+		assert.Zero(t, countPrefix(t, db, schema.EncodeMetadataKeyPrefix(ns, "tag", "red")), "the first write's metadata key remains")
+		assert.Equal(t, 1, countPrefix(t, db, schema.EncodeMetadataKeyPrefix(ns, "tag", "blue")))
+		value, closer, err := db.Get(schema.EncodeReverseKey(ns, 7, "tag", 1))
+		require.NoError(t, err)
+		assert.Equal(t, "blue", string(value))
+		require.NoError(t, closer.Close())
+		assert.Equal(t, 1, countPrefix(t, db, schema.EncodeReverseKeyPrefix(ns, 7)))
+	})
+
+	t.Run("upsert then delete", func(t *testing.T) {
+		batch := newVectorBatch(db, metrics)
+		defer func() { _ = batch.Close() }()
+		require.NoError(t, batch.UpsertVector(ns, &VectorValue{ID: 9, Embedding: []float32{1}, Metadata: map[string]string{"tag": "green"}, Version: 1}))
+		require.NoError(t, batch.DeleteVector(ns, 9))
+		require.NoError(t, batch.Commit())
+
+		assert.Zero(t, countPrefix(t, db, schema.EncodeMetadataKeyPrefix(ns, "tag", "green")))
+		assert.Zero(t, countPrefix(t, db, schema.EncodeReverseKeyPrefix(ns, 9)))
+		assert.Zero(t, countPrefix(t, db, schema.EncodeVectorKeyPrefix(ns, 9)))
+	})
+
+	t.Run("reset keeps the batch indexed", func(t *testing.T) {
+		batch := newVectorBatch(db, metrics)
+		defer func() { _ = batch.Close() }()
+		require.NoError(t, batch.UpsertVector(ns, &VectorValue{ID: 11, Embedding: []float32{1}, Metadata: map[string]string{"tag": "x"}, Version: 1}))
+		batch.Reset()
+		require.NoError(t, batch.UpsertVector(ns, &VectorValue{ID: 11, Embedding: []float32{1}, Metadata: map[string]string{"tag": "y"}, Version: 1}))
+		require.NoError(t, batch.UpsertVector(ns, &VectorValue{ID: 11, Embedding: []float32{1}, Metadata: map[string]string{"tag": "z"}, Version: 1}))
+		require.NoError(t, batch.Commit())
+
+		assert.Zero(t, countPrefix(t, db, schema.EncodeMetadataKeyPrefix(ns, "tag", "x")))
+		assert.Zero(t, countPrefix(t, db, schema.EncodeMetadataKeyPrefix(ns, "tag", "y")))
+		assert.Equal(t, 1, countPrefix(t, db, schema.EncodeMetadataKeyPrefix(ns, "tag", "z")))
+	})
 }
 
 func TestVectorBatch_ConcurrentOperations(t *testing.T) {
