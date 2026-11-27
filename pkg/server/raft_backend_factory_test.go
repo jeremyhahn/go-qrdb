@@ -105,8 +105,8 @@ func (s *fakeRaftInfoSource) recordedDataDir(_ context.Context, tenantID, db str
 	return dir, ok && dir != "", nil
 }
 
-func (s *fakeRaftInfoSource) stateStorage(tenantID, db string) database.BackendType {
-	return s.stateStorages[raftShardKey{tenantID: tenantID, database: db}]
+func (s *fakeRaftInfoSource) stateStorage(tenantID, db string) (database.BackendType, error) {
+	return s.stateStorages[raftShardKey{tenantID: tenantID, database: db}], nil
 }
 
 func newFakeRaftInfoSource() *fakeRaftInfoSource {
@@ -146,8 +146,8 @@ func (s *fakeRaftInfoSource) placementInfo(tenantID, db string) (*placement.Plac
 	return p, ok, nil
 }
 
-func (s *fakeRaftInfoSource) dedicatedWAL(tenantID, db string) bool {
-	return s.dedicated[raftShardKey{tenantID: tenantID, database: db}]
+func (s *fakeRaftInfoSource) dedicatedWAL(tenantID, db string) (bool, error) {
+	return s.dedicated[raftShardKey{tenantID: tenantID, database: db}], nil
 }
 
 func (s *fakeRaftInfoSource) recordedIncarnation(_ context.Context, tenantID, db string) (string, bool, error) {

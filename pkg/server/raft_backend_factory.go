@@ -220,11 +220,15 @@ type raftDatabaseInfoSource interface {
 	// per-tenant-KEY WAL (4d Option C). Meta-derived sources read the persisted
 	// DatabaseInfo flag; the placement source reads the replicated entry so a
 	// follower honors the same WAL routing the leader chose at create time.
-	dedicatedWAL(tenantID, db string) bool
+	// A placement table that cannot be read is an error, never "no entry".
+	dedicatedWAL(tenantID, db string) (bool, error)
 
 	// stateStorage returns the store the (tenant, db) database records for
-	// its group's state machine, or empty when it records none.
-	stateStorage(tenantID, db string) database.BackendType
+	// its group's state machine, or empty when it records none. The
+	// placement source falls back to the catalog only when no placement
+	// entry exists; a placement read failure is an error, so a transient
+	// fault never starts the group on another state store.
+	stateStorage(tenantID, db string) (database.BackendType, error)
 
 	// recordedIncarnation returns the incarnation the replicated catalog
 	// records for the (tenant, db) database, or ok=false when it records
@@ -1279,11 +1283,20 @@ func (f *RaftBackendFactory) planStart(ctx context.Context, tenantID, db string,
 	// 4d Option C: resolve whether this shard opted into a per-tenant-KEY WAL.
 	// The placement entry is authoritative cluster-wide (so followers agree with
 	// the leader); the meta-derived source covers Phase-4b single-node databases.
+	// The group's state storage comes from the same one placement read: a
+	// second read that failed must never swap in another store.
 	dedicatedWAL := false
+	var stateStorage database.BackendType
 	if pInfo != nil {
 		dedicatedWAL = pInfo.DedicatedWAL
+		stateStorage = database.BackendType(pInfo.StateStorage)
 	} else {
-		dedicatedWAL = f.dbInfo.dedicatedWAL(tenantID, db)
+		var werr, serr error
+		dedicatedWAL, werr = f.dbInfo.dedicatedWAL(tenantID, db)
+		stateStorage, serr = f.dbInfo.stateStorage(tenantID, db)
+		if err := errors.Join(werr, serr); err != nil {
+			return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "placement-lookup", Err: err}
+		}
 	}
 	if nodeScoped {
 		// The per-tenant-KEY WAL needs a tenant key; a prefix tenant has none.
@@ -1311,7 +1324,7 @@ func (f *RaftBackendFactory) planStart(ctx context.Context, tenantID, db string,
 		members:      local,
 		peers:        local,
 		dedicatedWAL: dedicatedWAL,
-		stateStorage: f.dbInfo.stateStorage(tenantID, db),
+		stateStorage: stateStorage,
 	}
 	if pInfo != nil {
 		if localReplica, rOK := pInfo.ReplicaForNode(f.localRaftAddr); rOK {
@@ -2190,30 +2203,30 @@ func (s *managerRaftInfoSource) placementInfo(_ string, _ string) (*placement.Pl
 }
 
 // dedicatedWAL reports the persisted per-tenant-KEY WAL opt-in for the database.
-func (s *managerRaftInfoSource) dedicatedWAL(tenantID, db string) bool {
+func (s *managerRaftInfoSource) dedicatedWAL(tenantID, db string) (bool, error) {
 	if s.manager == nil {
-		return false
+		return false, nil
 	}
 	dbase, ok := s.manager.Local(db, tenantID)
 	if !ok || dbase.Dropping() {
-		return false
+		return false, nil
 	}
-	return dbase.Info().DedicatedWAL
+	return dbase.Info().DedicatedWAL, nil
 }
 
-func (s *managerRaftInfoSource) stateStorage(tenantID, db string) database.BackendType {
+func (s *managerRaftInfoSource) stateStorage(tenantID, db string) (database.BackendType, error) {
 	if s.manager == nil {
-		return ""
+		return "", nil
 	}
 	dbase, ok := s.manager.Local(db, tenantID)
 	if !ok {
-		return ""
+		return "", nil
 	}
 	info := dbase.Info()
 	if info.Raft != nil {
-		return info.Raft.StateStorage
+		return info.Raft.StateStorage, nil
 	}
-	return ""
+	return "", nil
 }
 
 func (s *managerRaftInfoSource) recordedIncarnation(ctx context.Context, tenantID, db string) (string, bool, error) {
@@ -2360,9 +2373,13 @@ func (s *placementRaftInfoSource) placementInfo(tenantID, db string) (*placement
 // dedicatedWAL reads the per-tenant-KEY WAL opt-in from the replicated placement
 // entry (authoritative cluster-wide) and falls back to the meta-derived source
 // for databases without a placement entry.
-func (s *placementRaftInfoSource) dedicatedWAL(tenantID, db string) bool {
-	if _, _, p, ok, err := s.databaseAndPlacementInfo(tenantID, db); err == nil && ok && p != nil {
-		return p.DedicatedWAL
+func (s *placementRaftInfoSource) dedicatedWAL(tenantID, db string) (bool, error) {
+	_, _, p, ok, err := s.databaseAndPlacementInfo(tenantID, db)
+	if err != nil {
+		return false, err
+	}
+	if ok && p != nil {
+		return p.DedicatedWAL, nil
 	}
 	return s.fallback.dedicatedWAL(tenantID, db)
 }
@@ -2370,9 +2387,13 @@ func (s *placementRaftInfoSource) dedicatedWAL(tenantID, db string) bool {
 // stateStorage reads the store the placement recorded for the group, as
 // dedicatedWAL does: a replica placed on a node that never opened the
 // database has no local catalog record to read it from.
-func (s *placementRaftInfoSource) stateStorage(tenantID, db string) database.BackendType {
-	if _, _, p, ok, err := s.databaseAndPlacementInfo(tenantID, db); err == nil && ok && p != nil && p.StateStorage != "" {
-		return database.BackendType(p.StateStorage)
+func (s *placementRaftInfoSource) stateStorage(tenantID, db string) (database.BackendType, error) {
+	_, _, p, ok, err := s.databaseAndPlacementInfo(tenantID, db)
+	if err != nil {
+		return "", err
+	}
+	if ok && p != nil {
+		return database.BackendType(p.StateStorage), nil
 	}
 	return s.fallback.stateStorage(tenantID, db)
 }

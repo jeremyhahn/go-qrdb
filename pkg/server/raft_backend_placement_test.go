@@ -589,18 +589,130 @@ func TestPlacementInfoSource_DedicatedWAL(t *testing.T) {
 	fallback := newFakeRaftInfoSource()
 	src := &placementRaftInfoSource{store: store, localNodeID: "local:1", fallback: fallback,
 		timeout: placementResolveTimeout, localRootResolver: poolRootResolver}
-	if !src.dedicatedWAL("rt", "orders") {
+	dedicated := func(db string) bool {
+		t.Helper()
+		got, err := src.dedicatedWAL("rt", db)
+		if err != nil {
+			t.Fatalf("dedicatedWAL(%s): %v", db, err)
+		}
+		return got
+	}
+	if !dedicated("orders") {
 		t.Errorf("dedicatedWAL from placement = false, want true")
 	}
 
 	// No placement entry → fall back to meta source.
 	fallback.add("rt", "meta-only", 9, "/meta/root")
 	fallback.setDedicated("rt", "meta-only")
-	if !src.dedicatedWAL("rt", "meta-only") {
+	if !dedicated("meta-only") {
 		t.Errorf("dedicatedWAL fallback to meta = false, want true")
 	}
-	if src.dedicatedWAL("rt", "absent") {
+	if dedicated("absent") {
 		t.Errorf("dedicatedWAL for unknown db = true, want false")
+	}
+}
+
+// flakyKV answers reads from the wrapped memKV until failing is set, then
+// fails every Get: the transient fault a second placement read can hit
+// after the start path's first read succeeded.
+type flakyKV struct {
+	*memKV
+	failing bool
+	// failAfter, when > 0, sets failing once that many Gets have been
+	// answered, so a start path's later reads fail after its first.
+	failAfter int
+	gets      int
+}
+
+func (k *flakyKV) Get(ctx context.Context, key string) ([]byte, error) {
+	k.gets++
+	if k.failAfter > 0 && k.gets > k.failAfter {
+		k.failing = true
+	}
+	if k.failing {
+		return nil, errFlakyPlacementRead
+	}
+	return k.memKV.Get(ctx, key)
+}
+
+// newFlakyPlacementStore returns a placement store over a flakyKV.
+func newFlakyPlacementStore(t *testing.T) (*placement.Store, *flakyKV) {
+	t.Helper()
+	kv := &flakyKV{memKV: newMemKV()}
+	store, err := placement.NewStore(kv)
+	if err != nil {
+		t.Fatalf("placement.NewStore: %v", err)
+	}
+	return store, kv
+}
+
+var errFlakyPlacementRead = errors.New("placement read failed")
+
+// TestPlacementInfoSource_StateStorageReadErrorIsAnError pins that a
+// placement read failure is returned by stateStorage and dedicatedWAL,
+// never answered from the catalog.
+func TestPlacementInfoSource_StateStorageReadErrorIsAnError(t *testing.T) {
+	store, kv := newFlakyPlacementStore(t)
+	if err := store.Put(context.Background(), &placement.Placement{
+		TenantID: "rt", Database: "orders", ShardID: 7778, RF: 1, LeaderReplicaID: 1,
+		Replicas:     []placement.Replica{{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1"}},
+		StateStorage: placement.Backend(database.BackendMemory),
+	}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	fallback := newFakeRaftInfoSource()
+	fallback.stateStorages = map[raftShardKey]database.BackendType{{tenantID: "rt", database: "orders"}: database.BackendPebble}
+	src := &placementRaftInfoSource{store: store, localNodeID: "local:1", fallback: fallback,
+		timeout: placementResolveTimeout, localRootResolver: poolRootResolver}
+	if got, err := src.stateStorage("rt", "orders"); err != nil || got != database.BackendMemory {
+		t.Fatalf("stateStorage first read = (%q, %v), want the placement's memory", got, err)
+	}
+	kv.failing = true
+	if got, err := src.stateStorage("rt", "orders"); !errors.Is(err, errFlakyPlacementRead) {
+		t.Fatalf("stateStorage on a failing read = (%q, %v), want the read error", got, err)
+	}
+	if got, err := src.dedicatedWAL("rt", "orders"); !errors.Is(err, errFlakyPlacementRead) {
+		t.Fatalf("dedicatedWAL on a failing read = (%v, %v), want the read error", got, err)
+	}
+}
+
+// TestRaftBackendFactory_PlanStartTakesStateStorageFromThePlacementRead: a
+// placed group's start plan takes its state storage from the one placement
+// read the start path made. A later placement read that fails must not send
+// the start to the local catalog's store instead.
+func TestRaftBackendFactory_PlanStartTakesStateStorageFromThePlacementRead(t *testing.T) {
+	host, _ := newSharedTestHost(t)
+	reg := newVolumePooledRegistry(t)
+	ctx := context.Background()
+	registerVolumeTenant(t, reg, "ps")
+
+	store, kv := newFlakyPlacementStore(t)
+	if err := store.Put(ctx, &placement.Placement{
+		TenantID: "ps", Database: "db", ShardID: 7790, RF: 1, LeaderReplicaID: sharedHostReplicaID,
+		Replicas: []placement.Replica{
+			{ReplicaID: sharedHostReplicaID, NodeID: sharedHostRaftAddr, RaftAddr: sharedHostRaftAddr},
+		},
+		StateStorage: placement.Backend(database.BackendMemory),
+	}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	fallback := newFakeRaftInfoSource()
+	fallback.stateStorages = map[raftShardKey]database.BackendType{
+		{tenantID: "ps", database: "db"}: database.BackendPebble,
+	}
+	f := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg,
+		fallback, volTestLogger(),
+		WithPlacementInfoSource(store, sharedHostRaftAddr, reg.LocalTenantDataRoot))
+	t.Cleanup(func() { _ = f.CloseAll() })
+
+	// The first placement read answers; every later one fails.
+	kv.failAfter = kv.gets + 1
+	plan, err := f.planStart(ctx, "ps", "db", true, false)
+	if err != nil {
+		t.Fatalf("planStart: %v", err)
+	}
+	if plan.stateStorage != database.BackendMemory {
+		t.Fatalf("plan state storage = %q, want the placed %q", plan.stateStorage, database.BackendMemory)
 	}
 }
 
