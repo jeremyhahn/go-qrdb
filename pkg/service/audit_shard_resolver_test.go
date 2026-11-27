@@ -24,6 +24,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
@@ -31,7 +33,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
-	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 )
 
 // fakeIsolationLookup answers GetTenant from a fixed map, keyed by tenant ID.

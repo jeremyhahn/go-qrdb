@@ -20,13 +20,14 @@ import (
 	"testing"
 	"time"
 
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+	"github.com/stretchr/testify/require"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
-	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
-	"github.com/jeremyhahn/go-quicraft/pkg/sm"
-	"github.com/stretchr/testify/require"
 )
 
 // ---------------------------------------------------------------------------

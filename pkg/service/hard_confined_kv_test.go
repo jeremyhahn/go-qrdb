@@ -19,9 +19,10 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
-	"github.com/stretchr/testify/require"
 )
 
 // fakeKV is a minimal, map-backed KVServicer double. It embeds the
