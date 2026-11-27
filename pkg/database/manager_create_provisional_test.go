@@ -3,6 +3,9 @@ package database
 import (
 	"context"
 	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -197,6 +200,86 @@ func TestManager_Create_PromotionRefusedAfterReclaimClaim(t *testing.T) {
 	_, err = cat.Get(context.Background(), "", "orders")
 	var notFound *NotFoundError
 	require.ErrorAs(t, err, &notFound)
+}
+
+// reclaimSuccessorCatalog runs succeed before the first promotion Update:
+// a drop reclaims the provisional record and a successor re-creates the
+// name, so the stale create's promotion finds its incarnation gone.
+type reclaimSuccessorCatalog struct {
+	Catalog
+	succeed func(ctx context.Context, tenantID, name, incarnation string)
+	ran     bool
+}
+
+func (c *reclaimSuccessorCatalog) Update(ctx context.Context, tenantID, name, incarnation string, mutate func(*DatabaseMeta) error) error {
+	if !c.ran {
+		c.ran = true
+		c.succeed(ctx, tenantID, name, incarnation)
+	}
+	return c.Catalog.Update(ctx, tenantID, name, incarnation, mutate)
+}
+
+// listDirs returns every directory under root.
+func listDirs(t *testing.T, root string) []string {
+	t.Helper()
+	var dirs []string
+	require.NoError(t, filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && path != root {
+			dirs = append(dirs, path)
+		}
+		return nil
+	}))
+	return dirs
+}
+
+// TestManager_Create_ReclaimedCreateKeepsSuccessorDirs: a create whose
+// provisional record a drop reclaimed, and whose name a successor then
+// re-created in the same directories, fails without removing them.
+func TestManager_Create_ReclaimedCreateKeepsSuccessorDirs(t *testing.T) {
+	cat, err := NewKVCatalog(kvstore.NewMemoryKVStore(), nil)
+	require.NoError(t, err)
+	base := t.TempDir()
+	creator := NewManager(nil, base, WithKeyspaceReclaimer(&spyReclaimer{}))
+	successor := NewManager(nil, base, WithKeyspaceReclaimer(&spyReclaimer{}))
+	successor.SetCatalog(cat)
+	t.Cleanup(func() {
+		_ = creator.Close()
+		_ = successor.Close()
+	})
+	ctx := WithCreateGuard(context.Background(), func(context.Context) error { return nil })
+	var successorDirs []string
+	var successorIncarnation string
+	creator.SetCatalog(&reclaimSuccessorCatalog{Catalog: cat, succeed: func(_ context.Context, tenantID, name, incarnation string) {
+		require.NoError(t, cat.Delete(context.Background(), tenantID, name, incarnation, ""), "the reclaim")
+		_, err := successor.CreateWithCredentials(ctx, DatabaseConfig{Name: name, Backend: BackendMemory}, seal.Credentials{})
+		require.NoError(t, err, "the successor re-creates the name")
+		meta, err := cat.Get(context.Background(), tenantID, name)
+		require.NoError(t, err)
+		successorIncarnation = meta.Incarnation
+		successorDirs = listDirs(t, base)
+	}})
+
+	_, err = creator.CreateWithCredentials(ctx, DatabaseConfig{Name: "orders", Backend: BackendMemory}, seal.Credentials{})
+	var notFound *NotFoundError
+	require.ErrorAs(t, err, &notFound, "the stale create is never promoted")
+	var orphan *CatalogOrphanError
+	assert.False(t, errors.As(err, &orphan), "the successor's record is not the stale create's orphan")
+	_, held := creator.Local("orders", "")
+	assert.False(t, held)
+
+	require.NotEmpty(t, successorDirs)
+	for _, dir := range successorDirs {
+		_, statErr := os.Stat(dir)
+		assert.NoError(t, statErr, "the successor's directory %s survives", dir)
+	}
+	meta, err := cat.Get(context.Background(), "", "orders")
+	require.NoError(t, err)
+	assert.Equal(t, successorIncarnation, meta.Incarnation, "the successor's record survives")
+	_, held = successor.Local("orders", "")
+	assert.True(t, held, "the successor still serves the name")
 }
 
 // A provisioned database is created on every node at boot under the one

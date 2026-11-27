@@ -474,9 +474,12 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 			return nil
 		}); err != nil {
 			var claimed *DropInProgressError
-			if errors.As(err, &claimed) {
-				// The record, and the directories a re-create reuses, are
-				// the reclaimer's: no orphan is reported for them.
+			var reclaimed *NotFoundError
+			if errors.As(err, &claimed) || errors.As(err, &reclaimed) {
+				// A drop claimed the record, or already reclaimed it and a
+				// successor may have re-created the name: the record and
+				// the directories a re-create reuses are not this create's,
+				// so it neither removes them nor reports an orphan.
 				undo.catalog, undo.dirs = nil, nil
 			}
 			return nil, undo.run(ctx, err)

@@ -273,7 +273,13 @@ func (u *createUndo) run(ctx context.Context, cause error) error {
 		err := u.catalog.Delete(undoCtx, u.tenantID, u.name, u.incarnation, "")
 		cancel()
 		var notFound *NotFoundError
-		if err != nil && !errors.As(err, &notFound) {
+		if errors.As(err, &notFound) {
+			// The record of this incarnation is gone: a drop reclaimed it,
+			// and a successor that re-created the name may now own the
+			// directories, so they are left in place.
+			return cause
+		}
+		if err != nil {
 			return &CatalogOrphanError{Name: u.name, TenantID: u.tenantID, Err: cause, Cleanup: err}
 		}
 	}
