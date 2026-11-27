@@ -146,6 +146,9 @@ func requireNotActivated(t *testing.T, c *upgradeCluster, when string) {
 // one N+1, and one N and two N+1 -- serves every transport through the CLI
 // on every node, and forwards writes in both directions: through an N+1
 // follower to an N leader, and through an N follower to an N+1 leader.
+// The upgrade-probe keys put before activation read back on the N nodes,
+// and the node logs prove the gated command never entered the Raft log: no
+// member logged an OpUpgradeProbe apply, before or after the forwarding.
 func TestRollingUpgrade_MixedCluster_CLI(t *testing.T) {
 	bins := buildUpgradeBinaries(t)
 	for _, shape := range mixedShapes {
@@ -176,6 +179,7 @@ func TestRollingUpgrade_MixedCluster_CLI(t *testing.T) {
 				}
 			}
 			c.requireReadsEverywhere(t, want)
+			requireNoProbeApplied(t, c, "in a mixed N/N+1 cluster")
 
 			// The SQL wires serve the mixed cluster too: a row inserted
 			// over MySQL or PostgreSQL on any node, N or N+1, reads back on
@@ -221,6 +225,7 @@ func TestRollingUpgrade_MixedCluster_CLI(t *testing.T) {
 				c.requireReadsEverywhere(t, fwd)
 				c.requireSQLReadsEverywhere(t, fwdSQL)
 			}
+			requireNoProbeApplied(t, c, "after the forwarded writes in a mixed N/N+1 cluster")
 			requireNotActivated(t, c, "in a mixed N/N+1 cluster")
 		})
 	}
@@ -230,7 +235,9 @@ func TestRollingUpgrade_MixedCluster_CLI(t *testing.T) {
 // that the probe's gated put invoked on every N+1 member over every
 // transport takes the N path -- it reads back on every member, N members
 // included, which an N replica could not do had it been sent the probe
-// opcode -- and that writes through the N members keep applying everywhere.
+// opcode -- that no member's log shows it applied as OpUpgradeProbe, so the
+// gated command never entered the Raft log, and that writes through the N
+// members keep applying everywhere.
 func requirePreActivationGating(t *testing.T, c *upgradeCluster, shape string, next [3]bool) {
 	t.Helper()
 	want := make(map[string]string, 3*len(multiProtocols))
@@ -250,14 +257,16 @@ func requirePreActivationGating(t *testing.T, c *upgradeCluster, shape string, n
 		}
 	}
 	c.requireReadsEverywhere(t, want)
+	requireNoProbeApplied(t, c, "in the "+shape+" cluster")
 	requireNotActivated(t, c, "in the "+shape+" cluster")
 }
 
 // TestT9_PreActivationGating (T9): in both mixed shapes the upgrade probe's
 // gated operation invoked on an N+1 member is not sent to the cluster as the
-// new command on any transport, and the N members keep applying; after every
-// member runs N+1 and the feature activates, the same operation succeeds
-// and replicates to every member.
+// new command on any transport (the node logs show no OpUpgradeProbe apply),
+// and the N members keep applying; after every member runs N+1 and the
+// feature activates, the same operation succeeds and every member's log
+// shows it applied as OpUpgradeProbe.
 func TestT9_PreActivationGating(t *testing.T) {
 	bins := buildUpgradeBinaries(t)
 	c := startUpgradeCluster(t, []string{bins.n, bins.n, bins.next})
@@ -270,15 +279,18 @@ func TestT9_PreActivationGating(t *testing.T) {
 	awaitActivated(t, c.logs, upgradeProbeFeature)
 
 	after := make(map[string]string, 3*len(multiProtocols))
+	afterKeys := make([]string, 0, 3*len(multiProtocols))
 	for i, node := range c.nodes {
 		for _, proto := range multiProtocols {
 			key := fmt.Sprintf("%sactive/node%d-%s", upgradeProbeKeyPrefix, i+1, proto.name)
 			value := "active-" + proto.name
 			putAcked(t, node, proto, key, value)
 			after[key] = value
+			afterKeys = append(afterKeys, key)
 		}
 	}
 	c.requireReadsEverywhere(t, after)
+	awaitProbeApplied(t, c, afterKeys)
 }
 
 // TestRollingUpgrade_OldBinaryRefusedAfterActivation_CLI (T4): once the
