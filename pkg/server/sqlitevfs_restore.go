@@ -16,13 +16,8 @@ package server
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"errors"
 	"fmt"
-	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sqlitevfs"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
@@ -44,15 +39,14 @@ import (
 // restore found moved; with Force its error is returned. A dry run is the
 // inner service's.
 type sqliteRestoreMVCC struct {
-	service.MVCCKVServicer
+	// GuardedMVCC refuses single-key writes of SQLite keys and restores
+	// each database whole, under its writer lock.
+	*sqlitevfs.GuardedMVCC
 	kv  sqlitevfs.ServiceKV
 	txn sqlitevfs.ServiceTxn
 	// gate, when set, admits the database a MovePrefix creates (o1, see
 	// withSQLiteAdmission).
 	gate *sqliteAdmitGate
-	// locks resolves the lock service each rewritten Store takes the
-	// database's writer lock through.
-	locks sqliteLockResolver
 }
 
 var (
@@ -84,7 +78,7 @@ func withSQLiteRestoreHook(svcs *DatabaseServices, locks sqliteLockResolver) *Da
 		return svcs
 	}
 	out := *svcs
-	out.MVCC = &sqliteRestoreMVCC{MVCCKVServicer: svcs.MVCC, kv: kv, txn: txn, locks: locks}
+	out.MVCC = &sqliteRestoreMVCC{GuardedMVCC: sqlitevfs.NewGuardedMVCC(svcs.MVCC, kv, txn, sqlitevfs.LockResolver(locks)), kv: kv, txn: txn}
 	return &out
 }
 
@@ -93,162 +87,19 @@ func withSQLiteRestoreHook(svcs *DatabaseServices, locks sqliteLockResolver) *Da
 // takes its writer lock in.
 type sqliteLockResolver func() (sqlitevfs.LockServiceLocker, error)
 
-// sqliteRestoreLockTTL is the lease of the writer lock the restore hook
-// holds on each database it rewrites; the Store renews it as it writes.
-const sqliteRestoreLockTTL = 30 * time.Second
-
 // sqliteRestoreHolder returns a fresh writer-lock holder id for one restore.
-func sqliteRestoreHolder() (string, error) {
-	var raw [8]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return "", fmt.Errorf("sqlitevfs restore hook: holder id: %w", err)
-	}
-	return "sqlite-restore-" + hex.EncodeToString(raw[:]), nil
-}
-
 // RestoreToRevision runs the restore, then bumps the generation of each
 // SQLite database whose keys it changed. A bump failure is returned wrapped
 // together with the restore's result: the restore itself has been applied.
 func (s *sqliteRestoreMVCC) RestoreToRevision(ctx context.Context, req *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error) {
-	if req == nil {
-		return s.MVCCKVServicer.RestoreToRevision(ctx, req)
+	if s.gate == nil {
+		return s.GuardedMVCC.RestoreToRevision(ctx, req)
 	}
-	if req.DryRun {
-		plan, err := s.MVCCKVServicer.RestoreToRevision(ctx, req)
-		if err != nil || plan == nil {
-			return plan, err
-		}
-		dbs := restoredDatabases(plan.Changes)
-		if len(dbs) == 0 {
-			return plan, nil
-		}
-		changes, err := s.imageChanges(ctx, plan.Changes, dbs, req.Revision)
-		if err != nil {
-			return nil, err
-		}
-		priced := *plan
-		priced.Changes = changes
-		return &priced, nil
-	}
-	observed, err := s.kv.CurrentRevision(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("sqlitevfs restore hook: current revision: %w", err)
-	}
-	planReq := *req
-	planReq.DryRun = true
-	plan, err := s.MVCCKVServicer.RestoreToRevision(ctx, &planReq)
-	if err != nil || plan == nil {
-		return plan, err
-	}
-	dbs := restoredDatabases(plan.Changes)
-	if len(dbs) == 0 {
-		return s.MVCCKVServicer.RestoreToRevision(ctx, req)
-	}
-	changes, err := s.imageChanges(ctx, plan.Changes, dbs, req.Revision)
-	if err != nil {
-		return nil, err
-	}
-	result := &service.RestoreRevisionResult{
-		Revision: plan.Revision,
-		Changes:  changes,
-		Skipped:  plan.Skipped,
-	}
-	var otherKeys []string
-	for _, c := range plan.Changes {
-		if _, ok := sqlitevfs.DatabaseOfKey([]byte(c.Key)); !ok {
-			otherKeys = append(otherKeys, c.Key)
-		}
-	}
-	if len(otherKeys) > 0 {
-		keysReq := *req
-		keysReq.Prefix = ""
-		keysReq.Keys = otherKeys
-		other, err := s.MVCCKVServicer.RestoreToRevision(ctx, &keysReq)
-		if err != nil {
-			return nil, err
-		}
-		if other != nil {
-			result.Applied += other.Applied
-			result.Conflicts = append(result.Conflicts, other.Conflicts...)
-		}
-	}
-	kv := s.kv
-	txn := s.txn
-	if s.gate != nil {
-		kv = sqliteGatedKV{ServiceKV: s.kv, mover: s}
-		txn = sqliteGatedServiceTxn{inner: s.txn, gate: s.gate}
-	}
-	backend, err := sqlitevfs.NewServiceBackend(kv, txn)
-	if err != nil {
-		return nil, fmt.Errorf("sqlitevfs restore hook: %w", err)
-	}
-	if s.locks == nil {
-		return nil, errors.New("sqlitevfs restore hook: no lock service for the writer lock")
-	}
-	lockSvc, err := s.locks()
-	if err != nil {
-		return nil, fmt.Errorf("sqlitevfs restore hook: lock service: %w", err)
-	}
-	holder, err := sqliteRestoreHolder()
-	if err != nil {
-		return nil, err
-	}
-	writer, err := sqlitevfs.NewLockServiceWriter(lockSvc, holder, sqliteRestoreLockTTL)
-	if err != nil {
-		return nil, fmt.Errorf("sqlitevfs restore hook: writer lock: %w", err)
-	}
-	conflicted := make(map[string]bool)
-	for _, db := range dbs {
-		store, err := sqlitevfs.NewStore(backend, db, sqlitevfs.WithWriterLock(writer))
-		switch {
-		case err != nil:
-		case req.Force:
-			_, err = store.RestoreToRevision(ctx, req.Revision)
-		default:
-			_, err = store.RestoreToRevisionFrom(ctx, req.Revision, observed)
-		}
-		if err == nil {
-			continue
-		}
-		if !req.Force && (errors.Is(err, sqlitevfs.ErrSnapshotChanged) || errors.Is(err, sqlitevfs.ErrBusy)) {
-			conflicted[db] = true
-			continue
-		}
-		return nil, fmt.Errorf("sqlitevfs restore hook: restore database %q to revision %d: %w", db, req.Revision, err)
-	}
-	for _, c := range changes {
-		db, ok := sqlitevfs.DatabaseOfKey([]byte(c.Key))
-		switch {
-		case !ok:
-		case conflicted[db]:
-			result.Conflicts = append(result.Conflicts, c)
-		default:
-			result.Applied++
-		}
-	}
-	result.Conflicted = len(result.Conflicts)
-	return result, nil
+	return s.Restore(ctx, req, sqliteGatedKV{ServiceKV: s.kv, mover: s}, sqliteGatedServiceTxn{inner: s.txn, gate: s.gate})
 }
 
 // restoredDatabases returns, once each and in first-seen order, the SQLite
 // databases whose keys a restore changed.
-func restoredDatabases(changes []service.RestoreKeyChange) []string {
-	var dbs []string
-	seen := make(map[string]struct{})
-	for _, c := range changes {
-		db, ok := sqlitevfs.DatabaseOfKey([]byte(c.Key))
-		if !ok {
-			continue
-		}
-		if _, dup := seen[db]; dup {
-			continue
-		}
-		seen[db] = struct{}{}
-		dbs = append(dbs, db)
-	}
-	return dbs
-}
-
 // imageChanges returns changes with every SQLite key replaced by the
 // complete image of its database at rev: the metadata record and every
 // page, each priced at the bytes the restore may write. The revision diff
@@ -256,33 +107,6 @@ func restoredDatabases(changes []service.RestoreKeyChange) []string {
 // small change), but the Store rewrites the pages the restored metadata
 // points at, so a quota check pricing the diff would admit a restore far
 // past MaxStorageBytes. Non-SQLite changes are kept as they are.
-func (s *sqliteRestoreMVCC) imageChanges(ctx context.Context, changes []service.RestoreKeyChange, dbs []string, rev int64) ([]service.RestoreKeyChange, error) {
-	backend, err := sqlitevfs.NewServiceBackend(s.kv, s.txn)
-	if err != nil {
-		return nil, fmt.Errorf("sqlitevfs restore hook: %w", err)
-	}
-	out := make([]service.RestoreKeyChange, 0, len(changes))
-	for _, c := range changes {
-		if _, ok := sqlitevfs.DatabaseOfKey([]byte(c.Key)); !ok {
-			out = append(out, c)
-		}
-	}
-	for _, db := range dbs {
-		store, err := sqlitevfs.NewStore(backend, db)
-		if err != nil {
-			return nil, fmt.Errorf("sqlitevfs restore hook: database %q: %w", db, err)
-		}
-		image, err := store.ImageAt(ctx, rev)
-		if err != nil {
-			return nil, fmt.Errorf("sqlitevfs restore hook: image of %q at revision %d: %w", db, rev, err)
-		}
-		for _, k := range image {
-			out = append(out, service.RestoreKeyChange{Key: k.Key, Action: service.RestoreActionRevert, ToRevision: rev, ValueBytes: k.Bytes})
-		}
-	}
-	return out, nil
-}
-
 // MovePrefix forwards to the wrapped service.
 func (s *sqliteRestoreMVCC) MovePrefix(ctx context.Context, req *service.MovePrefixRequest) (int64, error) {
 	mover, ok := s.MVCCKVServicer.(service.PrefixMover)
@@ -353,28 +177,4 @@ func (s *sqliteRestoreMVCC) movedMeta(ctx context.Context, req *service.MovePref
 		}
 	}
 	return ops, compares, nil
-}
-
-// KeepsRevisionHistory forwards to the wrapped service.
-func (s *sqliteRestoreMVCC) KeepsRevisionHistory() bool {
-	r, ok := s.MVCCKVServicer.(service.RevisionHistoryReporter)
-	return !ok || r.KeepsRevisionHistory()
-}
-
-// CompactionPolicy forwards to the wrapped service.
-func (s *sqliteRestoreMVCC) CompactionPolicy(ctx context.Context) (*compaction.Policy, error) {
-	h, ok := s.MVCCKVServicer.(service.CompactionPolicyHolder)
-	if !ok {
-		return nil, nil
-	}
-	return h.CompactionPolicy(ctx)
-}
-
-// SetCompactionPolicy forwards to the wrapped service.
-func (s *sqliteRestoreMVCC) SetCompactionPolicy(ctx context.Context, policy *compaction.Policy) error {
-	h, ok := s.MVCCKVServicer.(service.CompactionPolicyHolder)
-	if !ok {
-		return &service.CompactionPolicyUnavailableError{}
-	}
-	return h.SetCompactionPolicy(ctx, policy)
 }

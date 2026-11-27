@@ -431,12 +431,8 @@ func TestSQLiteVFSRestore_CommitAfterPlanIsConflict(t *testing.T) {
 			hook.onPlan = func() {
 				newRestoreStore(t, reg, lockTenantA).restoreCommit(t, 0x55, 0x66)
 			}
-			w := &sqliteRestoreMVCC{
-				MVCCKVServicer: hook,
-				kv:             mvccSvc.(sqlitevfs.ServiceKV),
-				txn:            txnSvc.(sqlitevfs.ServiceTxn),
-				locks:          restoreLocks(t, reg, lockTenantA),
-			}
+			w := sqlitevfs.NewGuardedMVCC(hook, mvccSvc.(sqlitevfs.ServiceKV), txnSvc.(sqlitevfs.ServiceTxn),
+				sqlitevfs.LockResolver(restoreLocks(t, reg, lockTenantA)))
 
 			res, err := w.RestoreToRevision(ctx, &service.RestoreRevisionRequest{Revision: r, Prefix: "sqlite/"})
 			if err != nil {
