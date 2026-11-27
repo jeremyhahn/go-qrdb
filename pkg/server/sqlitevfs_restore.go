@@ -17,6 +17,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sqlitevfs"
@@ -143,6 +144,15 @@ func (s *sqliteRestoreMVCC) movedMeta(ctx context.Context, req *service.MovePref
 	if req.Src == "" || req.ExpectedKeys < 1 {
 		return nil, nil, nil
 	}
+	if prefixHoldsNoMeta(req.Src) && prefixHoldsNoMeta(req.Dst) {
+		// No key under either prefix can be a SQLite meta record (a staged
+		// publish: sqlite/<db>/stage/<id>/page/ -> sqlite/<db>/page/), so
+		// the move creates or removes no database whatever keys it moves:
+		// nothing to admit, and apply's ExpectedKeys count check is the
+		// whole guard. Per-key compares here would grow the publish
+		// proposal with the page count (SPEC sqlite-vfs Q2).
+		return nil, nil, nil
+	}
 	src := []byte(req.Src)
 	kvs, _, _, err := s.kv.Range(ctx, src, storage.PrefixEnd(src), service.WithKeysOnly(), service.WithLimit(req.ExpectedKeys+1))
 	if err != nil {
@@ -177,4 +187,23 @@ func (s *sqliteRestoreMVCC) movedMeta(ctx context.Context, req *service.MovePref
 		}
 	}
 	return ops, compares, nil
+}
+
+// prefixHoldsNoMeta reports whether no key beginning with prefix can be a
+// SQLite meta record (sqlite/<db>/meta): the prefix names one database,
+// sqlite/<db>/, and continues with a segment that is not a prefix of
+// "meta", so every key under it belongs to that database and differs from
+// its meta key.
+func prefixHoldsNoMeta(prefix string) bool {
+	db, ok := sqlitevfs.DatabaseOfKey([]byte(prefix))
+	if !ok {
+		return false
+	}
+	metaKey, err := sqlitevfs.MetaKey(db)
+	if err != nil {
+		return false
+	}
+	root := len(metaKey) - len("meta")
+	rest := prefix[root:]
+	return rest != "" && !strings.HasPrefix("meta", rest)
 }

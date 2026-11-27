@@ -435,6 +435,79 @@ func TestSQLiteAdmitMovePrefix_ShortListingIsRefused(t *testing.T) {
 	}
 }
 
+// TestSQLiteAdmitMovePrefix_StagedPublishIsBounded checks that a staged
+// publish (stage prefix -> page prefix of one database) carries no per-key
+// compare: the publish proposal must not grow with the staged page count,
+// or a large bulk write or VACUUM exceeds the log entry ceiling (SPEC
+// sqlite-vfs Q2). The moved pages still land.
+func TestSQLiteAdmitMovePrefix_StagedPublishIsBounded(t *testing.T) {
+	const pages = 2048
+	fakes := &admitFakes{allowed: true, max: 1}
+	svcs := gatedServices(t, lockScenes["prefix"](t).registry, lockTenantA, fakes)
+	rm, ok := svcs.MVCC.(*sqliteRestoreMVCC)
+	if !ok {
+		t.Fatalf("gated MVCC %T is no *sqliteRestoreMVCC", svcs.MVCC)
+	}
+	const commitID = "0123456789abcdef0123456789abcdef"
+	src, err := sqlitevfs.StagePrefix(wiringDB, commitID)
+	if err != nil {
+		t.Fatalf("StagePrefix: %v", err)
+	}
+	dst, err := sqlitevfs.PagePrefix(wiringDB)
+	if err != nil {
+		t.Fatalf("PagePrefix: %v", err)
+	}
+	for start := uint32(1); start <= pages; start += 256 {
+		ops := make([]service.Op, 0, 256)
+		for pgno := start; pgno < start+256 && pgno <= pages; pgno++ {
+			key, err := sqlitevfs.StageKey(wiringDB, commitID, pgno)
+			if err != nil {
+				t.Fatalf("StageKey: %v", err)
+			}
+			ops = append(ops, service.Op{Type: service.OpPut, Key: key, Value: []byte("page")})
+		}
+		if resp, err := svcs.Transaction.Execute(t.Context(), nil, ops, nil); err != nil || resp == nil || !resp.Succeeded {
+			t.Fatalf("seed stage pages: %+v, %v", resp, err)
+		}
+	}
+	req := &service.MovePrefixRequest{Src: string(src), Dst: string(dst), ExpectedKeys: pages}
+	moved, compares, err := rm.movedMeta(t.Context(), req)
+	if err != nil {
+		t.Fatalf("movedMeta: %v", err)
+	}
+	if len(moved) != 0 || len(compares) != 0 {
+		t.Fatalf("staged publish of %d pages: %d admission ops, %d compares; want none (bounded proposal)", pages, len(moved), len(compares))
+	}
+	if _, err := rm.MovePrefix(t.Context(), req); err != nil {
+		t.Fatalf("MovePrefix: %v", err)
+	}
+	kvs, _, _, err := rm.kv.Range(t.Context(), dst, storage.PrefixEnd(dst), service.WithKeysOnly())
+	if err != nil || len(kvs) != pages {
+		t.Fatalf("pages after the publish: %d, %v; want %d", len(kvs), err, pages)
+	}
+	if usage, _ := fakes.counts(); usage != 0 {
+		t.Fatalf("usage after a publish that creates no database = %d, want 0", usage)
+	}
+}
+
+func TestPrefixHoldsNoMeta(t *testing.T) {
+	for prefix, want := range map[string]bool{
+		"sqlite/" + wiringDB + "/page/":                                   true,
+		"sqlite/" + wiringDB + "/stage/0123456789abcdef0123456789abcdef/": true,
+		"sqlite/" + wiringDB + "/metadata":                                true,
+		"sqlite/" + wiringDB + "/":                                        false,
+		"sqlite/" + wiringDB + "/me":                                      false,
+		"sqlite/" + wiringDB + "/meta":                                    false,
+		"sqlite/":                                                         false,
+		"seed/" + wiringDB + "/":                                          false,
+		"":                                                                false,
+	} {
+		if got := prefixHoldsNoMeta(prefix); got != want {
+			t.Errorf("prefixHoldsNoMeta(%q) = %v, want %v", prefix, got, want)
+		}
+	}
+}
+
 func TestSQLiteAdmitRestore_CreateAndRemoveAreGated(t *testing.T) {
 	for name, build := range lockScenes {
 		t.Run(name, func(t *testing.T) {
