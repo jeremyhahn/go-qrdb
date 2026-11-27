@@ -293,20 +293,32 @@ func TestT9_PreActivationGating(t *testing.T) {
 	awaitProbeApplied(t, c, afterKeys)
 }
 
-// TestRollingUpgrade_OldBinaryRefusedAfterActivation_CLI (T4): once the
-// cluster has activated the probe, the N binary refuses to start on an
-// N+1 node's data directory with featuregate.UnsupportedFeatureError, and
-// the node starts again on N+1 and reads the data.
+// TestRollingUpgrade_OldBinaryRefusedAfterActivation_CLI (T4): a cluster
+// started on N rolls every node to N+1 and activates the probe, and the
+// probe's put on every transport replicates as OpUpgradeProbe to every
+// member. The N binary then refuses to start on an N+1 node's data
+// directory with featuregate.UnsupportedFeatureError while the two
+// surviving N+1 members keep serving writes on every transport; the node
+// starts again on N+1 and every key reads back on every member.
 func TestRollingUpgrade_OldBinaryRefusedAfterActivation_CLI(t *testing.T) {
 	bins := buildUpgradeBinaries(t)
-	c := startUpgradeCluster(t, []string{bins.next, bins.next, bins.next})
+	c := startUpgradeCluster(t, []string{bins.n, bins.n, bins.n})
+	for i := range c.nodes {
+		c.roll(t, i, bins.next)
+	}
 	awaitActivated(t, c.logs, upgradeProbeFeature)
 
-	want := map[string]string{upgradeProbeKeyPrefix + "x": "activated"}
-	for key, value := range want {
-		putAcked(t, c.nodes[0], multiProtocols[0], key, value)
+	want := make(map[string]string, 3*len(multiProtocols))
+	probeKeys := make([]string, 0, len(multiProtocols))
+	for _, proto := range multiProtocols {
+		key := fmt.Sprintf("%sactivated/%s", upgradeProbeKeyPrefix, proto.name)
+		value := "activated-" + proto.name
+		putAcked(t, c.nodes[0], proto, key, value)
+		want[key] = value
+		probeKeys = append(probeKeys, key)
 	}
 	c.requireReadsEverywhere(t, want)
+	awaitProbeApplied(t, c, probeKeys)
 
 	const node = 1
 	stopNode(t, c.cmds[node], 10*time.Second)
@@ -320,6 +332,17 @@ func TestRollingUpgrade_OldBinaryRefusedAfterActivation_CLI(t *testing.T) {
 	refusal := (&featuregate.UnsupportedFeatureError{Feature: upgradeProbeFeature}).Error()
 	if !strings.Contains(oldLog.String(), refusal) {
 		t.Fatalf("the N binary's log on node %d does not hold the refusal %q", node+1, refusal)
+	}
+
+	// The surviving N+1 members keep a quorum and serve every transport
+	// while the N binary is refused.
+	for _, i := range []int{0, 2} {
+		for _, proto := range multiProtocols {
+			key := fmt.Sprintf("refused/node%d/%s", i+1, proto.name)
+			value := fmt.Sprintf("survivor-node%d-%s", i+1, proto.name)
+			putAcked(t, c.nodes[i], proto, key, value)
+			want[key] = value
+		}
 	}
 
 	c.roll(t, node, bins.next)
