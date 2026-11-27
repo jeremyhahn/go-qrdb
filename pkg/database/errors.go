@@ -1137,8 +1137,12 @@ type InvalidRaftStateStorageError struct {
 
 // Error returns a human-readable description of the refused state storage.
 func (e *InvalidRaftStateStorageError) Error() string {
-	return "database: raft state storage " + strconv.Quote(string(e.StateStorage)) + " of database " +
-		strconv.Quote(e.Name) + " is not one of pebble, file, memory"
+	of := ""
+	if e.Name != "" {
+		of = " of database " + strconv.Quote(e.Name)
+	}
+	return "database: raft state storage " + strconv.Quote(string(e.StateStorage)) + of +
+		" is not one of pebble, memory"
 }
 
 // BackendFactoryInUseError is returned by Manager.SetBackendFactory while

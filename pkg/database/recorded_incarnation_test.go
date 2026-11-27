@@ -101,6 +101,18 @@ func TestManager_RecordedDataDir_FollowsTheCatalog(t *testing.T) {
 	}
 }
 
+// A tenant's home group is never a catalog database, and the catalog of an
+// isolated tenant lives in that home: reading the catalog to start the home
+// resolved the home again, which started it again, until the stack
+// overflowed. The home's data_dir is never looked up, so no catalog is read
+// for it -- not even one that is missing.
+func TestManager_RecordedDataDir_NeverReadsTheCatalogForTheTenantHome(t *testing.T) {
+	got, ok, err := NewManager(nil, t.TempDir()).RecordedDataDir(context.Background(), "acme", TenantHomeName)
+	if err != nil || ok || got != "" {
+		t.Fatalf("RecordedDataDir(home) = (%q, %v, %v), want (\"\", false, nil)", got, ok, err)
+	}
+}
+
 // TestCheckDataDirUnderTenantRoot pins the strictly-under rule.
 func TestCheckDataDirUnderTenantRoot(t *testing.T) {
 	for dir, want := range map[string]bool{

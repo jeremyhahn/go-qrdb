@@ -115,6 +115,12 @@ func (m *Manager) RecordedIncarnation(ctx context.Context, tenantID, name string
 // read is an error, never "no record": answering a read failure with the
 // default path starts the group's state somewhere the record does not name.
 func (m *Manager) RecordedDataDir(ctx context.Context, tenantID, name string) (dataDir string, ok bool, err error) {
+	// The tenant home is never a catalog database, and an isolated tenant's
+	// catalog is stored in its home: reading it here, while the home group
+	// starts, resolved the home again and recursed until the stack overflowed.
+	if name == TenantHomeName {
+		return "", false, nil
+	}
 	cat, err := m.catalog("resolve data_dir")
 	if err != nil {
 		return "", false, err
