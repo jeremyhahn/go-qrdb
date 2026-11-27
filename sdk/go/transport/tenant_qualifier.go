@@ -35,17 +35,27 @@ func TenantQualifierFromContext(ctx context.Context) string {
 	return s
 }
 
-// TenantUnaryClientInterceptor sets the tenant qualifier on every request
-// message that has an empty string field tenant_id.
+// TenantUnaryClientInterceptor sets the tenant qualifier on every user and
+// role request message that has an empty string field tenant_id.
 func TenantUnaryClientInterceptor() grpc.UnaryClientInterceptor {
 	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
-		if tid := TenantQualifierFromContext(ctx); tid != "" {
+		if tid := TenantQualifierFromContext(ctx); tid != "" && isIdentityMethod(method) {
 			if m, ok := req.(proto.Message); ok {
 				setTenantField(m.ProtoReflect(), tid)
 			}
 		}
 		return invoker(ctx, method, req, reply, cc, opts...)
 	}
+}
+
+// isIdentityMethod reports whether the gRPC full method name is a user or
+// role operation, the only calls the tenant qualifier targets (as on REST,
+// QUIC and MCP). Every other request with a tenant_id field, such as a
+// barrier call where an empty tenant_id names the system barrier, keeps the
+// tenant its caller set.
+func isIdentityMethod(fullMethod string) bool {
+	name := fullMethod[strings.LastIndex(fullMethod, "/")+1:]
+	return strings.Contains(name, "User") || strings.Contains(name, "Role")
 }
 
 func setTenantField(m protoreflect.Message, tenantID string) {

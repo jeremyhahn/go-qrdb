@@ -136,7 +136,7 @@ func TestTenantUnaryClientInterceptor_SetsEmptyTenantField(t *testing.T) {
 	invoke := func(context.Context, string, any, any, *grpc.ClientConn, ...grpc.CallOption) error { return nil }
 
 	req := &pb.GetUserRequest{Id: 7}
-	if err := icpt(ctx, "/m", req, nil, nil, invoke); err != nil {
+	if err := icpt(ctx, pb.QRDBService_GetUser_FullMethodName, req, nil, nil, invoke); err != nil {
 		t.Fatal(err)
 	}
 	if req.GetTenantId() != "acme" {
@@ -144,7 +144,7 @@ func TestTenantUnaryClientInterceptor_SetsEmptyTenantField(t *testing.T) {
 	}
 
 	named := &pb.GetUserRequest{Id: 7, TenantId: "globex"}
-	if err := icpt(ctx, "/m", named, nil, nil, invoke); err != nil {
+	if err := icpt(ctx, pb.QRDBService_GetUser_FullMethodName, named, nil, nil, invoke); err != nil {
 		t.Fatal(err)
 	}
 	if named.GetTenantId() != "globex" {
@@ -152,8 +152,42 @@ func TestTenantUnaryClientInterceptor_SetsEmptyTenantField(t *testing.T) {
 	}
 
 	// A message without a tenant_id field passes untouched.
-	if err := icpt(ctx, "/m", structpb.NewNullValue(), nil, nil, invoke); err != nil {
+	if err := icpt(ctx, pb.QRDBService_GetUser_FullMethodName, structpb.NewNullValue(), nil, nil, invoke); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestTenantUnaryClientInterceptor_LeavesSystemBarrierCallsUnqualified
+// proves a barrier call, whose empty tenant_id names the system barrier,
+// is sent with the tenant its caller set, while a role call on the same
+// ctx is qualified.
+func TestTenantUnaryClientInterceptor_LeavesSystemBarrierCallsUnqualified(t *testing.T) {
+	icpt := TenantUnaryClientInterceptor()
+	ctx := WithTenantQualifier(context.Background(), "acme")
+	invoke := func(context.Context, string, any, any, *grpc.ClientConn, ...grpc.CallOption) error { return nil }
+
+	for _, tc := range []struct {
+		method string
+		req    interface{ GetTenantId() string }
+	}{
+		{pb.QRDBService_BarrierEnableEncryption_FullMethodName, &pb.BarrierEnableEncryptionRequest{}},
+		{pb.TenantBarrierService_Status_FullMethodName, &pb.TenantBarrierStatusRequest{}},
+		{pb.TenantBarrierService_Seal_FullMethodName, &pb.TenantBarrierSealRequest{}},
+	} {
+		if err := icpt(ctx, tc.method, tc.req, nil, nil, invoke); err != nil {
+			t.Fatal(err)
+		}
+		if got := tc.req.GetTenantId(); got != "" {
+			t.Fatalf("%s: tenant_id = %q, want the system barrier (empty)", tc.method, got)
+		}
+	}
+
+	role := &pb.ListRolesRequest{}
+	if err := icpt(ctx, pb.QRDBService_ListRoles_FullMethodName, role, nil, nil, invoke); err != nil {
+		t.Fatal(err)
+	}
+	if role.GetTenantId() != "acme" {
+		t.Fatalf("ListRoles tenant_id = %q, want acme", role.GetTenantId())
 	}
 }
 
