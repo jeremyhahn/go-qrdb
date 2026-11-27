@@ -197,7 +197,11 @@ func TestVFS_RollbackLeavesDatabaseUnchanged(t *testing.T) {
 // meantime never mixes into its page cache (o7).
 func TestVFS_SharedAfterCommitReadsOwnCommit(t *testing.T) {
 	ctx := context.Background()
-	b := newBackend(t)
+	metaKey, err := sqlitevfs.MetaKey("shared.db")
+	if err != nil {
+		t.Fatalf("MetaKey: %v", err)
+	}
+	b := &pinFailBackend{MVCCBackend: newBackend(t), meta: string(metaKey)}
 	setup(t, "shared.db", plainOpener(b, "shared.db"))
 	db1 := openDB(t, "shared.db", "")
 	mustExec(t, db1, "create table a(id integer primary key, n integer, v blob)")
@@ -221,8 +225,15 @@ func TestVFS_SharedAfterCommitReadsOwnCommit(t *testing.T) {
 	if !rows.Next() {
 		t.Fatalf("no first row: %v", rows.Err())
 	}
+	// The pin at the own commit's revision fails once (a transient meta
+	// read error); the reads below must retry that pin, never begin at
+	// the newest revision the other writer then publishes.
+	b.armed.Store(true)
 	if _, err := conn.ExecContext(ctx, "insert into b(id) values(1)"); err != nil {
 		t.Fatalf("insert into b: %v", err)
+	}
+	if b.failed.Load() != 1 {
+		t.Fatalf("the pin after the own commit failed %d times, want once", b.failed.Load())
 	}
 
 	db2 := openDB(t, "shared.db", "")
@@ -256,6 +267,32 @@ func TestVFS_SharedAfterCommitReadsOwnCommit(t *testing.T) {
 	if got := count(t, db2, "a"); got != 1000 {
 		t.Fatalf("table a after the other commit = %d rows, want 1000", got)
 	}
+}
+
+// pinFailBackend, once armed, fails the first meta read at the revision
+// the next successful commit returns: the pin right after that commit.
+type pinFailBackend struct {
+	*sqlitevfs.MVCCBackend
+	meta   string
+	armed  atomic.Bool
+	failAt atomic.Int64
+	failed atomic.Int64
+}
+
+func (b *pinFailBackend) Commit(ctx context.Context, reads []sqlitevfs.ReadCheck, puts map[string][]byte, deletes [][]byte) (int64, error) {
+	rev, err := b.MVCCBackend.Commit(ctx, reads, puts, deletes)
+	if err == nil && b.armed.CompareAndSwap(true, false) {
+		b.failAt.Store(rev)
+	}
+	return rev, err
+}
+
+func (b *pinFailBackend) GetAt(ctx context.Context, key []byte, rev int64) ([]byte, bool, error) {
+	if string(key) == b.meta && rev != 0 && b.failAt.CompareAndSwap(rev, 0) {
+		b.failed.Add(1)
+		return nil, false, errors.New("transient meta read failure")
+	}
+	return b.MVCCBackend.GetAt(ctx, key, rev)
 }
 
 // TestVFS_RollbackAfterCacheSpillWritesNoRevision: a ROLLBACK after the

@@ -80,6 +80,10 @@ type dbFile struct {
 	// published is set from a commit until the unlock that ends it: txn
 	// is then the snapshot pinned at this connection's own publication.
 	published bool
+	// pinRev is the revision of this connection's own commit until the
+	// unlock below SHARED: the snapshot reads are pinned at, retried there
+	// if the pin after the commit failed.
+	pinRev int64
 }
 
 // servedSeq numbers the counters served in optimistic mode.
@@ -111,7 +115,7 @@ func (f *dbFile) reader() (*sqlitevfs.Txn, func(), error) {
 	if f.txn != nil {
 		return f.txn, func() {}, nil
 	}
-	txn, err := f.store.Begin(context.Background())
+	txn, err := f.begin()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -126,7 +130,7 @@ func (f *dbFile) reader() (*sqlitevfs.Txn, func(), error) {
 // writer returns the reserved Txn writes go to.
 func (f *dbFile) writer() (*sqlitevfs.Txn, error) {
 	if f.txn == nil {
-		txn, err := f.store.Begin(context.Background())
+		txn, err := f.begin()
 		if err != nil {
 			return nil, err
 		}
@@ -147,7 +151,19 @@ func (f *dbFile) release() {
 	if f.txn != nil {
 		_ = f.txn.Rollback(context.Background())
 	}
-	f.txn, f.reserved, f.dirty, f.published = nil, false, false, false
+	f.txn, f.reserved, f.dirty, f.published, f.pinRev = nil, false, false, false, 0
+}
+
+// begin opens the snapshot this connection reads: the revision of its own
+// commit while the lock that made it is held (pinRev), else the newest.
+// A failed pin is retried at pinRev only: the page cache SQLite keeps
+// after its commit belongs to that revision, so serving a newer one would
+// mix two database states; the read fails until the unlock ends the pin.
+func (f *dbFile) begin() (*sqlitevfs.Txn, error) {
+	if f.pinRev != 0 {
+		return f.store.BeginAt(context.Background(), f.pinRev)
+	}
+	return f.store.Begin(context.Background())
 }
 
 // commit commits the Txn as one revision. On failure the file enters
@@ -157,7 +173,8 @@ func (f *dbFile) release() {
 // commit (an open read statement) and reads on with the page cache of
 // its own commit, so those reads must come from that snapshot and not
 // from whatever committed since. If the pinned Begin fails, the commit
-// stands and the next read begins afresh (and reports the error).
+// stands and pinRev keeps the revision: the next read retries the pin
+// there (never the newest revision) and fails until the unlock.
 func (f *dbFile) commit(fallback int32) int32 {
 	txn := f.txn
 	f.txn, f.reserved, f.dirty = nil, false, false
@@ -172,6 +189,7 @@ func (f *dbFile) commit(fallback int32) int32 {
 		f.failed = resultCode(err, fallback)
 		return f.failed
 	}
+	f.pinRev = rev
 	if pinned, err := f.store.BeginAt(context.Background(), rev); err == nil {
 		f.txn = pinned
 		f.published = true
