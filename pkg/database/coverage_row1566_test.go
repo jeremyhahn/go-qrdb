@@ -213,3 +213,35 @@ func TestRow1566Errors(t *testing.T) {
 		t.Fatalf("ObjectStorageNotWiredError = %q", msg)
 	}
 }
+
+func TestRaftOptionSet_NamesTheFirstRaftOption(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  DatabaseConfig
+		want string
+	}{
+		{name: "none", cfg: DatabaseConfig{}},
+		{name: "empty raft", cfg: DatabaseConfig{Raft: &DatabaseRaftConfig{}}},
+		{name: "replicas", cfg: DatabaseConfig{Replicas: 3}, want: "replicas"},
+		{name: "dedicated wal", cfg: DatabaseConfig{DedicatedWAL: true}, want: "dedicated_wal"},
+		{name: "cluster mode", cfg: DatabaseConfig{Raft: &DatabaseRaftConfig{ClusterMode: "multi"}}, want: "raft.clusterMode"},
+		{name: "shard", cfg: DatabaseConfig{Raft: &DatabaseRaftConfig{ShardID: 7}}, want: "raft.shardId"},
+		{name: "replica", cfg: DatabaseConfig{Raft: &DatabaseRaftConfig{ReplicaID: 2}}, want: "raft.replicaId"},
+		{name: "address", cfg: DatabaseConfig{Raft: &DatabaseRaftConfig{RaftAddress: "127.0.0.1:1"}}, want: "raft.raftAddress"},
+		{name: "local nodes", cfg: DatabaseConfig{Raft: &DatabaseRaftConfig{LocalNodeCount: 3}}, want: "raft.localNodeCount"},
+		{name: "state storage", cfg: DatabaseConfig{Raft: &DatabaseRaftConfig{StateStorage: "pebble"}}, want: "raft.stateStorage"},
+		{name: "discovery", cfg: DatabaseConfig{Raft: &DatabaseRaftConfig{Discovery: "static"}}, want: "raft.discovery"},
+	}
+	for _, tc := range tests {
+		if got := raftOptionSet(&tc.cfg); got != tc.want {
+			t.Errorf("%s: raftOptionSet = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestEmbeddedBackendFactory_ReleaseMarkerWithoutAReleaser(t *testing.T) {
+	f := &EmbeddedBackendFactory{}
+	if err := f.ReleaseObjectStorageMarker(DatabaseConfig{Name: "orders"}); !errors.Is(err, ErrObjectStorageMarkerReleaseUnknown) {
+		t.Fatalf("ReleaseObjectStorageMarker = %v, want ErrObjectStorageMarkerReleaseUnknown", err)
+	}
+}
