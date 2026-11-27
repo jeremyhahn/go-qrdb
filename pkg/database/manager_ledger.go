@@ -226,7 +226,16 @@ func (u *createUndo) run(ctx context.Context, cause error) error {
 			return &CatalogOrphanError{Name: u.name, TenantID: u.tenantID, Err: cause, Cleanup: err}
 		}
 	}
+	self := keyFor(u.tenantID, u.name)
 	for i := len(u.dirs) - 1; i >= 0; i-- {
+		// A directory this create made may since hold another database's
+		// store: an in-flight create of another name, a registered database
+		// or a catalog record under it keeps it.
+		if u.m != nil && u.m.ownedByAnother(ctx, self, u.dirs[i]) {
+			u.m.logger.Warn("create rollback kept a directory another database owns",
+				"database", u.name, "dir", u.dirs[i])
+			continue
+		}
 		_ = os.RemoveAll(u.dirs[i])
 	}
 	return cause

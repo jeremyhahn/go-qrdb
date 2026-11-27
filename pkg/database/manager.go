@@ -133,6 +133,22 @@ type Manager struct {
 	// teardown must not interleave with either. The channel is closed when
 	// the claim is released, for a drop waiting to take it (awaitClaim).
 	inFlight sync.Map // dbKey -> chan struct{}
+
+	// createRoots holds the data roots of every create in flight, from
+	// before its root checks until it commits or rolls back
+	// (reserveCreateRoots). The root checks see only committed databases;
+	// without it a create of /x and one of /x/child could both pass them,
+	// and the rollback of the one that then failed its post-open check
+	// would remove the other's committed store. Guarded by createRootsMu.
+	createRootsMu sync.Mutex
+	createRoots   map[*createRootReservation]struct{}
+}
+
+// createRootReservation is the set of canonical data roots one in-flight
+// create holds (see Manager.createRoots).
+type createRootReservation struct {
+	key   dbKey
+	roots []string
 }
 
 // dbKey identifies a database on this node: its owning tenant, normalized,
@@ -371,6 +387,15 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	if err != nil {
 		return nil, err
 	}
+	// Held before any root check and through the rollback: a create whose
+	// root overlaps an in-flight create of another name cannot pass its
+	// checks before that create commits, nor lose its directories to that
+	// create's rollback.
+	release, err := m.reserveCreateRoots(cfg)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if err := m.validateDataDir(cfg.TenantID, cfg.Name, cfg.DataDir); err != nil {
 		return nil, err
 	}
@@ -2317,6 +2342,130 @@ func pathContains(base, candidate string) bool {
 		return false
 	}
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// createRootsFor returns the canonical data roots a create of cfg claims:
+// its catalog directory, its data directory (the explicit data_dir or the
+// default under the catalog directory) and the root the factory resolves
+// for it. A root the factory cannot resolve is left to create's own check,
+// which returns that error.
+func (m *Manager) createRootsFor(cfg DatabaseConfig) ([]string, error) {
+	dbDir := m.dbDir(cfg.TenantID, cfg.Name)
+	candidates := []string{dbDir, filepath.Join(dbDir, dataSubDir)}
+	if strings.TrimSpace(cfg.DataDir) != "" {
+		candidates = append(candidates, cfg.DataDir)
+	}
+	if resolver, ok := m.factory.(RecordRootResolver); ok {
+		if root, err := resolver.RecordRoot(cfg); err == nil && strings.TrimSpace(root) != "" {
+			candidates = append(candidates, root)
+		}
+	}
+	roots := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		resolved, err := resolveDataDir(c)
+		if err != nil {
+			return nil, &InvalidDataDirError{Name: cfg.Name, DataDir: c, Err: err}
+		}
+		roots = append(roots, resolved)
+	}
+	return roots, nil
+}
+
+// reserveCreateRoots reserves cfg's data roots for the whole create,
+// rollback included: a create of another name whose root equals, contains
+// or is contained by a held root is refused with *DataDirConflictError
+// until release runs. A create of the same name is admitted here; the name
+// claim (tryClaim) serializes it.
+func (m *Manager) reserveCreateRoots(cfg DatabaseConfig) (release func(), err error) {
+	roots, err := m.createRootsFor(cfg)
+	if err != nil {
+		return nil, err
+	}
+	key := keyFor(cfg.TenantID, cfg.Name)
+	m.createRootsMu.Lock()
+	defer m.createRootsMu.Unlock()
+	for held := range m.createRoots {
+		if held.key == key {
+			continue
+		}
+		for _, h := range held.roots {
+			for _, r := range roots {
+				if pathContains(h, r) || pathContains(r, h) {
+					dataDir := cfg.DataDir
+					if dataDir == "" {
+						dataDir = r
+					}
+					return nil, &DataDirConflictError{Name: cfg.Name, DataDir: dataDir, With: held.key.name}
+				}
+			}
+		}
+	}
+	res := &createRootReservation{key: key, roots: roots}
+	if m.createRoots == nil {
+		m.createRoots = make(map[*createRootReservation]struct{})
+	}
+	m.createRoots[res] = struct{}{}
+	return func() {
+		m.createRootsMu.Lock()
+		delete(m.createRoots, res)
+		m.createRootsMu.Unlock()
+	}, nil
+}
+
+// heldByOtherCreate reports whether dir is, or holds, a root reserved by an
+// in-flight create of a name other than self.
+func (m *Manager) heldByOtherCreate(self dbKey, dir string) bool {
+	resolved, err := resolveDataDir(dir)
+	if err != nil {
+		return true
+	}
+	m.createRootsMu.Lock()
+	defer m.createRootsMu.Unlock()
+	for held := range m.createRoots {
+		if held.key == self {
+			continue
+		}
+		for _, h := range held.roots {
+			if pathContains(resolved, h) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ownedByAnother reports whether removing dir would remove a store another
+// database owns: a root an in-flight create of another name holds, another
+// registered database's catalog or data directory, or a root another
+// catalog record names. A failed create's rollback keeps such a directory.
+func (m *Manager) ownedByAnother(ctx context.Context, self dbKey, dir string) bool {
+	if m.heldByOtherCreate(self, dir) {
+		return true
+	}
+	resolved, err := resolveDataDir(dir)
+	if err != nil {
+		return true
+	}
+	owned := false
+	m.databases.Range(func(key, value any) bool {
+		other, _ := key.(dbKey)
+		if other == self {
+			return true
+		}
+		db := value.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
+		for _, r := range []string{m.dbDir(other.tenant, other.name), db.DataDir()} {
+			if otherRoot, rerr := resolveDataDir(r); rerr == nil && pathContains(resolved, otherRoot) {
+				owned = true
+				return false
+			}
+		}
+		return true
+	})
+	if owned {
+		return true
+	}
+	var conflict *DataDirConflictError
+	return errors.As(m.recordRootConflict(ctx, self, self.name, dir), &conflict)
 }
 
 // validateDataDir enforces that a caller-supplied per-database DataDir
