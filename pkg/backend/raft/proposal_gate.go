@@ -39,8 +39,8 @@ func proposalGateFor(h *quicraft.Host) *proposalGate {
 		return nil
 	}
 	key := weak.Make(h)
-	if g, ok := proposalGates.Load(key); ok {
-		return g.(*proposalGate)
+	if v, ok := proposalGates.Load(key); ok {
+		return mustProposalGate(v)
 	}
 	g := &proposalGate{}
 	g.lease = g.gate.Register("raft proposals")
@@ -48,7 +48,17 @@ func proposalGateFor(h *quicraft.Host) *proposalGate {
 	if !loaded {
 		runtime.AddCleanup(h, func(k weak.Pointer[quicraft.Host]) { proposalGates.Delete(k) }, key)
 	}
-	return actual.(*proposalGate)
+	return mustProposalGate(actual)
+}
+
+// mustProposalGate asserts a proposalGates value. proposalGates holds only
+// *proposalGate values, so any other type is a programming error.
+func mustProposalGate(v any) *proposalGate {
+	g, ok := v.(*proposalGate)
+	if !ok {
+		panic(fmt.Sprintf("raft: proposalGates holds a %T, want *proposalGate", v))
+	}
+	return g
 }
 
 // admitProposal holds h's proposal gate for one proposal, or refuses with
