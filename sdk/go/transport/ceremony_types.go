@@ -53,8 +53,8 @@ type CeremonyOfficerRequest struct {
 // with *NoAdminCredentialSelectedError, there is no credential-less default
 // (go-qrdb#548 review). See docs/firstboot/user.md.
 type CeremonyInitializeRequest struct {
-	SOPin                  string                   `json:"so_pin"`
-	UserPin                string                   `json:"user_pin"`
+	SOPin                  Secret                   `json:"so_pin"`
+	UserPin                Secret                   `json:"user_pin"`
 	CredentialSealStrategy string                   `json:"credential_seal_strategy,omitempty"`
 	Threshold              int                      `json:"threshold"`
 	Policy                 string                   `json:"policy,omitempty"`
@@ -94,6 +94,17 @@ type CeremonyInitializeRequest struct {
 	// transport.BarrierInitializeRequest.Secret's existing convention (the
 	// TS SDK already sends the barrier passphrase base64-encoded).
 	Secret []byte `json:"secret,omitempty"`
+}
+
+// WipePINs zeroes SOPin and UserPin: the transport consumes them and every
+// transport defers WipePINs at the top of CeremonyInitialize, so success,
+// error and early-refusal returns all zero them (see
+// BarrierInitializeRequest). It is a no-op on a nil request.
+func (r *CeremonyInitializeRequest) WipePINs() {
+	if r != nil {
+		r.SOPin.Wipe()
+		r.UserPin.Wipe()
+	}
 }
 
 // CeremonyHolderCert is the CA-issued certificate of one initial holder.
@@ -141,9 +152,17 @@ type CeremonyStatusResponse struct {
 // ceremony.
 type SignCSRInitRequest struct {
 	Username string `json:"username"`
-	SOPin    string `json:"so_pin"`
+	SOPin    Secret `json:"so_pin"`
 	CSRPEM   string `json:"csr_pem"`
 	Role     string `json:"role"`
+}
+
+// WipePINs zeroes SOPin; every transport defers it at the top of
+// CeremonySignCSR. It is a no-op on a nil request.
+func (r *SignCSRInitRequest) WipePINs() {
+	if r != nil {
+		r.SOPin.Wipe()
+	}
 }
 
 // SignCSRInitResponse returns the signed certificate.

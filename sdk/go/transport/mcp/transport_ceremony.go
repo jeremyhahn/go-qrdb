@@ -33,6 +33,7 @@ var _ transport.CeremonyClient = (*Transport)(nil)
 // qrdb_ceremony_initialize MCP tool. Request parameters are passed as tool
 // arguments for forward compatibility.
 func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.CeremonyInitializeRequest) (*transport.CeremonyInitializeResponse, error) {
+	defer req.WipePINs()
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -47,6 +48,7 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 	if err != nil {
 		return nil, err
 	}
+	defer soPIN.Wipe()
 
 	args, err := wire.EncodeArgs(req, wire.CeremonyJSONFields...)
 	if err != nil {
@@ -59,11 +61,11 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 	// exactly (go-qrdb#1130).
 	delete(args, "so_pin")
 	delete(args, "user_pin")
-	if soPIN != "" {
-		putStringSecret(args, "so_pin", soPIN)
+	if len(soPIN) != 0 {
+		putSecret(args, "so_pin", soPIN)
 	}
-	if req.UserPin != "" {
-		putStringSecret(args, "user_pin", req.UserPin)
+	if len(req.UserPin) != 0 {
+		putSecret(args, "user_pin", req.UserPin)
 	}
 	putSecret(args, "secret", req.Secret)
 
@@ -103,6 +105,7 @@ func (t *Transport) CeremonyStatus(ctx context.Context) (*transport.CeremonyStat
 // CeremonySignCSR submits a CSR for signing during or after the ceremony by
 // calling the qrdb_ceremony_sign_csr MCP tool.
 func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRInitRequest) (*transport.SignCSRInitResponse, error) {
+	defer req.WipePINs()
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -117,13 +120,14 @@ func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRI
 	if err != nil {
 		return nil, err
 	}
+	defer soPIN.Wipe()
 
 	args := map[string]any{
 		"username": req.Username,
 		"csr_pem":  req.CSRPEM,
 		"role":     req.Role,
 	}
-	putStringSecret(args, "so_pin", soPIN)
+	putSecret(args, "so_pin", soPIN)
 	text, err := t.callTool(ctx, "qrdb_ceremony_sign_csr", args)
 	if err != nil {
 		return nil, &transport.RequestError{Method: "CeremonySignCSR", Err: err}

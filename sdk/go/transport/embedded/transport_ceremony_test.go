@@ -96,8 +96,8 @@ func TestEmbeddedCeremony_Initialize_ForwardsPins(t *testing.T) {
 	)
 
 	_, err := tr.CeremonyInitialize(context.Background(), &transport.CeremonyInitializeRequest{
-		SOPin:   "so-secret-pin",
-		UserPin: "user-secret-pin",
+		SOPin:   transport.Secret("so-secret-pin"),
+		UserPin: transport.Secret("user-secret-pin"),
 	})
 	if err != nil {
 		t.Fatalf("CeremonyInitialize: %v", err)
@@ -129,8 +129,8 @@ func TestEmbeddedCeremony_Initialize_ForwardsAllFields(t *testing.T) {
 	)
 
 	_, err := tr.CeremonyInitialize(context.Background(), &transport.CeremonyInitializeRequest{
-		SOPin:                  "so-pin",
-		UserPin:                "user-pin",
+		SOPin:                  transport.Secret("so-pin"),
+		UserPin:                transport.Secret("user-pin"),
 		CredentialSealStrategy: "shamir",
 		Threshold:              2,
 		Officers: []transport.CeremonyOfficerRequest{
@@ -228,7 +228,7 @@ func TestEmbeddedCeremony_SignCSR(t *testing.T) {
 	tr := newExtTransport(t, WithCeremonyService(&mockCeremonyService{}))
 	resp, err := tr.CeremonySignCSR(context.Background(), &transport.SignCSRInitRequest{
 		Username: "alice",
-		SOPin:    "1234",
+		SOPin:    transport.Secret("1234"),
 		CSRPEM:   "csr",
 		Role:     "officer",
 	})

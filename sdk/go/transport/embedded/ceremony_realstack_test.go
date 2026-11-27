@@ -44,7 +44,7 @@ func TestRequest_CeremonyInitialize_RealSOPINGateRefusesWrongPIN(t *testing.T) {
 	// Wrong SO PIN: refused, never bound.
 	var out *transport.CeremonyInitializeResponse
 	err := tr.Request(ctx, "CeremonyInitialize",
-		&transport.CeremonyInitializeRequest{SOPin: "wrong-pin", AdminGenerate: true}, &out)
+		&transport.CeremonyInitializeRequest{SOPin: transport.Secret("wrong-pin"), AdminGenerate: true}, &out)
 	if !errors.Is(err, pin.ErrPINInvalid) {
 		t.Fatalf("wrong SO PIN: got %v, want pin.ErrPINInvalid", err)
 	}
@@ -59,7 +59,7 @@ func TestRequest_CeremonyInitialize_RealSOPINGateRefusesWrongPIN(t *testing.T) {
 	// The correct SO PIN still reissues and binds cleanly -- proving the
 	// refusals above were about the PIN, not a stack that always refuses.
 	err = tr.Request(ctx, "CeremonyInitialize",
-		&transport.CeremonyInitializeRequest{SOPin: "correct-horse-battery", AdminGenerate: true}, &out)
+		&transport.CeremonyInitializeRequest{SOPin: transport.Secret("correct-horse-battery"), AdminGenerate: true}, &out)
 	if err != nil {
 		t.Fatalf("correct SO PIN: expected success, got %v", err)
 	}
@@ -78,12 +78,12 @@ func TestRequest_CeremonyInitialize_RealSOPINGateCheckedBeforeAdminAlreadyBound(
 
 	var out *transport.CeremonyInitializeResponse
 	if err := tr.Request(ctx, "CeremonyInitialize",
-		&transport.CeremonyInitializeRequest{SOPin: "correct-horse-battery", AdminGenerate: true}, &out); err != nil {
+		&transport.CeremonyInitializeRequest{SOPin: transport.Secret("correct-horse-battery"), AdminGenerate: true}, &out); err != nil {
 		t.Fatalf("bind: expected success, got %v", err)
 	}
 
 	err := tr.Request(ctx, "CeremonyInitialize",
-		&transport.CeremonyInitializeRequest{SOPin: "wrong-pin", AdminGenerate: true}, &out)
+		&transport.CeremonyInitializeRequest{SOPin: transport.Secret("wrong-pin"), AdminGenerate: true}, &out)
 	var alreadyBound *service.AdminAlreadyBoundError
 	if errors.As(err, &alreadyBound) {
 		t.Fatal("wrong SO PIN against an already-bound admin leaked AdminAlreadyBoundError instead of the PIN failure")

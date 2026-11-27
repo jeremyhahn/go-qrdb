@@ -69,27 +69,82 @@ func secretString(on bool) string {
 	return ""
 }
 
+// secretPIN is secretString for the PIN fields, which carry transport.Secret.
+// Each call returns a fresh buffer, so a transport that wipes it cannot reach
+// another call's PIN.
+func secretPIN(on bool) transport.Secret {
+	if on {
+		return transport.Secret(secretValue)
+	}
+	return nil
+}
+
+// pinLog keeps an alias to every PIN buffer a secretCalls call supplies.
+// Calls run one at a time, so it needs no lock.
+type pinLog struct{ bufs []transport.Secret }
+
+// pin is secretPIN, logging the buffer it hands out.
+func (l *pinLog) pin(on bool) transport.Secret {
+	p := secretPIN(on)
+	if p != nil {
+		l.bufs = append(l.bufs, p)
+	}
+	return p
+}
+
+// requireWiped fails t unless every PIN buffer supplied since the last
+// check is all zero now that the call has returned, then forgets them.
+func (l *pinLog) requireWiped(t *testing.T) {
+	t.Helper()
+	bufs := l.bufs
+	l.bufs = nil
+	for _, b := range bufs {
+		RequireZero(t, "the request PIN", b)
+	}
+}
+
+// RequireZero fails t unless every byte of b is zero: a transport consumes
+// a request's SOPin/UserPin and zeroes it when the call returns.
+func RequireZero(t *testing.T, what string, b []byte) {
+	t.Helper()
+	for i, c := range b {
+		if c != 0 {
+			t.Fatalf("%s survived the call: byte %d of %d is still set", what, i, len(b))
+		}
+	}
+}
+
 // SecretCalls is every verb, and every secret its request can carry.
 func SecretCalls() []SecretCall {
+	calls, _ := secretCalls()
+	return calls
+}
+
+// secretCalls is SecretCalls with the log of every barrier and ceremony PIN
+// buffer its calls supply, so RunBarrierSecretTLS can check that the
+// transport zeroed each one once the call returned. CreateTenant's SO PIN
+// stays the caller's (transport.CreateTenantRequest), so it is not logged.
+func secretCalls() ([]SecretCall, *pinLog) {
+	log := &pinLog{}
 	return []SecretCall{
 		{"BarrierInitialize init secret", transport.BarrierSecretInit, func(ctx context.Context, c SecretClient, on bool) error {
 			return c.BarrierInitialize(ctx, &transport.BarrierInitializeRequest{Secret: secretBytes(on)})
 		}},
 		{"BarrierInitialize user PIN", transport.BarrierSecretUserPIN, func(ctx context.Context, c SecretClient, on bool) error {
-			return c.BarrierInitialize(ctx, &transport.BarrierInitializeRequest{UserPin: secretString(on)})
+			return c.BarrierInitialize(ctx, &transport.BarrierInitializeRequest{UserPin: log.pin(on)})
 		}},
 		{"BarrierInitialize SO PIN", "", func(ctx context.Context, c SecretClient, on bool) error {
-			return c.BarrierInitialize(ctx, &transport.BarrierInitializeRequest{SOPin: secretString(on)})
+			return c.BarrierInitialize(ctx, &transport.BarrierInitializeRequest{SOPin: log.pin(on)})
 		}},
 		{"BarrierUnseal unseal key", transport.BarrierSecretUnsealKey, func(ctx context.Context, c SecretClient, on bool) error {
 			return c.BarrierUnseal(ctx, &transport.BarrierUnsealRequest{Secret: secretBytes(on)})
 		}},
 		{"BarrierInitializeShamir SO PIN", "", func(ctx context.Context, c SecretClient, on bool) error {
-			_, err := c.BarrierInitializeShamir(ctx, &transport.BarrierInitializeShamirRequest{Threshold: 2, TotalShares: 3, SOPin: secretString(on)})
+			_, err := c.BarrierInitializeShamir(ctx, &transport.BarrierInitializeShamirRequest{Threshold: 2, TotalShares: 3, SOPin: log.pin(on)})
 			return err
 		}},
 		{"BarrierInitializeShamir user PIN", transport.BarrierSecretUserPIN, func(ctx context.Context, c SecretClient, on bool) error {
-			_, err := c.BarrierInitializeShamir(ctx, &transport.BarrierInitializeShamirRequest{Threshold: 2, TotalShares: 3, UserPin: secretString(on)})
+			_, err := c.BarrierInitializeShamir(ctx, &transport.BarrierInitializeShamirRequest{Threshold: 2, TotalShares: 3, UserPin: log.pin(on)})
 			return err
 		}},
 		{"BarrierEnableEncryption passphrase", transport.BarrierSecretPassphrase, func(ctx context.Context, c SecretClient, on bool) error {
@@ -97,7 +152,7 @@ func SecretCalls() []SecretCall {
 			return err
 		}},
 		{"BarrierGenerateRecoveryKeys SO PIN", "", func(ctx context.Context, c SecretClient, on bool) error {
-			_, err := c.BarrierGenerateRecoveryKeys(ctx, &transport.BarrierGenerateRecoveryKeysRequest{Threshold: 2, SOPin: secretString(on)})
+			_, err := c.BarrierGenerateRecoveryKeys(ctx, &transport.BarrierGenerateRecoveryKeysRequest{Threshold: 2, SOPin: log.pin(on)})
 			return err
 		}},
 		{"BarrierQuorumSubmit share", transport.BarrierSecretShare, func(ctx context.Context, c SecretClient, on bool) error {
@@ -105,19 +160,19 @@ func SecretCalls() []SecretCall {
 			return err
 		}},
 		{"BarrierRekeyStart SO PIN", "", func(ctx context.Context, c SecretClient, on bool) error {
-			_, err := c.BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: transport.DomainUnseal, Threshold: 2, SOPin: secretString(on)})
+			_, err := c.BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: transport.DomainUnseal, Threshold: 2, SOPin: log.pin(on)})
 			return err
 		}},
 		{"BarrierOfficerRevoke SO PIN", "", func(ctx context.Context, c SecretClient, on bool) error {
-			_, err := c.BarrierOfficerRevoke(ctx, &transport.OfficerRevokeRequest{Domain: transport.DomainUnseal, Username: "officer", Threshold: 2, SOPin: secretString(on)})
+			_, err := c.BarrierOfficerRevoke(ctx, &transport.OfficerRevokeRequest{Domain: transport.DomainUnseal, Username: "officer", Threshold: 2, SOPin: log.pin(on)})
 			return err
 		}},
 		{"CeremonyInitialize SO PIN", "", func(ctx context.Context, c SecretClient, on bool) error {
-			_, err := c.CeremonyInitialize(ctx, &transport.CeremonyInitializeRequest{SOPin: secretString(on)})
+			_, err := c.CeremonyInitialize(ctx, &transport.CeremonyInitializeRequest{SOPin: log.pin(on)})
 			return err
 		}},
 		{"CeremonyInitialize user PIN", transport.BarrierSecretUserPIN, func(ctx context.Context, c SecretClient, on bool) error {
-			_, err := c.CeremonyInitialize(ctx, &transport.CeremonyInitializeRequest{UserPin: secretString(on)})
+			_, err := c.CeremonyInitialize(ctx, &transport.CeremonyInitializeRequest{UserPin: log.pin(on)})
 			return err
 		}},
 		{"CeremonyInitialize init secret", transport.BarrierSecretInit, func(ctx context.Context, c SecretClient, on bool) error {
@@ -125,7 +180,7 @@ func SecretCalls() []SecretCall {
 			return err
 		}},
 		{"CeremonySignCSR SO PIN", "", func(ctx context.Context, c SecretClient, on bool) error {
-			_, err := c.CeremonySignCSR(ctx, &transport.SignCSRInitRequest{Username: "officer", CSRPEM: "csr", Role: "officer", SOPin: secretString(on)})
+			_, err := c.CeremonySignCSR(ctx, &transport.SignCSRInitRequest{Username: "officer", CSRPEM: "csr", Role: "officer", SOPin: log.pin(on)})
 			return err
 		}},
 		{"TenantBarrierInit passphrase", transport.BarrierSecretPassphrase, func(ctx context.Context, c SecretClient, on bool) error {
@@ -140,7 +195,7 @@ func SecretCalls() []SecretCall {
 			return err
 		}},
 		{"CreateTenant SO PIN", "", func(ctx context.Context, c SecretClient, on bool) error {
-			_, err := c.CreateTenant(ctx, &transport.CreateTenantRequest{ID: "acme", Name: "acme", AdminUsername: "admin", SOPin: secretString(on)})
+			_, err := c.CreateTenant(ctx, &transport.CreateTenantRequest{ID: "acme", Name: "acme", AdminUsername: "admin", SOPin: secretPIN(on)})
 			return err
 		}},
 		{"CreateDatabase barrier passphrase", transport.BarrierSecretPassphrase, func(ctx context.Context, c SecretClient, on bool) error {
@@ -158,7 +213,7 @@ func SecretCalls() []SecretCall {
 			_, err := c.DatabaseBarrierQuorumSubmit(ctx, &transport.DatabaseQuorumSubmitRequest{Database: "db1", QuorumSubmitRequest: transport.QuorumSubmitRequest{Op: "unseal", Username: "officer", Share: secretBytes(on)}})
 			return err
 		}},
-	}
+	}, log
 }
 
 // RunBarrierSecretTLS asserts, for every SecretCalls verb, that transportName's
@@ -166,7 +221,8 @@ func SecretCalls() []SecretCall {
 // before any request reaches the server -- and sends it over TLS, and that the
 // same verb without the secret is still sent over plaintext.
 func RunBarrierSecretTLS(t *testing.T, transportName string, plaintext, overTLS SecretTarget) {
-	for _, call := range SecretCalls() {
+	calls, pins := secretCalls()
+	for _, call := range calls {
 		t.Run(call.Name, func(t *testing.T) {
 			t.Run("refused over plaintext", func(t *testing.T) {
 				before := plaintext.Reached()
@@ -177,6 +233,7 @@ func RunBarrierSecretTLS(t *testing.T, transportName string, plaintext, overTLS 
 				if n := plaintext.Reached() - before; n != 0 {
 					t.Fatalf("a refused request reached the server %d times", n)
 				}
+				pins.requireWiped(t)
 			})
 			t.Run("sent over TLS", func(t *testing.T) {
 				before := overTLS.Reached()
@@ -186,6 +243,7 @@ func RunBarrierSecretTLS(t *testing.T, transportName string, plaintext, overTLS 
 				if overTLS.Reached() == before {
 					t.Fatal("the request never reached the server over TLS")
 				}
+				pins.requireWiped(t)
 			})
 			t.Run("sent over plaintext without the secret", func(t *testing.T) {
 				before := plaintext.Reached()

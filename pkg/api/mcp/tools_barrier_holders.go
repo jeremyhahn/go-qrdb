@@ -69,7 +69,7 @@ func decodeHolderArgs(tool string, req mcp.CallToolRequest, v any) error {
 // decodeHolderArgs, then sets *soPIN from so_pin through pinArg, so the SO PIN
 // is read in either of its two forms and never from the struct decode, which
 // knows only the text form.
-func decodeHolderSOPINArgs(tool string, req mcp.CallToolRequest, v any, soPIN *string) error {
+func decodeHolderSOPINArgs(tool string, req mcp.CallToolRequest, v any, soPIN *transport.Secret) error {
 	if err := decodeHolderArgs(tool, req, v); err != nil {
 		return err
 	}
@@ -77,7 +77,7 @@ func decodeHolderSOPINArgs(tool string, req mcp.CallToolRequest, v any, soPIN *s
 	if err != nil {
 		return &ToolError{Tool: tool, Err: err}
 	}
-	*soPIN = pin
+	*soPIN = transport.Secret(pin)
 	return nil
 }
 
@@ -290,7 +290,7 @@ func handleRekeyStart(svc service.BarrierServicer) mcpserver.ToolHandlerFunc {
 		if err := decodeHolderSOPINArgs(tool, req, &in, &in.SOPin); err != nil {
 			return nil, err
 		}
-		round, err := svc.BarrierRekeyStart(ctx, seal.QuorumDomain(in.Domain), in.Threshold, seal.FactorPolicy(in.Policy), in.SOPin)
+		round, err := svc.BarrierRekeyStart(ctx, seal.QuorumDomain(in.Domain), in.Threshold, seal.FactorPolicy(in.Policy), string(in.SOPin))
 		if err != nil {
 			return nil, &ToolError{Tool: tool, Err: err}
 		}
@@ -307,7 +307,7 @@ func handleOfficerRevoke(svc service.BarrierServicer) mcpserver.ToolHandlerFunc 
 		if err := decodeHolderSOPINArgs(tool, req, &in, &in.SOPin); err != nil {
 			return nil, err
 		}
-		round, err := svc.BarrierOfficerRevoke(ctx, seal.QuorumDomain(in.Domain), in.Username, in.Threshold, in.SOPin)
+		round, err := svc.BarrierOfficerRevoke(ctx, seal.QuorumDomain(in.Domain), in.Username, in.Threshold, string(in.SOPin))
 		if err != nil {
 			return nil, &ToolError{Tool: tool, Err: err}
 		}

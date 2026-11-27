@@ -15,7 +15,9 @@
 package transport
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -25,6 +27,7 @@ import (
 	"google.golang.org/grpc/metadata"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/pinhook"
 )
 
 // SOPINHeader is the HTTP header the REST and MCP transports send the SO PIN
@@ -35,6 +38,34 @@ const SOPINHeader = "X-QRDB-SO-PIN"
 // transports send the SO PIN in. It is the server's
 // middleware.SOPINMetadataKey.
 const SOPINMetadataKey = "x-qrdb-so-pin"
+
+// Secret is a PIN a request carries as bytes that can be wiped. Its JSON
+// form is a plain JSON string, byte-identical to the string field it
+// replaces, so the wire format does not change. A barrier or ceremony
+// request's SOPin/UserPin is consumed: every transport zeroes it when the
+// call returns, whatever the outcome (see BarrierInitializeRequest).
+type Secret []byte
+
+// MarshalJSON encodes the secret as a JSON string.
+func (s Secret) MarshalJSON() ([]byte, error) {
+	return json.Marshal(string(s))
+}
+
+// UnmarshalJSON decodes a JSON string (or null) into the secret.
+func (s *Secret) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		return nil
+	}
+	var str string
+	if err := json.Unmarshal(data, &str); err != nil {
+		return err
+	}
+	*s = Secret(str)
+	return nil
+}
+
+// Wipe zeroes the secret's bytes in place.
+func (s Secret) Wipe() { clear(s) }
 
 // soPINKey is the context key WithSOPIN binds under.
 type soPINKey struct{}
@@ -139,20 +170,24 @@ func (e *SOPINConflictError) Error() string {
 // ResolveSOPIN returns the SO PIN a request carries in its so_pin field, on
 // every network transport: the request's own SOPin, or the PIN bound by
 // WithSOPIN when the request has none. Both set and different is a
-// *SOPINConflictError.
-func ResolveSOPIN(ctx context.Context, method, requestPIN string) (string, error) {
+// *SOPINConflictError. The bound PIN is returned as a fresh copy; a request
+// PIN is returned as is. Every call site defers Wipe on the result once the
+// error is checked (wiping an aliased request PIN twice is harmless).
+func ResolveSOPIN(ctx context.Context, method string, requestPIN Secret) (Secret, error) {
 	bound, ok, err := SOPINFromContext(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if !ok {
 		return requestPIN, nil
 	}
 	defer secure.Wipe(bound)
-	if requestPIN != "" && requestPIN != string(bound) {
-		return "", &SOPINConflictError{Method: method}
+	if len(requestPIN) != 0 && !bytes.Equal(requestPIN, bound) {
+		return nil, &SOPINConflictError{Method: method}
 	}
-	return string(bound), nil
+	resolved := append(Secret(nil), bound...)
+	pinhook.Record(ctx, resolved)
+	return resolved, nil
 }
 
 // SOPINUnaryClientInterceptor sends the PIN bound by WithSOPIN in the

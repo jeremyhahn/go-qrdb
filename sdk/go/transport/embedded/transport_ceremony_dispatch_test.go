@@ -34,7 +34,7 @@ func TestRequest_CeremonyDispatch(t *testing.T) {
 	tr := newExtTransport(t, WithCeremonyService(svc), WithCeremonyCA(&mockCeremonyCA{}))
 
 	var initOut *transport.CeremonyInitializeResponse
-	if err := tr.Request(ctx, "CeremonyInitialize", &transport.CeremonyInitializeRequest{SOPin: "so-pin-1234", UserPin: "user-pin-1234", Threshold: 2}, &initOut); err != nil {
+	if err := tr.Request(ctx, "CeremonyInitialize", &transport.CeremonyInitializeRequest{SOPin: transport.Secret("so-pin-1234"), UserPin: transport.Secret("user-pin-1234"), Threshold: 2}, &initOut); err != nil {
 		t.Fatal(err)
 	}
 	if initOut == nil || initOut.State != "initialized" || initOut.ShareCount != 3 {
@@ -53,7 +53,7 @@ func TestRequest_CeremonyDispatch(t *testing.T) {
 	}
 
 	var signOut *transport.SignCSRInitResponse
-	if err := tr.Request(ctx, "CeremonySignCSR", &transport.SignCSRInitRequest{Username: "alice", SOPin: "so-pin-1234", CSRPEM: "csr"}, &signOut); err != nil {
+	if err := tr.Request(ctx, "CeremonySignCSR", &transport.SignCSRInitRequest{Username: "alice", SOPin: transport.Secret("so-pin-1234"), CSRPEM: "csr"}, &signOut); err != nil {
 		t.Fatal(err)
 	}
 	if signOut == nil || signOut.CertPEM != "CERT" {

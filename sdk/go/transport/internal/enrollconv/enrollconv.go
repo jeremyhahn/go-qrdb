@@ -142,6 +142,6 @@ func TenantCreateRequest(req *transport.CreateTenantRequest) *pb.TenantCreateReq
 		SoCsrPem:          req.SOCSRPEM,
 		SoCertPem:         req.SOCertPEM,
 		SoChainPem:        req.SOChainPEM,
-		SoPin:             req.SOPin,
+		SoPin:             string(req.SOPin),
 	}
 }

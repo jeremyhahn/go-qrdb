@@ -125,7 +125,7 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 		"so_csr_pem":        req.SOCSRPEM,
 		"so_cert_pem":       req.SOCertPEM,
 		"so_chain_pem":      req.SOChainPEM,
-		"so_pin":            req.SOPin,
+		"so_pin":            string(req.SOPin),
 	} {
 		if value != "" {
 			args[name] = value

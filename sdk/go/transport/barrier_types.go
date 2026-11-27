@@ -53,11 +53,27 @@ import "time"
 // means copying it, and the wire format owns that copy. What the []byte buys
 // is that the copy the CALLER holds, and the one the daemon decodes, are both
 // destroyable on demand — which a string never was.
+//
+// SOPin and UserPin are different: the transport consumes them. Every
+// transport zeroes both when the call returns, on success, on error and on an
+// early refusal alike, so a caller that needs a PIN again hands each call its
+// own copy. The same holds for the SOPin/UserPin (Secret) fields of every
+// barrier and ceremony request; []byte fields such as Secret, Passphrase and
+// Share stay the caller's.
 type BarrierInitializeRequest struct {
 	Secret          []byte `json:"secret"`
 	BarrierStrategy string `json:"barrier_strategy,omitempty"`
-	SOPin           string `json:"so_pin,omitempty"`
-	UserPin         string `json:"user_pin,omitempty"`
+	SOPin           Secret `json:"so_pin,omitempty"`
+	UserPin         Secret `json:"user_pin,omitempty"`
+}
+
+// WipePINs zeroes SOPin and UserPin. Every transport defers it at the top of
+// BarrierInitialize; it is a no-op on a nil request.
+func (r *BarrierInitializeRequest) WipePINs() {
+	if r != nil {
+		r.SOPin.Wipe()
+		r.UserPin.Wipe()
+	}
 }
 
 // BarrierUnsealRequest holds the secret used to unseal the barrier when
@@ -162,7 +178,16 @@ type ClusterSeal struct {
 // an SO PIN has been provisioned, and refuses the seal when no backend is
 // configured.
 type BarrierSealRequest struct {
-	SOPin string `json:"so_pin,omitempty"`
+	SOPin Secret `json:"so_pin,omitempty"`
+}
+
+// WipePINs zeroes SOPin; see BarrierInitializeRequest. The generic Request
+// dispatch of every transport defers it, so the SO PIN of a seal request is
+// wiped on success and on every refusal. It is a no-op on a nil request.
+func (r *BarrierSealRequest) WipePINs() {
+	if r != nil {
+		r.SOPin.Wipe()
+	}
 }
 
 // BarrierInitializeShamirRequest initializes the barrier under Shamir custody.
@@ -181,8 +206,17 @@ type BarrierInitializeShamirRequest struct {
 	Threshold   int    `json:"threshold"`
 	TotalShares int    `json:"total_shares"`
 	Policy      string `json:"policy,omitempty"`
-	SOPin       string `json:"so_pin,omitempty"`
-	UserPin     string `json:"user_pin,omitempty"`
+	SOPin       Secret `json:"so_pin,omitempty"`
+	UserPin     Secret `json:"user_pin,omitempty"`
+}
+
+// WipePINs zeroes SOPin and UserPin; see BarrierInitializeRequest. It is a
+// no-op on a nil request.
+func (r *BarrierInitializeShamirRequest) WipePINs() {
+	if r != nil {
+		r.SOPin.Wipe()
+		r.UserPin.Wipe()
+	}
 }
 
 // BarrierInitializeShamirResponse is the share-free result of a Shamir
@@ -226,7 +260,15 @@ type BarrierEnableEncryptionResponse struct {
 type BarrierGenerateRecoveryKeysRequest struct {
 	Threshold int    `json:"threshold"`
 	Policy    string `json:"policy,omitempty"`
-	SOPin     string `json:"so_pin,omitempty"`
+	SOPin     Secret `json:"so_pin,omitempty"`
+}
+
+// WipePINs zeroes SOPin; see BarrierInitializeRequest. It is a no-op on a
+// nil request.
+func (r *BarrierGenerateRecoveryKeysRequest) WipePINs() {
+	if r != nil {
+		r.SOPin.Wipe()
+	}
 }
 
 // BarrierRecoveryKeysResponse is the share-free result of recovery key
@@ -434,7 +476,15 @@ type RekeyStartRequest struct {
 	Domain    string `json:"domain"`
 	Threshold int    `json:"threshold"`
 	Policy    string `json:"policy,omitempty"`
-	SOPin     string `json:"so_pin,omitempty"`
+	SOPin     Secret `json:"so_pin,omitempty"`
+}
+
+// WipePINs zeroes SOPin; see BarrierInitializeRequest. It is a no-op on a
+// nil request.
+func (r *RekeyStartRequest) WipePINs() {
+	if r != nil {
+		r.SOPin.Wipe()
+	}
 }
 
 // OfficerRevokeRequest revokes a holder. Revocation is a rekey round that
@@ -445,7 +495,15 @@ type OfficerRevokeRequest struct {
 	Domain    string `json:"domain"`
 	Username  string `json:"username"`
 	Threshold int    `json:"threshold,omitempty"`
-	SOPin     string `json:"so_pin,omitempty"`
+	SOPin     Secret `json:"so_pin,omitempty"`
+}
+
+// WipePINs zeroes SOPin; see BarrierInitializeRequest. It is a no-op on a
+// nil request.
+func (r *OfficerRevokeRequest) WipePINs() {
+	if r != nil {
+		r.SOPin.Wipe()
+	}
 }
 
 // QuorumRound describes an open quorum round.

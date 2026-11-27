@@ -34,6 +34,7 @@ var _ transport.BarrierClient = (*Transport)(nil)
 // BarrierInitialize initializes the barrier with a single master key.
 // Maps to POST /v1/barrier/initialize (204 No Content).
 func (t *Transport) BarrierInitialize(ctx context.Context, req *transport.BarrierInitializeRequest) error {
+	defer req.WipePINs()
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -70,13 +71,14 @@ func (t *Transport) BarrierChangePassphrase(ctx context.Context, req *transport.
 		return err
 	}
 	// The server verifies the SO PIN the body carries, as for BarrierSeal.
-	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierChangePassphrase", "")
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierChangePassphrase", nil)
 	if err != nil {
 		return err
 	}
+	defer soPIN.Wipe()
 	body := struct {
 		*transport.BarrierChangePassphraseRequest
-		SOPin string `json:"so_pin,omitempty"`
+		SOPin transport.Secret `json:"so_pin,omitempty"`
 	}{req, soPIN}
 
 	return t.postJSONDecode(ctx, "BarrierChangePassphrase", "/v1/barrier/change-passphrase", body, nil)
@@ -91,13 +93,14 @@ func (t *Transport) BarrierSeal(ctx context.Context) error {
 
 	// The barrier SO PIN, when one is configured, comes from the PIN bound by
 	// transport.WithSOPIN: BarrierSeal takes no request of its own.
-	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierSeal", "")
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierSeal", nil)
 	if err != nil {
 		return err
 	}
+	defer soPIN.Wipe()
 	var body any
-	if soPIN != "" {
-		body = map[string]string{"so_pin": soPIN}
+	if len(soPIN) != 0 {
+		body = map[string]transport.Secret{"so_pin": soPIN}
 	}
 	return t.postJSONDecode(ctx, "BarrierSeal", "/v1/barrier/seal", body, nil)
 }
@@ -150,6 +153,7 @@ func (t *Transport) BarrierStatus(ctx context.Context) (*transport.BarrierStatus
 // distributes one sealed envelope to each enrolled unseal-key holder.
 // Maps to POST /v1/barrier/shamir/initialize.
 func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.BarrierInitializeShamirRequest) (*transport.BarrierInitializeShamirResponse, error) {
+	defer req.WipePINs()
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -164,6 +168,7 @@ func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.
 	if err != nil {
 		return nil, err
 	}
+	defer soPIN.Wipe()
 	body := *req
 	body.SOPin = soPIN
 
@@ -197,6 +202,7 @@ func (t *Transport) BarrierEnableEncryption(ctx context.Context, req *transport.
 // BarrierGenerateRecoveryKeys generates recovery keys for disaster recovery
 // scenarios. Maps to POST /v1/barrier/recovery/generate.
 func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transport.BarrierGenerateRecoveryKeysRequest) (*transport.BarrierRecoveryKeysResponse, error) {
+	defer req.WipePINs()
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -211,6 +217,7 @@ func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transp
 	if err != nil {
 		return nil, err
 	}
+	defer soPIN.Wipe()
 	body := *req
 	body.SOPin = soPIN
 
@@ -411,6 +418,7 @@ func (t *Transport) BarrierQuorumSubmit(ctx context.Context, req *transport.Quor
 
 // BarrierRekeyStart opens a rekey round. Maps to POST /v1/barrier/rekey/start.
 func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyStartRequest) (*transport.QuorumRound, error) {
+	defer req.WipePINs()
 	ctx, err := t.guardSecret(ctx, req)
 	if err != nil {
 		return nil, err
@@ -421,6 +429,7 @@ func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyS
 	if err != nil {
 		return nil, err
 	}
+	defer soPIN.Wipe()
 	resolved := *req
 	resolved.SOPin = soPIN
 	var resp transport.QuorumRound
@@ -433,6 +442,7 @@ func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyS
 // BarrierOfficerRevoke revokes a holder through a quorum-gated rekey.
 // Maps to POST /v1/barrier/officers/revoke.
 func (t *Transport) BarrierOfficerRevoke(ctx context.Context, req *transport.OfficerRevokeRequest) (*transport.QuorumRound, error) {
+	defer req.WipePINs()
 	ctx, err := t.guardSecret(ctx, req)
 	if err != nil {
 		return nil, err
@@ -443,6 +453,7 @@ func (t *Transport) BarrierOfficerRevoke(ctx context.Context, req *transport.Off
 	if err != nil {
 		return nil, err
 	}
+	defer soPIN.Wipe()
 	resolved := *req
 	resolved.SOPin = soPIN
 	var resp transport.QuorumRound

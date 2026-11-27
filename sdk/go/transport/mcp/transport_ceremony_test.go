@@ -153,7 +153,7 @@ func TestCeremonySignCSR_Success(t *testing.T) {
 
 	resp, err := tr.CeremonySignCSR(context.Background(), &transport.SignCSRInitRequest{
 		Username: "officer1",
-		SOPin:    "1234",
+		SOPin:    transport.Secret("1234"),
 		CSRPEM:   "-----BEGIN CERTIFICATE REQUEST-----\nfake\n-----END CERTIFICATE REQUEST-----",
 		Role:     "officer",
 	})
@@ -172,7 +172,7 @@ func TestCeremonySignCSR_ServiceError(t *testing.T) {
 	defer cleanup()
 
 	if _, err := tr.CeremonySignCSR(context.Background(), &transport.SignCSRInitRequest{
-		Username: "x", SOPin: "x", CSRPEM: "x", Role: "x",
+		Username: "x", SOPin: transport.Secret("x"), CSRPEM: "x", Role: "x",
 	}); err == nil {
 		t.Fatal("expected error")
 	}
@@ -188,8 +188,8 @@ func TestCeremonyInitialize_Success(t *testing.T) {
 	defer cleanup()
 
 	resp, err := tr.CeremonyInitialize(context.Background(), &transport.CeremonyInitializeRequest{
-		SOPin:                  "1234",
-		UserPin:                "5678",
+		SOPin:                  transport.Secret("1234"),
+		UserPin:                transport.Secret("5678"),
 		Threshold:              2,
 		CredentialSealStrategy: "passphrase",
 		Hostname:               "qrdb.local",

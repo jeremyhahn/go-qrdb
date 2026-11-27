@@ -259,7 +259,7 @@ func (s *Server) handleBarrierRekeyStart(w http.ResponseWriter, r *http.Request)
 	if !decodeHolderJSON(w, r, &req) {
 		return
 	}
-	round, err := s.barrierSvc.BarrierRekeyStart(r.Context(), seal.QuorumDomain(req.Domain), req.Threshold, seal.FactorPolicy(req.Policy), req.SOPin)
+	round, err := s.barrierSvc.BarrierRekeyStart(r.Context(), seal.QuorumDomain(req.Domain), req.Threshold, seal.FactorPolicy(req.Policy), string(req.SOPin))
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -278,7 +278,7 @@ func (s *Server) handleBarrierOfficerRevoke(w http.ResponseWriter, r *http.Reque
 	if !decodeHolderJSON(w, r, &req) {
 		return
 	}
-	round, err := s.barrierSvc.BarrierOfficerRevoke(r.Context(), seal.QuorumDomain(req.Domain), req.Username, req.Threshold, req.SOPin)
+	round, err := s.barrierSvc.BarrierOfficerRevoke(r.Context(), seal.QuorumDomain(req.Domain), req.Username, req.Threshold, string(req.SOPin))
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return

@@ -52,7 +52,7 @@ func TestTenantOnboarding_SOFromTenantCreate(t *testing.T) {
 			resp, err := c.operator.Tenants().CreateTenant(boundedCtx(t), &transport.CreateTenantRequest{
 				ID: "acme", Name: "acme",
 				AdminUsername: "alice", AdminCSRPEM: string(adminCSR),
-				SOUsername: "sam", SOCSRPEM: string(soCSR), SOPin: "sam-pin-1234",
+				SOUsername: "sam", SOCSRPEM: string(soCSR), SOPin: transport.Secret("sam-pin-1234"),
 			})
 			if err != nil {
 				t.Fatalf("%s: create tenant with an SO: %v", tk, err)
@@ -111,7 +111,7 @@ func TestTenantOnboarding_SOMatchingTheAdminIsRefused(t *testing.T) {
 			if _, err := c.operator.Tenants().CreateTenant(boundedCtx(t), &transport.CreateTenantRequest{
 				ID: "acme", Name: "acme",
 				AdminUsername: "alice", AdminCSRPEM: string(csr),
-				SOUsername: "alice", SOCSRPEM: string(csr), SOPin: "alice-pin-1234",
+				SOUsername: "alice", SOCSRPEM: string(csr), SOPin: transport.Secret("alice-pin-1234"),
 			}); err == nil {
 				t.Fatalf("%s: under strict separation of duties a tenant was created with the admin as its SO", tk)
 			}
@@ -136,7 +136,7 @@ func TestTenantOnboarding_StandardPostureTheAdminIsTheSO(t *testing.T) {
 			resp, err := c.operator.Tenants().CreateTenant(boundedCtx(t), &transport.CreateTenantRequest{
 				ID: "acme", Name: "acme",
 				AdminUsername: "alice", AdminCSRPEM: string(csr),
-				SOUsername: "alice", SOCSRPEM: string(csr), SOPin: "alice-pin-1234",
+				SOUsername: "alice", SOCSRPEM: string(csr), SOPin: transport.Secret("alice-pin-1234"),
 			})
 			// FIPS 140 mode forces strict separation whatever is configured,
 			// so there the create is refused exactly as in the strict posture.

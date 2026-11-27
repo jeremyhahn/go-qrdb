@@ -37,13 +37,13 @@ func TestEmbedded_LockoutCarriesTheRetryDelay(t *testing.T) {
 	tr := newRekeyTransport(t, pins)
 	ctx := context.Background()
 	for i := 0; i < auth.SOPINFreeFailures; i++ {
-		_, err := tr.BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: transport.DomainUnseal, Threshold: 2, SOPin: "wrong-pin-0000"})
+		_, err := tr.BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: transport.DomainUnseal, Threshold: 2, SOPin: transport.Secret("wrong-pin-0000")})
 		var reqErr *transport.RequestError
 		if errors.As(err, &reqErr) {
 			t.Fatalf("wrong PIN %d = %v; a refusal naming no delay must not be wrapped", i+1, err)
 		}
 	}
-	_, err := tr.BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: transport.DomainUnseal, Threshold: 2, SOPin: rekeySOPIN})
+	_, err := tr.BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: transport.DomainUnseal, Threshold: 2, SOPin: transport.Secret(rekeySOPIN)})
 	var reqErr *transport.RequestError
 	var locked *pin.SOPINLockedError
 	if !errors.As(err, &reqErr) || !errors.As(err, &locked) {

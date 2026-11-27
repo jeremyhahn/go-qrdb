@@ -135,7 +135,7 @@ func TestOutcomeAndRound(t *testing.T) {
 // each holder's role and the factor policy.
 func TestCeremonyInit(t *testing.T) {
 	opts, err := CeremonyInitFrom(&transport.CeremonyInitializeRequest{
-		SOPin: "so", UserPin: "user", CredentialSealStrategy: "shamir", Threshold: 2, Policy: "any-enrolled",
+		SOPin: transport.Secret("so"), UserPin: transport.Secret("user"), CredentialSealStrategy: "shamir", Threshold: 2, Policy: "any-enrolled",
 		Officers: []transport.CeremonyOfficerRequest{{Username: "alice", Role: "so", CSRPEM: "a"}, {Username: "carol", Role: "custodian", CSRPEM: "c"}},
 		Hostname: "db.example.com", SANs: []string{"db.example.com"},
 	})

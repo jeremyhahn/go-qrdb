@@ -257,11 +257,11 @@ func TestRoundFromPB(t *testing.T) {
 // TestRekeyRevokeEncoders covers the four rekey/revoke encoders (system and
 // tenant scope).
 func TestRekeyRevokeEncoders(t *testing.T) {
-	r := RekeyToPB(&transport.RekeyStartRequest{Domain: "unseal", Threshold: 2, Policy: "designated", SOPin: "pin"})
+	r := RekeyToPB(&transport.RekeyStartRequest{Domain: "unseal", Threshold: 2, Policy: "designated", SOPin: transport.Secret("pin")})
 	if r.GetDomain() != "unseal" || r.GetThreshold() != 2 || r.GetPolicy() != "designated" || r.GetSoPin() != "pin" {
 		t.Errorf("RekeyToPB = %+v", r)
 	}
-	rv := RevokeToPB(&transport.OfficerRevokeRequest{Domain: "unseal", Username: "alice", Threshold: 2, SOPin: "pin"})
+	rv := RevokeToPB(&transport.OfficerRevokeRequest{Domain: "unseal", Username: "alice", Threshold: 2, SOPin: transport.Secret("pin")})
 	if rv.GetDomain() != "unseal" || rv.GetUsername() != "alice" || rv.GetThreshold() != 2 || rv.GetSoPin() != "pin" {
 		t.Errorf("RevokeToPB = %+v", rv)
 	}
@@ -280,7 +280,7 @@ func TestRekeyRevokeEncoders(t *testing.T) {
 // (zero-officer) shape.
 func TestCeremonyInitToPB(t *testing.T) {
 	req := &transport.CeremonyInitializeRequest{
-		SOPin: "so", UserPin: "user", CredentialSealStrategy: "shamir", Threshold: 2, Policy: "designated",
+		SOPin: transport.Secret("so"), UserPin: transport.Secret("user"), CredentialSealStrategy: "shamir", Threshold: 2, Policy: "designated",
 		Officers: []transport.CeremonyOfficerRequest{{
 			Username: "alice", Role: "so", CSRPEM: "a", EncryptionKEM: "x25519", EncryptionKey: []byte("pub"),
 			Factors: []transport.HolderFactorEnrolment{{Name: "fido2"}}, Designated: "fido2",

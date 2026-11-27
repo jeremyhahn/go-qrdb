@@ -54,6 +54,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/pinhook"
 )
 
 // Tenant and PIN the suite runs under.
@@ -292,23 +293,23 @@ func Run(t *testing.T, startServer func(t *testing.T, f *Fixture) Client) {
 		defer release()
 		calls := map[string]func() error{
 			"BarrierRekeyStart": func() error {
-				_, err := c.BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: transport.DomainUnseal, Threshold: 2, SOPin: "other"})
+				_, err := c.BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: transport.DomainUnseal, Threshold: 2, SOPin: transport.Secret("other")})
 				return err
 			},
 			"BarrierGenerateRecoveryKeys": func() error {
-				_, err := c.BarrierGenerateRecoveryKeys(ctx, &transport.BarrierGenerateRecoveryKeysRequest{Threshold: 2, SOPin: "other"})
+				_, err := c.BarrierGenerateRecoveryKeys(ctx, &transport.BarrierGenerateRecoveryKeysRequest{Threshold: 2, SOPin: transport.Secret("other")})
 				return err
 			},
 			"BarrierInitializeShamir": func() error {
-				_, err := c.BarrierInitializeShamir(ctx, &transport.BarrierInitializeShamirRequest{Threshold: 2, TotalShares: 3, SOPin: "other"})
+				_, err := c.BarrierInitializeShamir(ctx, &transport.BarrierInitializeShamirRequest{Threshold: 2, TotalShares: 3, SOPin: transport.Secret("other")})
 				return err
 			},
 			"CeremonyInitialize": func() error {
-				_, err := c.CeremonyInitialize(ctx, &transport.CeremonyInitializeRequest{SOPin: "other"})
+				_, err := c.CeremonyInitialize(ctx, &transport.CeremonyInitializeRequest{SOPin: transport.Secret("other")})
 				return err
 			},
 			"CeremonySignCSR": func() error {
-				_, err := c.CeremonySignCSR(ctx, &transport.SignCSRInitRequest{Username: "officer", SOPin: "other", CSRPEM: "csr", Role: "officer"})
+				_, err := c.CeremonySignCSR(ctx, &transport.SignCSRInitRequest{Username: "officer", SOPin: transport.Secret("other"), CSRPEM: "csr", Role: "officer"})
 				return err
 			},
 		}
@@ -364,6 +365,80 @@ func Run(t *testing.T, startServer func(t *testing.T, f *Fixture) Client) {
 		}
 		if f.Barrier.Rekeys() != 0 {
 			t.Fatalf("a refused rekey reached the service: %s", f.reached())
+		}
+	})
+	runPINWipe(t, start)
+}
+
+// runPINWipe checks that the transport zeroes the PINs a request carries,
+// and the copy of a PIN bound by transport.WithSOPIN, once the call returns:
+// after a call the server served (which must have seen the original PIN)
+// and after one the server refused.
+func runPINWipe(t *testing.T, start func(t *testing.T, f *Fixture) Client) {
+	t.Run("request PINs reach the server and are zeroed after the call", func(t *testing.T) {
+		f := NewFixture(t)
+		f.PINs = authtest.BarrierPINBackend(t, PIN)
+		c := start(t, f)
+		// The SO gate of some transports reads the bound PIN; the request
+		// carries the same PIN in its own buffers, which must be zeroed.
+		ctx, release := BindPIN(t, PIN)
+		defer release()
+		initSO, initUser, csrSO, rekeySO := transport.Secret(PIN), transport.Secret("user-pin-5678"), transport.Secret(PIN), transport.Secret(PIN)
+		if _, err := c.CeremonyInitialize(ctx, &transport.CeremonyInitializeRequest{SOPin: initSO, UserPin: initUser}); err != nil {
+			t.Fatalf("CeremonyInitialize with the SO PIN: %s; %s", describe(err), f.reached())
+		}
+		if _, err := c.CeremonySignCSR(ctx, &transport.SignCSRInitRequest{Username: "officer", CSRPEM: "csr", Role: "officer", SOPin: csrSO}); err != nil {
+			t.Fatalf("CeremonySignCSR with the SO PIN: %s; %s", describe(err), f.reached())
+		}
+		if got := f.Ceremony.SOPINs(); len(got) != 2 || got[0] != PIN || got[1] != PIN {
+			t.Fatalf("the ceremony saw %d SO PINs, want the request's PIN twice; %s", len(got), f.reached())
+		}
+		if _, err := c.BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: transport.DomainUnseal, Threshold: 2, SOPin: rekeySO}); err != nil {
+			t.Fatalf("BarrierRekeyStart with the SO PIN: %s; %s", describe(err), f.reached())
+		}
+		// The rekey is admitted only when the server verified the PIN it
+		// received against the backend, so it saw the original value.
+		if got := f.Barrier.Rekeys(); got != 1 {
+			t.Fatalf("rekeys = %d, want 1; %s", got, f.reached())
+		}
+		RequireZero(t, "CeremonyInitialize SOPin", initSO)
+		RequireZero(t, "CeremonyInitialize UserPin", initUser)
+		RequireZero(t, "CeremonySignCSR SOPin", csrSO)
+		RequireZero(t, "BarrierRekeyStart SOPin", rekeySO)
+	})
+	t.Run("a request PIN is zeroed after the server refuses the call", func(t *testing.T) {
+		f := NewFixture(t)
+		// No PIN backend: the server refuses the SO-PIN-gated rekey.
+		c := start(t, f)
+		soPIN := transport.Secret(PIN)
+		if _, err := c.BarrierRekeyStart(context.Background(), &transport.RekeyStartRequest{Domain: transport.DomainUnseal, Threshold: 2, SOPin: soPIN}); err == nil {
+			t.Fatal("BarrierRekeyStart with no PIN backend succeeded")
+		}
+		if f.Barrier.Rekeys() != 0 {
+			t.Fatalf("a refused rekey reached the service: %s", f.reached())
+		}
+		RequireZero(t, "BarrierRekeyStart SOPin", soPIN)
+	})
+	t.Run("the copy of a bound PIN is zeroed after the call", func(t *testing.T) {
+		f := NewFixture(t)
+		f.PINs = authtest.BarrierPINBackend(t, PIN)
+		c := start(t, f)
+		bound, release := BindPIN(t, PIN)
+		defer release()
+		rec := &pinhook.Recorder{}
+		ctx := pinhook.With(bound, rec)
+		if _, err := c.BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: transport.DomainUnseal, Threshold: 2}); err != nil {
+			t.Fatalf("BarrierRekeyStart with the SO PIN bound: %s; %s", describe(err), f.reached())
+		}
+		if got := f.Barrier.Rekeys(); got != 1 {
+			t.Fatalf("rekeys = %d, want 1; %s", got, f.reached())
+		}
+		copies := rec.Copies()
+		if len(copies) == 0 {
+			t.Fatal("the transport never resolved the bound PIN")
+		}
+		for _, p := range copies {
+			RequireZero(t, "the resolved copy of the bound SO PIN", p)
 		}
 	})
 }

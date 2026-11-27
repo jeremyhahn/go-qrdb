@@ -64,7 +64,7 @@ func TestLockout_OneRawBackendTwoConsumersShareOneBudget(t *testing.T) {
 		}
 	}
 	for i := viaCeremony; i < auth.SOPINFreeFailures; i++ {
-		if _, err := tr.BarrierGenerateRecoveryKeys(ctx, &transport.BarrierGenerateRecoveryKeysRequest{Threshold: 2, SOPin: "wrong-pin-0000"}); !errors.Is(err, pin.ErrPINInvalid) {
+		if _, err := tr.BarrierGenerateRecoveryKeys(ctx, &transport.BarrierGenerateRecoveryKeysRequest{Threshold: 2, SOPin: transport.Secret("wrong-pin-0000")}); !errors.Is(err, pin.ErrPINInvalid) {
 			t.Fatalf("transport wrong PIN %d = %v", i+1, err)
 		}
 	}

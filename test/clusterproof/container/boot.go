@@ -121,7 +121,7 @@ func (b *Boot) FirstBoot(ctx context.Context) error {
 	// secret it sent wipes only its own copy.
 	request := func() *transport.CeremonyInitializeRequest {
 		return &transport.CeremonyInitializeRequest{
-			SOPin: string(so), UserPin: string(user), AdminCertPEM: string(cert), Secret: slices.Clone(secret),
+			SOPin: transport.Secret(slices.Clone(so)), UserPin: transport.Secret(slices.Clone(user)), AdminCertPEM: string(cert), Secret: slices.Clone(secret),
 		}
 	}
 	errs := make([]error, len(b.Inventory.Nodes))
@@ -146,6 +146,8 @@ func (b *Boot) firstBoot(ctx context.Context, n Node, request func() *transport.
 		req := request()
 		_, err = api.CeremonyInitialize(ctx, req)
 		clear(req.Secret)
+		req.SOPin.Wipe()
+		req.UserPin.Wipe()
 		if err == nil {
 			return nil
 		}

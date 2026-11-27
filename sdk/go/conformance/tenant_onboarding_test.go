@@ -293,7 +293,7 @@ func withTenantSO(t *testing.T, req *transport.CreateTenantRequest) *transport.C
 	if err != nil {
 		t.Fatalf("SO CSR: %v", err)
 	}
-	req.SOUsername, req.SOCSRPEM, req.SOPin = "ciso", string(soCSR), "ciso-pin-1234"
+	req.SOUsername, req.SOCSRPEM, req.SOPin = "ciso", string(soCSR), transport.Secret("ciso-pin-1234")
 	return req
 }
 

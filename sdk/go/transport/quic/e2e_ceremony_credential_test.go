@@ -39,7 +39,7 @@ func TestE2E_CeremonyInitialize_HappyPath(t *testing.T) {
 		})
 	})
 	resp, err := tr.CeremonyInitialize(context.Background(), &transport.CeremonyInitializeRequest{
-		SOPin: "1234", UserPin: "5678", Threshold: 2,
+		SOPin: transport.Secret("1234"), UserPin: transport.Secret("5678"), Threshold: 2,
 		CredentialSealStrategy: "barrier",
 		Officers: []transport.CeremonyOfficerRequest{
 			{Username: "alice", CSRPEM: "csr1"},
@@ -74,7 +74,7 @@ func TestE2E_CeremonySignCSR_HappyPath(t *testing.T) {
 		return wire.StatusOK, mustMarshal(&pb.CeremonySignCSRResponse{CertPem: "signed-cert"})
 	})
 	resp, err := tr.CeremonySignCSR(context.Background(), &transport.SignCSRInitRequest{
-		Username: "alice", SOPin: "1234", CSRPEM: "csr", Role: "officer",
+		Username: "alice", SOPin: transport.Secret("1234"), CSRPEM: "csr", Role: "officer",
 	})
 	if err != nil {
 		t.Fatalf("CeremonySignCSR: %v", err)

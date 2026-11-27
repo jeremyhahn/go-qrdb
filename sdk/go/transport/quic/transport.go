@@ -432,8 +432,12 @@ func reachableButSealed(err error) bool {
 
 // Request performs a generic QUIC wire protocol request by method name.
 // This method is not supported for the QUIC transport; callers should
-// use the typed KVClient and AdminClient methods instead.
-func (t *Transport) Request(_ context.Context, method string, _, _ any) error {
+// use the typed KVClient and AdminClient methods instead. The request's PIN
+// buffers are still wiped: the caller handed them to the transport.
+func (t *Transport) Request(_ context.Context, method string, req, _ any) error {
+	if w, ok := req.(interface{ WipePINs() }); ok {
+		w.WipePINs()
+	}
 	return &transport.NotImplementedError{Method: "Request(" + method + ")"}
 }
 
@@ -1408,13 +1412,14 @@ func (t *Transport) requireTLS(req transport.BarrierSecretCarrier) error {
 // resolveSOPIN is transport.ResolveSOPIN, refusing a PIN -- the request's own
 // or one bound by transport.WithSOPIN -- when the configured address names the
 // plaintext http:// scheme explicitly.
-func (t *Transport) resolveSOPIN(ctx context.Context, method, explicit string) (string, error) {
+func (t *Transport) resolveSOPIN(ctx context.Context, method string, explicit transport.Secret) (transport.Secret, error) {
 	pin, err := transport.ResolveSOPIN(ctx, method, explicit)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	if pin != "" && transport.IsHTTP(t.config.Address) {
-		return "", &transport.SOPINRequiresTLSError{Transport: "quic"}
+	if len(pin) != 0 && transport.IsHTTP(t.config.Address) {
+		pin.Wipe()
+		return nil, &transport.SOPINRequiresTLSError{Transport: "quic"}
 	}
 	return pin, nil
 }

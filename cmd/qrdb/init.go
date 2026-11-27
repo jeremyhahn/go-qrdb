@@ -444,8 +444,8 @@ func runInit(cmd *cobra.Command, f *initFlags) error {
 	secretBytes := []byte(f.passphrase)
 	defer secure.Wipe(secretBytes)
 	req := &transport.CeremonyInitializeRequest{
-		SOPin:                  f.soPin,
-		UserPin:                f.userPin,
+		SOPin:                  transport.Secret(f.soPin),
+		UserPin:                transport.Secret(f.userPin),
 		Threshold:              f.threshold,
 		Policy:                 f.policy,
 		CredentialSealStrategy: f.barrierStrategy,

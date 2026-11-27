@@ -99,11 +99,11 @@ func (s systemHolders) quorumSubmit(ctx context.Context, req *transport.QuorumSu
 }
 
 func (s systemHolders) rekey(ctx context.Context, threshold int, policy, soPin string) (*transport.QuorumRound, error) {
-	return s.cl.Barrier().BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: s.domain, Threshold: threshold, Policy: policy, SOPin: soPin})
+	return s.cl.Barrier().BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: s.domain, Threshold: threshold, Policy: policy, SOPin: transport.Secret(soPin)})
 }
 
 func (s systemHolders) revoke(ctx context.Context, username string, threshold int, soPin string) (*transport.QuorumRound, error) {
-	return s.cl.Barrier().BarrierOfficerRevoke(ctx, &transport.OfficerRevokeRequest{Domain: s.domain, Username: username, Threshold: threshold, SOPin: soPin})
+	return s.cl.Barrier().BarrierOfficerRevoke(ctx, &transport.OfficerRevokeRequest{Domain: s.domain, Username: username, Threshold: threshold, SOPin: transport.Secret(soPin)})
 }
 
 func (s systemHolders) claimLabel() string {

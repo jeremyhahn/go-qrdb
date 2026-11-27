@@ -343,6 +343,12 @@ func reachableButSealed(err error) bool {
 
 // Request performs a generic gRPC request dispatch by method name.
 func (t *Transport) Request(ctx context.Context, method string, req, resp any) error {
+	// The request's PIN buffers are consumed by this call: wipe them on
+	// every return path, matching the typed methods and the embedded
+	// dispatch.
+	if w, ok := req.(interface{ WipePINs() }); ok {
+		defer w.WipePINs()
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}

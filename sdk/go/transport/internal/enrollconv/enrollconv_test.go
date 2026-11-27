@@ -231,7 +231,7 @@ func TestTenantCreateRequest(t *testing.T) {
 func TestTenantCreateRequest_SOFields(t *testing.T) {
 	got := TenantCreateRequest(&transport.CreateTenantRequest{
 		ID: "t1", AdminUsername: "admin", AdminCSRPEM: "admin-csr",
-		SOUsername: "so", SOCSRPEM: "so-csr", SOCertPEM: "so-cert", SOChainPEM: "so-chain", SOPin: "so-pin",
+		SOUsername: "so", SOCSRPEM: "so-csr", SOCertPEM: "so-cert", SOChainPEM: "so-chain", SOPin: transport.Secret("so-pin"),
 	})
 	if got.GetSoUsername() != "so" || got.GetSoCsrPem() != "so-csr" || got.GetSoCertPem() != "so-cert" ||
 		got.GetSoChainPem() != "so-chain" || got.GetSoPin() != "so-pin" {
