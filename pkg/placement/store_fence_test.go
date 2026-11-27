@@ -218,7 +218,12 @@ func withReplica(p *placement.Placement, node string, state placement.ReplicaSta
 
 func seedPlacement(t *testing.T, kv *fenceGuardedKV, p *placement.Placement) {
 	t.Helper()
-	b, err := json.Marshal(p)
+	// The store keeps the database name out of the stored value (it is
+	// resolved through the catalog), so the seed must encode the same way
+	// for compare-and-swap's byte comparison to match.
+	stored := *p
+	stored.Database = ""
+	b, err := json.Marshal(&stored)
 	if err != nil {
 		t.Fatal(err)
 	}
