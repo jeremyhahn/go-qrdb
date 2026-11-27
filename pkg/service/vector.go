@@ -99,6 +99,10 @@ type vectorService struct {
 	routed     vector.Storage
 	homeMu     sync.Mutex
 	homeStores map[string]*tenantVectorHome
+	// homeSeeded records, under homeMu, the tenants whose home-store vector
+	// counts the metrics were seeded from, so a store re-opened or not
+	// cacheable is never counted twice.
+	homeSeeded map[string]bool
 	// homeGens records, under indexMu, the home-store write generation each cached home-namespace index reflects.
 	homeGens map[string]homeIndexGeneration
 
@@ -589,6 +593,7 @@ func NewVectorService(
 		rebuildJobs:    make(map[string]*RebuildJobState),
 		compactionJobs: make(map[string]*CompactionJobState),
 		homeStores:     make(map[string]*tenantVectorHome),
+		homeSeeded:     make(map[string]bool),
 	}
 	svc.routed = &tenantRoutedVectorStorage{v: svc}
 	svc.bgCtx, svc.bgCancel = context.WithCancel(context.Background())
@@ -795,22 +800,28 @@ func (v *vectorService) loadNamespaces() error {
 			continue
 		}
 
-		// Update metrics with logical namespace name and tenant label so
-		// that no scoped key (containing \x1f) appears in emitted label values.
-		// The seed is the stored count: ListNamespaces returns the record
-		// as created, whose VectorCount no write updates, while
-		// GetNamespaceInfo overlays the live count of stored vectors.
-		if v.metrics != nil {
-			stored := ns.VectorCount
-			if info, err := v.storage.GetNamespaceInfo(ctx, ns.Name); err == nil && info != nil {
-				stored = info.VectorCount
-			}
-			v.metrics.addVectors(ns.Name, float64(stored))
-			v.refreshIndexSizeMetric(ns.Name)
-		}
+		v.seedNamespaceMetrics(ctx, v.storage, &ns)
 	}
 
 	return nil
+}
+
+// seedNamespaceMetrics adds ns's stored vector count from st to the vector
+// count gauge and refreshes its index-size gauge. The metrics carry the
+// logical namespace name and tenant label, so no scoped key (containing
+// \x1f) appears in emitted label values. The seed is the stored count:
+// ListNamespaces returns the record as created, whose VectorCount no write
+// updates, while GetNamespaceInfo overlays the live count.
+func (v *vectorService) seedNamespaceMetrics(ctx context.Context, st vector.Storage, ns *vector.NamespaceInfo) {
+	if v.metrics == nil || ns == nil {
+		return
+	}
+	stored := ns.VectorCount
+	if info, err := st.GetNamespaceInfo(ctx, ns.Name); err == nil && info != nil {
+		stored = info.VectorCount
+	}
+	v.metrics.addVectors(ns.Name, float64(stored))
+	v.refreshIndexSizeMetric(ns.Name)
 }
 
 // ensureHNSWIndex ensures that an HNSW index exists for the given namespace.

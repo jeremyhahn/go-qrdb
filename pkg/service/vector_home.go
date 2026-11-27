@@ -110,7 +110,28 @@ func (v *vectorService) storageFor(ctx context.Context, tenantID string) (vector
 	} else {
 		delete(v.homeStores, tenantID)
 	}
+	v.seedHomeMetrics(ctx, tenantID, st)
 	return st, nil
+}
+
+// seedHomeMetrics seeds, once per tenant, the vector metrics from the
+// namespaces a tenant's home store already holds: loadNamespaces reads only
+// the node-local store, so after a restart a home-backed namespace would
+// otherwise count from zero. It runs under homeMu, on the tenant's first
+// home access, before any write of this process reaches that store.
+func (v *vectorService) seedHomeMetrics(ctx context.Context, tenantID string, st vector.Storage) {
+	if v.metrics == nil || v.homeSeeded[tenantID] {
+		return
+	}
+	namespaces, err := st.ListNamespaces(ctx)
+	if err != nil {
+		// Unseeded: the next home access retries.
+		return
+	}
+	v.homeSeeded[tenantID] = true
+	for i := range namespaces {
+		v.seedNamespaceMetrics(ctx, st, &namespaces[i])
+	}
 }
 
 // storageForNamespace returns the store of the tenant a scoped namespace
@@ -157,10 +178,10 @@ func (v *vectorService) homeIndex(ctx context.Context, home generationStorage, s
 		return nil, homeReadError(scoped, err)
 	}
 	v.indexMu.Lock()
-	defer v.indexMu.Unlock()
 	if cur, ok := v.hnswIndexes[scoped]; ok {
 		if seen, known := v.homeGens[scoped]; known && seen.index == cur &&
 			seen.ver.Incarnation == ver.Incarnation && seen.ver.Generation >= ver.Generation {
+			v.indexMu.Unlock()
 			return cur, nil
 		}
 	}
@@ -169,6 +190,9 @@ func (v *vectorService) homeIndex(ctx context.Context, home generationStorage, s
 	}
 	v.hnswIndexes[scoped] = built
 	v.homeGens[scoped] = homeIndexGeneration{index: built, ver: ver}
+	v.indexMu.Unlock()
+	// The rebuilt index replaces the one the index-size gauge measured.
+	v.refreshIndexSizeMetric(scoped)
 	return built, nil
 }
 
