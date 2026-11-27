@@ -2210,17 +2210,12 @@ export class RestClient implements Client {
             create: async (req: CreateDatabaseRequest): Promise<DatabaseInfo> => {
                 this.ensureConnected();
                 // A REST client creates the database on the server it talks
-                // to: that is an embedded database of that server. A remote
-                // mode or a connection to another server is a desktop-side
-                // registration this transport cannot make, so it is refused
-                // before anything is sent rather than created embedded.
+                // to: that is an embedded database of that server. Any other
+                // mode is refused before anything is sent rather than
+                // created embedded.
                 if (req.mode !== undefined && req.mode !== '' && req.mode !== 'embedded') {
                     throw new UnsupportedOptionError('database.create', 'mode',
                         `mode "${req.mode}" is not served over REST; only an embedded database can be created`);
-                }
-                if (req.connection !== undefined) {
-                    throw new UnsupportedOptionError('database.create', 'connection',
-                        'a remote connection is not served over REST; only an embedded database can be created');
                 }
                 // "embedded" is the only mode left and the server's create
                 // request has no mode field (its strict decoder refuses an

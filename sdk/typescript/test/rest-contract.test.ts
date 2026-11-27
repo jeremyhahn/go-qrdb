@@ -143,15 +143,6 @@ describe('database.create refuses options REST cannot serve', () => {
         expect(calls).toHaveLength(0);
     });
 
-    it('a connection is refused and nothing is sent', async () => {
-        const client = await connectedClient();
-        const calls = installMockFetch({});
-        await expect(client.database.create({
-            name: 'r2', backend: 'memory', connection: { transport: 'rest', address: 'https://b.example' },
-        })).rejects.toBeInstanceOf(UnsupportedOptionError);
-        expect(calls).toHaveLength(0);
-    });
-
     it('mode embedded sends the wire body without a mode field', async () => {
         const client = await connectedClient();
         const calls = installMockFetch({ name: 'e1' });
