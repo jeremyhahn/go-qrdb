@@ -349,17 +349,31 @@ func TestRollingUpgrade_OldBinaryRefusedAfterActivation_CLI(t *testing.T) {
 	c.requireReadsEverywhere(t, want)
 }
 
-// TestRollingUpgrade_KeyDeliveryAcrossVersions_CLI (T7): in a cluster of
-// one N and two N+1 members a raft-isolated tenant created through the CLI
+// TestRollingUpgrade_KeyDeliveryAcrossVersions_CLI (T7): in both mixed
+// shapes (two N and one N+1, one N and two N+1) a raft-isolated tenant
+// created through the CLI
 // is served on every node under that node's own key, both with the leader
-// on the N node (N proposes, N+1 members follow) and with the leader on an
-// N+1 node (N+1 proposes, the N member follows).
+// on an N node (N proposes, the other members follow) and with the leader
+// on an N+1 node (N+1 proposes, the N members follow).
 func TestRollingUpgrade_KeyDeliveryAcrossVersions_CLI(t *testing.T) {
 	bins := buildUpgradeBinaries(t)
-	nodeBins, nIdx, nextIdx := shapeBinaries(bins, mixedShapes[1].next)
+	cli := buildCLIBinary(t)
+	for si, shape := range mixedShapes {
+		t.Run(shape.name, func(t *testing.T) {
+			runKeyDeliveryShape(t, bins, cli, shape.next, si)
+		})
+	}
+}
+
+// runKeyDeliveryShape is T7 on one mixed shape: a raft-isolated tenant is
+// created with the leader on an N node and another with the leader on an
+// N+1 node, and each is served on every node under that node's own key.
+// shapeIdx keeps the tenant names unique per shape.
+func runKeyDeliveryShape(t *testing.T, bins upgradeBinaries, cli string, next [3]bool, shapeIdx int) {
+	t.Helper()
+	nodeBins, nIdx, nextIdx := shapeBinaries(bins, next)
 	c := startIsolationRaftCluster(t, nodeBins)
 
-	cli := buildCLIBinary(t)
 	var nodes [3]*multiProtoNode
 	for i := range nodes {
 		certPath, keyPath := c.ca.boundAdminCert(t, c.dataDirs[i])
@@ -378,8 +392,8 @@ func TestRollingUpgrade_KeyDeliveryAcrossVersions_CLI(t *testing.T) {
 		tenant string
 		leader int
 	}{
-		{tenant: "upg-from-n", leader: nIdx},
-		{tenant: "upg-from-next", leader: nextIdx},
+		{tenant: fmt.Sprintf("upg-from-n-%d", shapeIdx), leader: nIdx},
+		{tenant: fmt.Sprintf("upg-from-next-%d", shapeIdx), leader: nextIdx},
 	} {
 		moveShard1Leader(t, c.ca, nodes, dir.leader)
 		certPath, keyPath := createTenantWithAdminCert(t, nodes[dir.leader], multiProtocols[0], dir.tenant,
