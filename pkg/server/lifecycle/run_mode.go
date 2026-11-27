@@ -122,7 +122,11 @@ func writeRunMode(dataDir, marker, mode string) (err error) {
 	return nil
 }
 
-// checkRunMode validates a present marker's content against mode.
+// checkRunMode validates a present marker's content against mode. A marker
+// that names mode is accepted only once dataDir is synced: the claim that
+// wrote it may have renamed it into place and then failed the directory sync,
+// and a marker that does not survive power loss would let a start in the
+// other mode after a crash bypass the guard.
 func checkRunMode(dataDir, marker, content, mode string) error {
 	recorded := strings.TrimSpace(content)
 	if recorded != capabilities.ModeStandalone && recorded != capabilities.ModeRaft {
@@ -130,6 +134,9 @@ func checkRunMode(dataDir, marker, content, mode string) error {
 	}
 	if recorded != mode {
 		return &RunModeMismatchError{DataDir: dataDir, Recorded: recorded, Configured: mode}
+	}
+	if err := fsync.Dir(dataDir); err != nil {
+		return &RunModeMarkerError{Path: dataDir, Err: err}
 	}
 	return nil
 }

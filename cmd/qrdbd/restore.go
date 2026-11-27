@@ -28,7 +28,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/service/backupsink"
-	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
 )
 
 // restoreShardFromBackup performs an OFFLINE, one-shot disaster-recovery
@@ -74,13 +73,12 @@ import (
 //     idempotent-skip case, already-restored) state, and hand control back to
 //     the normal boot sequence.
 func restoreShardFromBackup(ctx context.Context, f *startFlags, host *quicraft.Host, createFn sm.CreateFunc, shardCfg quicraftconfig.Config, complianceAudit audit.AuditLogger, auditPolicy audit.FailurePolicy) (err error) {
-	if f.backupDir == "" {
-		return &RestoreBackupSourceRequiredError{}
-	}
-
-	backupStore, err := file.New(f.backupDir)
+	backupStore, err := openBackupStore(f)
 	if err != nil {
 		return &RestoreBackupError{Phase: "open-backup-store", BackupID: f.restoreBackupID, ShardID: shardCfg.ShardID, Err: err}
+	}
+	if backupStore == nil {
+		return &RestoreBackupSourceRequiredError{}
 	}
 	defer func() { _ = backupStore.Close() }()
 

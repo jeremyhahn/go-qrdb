@@ -16,6 +16,7 @@ package objstore
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"hash/crc32"
 	"io"
@@ -120,7 +121,7 @@ func journalRoot(root string) (string, error) {
 func refuseInTreeJournal(provider string, store objcommon.Storage) error {
 	rc, err := store.Get(journalName)
 	if err != nil {
-		if notFound(err) {
+		if missingIn(context.Background(), store, journalName, err) {
 			return nil
 		}
 		return err
@@ -259,7 +260,7 @@ func (e *Engine) writeJournal(image []byte) error {
 // clearJournal removes the committed journal object after its operations
 // have been fully applied, making the commit final.
 func (e *Engine) clearJournal() error {
-	if err := e.journal.Delete(journalName); err != nil && !notFound(err) {
+	if err := e.journal.Delete(journalName); err != nil && !missingIn(context.Background(), e.journal, journalName, err) {
 		return &JournalWriteError{Err: err}
 	}
 	return nil
@@ -273,7 +274,7 @@ func (e *Engine) clearJournal() error {
 func (e *Engine) recoverJournal() error {
 	rc, err := e.journal.Get(journalName)
 	if err != nil {
-		if notFound(err) {
+		if missingIn(context.Background(), e.journal, journalName, err) {
 			return nil
 		}
 		return err

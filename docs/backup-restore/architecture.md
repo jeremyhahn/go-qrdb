@@ -70,15 +70,19 @@ Selective at both ends: back up specific shards, restore specific shards.
 |---|---|---|
 | Backup service, manifest, checksums | `pkg/service` (backup) | go-qrdb |
 | Shard snapshot capture | `pkg/service` (`ShardSnapshotProvider`, `NewHostShardSnapshotProvider`) over the **go-quicraft** host | go-qrdb / go-quicraft |
-| Backup repository (`service.BackupSink`) | `pkg/service/backupsink` over any `storage.Storage`, including the go-objstore backend | go-qrdb / **go-objstore** |
+| Backup repository (`service.BackupSink`) | `pkg/service/backupsink` over any `storage.Storage`: the file engine for `--backup-dir`, or any go-objstore provider opened by `lifecycle.OpenBackupDestination` from `backup.destination` for `qrdbd` and `sdk/go/node` | go-qrdb / **go-objstore** |
 | Encryption (AES-256-GCM, wrapped DEK) | `pkg/service` (backup), `pkg/keywrap` | go-qrdb |
 | SDK surface | `sdk/go` (`transport.BackupClient`) | go-qrdb |
 
 `Destination` is a label recorded with the backup and bound into its
 authenticated data; it does not select where the bytes go. The bytes go to the
 node's backup sink: `qrdbd start --backup-dir <dir>` persists them to a
-file-backed store, and an embedding program injects any `service.BackupSink`
-with `server.WithBackupSink`. With no sink, backups are held in process memory
+file-backed store; a `backup.destination` block in the configuration persists
+them to any go-objstore provider (`local`, `s3` — MinIO is an `s3` endpoint —
+`azure`, `gcs`), opened by `lifecycle.OpenBackupDestination` for `qrdbd` and the
+SDK node alike, so an embedder chooses object storage from configuration
+without importing go-objstore; and an embedding program can still inject any
+`service.BackupSink` with `server.WithBackupSink`. The sources are exclusive. With no sink, backups are held in process memory
 and die with the process.
 
 ## Run-mode dependency
