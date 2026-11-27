@@ -501,6 +501,16 @@ func (s releaseFaultStore) Get(name string) (io.ReadCloser, error) {
 	return s.Storage.Get(name)
 }
 
+// Exists fails for the journal while journalReadFails holds: an unreachable
+// store fails the existence probe too, so the open cannot read a failed Get
+// as an absent journal (missingIn) and must fail.
+func (s releaseFaultStore) Exists(ctx context.Context, name string) (bool, error) {
+	if name == "qrdb-objstore-journal" && journalReadFails.Load() {
+		return false, errReleaseFault
+	}
+	return s.Storage.Exists(ctx, name)
+}
+
 // TestManager_FailedCreateClaimUndoIsRetried: a create whose open claimed
 // the namespace, failed, and could not give the claim back records a release
 // entry for its incarnation, and the next retry releases the namespace.
