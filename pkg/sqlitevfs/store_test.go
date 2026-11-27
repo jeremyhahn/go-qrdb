@@ -22,6 +22,7 @@ import (
 	"io"
 	"math"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1905,6 +1906,174 @@ func TestWriterLeaseLostDuringStagingFailsPublish(t *testing.T) {
 		t.Fatalf("revision %d went below the seeded %d", revOf(t, b), before)
 	}
 	other := beginReserved(t, sb)
+	if err := other.Rollback(t.Context()); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+}
+
+// recordLocker is a LockServiceLocker that keeps each lock's record in the
+// page backend's keyspace, as pkg/lock does in a database scope: acquiring
+// puts the record (its create revision is the fencing token) and rewrites it
+// once (pkg/lock's token update, so the mod revision moves past the token);
+// an expired lease leaves the record in place until the next holder deletes
+// and recreates it. afterExtend, when set, runs once after the next
+// successful Extend: the holder is paused right after its Check.
+type recordLocker struct {
+	b           *MVCCBackend
+	mu          sync.Mutex
+	locks       map[string]recordLock
+	afterExtend func()
+}
+
+type recordLock struct {
+	holder  string
+	token   int64
+	expired bool
+}
+
+func newRecordLocker(b *MVCCBackend) *recordLocker {
+	return &recordLocker{b: b, locks: make(map[string]recordLock)}
+}
+
+func (r *recordLocker) TryLock(ctx context.Context, key, holderID string, _ time.Duration, _ bool) (*lock.Lock, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec := []byte(lock.RecordKey(key))
+	if held, ok := r.locks[key]; ok {
+		if !held.expired {
+			return nil, &lock.LockHeldError{Key: key, HolderID: held.holder}
+		}
+		if _, err := r.b.Commit(ctx, nil, nil, [][]byte{rec}); err != nil {
+			return nil, err
+		}
+	}
+	token, err := r.b.Commit(ctx, nil, map[string][]byte{string(rec): []byte(holderID)}, nil)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := r.b.Commit(ctx, nil, map[string][]byte{string(rec): []byte(holderID + "/token")}, nil); err != nil {
+		return nil, err
+	}
+	r.locks[key] = recordLock{holder: holderID, token: token}
+	return &lock.Lock{Key: key, FencingToken: token, HolderID: holderID, AcquireCount: 1}, nil
+}
+
+func (r *recordLocker) Extend(_ context.Context, key string, token int64) (*lock.Lock, error) {
+	r.mu.Lock()
+	held, ok := r.locks[key]
+	if !ok || held.expired || held.token != token {
+		r.mu.Unlock()
+		return nil, &lock.NotLockHolderError{Key: key, ExpectedToken: token, ActualToken: held.token}
+	}
+	hook := r.afterExtend
+	r.afterExtend = nil
+	r.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return &lock.Lock{Key: key, FencingToken: token, HolderID: held.holder, AcquireCount: 1}, nil
+}
+
+func (r *recordLocker) Unlock(ctx context.Context, key string, token int64) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	held, ok := r.locks[key]
+	if !ok || held.token != token {
+		return &lock.NotLockHolderError{Key: key, ExpectedToken: token, ActualToken: held.token}
+	}
+	delete(r.locks, key)
+	_, err := r.b.Commit(ctx, nil, nil, [][]byte{[]byte(lock.RecordKey(key))})
+	return err
+}
+
+// expire ends the holder's lease without removing its record.
+func (r *recordLocker) expire(key string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if held, ok := r.locks[key]; ok {
+		held.expired = true
+		r.locks[key] = held
+	}
+}
+
+func newFencedStore(t *testing.T, b Backend, r *recordLocker, holder string) *Store {
+	t.Helper()
+	w, err := NewLockServiceWriter(r, holder, time.Minute)
+	if err != nil {
+		t.Fatalf("NewLockServiceWriter: %v", err)
+	}
+	s, err := NewStore(b, "app.db", WithStageThreshold(2*testPageSize), WithStageChunkBytes(testPageSize), WithWriterLock(w))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	return s
+}
+
+// TestWriterLeaseExpiredAfterCheckDirect: a writer paused after its final
+// Check, whose lease then expires and whose lock a second writer takes
+// (Reserve, no commit), must not publish its pages: the token is a
+// condition of the commit itself (SPEC sqlite-vfs Q3).
+func TestWriterLeaseExpiredAfterCheckDirect(t *testing.T) {
+	b := newTestBackend(t)
+	r := newRecordLocker(b)
+	sa := newFencedStore(t, b, r, "a")
+	sb := newFencedStore(t, b, r, "b")
+	seeded := beginReserved(t, sa)
+	writePages(t, seeded, 0x01)
+	commit(t, seeded)
+
+	txn := beginReserved(t, sa)
+	writePages(t, txn, 0x09)
+	var other *Txn
+	r.mu.Lock()
+	r.afterExtend = func() {
+		r.expire(sa.lockKey)
+		other = beginReserved(t, sb)
+	}
+	r.mu.Unlock()
+	if _, err := txn.Commit(t.Context()); !errors.Is(err, ErrBusy) {
+		t.Fatalf("Commit after the lease expired past the final Check err = %v, want ErrBusy", err)
+	}
+	if other == nil {
+		t.Fatal("the commit never checked its lease, so no second writer reserved")
+	}
+	if got := readAll(t, begin(t, sb)); !bytes.Equal(got, pageOf(0x01)) {
+		t.Fatal("a commit whose lock another writer holds changed the pages")
+	}
+	if err := other.Rollback(t.Context()); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+}
+
+// TestWriterLeaseExpiredAfterCheckStaged is the staged publish's case: the
+// lease expires after the last chunk's Check, before the publish.
+func TestWriterLeaseExpiredAfterCheckStaged(t *testing.T) {
+	b := newStagingBackend(t)
+	r := newRecordLocker(b.MVCCBackend)
+	sa := newFencedStore(t, b, r, "a")
+	sb := newFencedStore(t, b, r, "b")
+	seeded := beginReserved(t, sa)
+	writePages(t, seeded, 0x01)
+	commit(t, seeded)
+
+	txn := beginReserved(t, sa)
+	writePages(t, txn, 0x07, 0x08, 0x09)
+	var other *Txn
+	b.onPublish = func() {
+		b.onPublish = nil
+		r.expire(sa.lockKey)
+		other = beginReserved(t, sb)
+	}
+	if _, err := txn.Commit(t.Context()); !errors.Is(err, ErrBusy) {
+		t.Fatalf("staged Commit after the lease expired past the final Check err = %v, want ErrBusy", err)
+	}
+	if other == nil || b.publishes == 0 {
+		t.Fatal("the commit never reached its publish, so no second writer reserved")
+	}
+	assertNoStageKeyLive(t, b)
+	if got := readAll(t, begin(t, sb)); !bytes.Equal(got, pageOf(0x01)) {
+		t.Fatal("a staged commit whose lock another writer holds changed the pages")
+	}
 	if err := other.Rollback(t.Context()); err != nil {
 		t.Fatalf("Rollback: %v", err)
 	}

@@ -140,7 +140,7 @@ func (t *Txn) commitStaged(ctx context.Context, reads []ReadCheck, metaValue []b
 			// took as expired: the commit is retryable, as a lost read.
 			err = fmt.Errorf("%w: %w", ErrSnapshotChanged, err)
 		}
-		return fail(err)
+		return fail(t.fenceLost(ctx, err))
 	}
 	s.trimAfter(ctx, rev, rest)
 	return rev, nil

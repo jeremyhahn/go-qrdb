@@ -147,7 +147,7 @@ func (b *MVCCBackend) checkReadsLocked(reads []ReadCheck) error {
 	}
 	now := b.store.CurrentRevision()
 	for _, r := range reads {
-		var modRev int64
+		var modRev, createRev int64
 		found := false
 		if now > 0 {
 			kv, err := b.store.GetAtRevision(r.Key, now)
@@ -160,7 +160,14 @@ func (b *MVCCBackend) checkReadsLocked(reads []ReadCheck) error {
 			} else {
 				found = true
 				modRev = kv.ModRevision
+				createRev = kv.CreateRevision
 			}
+		}
+		if r.CreateRev != 0 {
+			if !found || createRev != r.CreateRev {
+				return fmt.Errorf("%w: %q no longer holds create revision %d", ErrSnapshotChanged, r.Key, r.CreateRev)
+			}
+			continue
 		}
 		if found != r.Found || (found && modRev > r.Rev) {
 			return fmt.Errorf("%w: %q changed since revision %d", ErrSnapshotChanged, r.Key, r.Rev)

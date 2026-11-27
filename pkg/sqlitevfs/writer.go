@@ -80,6 +80,27 @@ type lockerWriter struct {
 	locker   writerLocker
 	holderID string
 	ttl      time.Duration
+	// fenced is set when the lock records live in the page backend's
+	// keyspace (the lock service of the database's own scope), so a
+	// commit can carry the token as a condition (fenceKey).
+	fenced bool
+}
+
+// writerFence is implemented by a WriterLock whose lock record lives in
+// the keyspace of the Store's backend: fenceKey returns the record's key
+// for the lock named key, and a commit carries a read check that the
+// record's create revision is still the holder's fencing token, so a
+// writer whose lease expired after its last Check cannot publish once
+// another writer took the lock (SPEC sqlite-vfs Q3).
+type writerFence interface {
+	fenceKey(key string) ([]byte, bool)
+}
+
+func (w *lockerWriter) fenceKey(key string) ([]byte, bool) {
+	if !w.fenced {
+		return nil, false
+	}
+	return []byte(lock.RecordKey(key)), true
 }
 
 // NewLockerWriter returns the Q3 A serialized-writer default: a WriterLock
@@ -115,7 +136,7 @@ func NewLockServiceWriter(svc LockServiceLocker, holderID string, ttl time.Durat
 	if ttl <= 0 {
 		return nil, fmt.Errorf("%w: lease TTL %s", ErrInvalidOption, ttl)
 	}
-	return &lockerWriter{locker: lockServiceAdapter{svc: svc}, holderID: holderID, ttl: ttl}, nil
+	return &lockerWriter{locker: lockServiceAdapter{svc: svc}, holderID: holderID, ttl: ttl, fenced: true}, nil
 }
 
 // Acquire calls TryLock once; a held lock is ErrBusy naming the key and its

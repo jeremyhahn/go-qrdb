@@ -162,6 +162,12 @@ func readCompares(reads []ReadCheck) []service.Compare {
 	}
 	cmps := make([]service.Compare, 0, 2*len(reads))
 	for _, r := range reads {
+		if r.CreateRev != 0 {
+			// A fence: an absent record has create revision 0, never
+			// a token, so a released or lost lock refuses too.
+			cmps = append(cmps, service.Compare{Key: r.Key, Target: service.CompareCreateRevision, Result: service.CompareEqual, CreateRevision: r.CreateRev})
+			continue
+		}
 		if !r.Found {
 			cmps = append(cmps, service.Compare{Key: r.Key, Target: service.CompareModRevision, Result: service.CompareEqual, ModRevision: 0})
 			continue

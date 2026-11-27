@@ -62,11 +62,15 @@ type Backend interface {
 // Key's live state is unchanged since revision Rev. Found is whether Key had
 // a live value at Rev: when true, Key must still have a live value whose mod
 // revision is at most Rev; when false, Key must still have no live value (an
-// absent key stays absent).
+// absent key stays absent). A non-zero CreateRev is a fence instead: Key
+// must still have a live value whose create revision is CreateRev (a lock
+// record whose create revision is the holder's fencing token); Rev and Found
+// are then ignored.
 type ReadCheck struct {
-	Key   []byte
-	Rev   int64
-	Found bool
+	Key       []byte
+	Rev       int64
+	Found     bool
+	CreateRev int64
 }
 
 // Store is the page store of one SQLite database file over a Backend.
@@ -89,6 +93,10 @@ type Store struct {
 	// the lock named lockKey; nil is the no-lock (optimistic/local) Store.
 	writer  WriterLock
 	lockKey string
+	// fenceKey is the key of the writer lock's record when it lives in
+	// the backend's keyspace (writerFence): every held commit carries a
+	// read check that the record still holds the transaction's token.
+	fenceKey []byte
 
 	// optimistic is the opt-in optimistic writer mode (Q3 A): no writer
 	// lock, and every commit carries the transaction's read set, so a
@@ -328,6 +336,11 @@ func NewStore(b Backend, db string, opts ...Option) (*Store, error) {
 	}
 	if s.optimistic && s.writer != nil {
 		return nil, ErrOptimisticWithWriterLock
+	}
+	if f, ok := s.writer.(writerFence); ok {
+		if key, fenced := f.fenceKey(s.lockKey); fenced {
+			s.fenceKey = key
+		}
 	}
 	return s, nil
 }
@@ -1251,7 +1264,7 @@ func (t *Txn) commitWrites(ctx context.Context) (int64, error) {
 	head, rest := t.store.splitDeletes(spent, trim)
 	rev, err := t.store.backend.Commit(ctx, reads, puts, append(deletes, head...))
 	if err != nil {
-		return 0, fmt.Errorf("sqlitevfs: commit %q: %w", t.store.db, err)
+		return 0, fmt.Errorf("sqlitevfs: commit %q: %w", t.store.db, t.fenceLost(ctx, err))
 	}
 	t.store.trimAfter(ctx, rev, rest)
 	return rev, nil
@@ -1296,8 +1309,14 @@ func (t *Txn) dropUnchanged(ctx context.Context) error {
 // does. In optimistic mode every page the transaction read from its snapshot
 // must also be unchanged since rev, in key order.
 func (t *Txn) readSet(now int64, metaFound bool) []ReadCheck {
-	reads := make([]ReadCheck, 0, len(t.reads)+1)
+	reads := make([]ReadCheck, 0, len(t.reads)+2)
 	reads = append(reads, ReadCheck{Key: t.store.metaKey, Rev: now, Found: metaFound})
+	if t.held && t.store.fenceKey != nil {
+		// The writer lock's token is a condition of the same request
+		// that publishes the pages: a lease lost after the last Check,
+		// with the lock taken by another writer, refuses the commit.
+		reads = append(reads, ReadCheck{Key: t.store.fenceKey, CreateRev: t.token})
+	}
 	keys := make([]string, 0, len(t.reads))
 	for key := range t.reads {
 		keys = append(keys, key)
@@ -1307,6 +1326,20 @@ func (t *Txn) readSet(now int64, metaFound bool) []ReadCheck {
 		reads = append(reads, ReadCheck{Key: []byte(key), Rev: t.rev, Found: t.reads[key]})
 	}
 	return reads
+}
+
+// fenceLost maps a held commit refused by its read set to the writer
+// lock's own error when the lock moved on: the fence (readSet) failed
+// because the lease was lost after the last Check, which is ErrBusy, not a
+// changed snapshot. Any other error, or a lock still held, is err.
+func (t *Txn) fenceLost(ctx context.Context, err error) error {
+	if !t.held || t.store.fenceKey == nil || !errors.Is(err, ErrSnapshotChanged) {
+		return err
+	}
+	if cerr := t.store.writer.Check(context.WithoutCancel(ctx), t.store.lockKey, t.token); cerr != nil {
+		return cerr
+	}
+	return err
 }
 
 // Rollback discards the buffer and releases a held writer lock. The
