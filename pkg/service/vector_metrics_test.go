@@ -486,3 +486,35 @@ func TestTenantMetricLabels_TenantOnly(t *testing.T) {
 		assert.False(t, containsControlBytes(labels["tenant"]), "tenant must be control-byte-free for physical=%q", tc.physical)
 	}
 }
+
+// TestVectorCountMetric_HomeBackedRestartSeedsTheStoredCount: after a
+// restart, a namespace in a tenant home counts its stored vectors, so
+// deleting one of two reports 1, and the lazily rebuilt home index sets
+// the index-size gauge.
+func TestVectorCountMetric_HomeBackedRestartSeedsTheStoredCount(t *testing.T) {
+	homes := newFakeVectorHomes()
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	ns := tenant.ComposeNamespace("acme", tenant.DefaultDatabase) + "docs"
+
+	isolatedRegistry(t)
+	svc1, _ := newHomedVectorService(t, homes)
+	_, err := svc1.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: ns, Dimension: 2})
+	require.NoError(t, err)
+	for id := uint64(1); id <= 2; id++ {
+		_, err = svc1.UpsertVector(ctx, &UpsertVectorRequest{Namespace: ns, ID: id, Vector: []float32{1, float32(id)}})
+		require.NoError(t, err)
+	}
+	require.NotEmpty(t, vectorHomeKeys(t, homes.home("acme")), "the vectors must be in acme's home")
+
+	reg := isolatedRegistry(t)
+	svc2, _ := newHomedVectorService(t, homes)
+	_, err = svc2.DeleteVector(ctx, &DeleteVectorRequest{Namespace: ns, ID: 1})
+	require.NoError(t, err)
+	assert.Equal(t, 1.0, tenantGauge(t, reg, "qrdb_vector_vector_count", "acme"),
+		"the restarted home namespace counts its stored vectors")
+
+	_, err = svc2.SearchSimilar(ctx, &SearchSimilarRequest{Namespace: ns, QueryVector: []float32{1, 0}, K: 1})
+	require.NoError(t, err)
+	assert.Greater(t, tenantGauge(t, reg, "qrdb_vector_index_size_bytes", "acme"), 0.0,
+		"the rebuilt home index sets the index-size gauge")
+}
