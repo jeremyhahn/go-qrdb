@@ -77,6 +77,9 @@ type dbFile struct {
 	// served is the change counter page 1 shows in this transaction in
 	// optimistic mode; 0 serves the snapshot's change counter.
 	served uint32
+	// published is set from a commit until the unlock that ends it: txn
+	// is then the snapshot pinned at this connection's own publication.
+	published bool
 }
 
 // servedSeq numbers the counters served in optimistic mode.
@@ -144,7 +147,7 @@ func (f *dbFile) release() {
 	if f.txn != nil {
 		_ = f.txn.Rollback(context.Background())
 	}
-	f.txn, f.reserved, f.dirty = nil, false, false
+	f.txn, f.reserved, f.dirty, f.published = nil, false, false, false
 }
 
 // commit commits the Txn as one revision. On failure the file enters
@@ -158,6 +161,11 @@ func (f *dbFile) release() {
 func (f *dbFile) commit(fallback int32) int32 {
 	txn := f.txn
 	f.txn, f.reserved, f.dirty = nil, false, false
+	if err := trimToHeader(txn); err != nil {
+		_ = txn.Rollback(context.Background())
+		f.failed = resultCode(err, fallback)
+		return f.failed
+	}
 	rev, err := txn.Commit(context.Background())
 	if err != nil {
 		_ = txn.Rollback(context.Background())
@@ -166,6 +174,7 @@ func (f *dbFile) commit(fallback int32) int32 {
 	}
 	if pinned, err := f.store.BeginAt(context.Background(), rev); err == nil {
 		f.txn = pinned
+		f.published = true
 	}
 	return sqlite3.SQLITE_OK
 }
@@ -187,6 +196,33 @@ func (f *dbFile) read(p []byte, off int64) int32 {
 		return sqlite3.SQLITE_IOERR_SHORT_READ
 	}
 	return sqlite3.SQLITE_OK
+}
+
+// trimToHeader shrinks txn to the page count page 1's header records.
+// SQLite truncates a shrinking rollback-journal commit only after the
+// xSync that publishes it, so without this the truncate would be a
+// second publication under a second writer reservation, and another
+// writer committing in between fails it with a stale snapshot. A file
+// with no header yet, or a header that does not match the stored page
+// size, is left as it is.
+func trimToHeader(txn *sqlitevfs.Txn) error {
+	var hdr [32]byte
+	if n, err := txn.ReadAt(hdr[:], 0); n != len(hdr) || (err != nil && !errors.Is(err, io.EOF)) {
+		return nil
+	}
+	pageSize := int64(binary.BigEndian.Uint16(hdr[16:18]))
+	if pageSize == 1 {
+		pageSize = 65536
+	}
+	pages := int64(binary.BigEndian.Uint32(hdr[28:32]))
+	size := txn.Size()
+	if pages == 0 || pageSize == 0 || size%pageSize != 0 {
+		return nil
+	}
+	if want := pages * pageSize; want < size {
+		return txn.Truncate(want)
+	}
+	return nil
 }
 
 func (f *dbFile) write(p []byte, off int64) int32 {
@@ -213,6 +249,12 @@ func (f *dbFile) write(p []byte, off int64) int32 {
 
 func (f *dbFile) truncate(size int64) int32 {
 	if f.failed != sqlite3.SQLITE_OK {
+		return sqlite3.SQLITE_OK
+	}
+	// A shrinking commit's truncate comes after its publication, which
+	// already trimmed the image to the header's page count: it is a no-op
+	// and takes no new writer reservation.
+	if f.published && !f.reserved && f.txn != nil && f.txn.Size() == size {
 		return sqlite3.SQLITE_OK
 	}
 	txn, err := f.writer()
@@ -285,6 +327,7 @@ func (f *dbFile) unlock(level int32) int32 {
 		f.release()
 	}
 	f.failed = sqlite3.SQLITE_OK
+	f.published = false
 	f.level = level
 	return rc
 }

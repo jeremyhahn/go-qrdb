@@ -669,6 +669,142 @@ func TestVFS_VacuumAboveStageThreshold(t *testing.T) {
 	}
 }
 
+// metaCountingBackend counts the commits that publish a database's meta
+// record.
+type metaCountingBackend struct {
+	*sqlitevfs.MVCCBackend
+	meta  string
+	count atomic.Int64
+}
+
+func (b *metaCountingBackend) Commit(ctx context.Context, reads []sqlitevfs.ReadCheck, puts map[string][]byte, deletes [][]byte) (int64, error) {
+	rev, err := b.MVCCBackend.Commit(ctx, reads, puts, deletes)
+	if _, ok := puts[b.meta]; ok && err == nil {
+		b.count.Add(1)
+	}
+	return rev, err
+}
+
+func (b *metaCountingBackend) Publish(ctx context.Context, src, dst []byte, expectedKeys int64, reads []sqlitevfs.ReadCheck, puts map[string][]byte, deletes [][]byte) (int64, error) {
+	rev, err := b.MVCCBackend.Publish(ctx, src, dst, expectedKeys, reads, puts, deletes)
+	if _, ok := puts[b.meta]; ok && err == nil {
+		b.count.Add(1)
+	}
+	return rev, err
+}
+
+// releaseHookLocker runs a hook once, right after the next writer-lock
+// release once armed: the window between one commit's publication and
+// the connection's next call.
+type releaseHookLocker struct {
+	*memLocker
+	hook atomic.Pointer[func()]
+}
+
+func (l *releaseHookLocker) Unlock(ctx context.Context, key string, token int64) error {
+	err := l.memLocker.Unlock(ctx, key, token)
+	if hook := l.hook.Swap(nil); hook != nil {
+		(*hook)()
+	}
+	return err
+}
+
+// TestVFS_ShrinkingVacuumIsOnePublication: a VACUUM that shrinks the file
+// publishes its pages and its smaller size in one meta publication under
+// one writer reservation, so a writer that commits right after that
+// publication neither fails the VACUUM nor sees an oversized image.
+func TestVFS_ShrinkingVacuumIsOnePublication(t *testing.T) {
+	for mode, opts := range map[string][]sqlitevfs.Option{
+		"direct": nil,
+		"staged": {sqlitevfs.WithStageThreshold(4096)},
+	} {
+		t.Run(mode, func(t *testing.T) {
+			name := "shrink-" + mode + ".db"
+			metaKey, err := sqlitevfs.MetaKey(name)
+			if err != nil {
+				t.Fatalf("MetaKey: %v", err)
+			}
+			b := &metaCountingBackend{MVCCBackend: newBackend(t), meta: string(metaKey)}
+			l := &releaseHookLocker{memLocker: newMemLocker()}
+			var conns atomic.Int64
+			setup(t, name, func(url.Values) (*sqlitevfs.Store, error) {
+				w, err := sqlitevfs.NewLockerWriter(l, fmt.Sprintf("conn-%d", conns.Add(1)), time.Minute)
+				if err != nil {
+					return nil, err
+				}
+				return sqlitevfs.NewStore(b, name, append([]sqlitevfs.Option{sqlitevfs.WithWriterLock(w)}, opts...)...)
+			})
+			db := openDB(t, name, "")
+			other := openDB(t, name, "")
+			mustExec(t, db, "create table t(a integer primary key, b blob)")
+			mustExec(t, db, "create table u(a)")
+			for i := 0; i < 40; i++ {
+				mustExec(t, db, "insert into t(b) values(randomblob(2000))")
+			}
+			mustExec(t, db, "delete from t where a % 2 = 0")
+			if n := count(t, other, "u"); n != 0 {
+				t.Fatalf("rows in u = %d, want 0", n)
+			}
+			var pagesBefore int
+			if err := db.QueryRow("pragma page_count").Scan(&pagesBefore); err != nil {
+				t.Fatalf("page_count: %v", err)
+			}
+
+			interleaved := false
+			hook := func() {
+				interleaved = true
+				if _, err := other.Exec("insert into u values(1)"); err != nil {
+					t.Errorf("writer interleaved after the VACUUM's publication: %v", err)
+				}
+			}
+			l.hook.Store(&hook)
+			before := b.count.Load()
+			mustExec(t, db, "vacuum")
+			if !interleaved {
+				t.Fatal("no writer-lock release during the VACUUM")
+			}
+			// The interleaved insert is one publication of its own.
+			if got := b.count.Load() - before - 1; got != 1 {
+				t.Fatalf("the VACUUM published the meta record %d times, want once", got)
+			}
+
+			var pages, pageSize int
+			if err := db.QueryRow("pragma page_count").Scan(&pages); err != nil {
+				t.Fatalf("page_count: %v", err)
+			}
+			if err := db.QueryRow("pragma page_size").Scan(&pageSize); err != nil {
+				t.Fatalf("page_size: %v", err)
+			}
+			if pages >= pagesBefore {
+				t.Fatalf("VACUUM left %d pages, was %d: nothing shrank", pages, pagesBefore)
+			}
+			s, err := sqlitevfs.NewStore(b, name)
+			if err != nil {
+				t.Fatalf("NewStore: %v", err)
+			}
+			txn, err := s.Begin(context.Background())
+			if err != nil {
+				t.Fatalf("Begin: %v", err)
+			}
+			size := txn.Size()
+			_ = txn.Rollback(context.Background())
+			if want := int64(pages * pageSize); size != want {
+				t.Fatalf("stored size = %d, want the %d pages SQLite reports (%d)", size, pages, want)
+			}
+			if n := count(t, db, "t"); n != 20 {
+				t.Fatalf("rows in t = %d, want 20", n)
+			}
+			if n := count(t, db, "u"); n != 1 {
+				t.Fatalf("rows in u = %d, want the interleaved 1", n)
+			}
+			var ok string
+			if err := db.QueryRow("pragma integrity_check").Scan(&ok); err != nil || ok != "ok" {
+				t.Fatalf("integrity_check = %q, %v", ok, err)
+			}
+		})
+	}
+}
+
 func TestVFS_OptimisticDisjointWriters(t *testing.T) {
 	b := newBackend(t)
 	const name = "optimistic.db"
