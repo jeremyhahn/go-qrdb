@@ -28,6 +28,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 )
 
 // failoverLeaseTTL is the TTL of the lease kept alive across the failover.
@@ -37,6 +39,12 @@ import (
 const (
 	failoverLeaseTTL   = 10
 	failoverRenewAfter = 6 * time.Second
+	// failoverSealReconfirm bounds how long a survivor refuses with
+	// SEAL_STATE_UNCONFIRMED after the leader dies: the cluster seal monitor
+	// serves for one lease past its last good records scan and scans every
+	// poll interval, each scan bounded by two poll intervals, so one lease
+	// plus a scan cycle covers a system shard that is still electing.
+	failoverSealReconfirm = clusterseal.DefaultLease + 3*clusterseal.DefaultPollInterval
 )
 
 // TestLease_ThreeNode_KeepAliveSurvivesLeaderFailure kills the leader right
@@ -98,8 +106,14 @@ func TestLease_ThreeNode_KeepAliveSurvivesLeaderFailure(t *testing.T) {
 	// The new leader's first sweep promotes it, restarting every lease at
 	// its full TTL; its stale follower copy had at most
 	// failoverLeaseTTL-failoverRenewAfter seconds left.
-	awaitClusterCondition(t, 5*time.Second, "new leader restarting the lease at its full TTL", func() error {
-		got := httpLeaseTTL(t, c.ca, newLeader, lease.ID)
+	// A survivor whose cluster seal lease lapsed during the failover answers
+	// the retryable SEAL_STATE_UNCONFIRMED until its next records scan
+	// succeeds, so the window adds failoverSealReconfirm to the sweep's.
+	awaitClusterCondition(t, 5*time.Second+failoverSealReconfirm, "new leader restarting the lease at its full TTL", func() error {
+		got, err := httpLeaseTTLOrUnconfirmed(t, c.ca, newLeader, lease.ID)
+		if err != nil {
+			return err
+		}
 		if got.RemainingTTL < failoverLeaseTTL-1 {
 			return &leaseNotAgedError{Remaining: got.RemainingTTL}
 		}
