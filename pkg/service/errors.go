@@ -452,6 +452,21 @@ func (e *NotLeaderError) Error() string {
 		" at " + e.LeaderAddress
 }
 
+// NotLeaderShard returns the shard this node does not lead. The SDK's
+// transport carries the same refusal as its own type, which this package
+// cannot name; LeadershipTransient recognises a not-leader of either layer by
+// this method.
+func (e *NotLeaderError) NotLeaderShard() uint64 {
+	return e.ShardID
+}
+
+// notLeaderErr is a not-leader refusal of any layer: this package's
+// *NotLeaderError or a transport's carrying of it.
+type notLeaderErr interface {
+	error
+	NotLeaderShard() uint64
+}
+
 // Is reports the ErrNotStored marker: a node that is not the leader cannot
 // commit the entry, so the proposal was refused rather than applied.
 func (e *NotLeaderError) Is(target error) bool {
@@ -506,7 +521,7 @@ func LeadershipTransient(err error) bool {
 			return true
 		}
 	}
-	var nl *NotLeaderError
+	var nl notLeaderErr
 	return errors.As(err, &nl)
 }
 

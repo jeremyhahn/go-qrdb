@@ -56,6 +56,31 @@ func TestLeadershipTransient_ElectionErrors(t *testing.T) {
 	}
 }
 
+// transportNotLeaderError has the shape of the SDK transport's
+// *transport.NotLeaderError: its own type carrying the not-leader refusal,
+// with no *NotLeaderError in its chain, recognised by NotLeaderShard.
+type transportNotLeaderError struct{ shardID uint64 }
+
+func (e *transportNotLeaderError) Error() string {
+	return "transport: not leader for shard 1, leader unknown"
+}
+
+func (e *transportNotLeaderError) NotLeaderShard() uint64 { return e.shardID }
+
+// A not-leader refusal a transport carried as its own type is the same
+// election state: a replica closed while its shard is leaderless gets it
+// from the embedded transport, never the service type.
+func TestLeadershipTransient_TransportNotLeader(t *testing.T) {
+	err := error(&transportNotLeaderError{shardID: 1})
+	if !LeadershipTransient(err) {
+		t.Errorf("LeadershipTransient(%v) = false, want true", err)
+	}
+	wrapped := &storeWrapError{err: &ReadError{Err: err}}
+	if !LeadershipTransient(wrapped) {
+		t.Errorf("LeadershipTransient(%v) = false, want true through wrappers", wrapped)
+	}
+}
+
 // TestLeadershipTransient_OtherErrorsAreFinal: nothing that is not an
 // election is transient, so a caller waiting one out never masks it.
 func TestLeadershipTransient_OtherErrorsAreFinal(t *testing.T) {

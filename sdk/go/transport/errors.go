@@ -144,6 +144,14 @@ func (e *NotLeaderError) Error() string {
 		" at " + e.LeaderAddress
 }
 
+// NotLeaderShard returns the shard the target node does not lead. It is how
+// service.LeadershipTransient recognises this refusal: the embedded transport
+// translates *service.NotLeaderError into this type, and a network client
+// decodes it from the wire, so neither keeps the service type in its chain.
+func (e *NotLeaderError) NotLeaderShard() uint64 {
+	return e.ShardID
+}
+
 // TLSError is returned when TLS configuration or handshake fails.
 type TLSError struct {
 	Err error

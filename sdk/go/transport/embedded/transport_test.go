@@ -1167,6 +1167,21 @@ func TestTranslateError_NotLeader(t *testing.T) {
 	}
 }
 
+// The translated not-leader refusal stays an election state: a replica
+// closed while its shard is leaderless (no leader known) gets this error,
+// and service.LeadershipTransient must still classify it as transient.
+func TestTranslateError_NotLeaderIsLeadershipTransient(t *testing.T) {
+	for _, svcErr := range []*service.NotLeaderError{
+		{ShardID: 1},
+		{ShardID: 1, LeaderID: 2, LeaderAddress: "10.0.0.1:63001"},
+	} {
+		err := translateError(svcErr)
+		if !service.LeadershipTransient(err) {
+			t.Errorf("LeadershipTransient(%v) = false, want true", err)
+		}
+	}
+}
+
 func TestTranslateError_Generic(t *testing.T) {
 	err := translateError(errors.New("something went wrong"))
 	var reqErr *transport.RequestError
