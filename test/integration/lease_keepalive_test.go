@@ -174,11 +174,14 @@ watching:
 // than that. A refusal from read is returned as is, so the poll retries it.
 func leaseRestartedCheck(killed time.Time, now func() time.Time, read func() (leaseResult, error)) func() error {
 	return func() error {
+		// The TTL describes the lease when the server sampled it, which is
+		// no earlier than this instant; taking the threshold after the read
+		// would let a slow response lower it without ageing the sample.
+		elapsed := now().Sub(killed)
 		got, err := read()
 		if err != nil {
 			return err
 		}
-		elapsed := now().Sub(killed)
 		need := float64(failoverLeaseTTL-1) - elapsed.Seconds()
 		if need <= 1 {
 			return &leaseRestartWindowSpentError{Elapsed: elapsed}
@@ -233,15 +236,20 @@ func TestLease_RestartCheck_SlowSealReconfirm(t *testing.T) {
 		name     string
 		expiry   time.Time
 		wantPass bool
+		// delay is how long the response takes to arrive after the server
+		// sampled the lease; the clock advances by it inside read.
+		delay time.Duration
 	}{
-		{"restarted at promotion", promoted.Add(failoverLeaseTTL*time.Second + grace), true},
-		{"stale follower copy", killed.Add(failoverLeaseTTL*time.Second - failoverRenewAfter), false},
-		{"stale copy clamped to zero", killed, false},
+		{"restarted at promotion", promoted.Add(failoverLeaseTTL*time.Second + grace), true, 0},
+		{"stale follower copy", killed.Add(failoverLeaseTTL*time.Second - failoverRenewAfter), false, 0},
+		{"stale copy clamped to zero", killed, false, 0},
+		{"stale copy answered 6s late", killed.Add(failoverLeaseTTL*time.Second - failoverRenewAfter), false, 6 * time.Second},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			clock := killed
 			check := leaseRestartedCheck(killed, func() time.Time { return clock }, func() (leaseResult, error) {
+				defer func() { clock = clock.Add(tc.delay) }()
 				if clock.Before(confirmed) {
 					return leaseResult{}, &sealUnconfirmedError{Body: "simulated"}
 				}
@@ -249,7 +257,9 @@ func TestLease_RestartCheck_SlowSealReconfirm(t *testing.T) {
 			})
 			var passedAt time.Time
 			for ; !clock.After(windowEnd); clock = clock.Add(step) {
+				sampled := clock
 				err := check()
+				clock = sampled
 				var (
 					unconfirmed *sealUnconfirmedError
 					notAged     *leaseNotAgedError
