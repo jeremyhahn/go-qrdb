@@ -144,6 +144,23 @@ func (f *fakeShardLifecycle) CloseShardIfOwned(tenantID, db string, shardID uint
 	return 0, nil
 }
 
+func (f *fakeShardLifecycle) CloseShardByID(tenantID string, shardID uint64, purge bool) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for key := range f.started {
+		if key.tenantID != tenantID || f.shardIDs[key] != shardID {
+			continue
+		}
+		delete(f.started, key)
+		f.closed = append(f.closed, key)
+		if purge {
+			f.purged = append(f.purged, key)
+		}
+		return key.database, nil
+	}
+	return "", nil
+}
+
 func (f *fakeShardLifecycle) CloseAndPurge(tenantID, db string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -67,6 +67,13 @@ type ShardLifecycle interface {
 	// other placement's shard id when a different shard was left running.
 	CloseShardIfOwned(tenantID, db string, shardID uint64, purge bool) (otherShard uint64, err error)
 
+	// CloseShardByID stops tenantID's shard shardID under whatever name it
+	// runs, purging when purge is set, for a placement delete whose name is
+	// unknown. It invalidates a start of the shard still being planned, so
+	// the shard never starts once its placement is gone. It returns the name
+	// the shard ran under, empty when none was on this host.
+	CloseShardByID(tenantID string, shardID uint64, purge bool) (db string, err error)
+
 	// StartedAsObserver reports whether the locally running shard for
 	// (tenantID, db) was started with the observer role latched into its
 	// local raft configuration (false when the shard is not started). Used
@@ -871,16 +878,35 @@ func (r *TenantShardReconciler) handleEvent(ctx context.Context, ev placement.Ev
 			// value carries the shard identity.
 			shardID = ev.ShardID
 		}
+		if name == "" {
+			// The delete's prior value names the database when it was
+			// delivered.
+			name = ev.Database
+		}
 		if name == "" && shardID != 0 {
 			// Its name never resolved here, but a shard started under it
 			// (by an earlier name, or opened from the catalog) is found by
 			// the shard id alone.
 			name = r.startedShardName(ev.TenantID, shardID)
 		}
-		if name == "" || shardID == 0 {
+		if shardID == 0 {
 			r.logger.Debug("placement reconciler: delete of an entry never seen, nothing to close",
 				slog.String("tenant", ev.TenantID),
 				slog.String("database_id", ev.DatabaseID))
+			break
+		}
+		if name == "" {
+			// No name is known, yet a start of the shard may be planned on
+			// this host right now (its placement read before the delete):
+			// close by shard id, which invalidates that plan so the shard
+			// and its WAL never start.
+			closed, err := r.factory.CloseShardByID(ev.TenantID, shardID, r.purgeOnDemotion)
+			if err != nil {
+				r.logger.Warn("placement reconciler: shard close on delete failed",
+					slog.String("tenant", ev.TenantID),
+					slog.String("database", closed),
+					slog.Any("error", err))
+			}
 			break
 		}
 		if err := r.closeDemotedShard(ev.TenantID, name, shardID); err != nil {

@@ -297,6 +297,12 @@ type RaftBackendFactory struct {
 	// Production leaves it nil.
 	fenceResolveHook func()
 
+	// planReadHook, when non-nil, runs in planStart right after the
+	// placement read, before the plan is built. It is a TEST-ONLY seam,
+	// used to delete the placement while a start is being planned.
+	// Production leaves it nil.
+	planReadHook func(tenantID, db string)
+
 	// generation counts the shards removed from shards (forgetLocked,
 	// CloseAll) and the purges of a database, cached or not (CloseAndPurge).
 	// A start planned with mu released re-checks it before starting: a
@@ -1103,6 +1109,9 @@ func (f *RaftBackendFactory) planStart(ctx context.Context, tenantID, db string,
 			return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "placement-lookup", Err: perr}
 		}
 	}
+	if f.planReadHook != nil {
+		f.planReadHook(tenantID, db)
+	}
 
 	// Cold-path check, mirroring the cache-hit one above: refuse before
 	// ever starting or attaching a shard for a database whose replicated
@@ -1744,6 +1753,47 @@ func (f *RaftBackendFactory) CloseShardIfOwned(tenantID, db string, shardID uint
 	f.mu.Unlock()
 	defer f.endPurge(key, done)
 	return 0, f.stopAndPurge(tenantID, db, rs)
+}
+
+// CloseShardByID stops tenantID's shard shardID, purging its dataDir when
+// purge is set, whatever name it runs under. It serves a placement delete
+// that names only the shard: the start of that shard still being planned
+// is invalidated (the generation changes, so its commit re-plans and finds
+// the placement gone), a start already committed is waited for and then
+// stopped, and a shard already serving is stopped. Every step is under
+// f.mu, so no start of the shard slips in between the lookup and the
+// invalidation. It reports the name the shard ran under, empty when no
+// shard of that id was on this host.
+func (f *RaftBackendFactory) CloseShardByID(tenantID string, shardID uint64, purge bool) (db string, err error) {
+	f.mu.Lock()
+	f.awaitStartsLocked(func(k raftShardKey, s *startingShard) bool {
+		return k.tenantID == tenantID && s.shardID == shardID
+	})
+	var (
+		key   raftShardKey
+		rs    *raftShard
+		found bool
+	)
+	for k, s := range f.shards {
+		if k.tenantID == tenantID && s.shardID == shardID {
+			key, rs, found = k, s, true
+			break
+		}
+	}
+	if !found {
+		f.generation++
+		f.mu.Unlock()
+		return "", nil
+	}
+	f.forgetLocked(key)
+	if !purge {
+		f.mu.Unlock()
+		return key.database, f.stopShard(rs)
+	}
+	done := f.beginPurgeLocked(key)
+	f.mu.Unlock()
+	defer f.endPurge(key, done)
+	return key.database, f.stopAndPurge(tenantID, key.database, rs)
 }
 
 // beginPurgeLocked lists key as purging and returns the channel endPurge
