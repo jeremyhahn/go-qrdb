@@ -312,6 +312,27 @@ func TestClientBackend_SnapshotChanged(t *testing.T) {
 	}
 }
 
+// TestClientBackend_RevisionZeroIsEmpty checks a pin at revision zero over
+// the SDK sees the empty store, not the database at the current revision.
+func TestClientBackend_RevisionZeroIsEmpty(t *testing.T) {
+	mvcc, txn, _ := newClient(t)
+	b := newBackend(t, mvcc, txn)
+	seed := begin(t, newStore(t, b))
+	writePages(t, seed, 0x01)
+	commit(t, seed)
+
+	pinned, err := newStore(t, b).BeginAt(t.Context(), 0)
+	if err != nil {
+		t.Fatalf("BeginAt(0): %v", err)
+	}
+	if size := pinned.Size(); size != 0 {
+		t.Fatalf("BeginAt(0) over the SDK sees a %d-byte database, want an empty one", size)
+	}
+	if err := pinned.Rollback(t.Context()); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+}
+
 func TestClientWriterLock_SecondHolderBusy(t *testing.T) {
 	_, _, l := newClient(t)
 	a, err := sdksqlitevfs.NewWriterLock(l, "a", 0)

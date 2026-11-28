@@ -87,6 +87,11 @@ func (b *ServiceBackend) Revision(ctx context.Context) (int64, error) {
 // before rev, which is how the server answers a key never written) or a nil
 // KeyValue is found=false with a nil error.
 func (b *ServiceBackend) GetAt(ctx context.Context, key []byte, rev int64) ([]byte, bool, error) {
+	// Revision zero is the empty store, as on MVCCBackend and in Keys; the
+	// service reads a non-positive revision as the current one.
+	if rev <= 0 {
+		return nil, false, nil
+	}
 	kv, err := b.kv.GetAtRevision(ctx, string(key), rev)
 	if err != nil {
 		var notFound *service.KeyNotFoundError

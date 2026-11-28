@@ -44,3 +44,30 @@ func TestBackendPublishExplicitWritesWinOverMoved(t *testing.T) {
 		})
 	}
 }
+
+// TestBackendRevisionZeroIsTheEmptyStore checks every backend reads
+// revision zero as the store before any write, never as the current one.
+func TestBackendRevisionZeroIsTheEmptyStore(t *testing.T) {
+	for name, b := range publishBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			if _, err := b.Commit(ctx, nil, map[string][]byte{"k/1": []byte("v")}, nil); err != nil {
+				t.Fatalf("Commit: %v", err)
+			}
+			if v, found, err := b.GetAt(ctx, []byte("k/1"), 0); err != nil || found {
+				t.Fatalf("GetAt at revision 0 = %q found=%v err=%v, want not found", v, found, err)
+			}
+			seed(t, newTestStore(t, b, "app.db"), 0x01)
+			txn, err := newTestStore(t, b, "app.db").BeginAt(ctx, 0)
+			if err != nil {
+				t.Fatalf("BeginAt(0): %v", err)
+			}
+			if size := txn.Size(); size != 0 {
+				t.Fatalf("BeginAt(0) sees a %d-byte database, want an empty one", size)
+			}
+			if err := txn.Rollback(ctx); err != nil {
+				t.Fatalf("Rollback: %v", err)
+			}
+		})
+	}
+}
