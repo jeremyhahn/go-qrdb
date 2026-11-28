@@ -53,17 +53,7 @@ func TestActivatePending_Matrix(t *testing.T) {
 			c.parallel(t)
 			client, ctx := c.bootClientGranting(t, activatePendingPermissions)
 			users := client.Users()
-			t.Run("concurrent-race", func(t *testing.T) {
-				// The file engine's Get takes no lock against a batch commit,
-				// so a concurrent reader can see the new metadata revision
-				// before its data record ("mvcc: revision N not found"): a
-				// storage read race outside ActivatePending, reported with
-				// #1765. Pebble and memory standalone and raft cover the race.
-				if c.backend == database.BackendFile {
-					t.Skip("file engine: unlocked Get races a batch commit (mvcc revision not found)")
-				}
-				assertActivatePendingRace(t, subtestCtx(t, ctx), users)
-			})
+			t.Run("concurrent-race", func(t *testing.T) { assertActivatePendingRace(t, subtestCtx(t, ctx), users) })
 			t.Run("disabled-refused", func(t *testing.T) { assertDisabledNotActivatedPending(t, subtestCtx(t, ctx), users) })
 		})
 	}

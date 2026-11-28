@@ -115,7 +115,12 @@ type Engine struct {
 	// to the open file, so two goroutines sharing lock would both hold it --
 	// writeMu is what stops that. A nil lock (an Engine built by hand in a
 	// test) is only ever used through the unlocked internals.
-	writeMu sync.Mutex
+	//
+	// Get and Exists take writeMu's read side, so an in-process reader never
+	// observes a batch half applied -- a revision pointer whose data record
+	// is not yet written (go-qrdb#1765). Callers already holding the write
+	// side read through get, never Get: an RWMutex is not reentrant.
+	writeMu sync.RWMutex
 	lock    *filelock.File
 
 	// durableShardDirs remembers, by path, every shard directory this
@@ -492,7 +497,7 @@ type lockedView struct {
 }
 
 // Get reads key.
-func (v lockedView) Get(key []byte) ([]byte, error) { return v.e.Get(key) }
+func (v lockedView) Get(key []byte) ([]byte, error) { return v.e.get(key) }
 
 // Set writes key without taking the write lock.
 func (v lockedView) Set(key, value []byte) error { return v.e.set(key, value) }
@@ -734,6 +739,14 @@ func isShardDirName(name string) bool {
 // rather than silently returning a value that provably belongs to a
 // different key (KeyMismatchError).
 func (e *Engine) Get(key []byte) ([]byte, error) {
+	e.writeMu.RLock()
+	defer e.writeMu.RUnlock()
+	return e.get(key)
+}
+
+// get is Get without writeMu, for a caller that already holds its write side
+// (CompareAndSwap, an Exclusive view).
+func (e *Engine) get(key []byte) ([]byte, error) {
 	if e.closed.Load() {
 		return nil, &storage.ClosedError{}
 	}
@@ -821,7 +834,7 @@ func (e *Engine) CompareAndSwap(ctx context.Context, key, expected, next []byte)
 	}
 	defer func() { err = e.unlockWrites(err) }()
 
-	current, err := e.Get(key)
+	current, err := e.get(key)
 	if err != nil {
 		return false, err
 	}
@@ -1055,6 +1068,8 @@ func (e *Engine) List(prefix []byte) ([][]byte, error) {
 // needs the record-name key, so a store that has not read it yet answers
 // with the barrier's error while the barrier is sealed.
 func (e *Engine) Exists(key []byte) (bool, error) {
+	e.writeMu.RLock()
+	defer e.writeMu.RUnlock()
 	if e.closed.Load() {
 		return false, &storage.ClosedError{}
 	}
