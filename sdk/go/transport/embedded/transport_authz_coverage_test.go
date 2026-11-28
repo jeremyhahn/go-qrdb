@@ -57,6 +57,7 @@ var targetResolvedOperations = map[string]struct{}{
 	"GetUserByUsername":               {},
 	"GetUserByEmail":                  {},
 	"AddCertBinding":                  {},
+	"ActivateWithCertBinding":         {},
 	"RemoveCertBinding":               {},
 	"UpdateUser":                      {},
 	"DeleteUser":                      {},

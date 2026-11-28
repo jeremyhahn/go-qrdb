@@ -2124,6 +2124,7 @@ func TestEmbeddedAuth_CertBinding_NilUserService(t *testing.T) {
 	for name, call := range map[string]func() error{
 		"GetUserByCertThumbprint": func() error { _, err := tr.GetUserByCertThumbprint(ctx, "AABBCC"); return err },
 		"AddCertBinding":          func() error { _, err := tr.AddCertBinding(ctx, 1, "AABBCC", 0); return err },
+		"ActivateWithCertBinding": func() error { _, err := tr.ActivateWithCertBinding(ctx, 1, "AABBCC", 0); return err },
 		"RemoveCertBinding":       func() error { _, err := tr.RemoveCertBinding(ctx, 1, "AABBCC"); return err },
 	} {
 		var nie *transport.NotImplementedError

@@ -16,6 +16,7 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 | Get by email (canonical login key) | `POST /users/lookup` | `GetUserByEmail` | `user.GetByEmail` | `qrdb_user_get_by_email` | `GetUserByEmail` | `users:read` |
 | Get by cert thumbprint | `GET /users/by-cert-thumbprint/{thumbprint}` | `GetUserByCertThumbprint` | `user.GetByCertThumbprint` | `qrdb_user_get_by_cert_thumbprint` | `GetUserByCertThumbprint` | `users:get_by_cert_thumbprint` |
 | Add cert binding | `POST /users/{id}/cert-bindings` | `AddCertBinding` | `user.AddCertBinding` | `qrdb_user_add_cert_binding` | `AddCertBinding` | `users:add_cert_binding` |
+| Activate pending with first cert binding | `POST /users/{id}/activate-with-cert-binding` | `ActivateWithCertBinding` | `user.ActivateWithCertBinding` | `qrdb_user_activate_with_cert_binding` | `ActivateWithCertBinding` | `users:add_cert_binding` |
 | Withdraw cert binding | `DELETE /users/{id}/cert-bindings/{thumbprint}` | `RemoveCertBinding` | `user.RemoveCertBinding` | `qrdb_user_remove_cert_binding` | `RemoveCertBinding` | `users:remove_cert_binding` |
 | Update | `PUT /users/{id}` | `UpdateUser` | `user.Update` | `qrdb_user_update` | `UpdateUser` | `users:update` |
 | Delete | `DELETE /users/{id}` | `DeleteUser` | `user.Delete` | `qrdb_user_delete` | `DeleteUser` | `users:delete` |
@@ -24,6 +25,18 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 | Disable | `POST /users/{id}/disable` | `DisableUser` | `user.Disable` | `qrdb_user_disable` | `DisableUser` | `users:disable` |
 | Suspend | `POST /users/{id}/suspend` | `SuspendUser` | `user.Suspend` | `qrdb_user_suspend` | `SuspendUser` | `users:suspend` |
 | Unsuspend | `POST /users/{id}/unsuspend` | `UnsuspendUser` | `user.Unsuspend` | `qrdb_user_unsuspend` | `UnsuspendUser` | `users:unsuspend` |
+
+Activate-with-cert-binding takes the same body as add cert binding
+(`thumbprint`, optional `notAfterUnix`/`not_after_unix`). It is authorized
+exactly like add cert binding (`users:add_cert_binding` plus the
+certificate-target guard). It moves a `pending` account to `active` and
+records its first binding in one commit. An account that is no longer
+pending, or is still pending but already holds a binding, is refused with
+`transport.AccountNotPendingError{ID, Lifecycle, HasCredential}` and nothing
+is written. Of N concurrent callers, exactly one succeeds. The refusal is the
+structured reason `ACCOUNT_NOT_PENDING` (class FailedPrecondition) on every
+wire, so `errors.As` matches it on every transport. It is distinct from a
+validation error, `CertBindingExpiredError` and store errors.
 
 ## Capability matrix — invitation self-enrolment
 
