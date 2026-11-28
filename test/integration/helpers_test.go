@@ -47,6 +47,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
@@ -1833,6 +1834,30 @@ func httpLeaseKeepAlive(t *testing.T, ca *testCA, port int, leaseID int64) lease
 // lease with its remaining TTL. Retries up to 3 times on transient errors.
 func httpLeaseTTL(t *testing.T, ca *testCA, port int, leaseID int64) leaseResult {
 	t.Helper()
+	result, err := httpLeaseTTLOrUnconfirmed(t, ca, port, leaseID)
+	if err != nil {
+		t.Fatalf("httpLeaseTTL: %v", err)
+	}
+	return result
+}
+
+// sealUnconfirmedError is the documented retryable refusal a node answers
+// with while it cannot confirm the cluster seal state, returned as an error
+// so a polling condition can retry it.
+type sealUnconfirmedError struct {
+	Port int
+	Body string
+}
+
+func (e *sealUnconfirmedError) Error() string {
+	return fmt.Sprintf("port %d refused with %s: %s", e.Port, replicaforward.ReasonSealStateUnconfirmed, e.Body)
+}
+
+// httpLeaseTTLOrUnconfirmed is httpLeaseTTL for a polling condition: a 503
+// whose code field is exactly SEAL_STATE_UNCONFIRMED comes back as a
+// *sealUnconfirmedError; any other non-200 still fails the test at once.
+func httpLeaseTTLOrUnconfirmed(t *testing.T, ca *testCA, port int, leaseID int64) (leaseResult, error) {
+	t.Helper()
 	url := fmt.Sprintf("https://127.0.0.1:%d/lease/ttl?lease_id=%d", port, leaseID)
 	client := mtlsHTTPClient(t, ca, 10*time.Second)
 	const maxRetries = 3
@@ -1843,19 +1868,43 @@ func httpLeaseTTL(t *testing.T, ca *testCA, port int, leaseID int64) leaseResult
 			lastErr = err
 			continue
 		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			t.Fatalf("httpLeaseTTL: status %d, body: %s", resp.StatusCode, body)
+		result, err := classifyLeaseTTLResponse(port, resp)
+		_ = resp.Body.Close()
+		if unconfirmed := (*sealUnconfirmedError)(nil); errors.As(err, &unconfirmed) {
+			return leaseResult{}, err
 		}
-		var result leaseResult
-		if decErr := json.NewDecoder(resp.Body).Decode(&result); decErr != nil {
-			t.Fatalf("httpLeaseTTL: decode: %v", decErr)
+		if err != nil {
+			t.Fatalf("%v", err)
 		}
-		return result
+		return result, nil
 	}
 	t.Fatalf("httpLeaseTTL: %v (after %d attempts)", lastErr, maxRetries)
-	return leaseResult{}
+	return leaseResult{}, nil
+}
+
+// classifyLeaseTTLResponse decodes a /lease/ttl response. A 503 whose JSON
+// code is replicaforward.ReasonSealStateUnconfirmed comes back as
+// *sealUnconfirmedError, which callers may retry; every other non-200 status
+// and an undecodable 200 body come back as a plain error the caller must
+// treat as fatal.
+func classifyLeaseTTLResponse(port int, resp *http.Response) (leaseResult, error) {
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode == http.StatusServiceUnavailable {
+			var refusal struct {
+				Code string `json:"code"`
+			}
+			if json.Unmarshal(body, &refusal) == nil && refusal.Code == replicaforward.ReasonSealStateUnconfirmed {
+				return leaseResult{}, &sealUnconfirmedError{Port: port, Body: string(body)}
+			}
+		}
+		return leaseResult{}, fmt.Errorf("httpLeaseTTL: status %d, body: %s", resp.StatusCode, body)
+	}
+	var result leaseResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return leaseResult{}, fmt.Errorf("httpLeaseTTL: decode: %w", err)
+	}
+	return result, nil
 }
 
 // httpLeaseList sends a GET request to /lease/list and returns all active
