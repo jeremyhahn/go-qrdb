@@ -1357,6 +1357,90 @@ func TestManager_RecreatedNameOnTheSameNamespaceKeepsIt(t *testing.T) {
 	}
 }
 
+// pausingFactory runs before once, ahead of the first open of the database
+// named name: the window in which a create has published its catalog record
+// and not yet opened the provider.
+type pausingFactory struct {
+	*database.EmbeddedBackendFactory
+	name   string
+	before func()
+}
+
+func (f *pausingFactory) Create(cfg database.DatabaseConfig, dataDir string) (database.Backend, error) {
+	if hook := f.before; hook != nil && cfg.Name == f.name {
+		f.before = nil
+		hook()
+	}
+	return f.EmbeddedBackendFactory.Create(cfg, dataDir)
+}
+
+// TestManager_ReleaseRetryDuringAProvisionalSuccessorFreesTheOldMarker pins
+// that a release retry which finds a successor's provisional record on the
+// same namespace releases the dropped incarnation's owner marker before it
+// forgets the entry: the successor's open, which runs after its record is
+// published, then succeeds, and the name stays creatable.
+func TestManager_ReleaseRetryDuringAProvisionalSuccessorFreesTheOldMarker(t *testing.T) {
+	ctx := context.Background()
+	base := t.TempDir()
+	rootA := filepath.Join(base, "a")
+	rootC := filepath.Join(base, "c")
+	cat := databasetest.Catalog(t.TempDir())
+	dirA, dirB := t.TempDir(), t.TempDir()
+	a := database.NewManager(nil, dirA, database.WithBackendFactory(objstoredb.NewBackendFactory()))
+	a.SetCatalog(cat)
+	t.Cleanup(func() { _ = a.Close() })
+	paused := &pausingFactory{EmbeddedBackendFactory: objstoredb.NewBackendFactory(), name: "blobs"}
+	b := database.NewManager(nil, dirB, database.WithBackendFactory(paused))
+	b.SetCatalog(cat)
+	t.Cleanup(func() { _ = b.Close() })
+	t.Cleanup(func() { releaseFaultArmed.Store(false) })
+
+	if _, err := a.Create(releaseFaultObjstore(t, "blobs", rootA)); err != nil {
+		t.Fatalf("Create on A: %v", err)
+	}
+	releaseFaultArmed.Store(true)
+	if err := a.Drop(ctx, "blobs"); err != nil {
+		t.Fatalf("Drop on A: %v", err)
+	}
+	if releaseFaultArmed.Load() {
+		t.Fatal("the drop never deleted the owner marker")
+	}
+	if left := releaseLedgerFiles(t, dirA); len(left) != 1 {
+		t.Fatalf("A's release ledger holds %v, want the failed release's entry", left)
+	}
+
+	// B re-creates the name on the same namespace; between publishing its
+	// record and opening the provider, A retries its recorded release.
+	var retryErr error
+	paused.before = func() {
+		_, retryErr = a.Create(releaseFaultObjstore(t, "other", rootC))
+	}
+	db, err := b.Create(releaseFaultObjstore(t, "blobs", rootA))
+	if retryErr != nil {
+		t.Fatalf("Create on A during B's create: %v", retryErr)
+	}
+	if paused.before != nil {
+		t.Fatal("B's create never opened the provider")
+	}
+	if err != nil {
+		t.Fatalf("B's re-create after A's retry: %v", err)
+	}
+	if err := db.Backend().Put(ctx, []byte("key"), []byte("v")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if left := releaseLedgerFiles(t, dirA); len(left) != 0 {
+		t.Fatalf("A's release ledger still holds %v, want no entry", left)
+	}
+
+	// The name is not refused for good: dropped and created again, it opens.
+	if err := b.Drop(ctx, "blobs"); err != nil {
+		t.Fatalf("Drop on B: %v", err)
+	}
+	if _, err := b.Create(releaseFaultObjstore(t, "blobs", rootA)); err != nil {
+		t.Fatalf("Create of the name after B's drop: %v", err)
+	}
+}
+
 // TestManager_SecondDatabaseCannotReachAnothersNamespace pins that a database
 // owns its provider namespace: a second database configured onto the first's
 // path is refused, cannot read or reclaim its objects, and the first still

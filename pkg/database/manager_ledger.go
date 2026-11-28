@@ -356,10 +356,16 @@ func (m *Manager) retryNamespaceRelease(ctx context.Context, cat Catalog, entry 
 			}
 			return
 		}
-		// The name was re-created. The entry is forgotten only when the
-		// live database holds the entry's namespace, and released only when
-		// it provably holds another one; on any doubt the entry is kept,
-		// since ReleaseOwner reclaims records the live database may share.
+		// The name was re-created. When the live database holds the entry's
+		// namespace, the entry is forgotten only once the dropped
+		// incarnation's owner marker is gone: the live record may be a
+		// provisional successor whose open has not yet run, and that open is
+		// refused while the old marker names the dropped incarnation.
+		// releaseObjectStorageMarker deletes the marker only while it names
+		// the entry's incarnation and never reclaims records the successor
+		// shares. When the live database provably holds another namespace,
+		// the entry is released; on any doubt the entry is kept, since
+		// ReleaseOwner reclaims records the live database may share.
 		live := DatabaseConfig{TenantID: entry.TenantID, Name: entry.Name, Backend: meta.Backend, Objstore: meta.Objstore}
 		same, err := m.sameObjectStorageNamespace(entry.config(), live)
 		if err != nil {
@@ -367,6 +373,10 @@ func (m *Manager) retryNamespaceRelease(ctx context.Context, cat Catalog, entry 
 			return
 		}
 		if same {
+			if err := releaseObjectStorageMarker(m.factory, entry.config()); err != nil {
+				warn("object-storage namespace release of a re-created name kept: owner marker not released", err)
+				return
+			}
 			if err := m.forgetRelease(key.tenant, key.name, entry.file); err != nil {
 				warn("failed to forget the namespace release entry of a re-created database", err)
 			}
