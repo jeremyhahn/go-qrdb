@@ -143,6 +143,7 @@ const (
 	QRDBService_GetUserByEmail_FullMethodName                     = "/qrdb.v1.QRDBService/GetUserByEmail"
 	QRDBService_GetUserByCertThumbprint_FullMethodName            = "/qrdb.v1.QRDBService/GetUserByCertThumbprint"
 	QRDBService_AddCertBinding_FullMethodName                     = "/qrdb.v1.QRDBService/AddCertBinding"
+	QRDBService_ActivateWithCertBinding_FullMethodName            = "/qrdb.v1.QRDBService/ActivateWithCertBinding"
 	QRDBService_RemoveCertBinding_FullMethodName                  = "/qrdb.v1.QRDBService/RemoveCertBinding"
 	QRDBService_UpdateUser_FullMethodName                         = "/qrdb.v1.QRDBService/UpdateUser"
 	QRDBService_DeleteUser_FullMethodName                         = "/qrdb.v1.QRDBService/DeleteUser"
@@ -594,6 +595,13 @@ type QRDBServiceClient interface {
 	// AddCertBinding binds an mTLS certificate's SPKI thumbprint to a user
 	// so GetUserByCertThumbprint resolves it (the enrollment seam).
 	AddCertBinding(ctx context.Context, in *AddCertBindingRequest, opts ...grpc.CallOption) (*UserResponse, error)
+	// ActivateWithCertBinding binds an mTLS certificate's SPKI thumbprint to
+	// a PENDING account that holds no binding and moves it to active, in one
+	// conditional commit. Any other account is refused with the
+	// ACCOUNT_NOT_PENDING refusal (FAILED_PRECONDITION) and nothing is
+	// written. It binds a key, so it takes AddCertBinding's permission and
+	// certificate target rule.
+	ActivateWithCertBinding(ctx context.Context, in *ActivateWithCertBindingRequest, opts ...grpc.CallOption) (*UserResponse, error)
 	// RemoveCertBinding withdraws an mTLS certificate's SPKI thumbprint from a
 	// user so it no longer resolves and no longer authenticates. Withdrawing
 	// the LAST binding returns the account to CN/OU admission.
@@ -2153,6 +2161,16 @@ func (c *qRDBServiceClient) AddCertBinding(ctx context.Context, in *AddCertBindi
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(UserResponse)
 	err := c.cc.Invoke(ctx, QRDBService_AddCertBinding_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) ActivateWithCertBinding(ctx context.Context, in *ActivateWithCertBindingRequest, opts ...grpc.CallOption) (*UserResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UserResponse)
+	err := c.cc.Invoke(ctx, QRDBService_ActivateWithCertBinding_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -4093,6 +4111,13 @@ type QRDBServiceServer interface {
 	// AddCertBinding binds an mTLS certificate's SPKI thumbprint to a user
 	// so GetUserByCertThumbprint resolves it (the enrollment seam).
 	AddCertBinding(context.Context, *AddCertBindingRequest) (*UserResponse, error)
+	// ActivateWithCertBinding binds an mTLS certificate's SPKI thumbprint to
+	// a PENDING account that holds no binding and moves it to active, in one
+	// conditional commit. Any other account is refused with the
+	// ACCOUNT_NOT_PENDING refusal (FAILED_PRECONDITION) and nothing is
+	// written. It binds a key, so it takes AddCertBinding's permission and
+	// certificate target rule.
+	ActivateWithCertBinding(context.Context, *ActivateWithCertBindingRequest) (*UserResponse, error)
 	// RemoveCertBinding withdraws an mTLS certificate's SPKI thumbprint from a
 	// user so it no longer resolves and no longer authenticates. Withdrawing
 	// the LAST binding returns the account to CN/OU admission.
@@ -4885,6 +4910,9 @@ func (UnimplementedQRDBServiceServer) GetUserByCertThumbprint(context.Context, *
 }
 func (UnimplementedQRDBServiceServer) AddCertBinding(context.Context, *AddCertBindingRequest) (*UserResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AddCertBinding not implemented")
+}
+func (UnimplementedQRDBServiceServer) ActivateWithCertBinding(context.Context, *ActivateWithCertBindingRequest) (*UserResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ActivateWithCertBinding not implemented")
 }
 func (UnimplementedQRDBServiceServer) RemoveCertBinding(context.Context, *RemoveCertBindingRequest) (*UserResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RemoveCertBinding not implemented")
@@ -7353,6 +7381,24 @@ func _QRDBService_AddCertBinding_Handler(srv interface{}, ctx context.Context, d
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QRDBServiceServer).AddCertBinding(ctx, req.(*AddCertBindingRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_ActivateWithCertBinding_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ActivateWithCertBindingRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).ActivateWithCertBinding(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_ActivateWithCertBinding_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).ActivateWithCertBinding(ctx, req.(*ActivateWithCertBindingRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -10765,6 +10811,10 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "AddCertBinding",
 			Handler:    _QRDBService_AddCertBinding_Handler,
+		},
+		{
+			MethodName: "ActivateWithCertBinding",
+			Handler:    _QRDBService_ActivateWithCertBinding_Handler,
 		},
 		{
 			MethodName: "RemoveCertBinding",

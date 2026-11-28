@@ -521,6 +521,36 @@ func (t *Transport) AddCertBinding(ctx context.Context, userID uint64, thumbprin
 	return wireToUser(&wire), nil
 }
 
+// ActivateWithCertBinding activates a pending account with its first mTLS
+// SPKI thumbprint binding via the QUIC user.ActivateWithCertBinding method.
+// The payload is user.AddCertBinding's.
+func (t *Transport) ActivateWithCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*transport.User, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	payload, err := json.Marshal(addCertBindingWireRequest{
+		UserID:       userID,
+		Thumbprint:   thumbprint,
+		NotAfterUnix: notAfterUnix,
+	})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ActivateWithCertBinding", Err: &MarshalError{Err: err}}
+	}
+
+	data, err := t.call(ctx, "user.ActivateWithCertBinding", payload)
+	if err != nil {
+		return nil, mapUserNotFound("ActivateWithCertBinding", userID, err)
+	}
+
+	var wire userWireResponse
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return nil, &transport.RequestError{Method: "ActivateWithCertBinding", Err: &UnmarshalError{Err: err}}
+	}
+
+	return wireToUser(&wire), nil
+}
+
 // RemoveCertBinding withdraws an mTLS SPKI thumbprint from a user via the QUIC
 // user.RemoveCertBinding method.
 func (t *Transport) RemoveCertBinding(ctx context.Context, userID uint64, thumbprint string) (*transport.User, error) {

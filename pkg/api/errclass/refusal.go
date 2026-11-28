@@ -39,6 +39,7 @@ var refusals = []refusalEncoder{
 	factorConditionRefusal,
 	soRoleRefusal,
 	userConcurrentUpdateRefusal,
+	accountNotPendingRefusal,
 	commandConflictRefusal,
 	lockRefusal,
 	barrierRefusal,
@@ -125,6 +126,20 @@ func userConcurrentUpdateRefusal(err error) (string, map[string]string, bool) {
 	}
 	if e, ok := errors.AsType[*user.ConcurrentUpdateError](err); ok {
 		return transport.ReasonUserConcurrentUpdate, e.Metadata(), true
+	}
+	return "", nil, false
+}
+
+// accountNotPendingRefusal carries an activation refused because the account
+// is not awaiting its first credential (go-qrdb#1764), so every transport
+// rebuilds the typed *transport.AccountNotPendingError, distinct from the
+// other FailedPrecondition refusals.
+func accountNotPendingRefusal(err error) (string, map[string]string, bool) {
+	if Classify(err) != FailedPrecondition {
+		return "", nil, false
+	}
+	if e, ok := errors.AsType[*user.AccountNotPendingError](err); ok {
+		return transport.ReasonAccountNotPending, e.Metadata(), true
 	}
 	return "", nil, false
 }

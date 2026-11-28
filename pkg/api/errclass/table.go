@@ -935,6 +935,12 @@ var identityRules = []rule{
 	as(&user.BootstrapAdminLockoutError{}, FailedPrecondition),
 	// An enrolment whose expiry is already past: a bad field value.
 	as(&user.CertBindingExpiredError{}, InvalidArgument),
+	// An activation of an account that is not awaiting its first credential
+	// (not pending, or already bound): the request is well formed, the
+	// account's state forbids it. It travels as the ACCOUNT_NOT_PENDING
+	// structured refusal (refusal.go), so no client confuses it with a bad
+	// field, an expired binding or a store failure (go-qrdb#1764).
+	as(&user.AccountNotPendingError{}, FailedPrecondition),
 	// A lost optimistic-concurrency check: re-read and retry.
 	as(&user.ConcurrentUpdateError{}, Aborted),
 	// The commit may have landed: reconcile, do not assume failure.
@@ -1139,7 +1145,6 @@ var onboardingRules = []rule{
 	as(&service.InvitationFieldError{}, InvalidArgument),
 	as(&service.InvitationKeyInUseError{}, AlreadyExists),
 	as(&service.InvitationAccountActiveError{}, FailedPrecondition),
-	as(&user.AccountNotPendingError{}, FailedPrecondition),
 }
 
 // tenantRules are the tenant-lifecycle conditions.

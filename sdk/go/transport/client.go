@@ -738,6 +738,23 @@ type UserClient interface {
 	// the enrollment seam used to bind an admin's certificate to a user.
 	AddCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*User, error)
 
+	// ActivateWithCertBinding binds an mTLS certificate's SPKI thumbprint to
+	// a PENDING account that holds no binding and moves the account to
+	// active, in one conditional commit: the account gets its first
+	// credential and becomes usable at once, or nothing is written. A
+	// notAfterUnix > 0 sets the binding's expiry; otherwise the binding never
+	// expires.
+	//
+	// Any other account -- active, disabled or suspended, or pending with a
+	// binding already -- is refused with *AccountNotPendingError (match it
+	// with errors.As) and nothing is written, so of concurrent activations of
+	// one account exactly one succeeds. A thumbprint bound to another account
+	// is refused as AddCertBinding refuses it.
+	//
+	// It binds a key, so it is authorized exactly as AddCertBinding: the
+	// users:add_cert_binding permission and the certificate target rule.
+	ActivateWithCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*User, error)
+
 	// RemoveCertBinding withdraws an mTLS certificate's SPKI thumbprint from
 	// the user server-side, so GetUserByCertThumbprint no longer resolves it
 	// and a certificate issued for that key no longer authenticates as the

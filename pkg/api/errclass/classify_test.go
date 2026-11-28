@@ -568,7 +568,7 @@ func TestClassify_OnboardingRows(t *testing.T) {
 		{"invitation field", &service.InvitationFieldError{Field: "token", Reason: "is required"}, InvalidArgument},
 		{"invitation key in use", &service.InvitationKeyInUseError{}, AlreadyExists},
 		{"invitation account active", &service.InvitationAccountActiveError{Username: "bob"}, FailedPrecondition},
-		{"account not pending", &user.AccountNotPendingError{ID: 1, Lifecycle: user.LifecycleActive}, FailedPrecondition},
+		{"account not pending", &user.AccountNotPendingError{ID: 1, Lifecycle: string(user.LifecycleActive)}, FailedPrecondition},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := Classify(wrapped{tc.err}); got != tc.want {

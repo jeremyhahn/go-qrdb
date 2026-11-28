@@ -254,6 +254,7 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 //   - POST   /users/{id}/enable  -> enable user
 //   - POST   /users/{id}/disable -> disable user
 //   - POST   /users/{id}/cert-bindings              -> enrol a cert binding
+//   - POST   /users/{id}/activate-with-cert-binding -> activate a pending account with its first binding
 //   - DELETE /users/{id}/cert-bindings/{thumbprint} -> withdraw one
 func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 	if s.userSvc == nil {
@@ -368,6 +369,15 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			s.handleAddCertBinding(w, r, id)
+			return
+		}
+		if seg, found := strings.CutSuffix(rest, "/activate-with-cert-binding"); found && seg != "" {
+			id, err := parseUserID(seg)
+			if err != nil {
+				writeErrorJSON(w, mapHTTPError(err), err)
+				return
+			}
+			s.handleActivateWithCertBinding(w, r, id)
 			return
 		}
 		w.Header().Set("Allow", "GET, PUT, DELETE")
@@ -530,6 +540,35 @@ func (s *Server) handleAddCertBinding(w http.ResponseWriter, r *http.Request, us
 		return
 	}
 	u, err := s.userSvc.AddCertBinding(ctx, userID, req.Thumbprint, req.NotAfterUnix)
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+
+	s.writeUserJSON(ctx, w, http.StatusOK, u)
+}
+
+// handleActivateWithCertBinding handles
+// POST /users/{userID}/activate-with-cert-binding -- binds an mTLS
+// certificate's SPKI thumbprint to a PENDING account holding no binding and
+// moves it to active in one commit. It binds a key, so it takes
+// users:add_cert_binding and the certificate target rule; an account not
+// awaiting its first credential is refused 412 with the ACCOUNT_NOT_PENDING
+// code. The body is addCertBindingRequest's.
+func (s *Server) handleActivateWithCertBinding(w http.ResponseWriter, r *http.Request, userID uint64) {
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	var req addCertBindingRequest
+	if !decodeIAMRequest(w, r, &req) {
+		return
+	}
+
+	if err := s.authMW.AuthorizeCertBindingTarget(ctx, s.userSvc, userID); err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+	u, err := user.ActivateWithCertBindingOn(ctx, s.userSvc, userID, req.Thumbprint, req.NotAfterUnix)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return

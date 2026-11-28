@@ -168,6 +168,7 @@ var expectedToolPerms = map[string]permission.Permission{
 	"qrdb_user_unsuspend":                     permission.UsersUnsuspend,
 	"qrdb_user_get_by_cert_thumbprint":        permission.UsersGetByCertThumbprint,
 	"qrdb_user_add_cert_binding":              permission.UsersAddCertBinding,
+	"qrdb_user_activate_with_cert_binding":    permission.UsersAddCertBinding,
 	"qrdb_user_remove_cert_binding":           permission.UsersRemoveCertBinding,
 	"qrdb_group_create":                       permission.GroupsCreate,
 	"qrdb_group_get":                          permission.GroupsRead,

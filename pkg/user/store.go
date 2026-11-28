@@ -1834,7 +1834,7 @@ func (s *kvUserStore) ClaimExpiredPending(ctx context.Context, id uint64, now ti
 		if err := s.dropStaleMarker(ctx, id); err != nil {
 			return nil, err
 		}
-		return nil, &AccountNotPendingError{ID: existing.ID, Lifecycle: existing.Lifecycle}
+		return nil, &AccountNotPendingError{ID: existing.ID, Lifecycle: string(existing.Lifecycle)}
 	}
 	if err := s.guardBootstrapAdmin(existing, nil); err != nil {
 		return nil, err
@@ -1936,7 +1936,7 @@ func (s *kvUserStore) DeleteExpiredPending(ctx context.Context, id uint64, now t
 	}
 	u, err := s.deleteUser(ctx, id, func(u *User) error {
 		if !PendingReapable(u, now) {
-			return &AccountNotPendingError{ID: u.ID, Lifecycle: u.Lifecycle}
+			return &AccountNotPendingError{ID: u.ID, Lifecycle: string(u.Lifecycle)}
 		}
 		return nil
 	})

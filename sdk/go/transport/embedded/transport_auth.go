@@ -182,6 +182,30 @@ func (t *Transport) AddCertBinding(ctx context.Context, userID uint64, thumbprin
 	return userToTransport(ctx, t.userAuthFactorSvc, u)
 }
 
+// ActivateWithCertBinding activates a pending account with its first mTLS
+// SPKI thumbprint binding via the embedded user service. It binds a key, so
+// it takes AddCertBinding's permission and certificate target rule.
+func (t *Transport) ActivateWithCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*transport.User, error) {
+	ctx, err := t.admit(ctx, "ActivateWithCertBinding")
+	if err != nil {
+		return nil, err
+	}
+	if t.userSvc == nil {
+		return nil, &transport.NotImplementedError{Method: "ActivateWithCertBinding"}
+	}
+	if err := t.authorizeUserTarget(ctx, userID, permission.UsersAddCertBinding); err != nil {
+		return nil, err
+	}
+	if err := t.authMW.AuthorizeCertBindingTarget(ctx, t.userSvc, userID); err != nil {
+		return nil, err
+	}
+	u, err := user.ActivateWithCertBindingOn(ctx, t.userSvc, userID, thumbprint, notAfterUnix)
+	if err != nil {
+		return nil, err
+	}
+	return userToTransport(ctx, t.userAuthFactorSvc, u)
+}
+
 // RemoveCertBinding withdraws an mTLS SPKI thumbprint from a user via the
 // embedded user service.
 func (t *Transport) RemoveCertBinding(ctx context.Context, userID uint64, thumbprint string) (*transport.User, error) {

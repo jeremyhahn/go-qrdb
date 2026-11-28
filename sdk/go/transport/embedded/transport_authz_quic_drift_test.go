@@ -383,6 +383,7 @@ var quicMethodExclusions = map[string]string{
 	"tenant.Update":                      "target-resolved",
 	"tenant.UpdateEntitlements":          "target-resolved",
 	"tenant.UpdateQuotas":                "target-resolved",
+	"user.ActivateWithCertBinding":       "target-resolved",
 	"user.AddCertBinding":                "target-resolved",
 	"user.Create":                        "target-resolved",
 	"user.Delete":                        "target-resolved",

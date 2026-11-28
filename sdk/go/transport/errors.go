@@ -577,6 +577,76 @@ func UserConcurrentUpdateFromMetadata(md map[string]string) *UserConcurrentUpdat
 	return &UserConcurrentUpdateError{ID: id}
 }
 
+// AccountNotPendingError refuses UserClient.ActivateWithCertBinding for an
+// account that is not awaiting its first credential: it is not pending, or
+// it is pending but already holds a certificate binding. Activation is the
+// single point at which an invited account gets a credential, so of
+// concurrent activations of one account exactly one commits and every other
+// is refused with this error, and nothing is written.
+//
+// It is the ONE type for this condition across the SDK surface:
+// pkg/user.AccountNotPendingError is an alias of it, the user service returns
+// it in-process, and every remote transport rebuilds it from the
+// ReasonAccountNotPending structured refusal. Match it with errors.As; it is
+// distinct from a validation error, a CertBindingExpiredError and a store
+// error.
+type AccountNotPendingError struct {
+	// ID is the account.
+	ID uint64
+
+	// Lifecycle is the state the account holds: pending, active, disabled
+	// or suspended.
+	Lifecycle string
+
+	// HasCredential reports a pending account that already holds a binding.
+	HasCredential bool
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *AccountNotPendingError) Error() string {
+	if e.HasCredential {
+		return "user: account " + strconv.FormatUint(e.ID, 10) + " already holds a certificate binding"
+	}
+	return "user: account " + strconv.FormatUint(e.ID, 10) + " is " + e.Lifecycle + ", not pending"
+}
+
+// ReasonAccountNotPending is the structured-refusal reason every transport
+// carries beside the message of an *AccountNotPendingError, so a client
+// rebuilds the typed error without parsing text.
+const ReasonAccountNotPending = "ACCOUNT_NOT_PENDING"
+
+// Refusal metadata keys of AccountNotPendingError.
+const (
+	accountNotPendingKeyUserID        = "user_id"
+	accountNotPendingKeyLifecycle     = "lifecycle"
+	accountNotPendingKeyHasCredential = "has_credential" //nolint:gosec // G101: a wire detail key name, not a credential
+)
+
+// Metadata encodes e as structured-refusal metadata.
+func (e *AccountNotPendingError) Metadata() map[string]string {
+	return map[string]string{
+		accountNotPendingKeyUserID:        strconv.FormatUint(e.ID, 10),
+		accountNotPendingKeyLifecycle:     e.Lifecycle,
+		accountNotPendingKeyHasCredential: strconv.FormatBool(e.HasCredential),
+	}
+}
+
+// AccountNotPendingFromMetadata rebuilds the error Metadata encoded. The
+// reason, not the metadata, says the account is not pending, so a missing or
+// malformed field leaves its zero value rather than losing the
+// classification.
+func AccountNotPendingFromMetadata(md map[string]string) *AccountNotPendingError {
+	id, err := strconv.ParseUint(md[accountNotPendingKeyUserID], 10, 64)
+	if err != nil {
+		id = 0
+	}
+	hasCredential, err := strconv.ParseBool(md[accountNotPendingKeyHasCredential])
+	if err != nil {
+		hasCredential = false
+	}
+	return &AccountNotPendingError{ID: id, Lifecycle: md[accountNotPendingKeyLifecycle], HasCredential: hasCredential}
+}
+
 // commandConflictError reports that the server refused a write because it
 // conflicts with stored state, a unique secondary index the value would
 // violate. The server's *service.CommandConflictError reaches a client as the

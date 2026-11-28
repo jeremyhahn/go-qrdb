@@ -174,6 +174,37 @@ func TestUserConcurrentUpdateFromMetadata_malformedIDKeepsClassification(t *test
 	}
 }
 
+func TestRefusalError_accountNotPendingRoundTrips(t *testing.T) {
+	for _, want := range []*AccountNotPendingError{
+		{ID: 9, Lifecycle: "disabled"},
+		{ID: 9, Lifecycle: "pending", HasCredential: true},
+	} {
+		err := RefusalError(ReasonAccountNotPending, want.Metadata())
+		got, ok := errors.AsType[*AccountNotPendingError](err)
+		if !ok || *got != *want {
+			t.Fatalf("RefusalError(%s) = %#v, want %#v", ReasonAccountNotPending, err, want)
+		}
+	}
+}
+
+func TestAccountNotPendingFromMetadata_malformedFieldsAreZero(t *testing.T) {
+	for _, md := range []map[string]string{nil, {"user_id": "x", "has_credential": "maybe"}, {"user_id": "-1"}} {
+		got := AccountNotPendingFromMetadata(md)
+		if got == nil || got.ID != 0 || got.HasCredential {
+			t.Fatalf("AccountNotPendingFromMetadata(%v) = %+v, want zero ID and no credential", md, got)
+		}
+	}
+}
+
+func TestAccountNotPendingError_message(t *testing.T) {
+	if got, want := (&AccountNotPendingError{ID: 9, Lifecycle: "disabled"}).Error(), "user: account 9 is disabled, not pending"; got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+	if got, want := (&AccountNotPendingError{ID: 9, Lifecycle: "pending", HasCredential: true}).Error(), "user: account 9 already holds a certificate binding"; got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+}
+
 func TestUserConcurrentUpdateError_isRetryableConflict(t *testing.T) {
 	var err error = &UserConcurrentUpdateError{ID: 9}
 	if want := "user: concurrent update to user 9; re-read and retry"; err.Error() != want {

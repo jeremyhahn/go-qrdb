@@ -1029,6 +1029,7 @@ func TestUserTools_Registration(t *testing.T) {
 		"qrdb_user_get_by_email",
 		"qrdb_user_get_by_cert_thumbprint",
 		"qrdb_user_add_cert_binding",
+		"qrdb_user_activate_with_cert_binding",
 		"qrdb_user_remove_cert_binding",
 		"qrdb_user_update",
 		"qrdb_user_delete",

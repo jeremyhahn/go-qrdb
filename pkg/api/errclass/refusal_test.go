@@ -61,6 +61,39 @@ func TestRefusal_userConcurrentUpdate(t *testing.T) {
 	}
 }
 
+// TestRefusal_accountNotPending pins that a refused activation travels as its
+// own ACCOUNT_NOT_PENDING refusal under FailedPrecondition and rebuilds into
+// the same typed value on the client.
+func TestRefusal_accountNotPending(t *testing.T) {
+	for _, want := range []*user.AccountNotPendingError{
+		{ID: 9, Lifecycle: string(user.LifecycleActive)},
+		{ID: 9, Lifecycle: string(user.LifecyclePending), HasCredential: true},
+	} {
+		reason, md, ok := Refusal(&wrappedError{want})
+		if !ok || reason != transport.ReasonAccountNotPending {
+			t.Fatalf("Refusal(%+v) = %q, %v; want %q, true", want, reason, ok, transport.ReasonAccountNotPending)
+		}
+		if got := transport.RefusalError(reason, md); !reflect.DeepEqual(got, want) {
+			t.Fatalf("Refusal(%+v) rebuilds %#v, want %#v", want, got, want)
+		}
+		if got := Classify(want); got != FailedPrecondition {
+			t.Fatalf("Classify(not pending) = %v, want FailedPrecondition", got)
+		}
+	}
+}
+
+// An activation refusal wrapped by an error of another class keeps that class
+// and carries no refusal a client would rebuild as a lost race.
+func TestRefusal_accountNotPendingUnderDataLossCarriesNone(t *testing.T) {
+	err := &user.IndexCompensationError{Op: "activate", Cause: &user.AccountNotPendingError{ID: 9, Lifecycle: "active"}}
+	if got := Classify(err); got != DataLoss {
+		t.Fatalf("Classify() = %v, want DataLoss", got)
+	}
+	if reason, md, ok := Refusal(err); ok || reason != "" || md != nil {
+		t.Fatalf("Refusal() = %q, %v, %v; want none", reason, md, ok)
+	}
+}
+
 func TestRefusal_commandConflict(t *testing.T) {
 	want := &service.CommandConflictError{Message: "unique index system/system/member.Email: value already taken"}
 	reason, md, ok := Refusal(&wrappedError{want})

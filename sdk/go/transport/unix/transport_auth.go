@@ -186,6 +186,26 @@ func (t *Transport) AddCertBinding(ctx context.Context, userID uint64, thumbprin
 	return protoToUser(resp), nil
 }
 
+// ActivateWithCertBinding activates a pending account with its first mTLS
+// SPKI thumbprint binding via the qrdb ActivateWithCertBinding RPC over the
+// unix socket.
+func (t *Transport) ActivateWithCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*transport.User, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	resp, err := t.client.ActivateWithCertBinding(ctx, &pb.ActivateWithCertBindingRequest{
+		UserId:       userID,
+		Thumbprint:   thumbprint,
+		NotAfterUnix: notAfterUnix,
+	})
+	if err != nil {
+		return nil, mapUserNotFound("ActivateWithCertBinding", userID, err)
+	}
+
+	return protoToUser(resp), nil
+}
+
 // RemoveCertBinding withdraws an mTLS SPKI thumbprint from a user via the qrdb
 // RemoveCertBinding RPC over the unix socket.
 func (t *Transport) RemoveCertBinding(ctx context.Context, userID uint64, thumbprint string) (*transport.User, error) {

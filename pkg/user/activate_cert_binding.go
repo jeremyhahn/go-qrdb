@@ -74,10 +74,10 @@ func (s *kvUserStore) ActivateWithCertBinding(ctx context.Context, userID uint64
 			return nil, &StoreError{Op: "activate_with_cert_binding", Detail: "unmarshal", Err: uerr}
 		}
 		if existing.Lifecycle != LifecyclePending {
-			return nil, &AccountNotPendingError{ID: existing.ID, Lifecycle: existing.Lifecycle}
+			return nil, &AccountNotPendingError{ID: existing.ID, Lifecycle: string(existing.Lifecycle)}
 		}
 		if len(existing.CertBindings) > 0 {
-			return nil, &AccountNotPendingError{ID: existing.ID, Lifecycle: existing.Lifecycle, HasCredential: true}
+			return nil, &AccountNotPendingError{ID: existing.ID, Lifecycle: string(existing.Lifecycle), HasCredential: true}
 		}
 
 		// A thumbprint resolves to exactly one identity within a tenant, the
@@ -136,4 +136,17 @@ func (s *kvUserStore) ActivateWithCertBinding(ctx context.Context, userID uint64
 	// redemption that did not commit must never be told it activated the
 	// account.
 	return nil, lastConflict
+}
+
+// ActivateWithCertBindingOn runs svc's ActivateWithCertBinding: the entry
+// every transport's authenticated activation handler calls (go-qrdb#1764),
+// so each answers the same way for a user service that cannot activate. A
+// svc that is not a CertActivator is refused with ErrActivationUnsupported
+// and nothing is written.
+func ActivateWithCertBindingOn(ctx context.Context, svc UserServicer, userID uint64, thumbprint string, notAfterUnix int64) (*User, error) {
+	activator, ok := svc.(CertActivator)
+	if !ok {
+		return nil, &StoreError{Op: "activate_with_cert_binding", Detail: "user service", Err: ErrActivationUnsupported}
+	}
+	return activator.ActivateWithCertBinding(ctx, userID, thumbprint, notAfterUnix)
 }

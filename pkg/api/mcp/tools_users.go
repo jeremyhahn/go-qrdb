@@ -245,6 +245,13 @@ func userTools(svc user.UserServicer, factorSvc user.FactorLister, authMW *authm
 			Handler: handleUserAddCertBinding(svc, factorSvc, authMW),
 		},
 		{
+			// Activation binds a key exactly as add_cert_binding does, so it
+			// takes the same permission.
+			Tool:    toolUserActivateWithCertBinding(),
+			Perm:    permission.UsersAddCertBinding,
+			Handler: handleUserActivateWithCertBinding(svc, factorSvc, authMW),
+		},
+		{
 			Tool:    toolUserRemoveCertBinding(),
 			Perm:    permission.UsersRemoveCertBinding,
 			Handler: handleUserRemoveCertBinding(svc, factorSvc),
@@ -595,6 +602,65 @@ func handleUserAddCertBinding(svc user.UserServicer, factorSvc user.FactorLister
 		data, err := marshalUserRecord(ctx, factorSvc, u)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_user_add_cert_binding", Err: err}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolUserActivateWithCertBinding defines the
+// qrdb_user_activate_with_cert_binding tool schema.
+func toolUserActivateWithCertBinding() mcp.Tool {
+	return mcp.NewTool("qrdb_user_activate_with_cert_binding",
+		mcp.WithDescription("Bind an mTLS certificate's SPKI thumbprint to a PENDING account that holds no binding and move it to active, in one commit. Any other account is refused with ACCOUNT_NOT_PENDING and nothing is written."),
+		mcp.WithString("user_id",
+			mcp.Required(),
+			mcp.Description("The ID of the pending user to activate."),
+		),
+		mcp.WithString("thumbprint",
+			mcp.Required(),
+			mcp.Description("The base64url SPKI SHA-256 thumbprint to bind."),
+		),
+		mcp.WithNumber("not_after_unix",
+			mcp.Description("Optional binding expiry as a Unix timestamp. Zero means the binding never expires."),
+		),
+	)
+}
+
+// handleUserActivateWithCertBinding returns a tool handler that delegates to
+// user.ActivateWithCertBindingOn under AddCertBinding's certificate target
+// rule.
+func handleUserActivateWithCertBinding(svc user.UserServicer, factorSvc user.FactorLister, authMW *authmw.AuthMiddleware) mcpserver.ToolHandlerFunc {
+	const tool = "qrdb_user_activate_with_cert_binding"
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userIDStr := mcp.ParseString(req, "user_id", "")
+		if userIDStr == "" {
+			return mcp.NewToolResultError("user_id is required"), nil
+		}
+
+		thumbprint := mcp.ParseString(req, "thumbprint", "")
+		if thumbprint == "" {
+			return mcp.NewToolResultError("thumbprint is required"), nil
+		}
+
+		notAfterUnix := mcp.ParseInt64(req, "not_after_unix", 0)
+
+		userID, parseErr := parseUint64(userIDStr)
+		if parseErr != nil {
+			return mcp.NewToolResultError("user_id must be a uint64: " + parseErr.Error()), nil
+		}
+
+		if err := authMW.AuthorizeCertBindingTarget(ctx, svc, userID); err != nil {
+			return nil, &ToolError{Tool: tool, Err: err}
+		}
+		u, err := user.ActivateWithCertBindingOn(ctx, svc, userID, thumbprint, notAfterUnix)
+		if err != nil {
+			return nil, &ToolError{Tool: tool, Err: err}
+		}
+
+		data, err := marshalUserRecord(ctx, factorSvc, u)
+		if err != nil {
+			return nil, &ToolError{Tool: tool, Err: err}
 		}
 
 		return mcp.NewToolResultText(string(data)), nil
