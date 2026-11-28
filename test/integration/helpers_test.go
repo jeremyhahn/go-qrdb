@@ -1859,27 +1859,43 @@ func httpLeaseTTLOrUnconfirmed(t *testing.T, ca *testCA, port int, leaseID int64
 			lastErr = err
 			continue
 		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			if resp.StatusCode == http.StatusServiceUnavailable {
-				var refusal struct {
-					Code string `json:"code"`
-				}
-				if json.Unmarshal(body, &refusal) == nil && refusal.Code == replicaforward.ReasonSealStateUnconfirmed {
-					return leaseResult{}, &sealUnconfirmedError{Port: port, Body: string(body)}
-				}
-			}
-			t.Fatalf("httpLeaseTTL: status %d, body: %s", resp.StatusCode, body)
+		result, err := classifyLeaseTTLResponse(port, resp)
+		_ = resp.Body.Close()
+		if unconfirmed := (*sealUnconfirmedError)(nil); errors.As(err, &unconfirmed) {
+			return leaseResult{}, err
 		}
-		var result leaseResult
-		if decErr := json.NewDecoder(resp.Body).Decode(&result); decErr != nil {
-			t.Fatalf("httpLeaseTTL: decode: %v", decErr)
+		if err != nil {
+			t.Fatalf("%v", err)
 		}
 		return result, nil
 	}
 	t.Fatalf("httpLeaseTTL: %v (after %d attempts)", lastErr, maxRetries)
 	return leaseResult{}, nil
+}
+
+// classifyLeaseTTLResponse decodes a /lease/ttl response. A 503 whose JSON
+// code is replicaforward.ReasonSealStateUnconfirmed comes back as
+// *sealUnconfirmedError, which callers may retry; every other non-200 status
+// and an undecodable 200 body come back as a plain error the caller must
+// treat as fatal.
+func classifyLeaseTTLResponse(port int, resp *http.Response) (leaseResult, error) {
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode == http.StatusServiceUnavailable {
+			var refusal struct {
+				Code string `json:"code"`
+			}
+			if json.Unmarshal(body, &refusal) == nil && refusal.Code == replicaforward.ReasonSealStateUnconfirmed {
+				return leaseResult{}, &sealUnconfirmedError{Port: port, Body: string(body)}
+			}
+		}
+		return leaseResult{}, fmt.Errorf("httpLeaseTTL: status %d, body: %s", resp.StatusCode, body)
+	}
+	var result leaseResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return leaseResult{}, fmt.Errorf("httpLeaseTTL: decode: %w", err)
+	}
+	return result, nil
 }
 
 // httpLeaseList sends a GET request to /lease/list and returns all active

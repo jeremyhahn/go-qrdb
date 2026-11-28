@@ -25,6 +25,7 @@ package integration_test
 import (
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strconv"
 	"testing"
@@ -32,6 +33,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 )
 
 // failoverLeaseTTL is the TTL of the lease kept alive across the failover.
@@ -288,5 +290,80 @@ func TestLease_RestartCheck_SlowSealReconfirm(t *testing.T) {
 	var spent *leaseRestartWindowSpentError
 	if err := check(); !errors.As(err, &spent) {
 		t.Fatalf("check %v after the kill = %v, want the spent-window error", clock.Sub(killed), err)
+	}
+}
+
+// TestLease_TTLResponseClassification drives classifyLeaseTTLResponse, the
+// classifier behind httpLeaseTTLOrUnconfirmed, through controlled HTTP
+// responses. Only a 503 carrying the SEAL_STATE_UNCONFIRMED code is the
+// retryable not-yet error; a following 200 decodes; every other refusal
+// stays on the fatal path.
+func TestLease_TTLResponseClassification(t *testing.T) {
+	type reply struct {
+		status int
+		body   string
+	}
+	unconfirmed := `{"error":"clusterseal: this node cannot confirm the cluster seal state; retry","code":"` +
+		replicaforward.ReasonSealStateUnconfirmed + `"}`
+	var queue []reply
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		next := queue[0]
+		queue = queue[1:]
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(next.status)
+		_, _ = w.Write([]byte(next.body))
+	}))
+	defer srv.Close()
+
+	classify := func(t *testing.T, r reply) (leaseResult, error) {
+		t.Helper()
+		queue = append(queue, r)
+		resp, err := srv.Client().Get(srv.URL)
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer resp.Body.Close()
+		return classifyLeaseTTLResponse(4242, resp)
+	}
+
+	t.Run("unconfirmed then restarted", func(t *testing.T) {
+		_, err := classify(t, reply{http.StatusServiceUnavailable, unconfirmed})
+		var refusal *sealUnconfirmedError
+		if !errors.As(err, &refusal) {
+			t.Fatalf("503 %s: got %v, want *sealUnconfirmedError", replicaforward.ReasonSealStateUnconfirmed, err)
+		}
+		if refusal.Port != 4242 || refusal.Body != unconfirmed {
+			t.Fatalf("refusal = %+v, want port 4242 and the response body", refusal)
+		}
+		got, err := classify(t, reply{http.StatusOK, `{"id":7,"ttl":60,"granted_ttl":60,"remaining_ttl":59}`})
+		if err != nil {
+			t.Fatalf("200 after the refusal: %v", err)
+		}
+		if got.ID != 7 || got.RemainingTTL != 59 {
+			t.Fatalf("200 decoded to %+v, want id 7 remaining_ttl 59", got)
+		}
+	})
+
+	for _, tc := range []struct {
+		name string
+		r    reply
+	}{
+		{"503 with another code", reply{http.StatusServiceUnavailable, `{"error":"draining","code":"NODE_DRAINING"}`}},
+		{"500 with the unconfirmed code", reply{http.StatusInternalServerError, unconfirmed}},
+		{"409 with the unconfirmed code", reply{http.StatusConflict, unconfirmed}},
+		{"503 with a malformed body", reply{http.StatusServiceUnavailable, `{"code":`}},
+		{"503 with an empty body", reply{http.StatusServiceUnavailable, ``}},
+		{"503 with the code only in the message", reply{http.StatusServiceUnavailable, `{"error":"` + replicaforward.ReasonSealStateUnconfirmed + `"}`}},
+		{"200 with a malformed body", reply{http.StatusOK, `{"id":`}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := classify(t, tc.r)
+			if err == nil {
+				t.Fatalf("status %d body %q: got nil error, want the fatal path", tc.r.status, tc.r.body)
+			}
+			if refusal := (*sealUnconfirmedError)(nil); errors.As(err, &refusal) {
+				t.Fatalf("status %d body %q: classified as retryable: %v", tc.r.status, tc.r.body, err)
+			}
+		})
 	}
 }
