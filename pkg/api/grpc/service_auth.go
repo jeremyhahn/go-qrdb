@@ -147,6 +147,27 @@ func (s *qrdbServiceServer) AddCertBinding(ctx context.Context, req *pb.AddCertB
 	return s.userResponse(ctx, u)
 }
 
+// ActivateWithCertBinding activates a pending account with its first mTLS
+// SPKI thumbprint binding. It binds a key exactly as AddCertBinding does, so
+// it takes the same users:add_cert_binding permission (the RPC's option) and
+// the same certificate target rule; an account not awaiting its first
+// credential is refused with the ACCOUNT_NOT_PENDING refusal.
+func (s *qrdbServiceServer) ActivateWithCertBinding(ctx context.Context, req *pb.ActivateWithCertBindingRequest) (*pb.UserResponse, error) {
+	if s.userSvc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "user"})
+	}
+
+	if err := s.authMW.AuthorizeCertBindingTarget(ctx, s.userSvc, req.GetUserId()); err != nil {
+		return nil, mapServiceError(err)
+	}
+	u, err := user.ActivateWithCertBindingOn(ctx, s.userSvc, req.GetUserId(), req.GetThumbprint(), req.GetNotAfterUnix())
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+
+	return s.userResponse(ctx, u)
+}
+
 // RemoveCertBinding withdraws an mTLS SPKI thumbprint from a user.
 func (s *qrdbServiceServer) RemoveCertBinding(ctx context.Context, req *pb.RemoveCertBindingRequest) (*pb.UserResponse, error) {
 	if s.userSvc == nil {

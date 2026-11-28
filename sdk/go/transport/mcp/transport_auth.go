@@ -447,6 +447,31 @@ func (t *Transport) AddCertBinding(ctx context.Context, userID uint64, thumbprin
 	return serverUserToTransport(&raw), nil
 }
 
+// ActivateWithCertBinding activates a pending account with its first mTLS
+// SPKI thumbprint binding. Calls the qrdb_user_activate_with_cert_binding
+// tool.
+func (t *Transport) ActivateWithCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*transport.User, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	text, err := t.callTool(ctx, "qrdb_user_activate_with_cert_binding", map[string]any{
+		"user_id":        strconv.FormatUint(userID, 10),
+		"thumbprint":     thumbprint,
+		"not_after_unix": notAfterUnix,
+	})
+	if err != nil {
+		return nil, mapUserNotFound(userID, err)
+	}
+
+	var raw serverUser
+	if jsonErr := json.Unmarshal([]byte(text), &raw); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "ActivateWithCertBinding", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return serverUserToTransport(&raw), nil
+}
+
 // RemoveCertBinding withdraws an mTLS SPKI thumbprint from a user. Calls the
 // qrdb_user_remove_cert_binding MCP tool.
 func (t *Transport) RemoveCertBinding(ctx context.Context, userID uint64, thumbprint string) (*transport.User, error) {

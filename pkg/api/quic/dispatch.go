@@ -278,6 +278,7 @@ func (s *Server) buildHandlers() {
 	s.handle("user.GetByEmail", permission.UsersRead, s.handleGetUserByEmail)
 	s.handle("user.GetByCertThumbprint", permission.UsersGetByCertThumbprint, s.handleGetUserByCertThumbprint)
 	s.handle("user.AddCertBinding", permission.UsersAddCertBinding, s.handleAddCertBinding)
+	s.handle("user.ActivateWithCertBinding", permission.UsersAddCertBinding, s.handleActivateWithCertBinding)
 	s.handle("user.RemoveCertBinding", permission.UsersRemoveCertBinding, s.handleRemoveCertBinding)
 	s.handle("user.Update", permission.UsersUpdate, s.handleUpdateUser)
 	s.handle("user.Delete", permission.UsersDelete, s.handleDeleteUser)

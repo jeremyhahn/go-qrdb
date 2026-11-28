@@ -319,10 +319,10 @@ func TestRoutingUserService_ActivateWithCertBindingRoutesToTheOwningTenant(t *te
 }
 
 func TestAccountNotPendingError_Message(t *testing.T) {
-	if got := (&AccountNotPendingError{ID: 7, Lifecycle: LifecycleActive}).Error(); got != "user: account 7 is active, not pending" {
+	if got := (&AccountNotPendingError{ID: 7, Lifecycle: string(LifecycleActive)}).Error(); got != "user: account 7 is active, not pending" {
 		t.Fatalf("Error() = %q", got)
 	}
-	if got := (&AccountNotPendingError{ID: 7, Lifecycle: LifecyclePending, HasCredential: true}).Error(); got != "user: account 7 already holds a certificate binding" {
+	if got := (&AccountNotPendingError{ID: 7, Lifecycle: string(LifecyclePending), HasCredential: true}).Error(); got != "user: account 7 already holds a certificate binding" {
 		t.Fatalf("Error() = %q", got)
 	}
 }

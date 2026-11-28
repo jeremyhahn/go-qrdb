@@ -680,6 +680,16 @@ service QRDBService {
         option (qrdb.v1.permission) = "users:add_cert_binding";
     }
 
+    // ActivateWithCertBinding binds an mTLS certificate's SPKI thumbprint to
+    // a PENDING account that holds no binding and moves it to active, in one
+    // conditional commit. Any other account is refused with the
+    // ACCOUNT_NOT_PENDING refusal (FAILED_PRECONDITION) and nothing is
+    // written. It binds a key, so it takes AddCertBinding's permission and
+    // certificate target rule.
+    rpc ActivateWithCertBinding(ActivateWithCertBindingRequest) returns (UserResponse) {
+        option (qrdb.v1.permission) = "users:add_cert_binding";
+    }
+
     // RemoveCertBinding withdraws an mTLS certificate's SPKI thumbprint from a
     // user so it no longer resolves and no longer authenticates. Withdrawing
     // the LAST binding returns the account to CN/OU admission.
@@ -3389,6 +3399,15 @@ message GetUserByCertThumbprintRequest {
 // AddCertBindingRequest binds an mTLS certificate's SPKI thumbprint to a user.
 // A not_after_unix > 0 sets the binding's expiry; otherwise it never expires.
 message AddCertBindingRequest {
+    uint64 user_id = 1;
+    string thumbprint = 2;
+    int64 not_after_unix = 3;
+}
+
+// ActivateWithCertBindingRequest activates a pending account with its first
+// certificate binding. A not_after_unix > 0 sets the binding's expiry;
+// otherwise it never expires.
+message ActivateWithCertBindingRequest {
     uint64 user_id = 1;
     string thumbprint = 2;
     int64 not_after_unix = 3;

@@ -313,6 +313,28 @@ func (t *Transport) AddCertBinding(ctx context.Context, userID uint64, thumbprin
 	return &user, nil
 }
 
+// ActivateWithCertBinding activates a pending account with its first mTLS
+// SPKI thumbprint binding. Maps to
+// POST /users/{userID}/activate-with-cert-binding.
+func (t *Transport) ActivateWithCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*transport.User, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	payload := map[string]any{
+		"thumbprint":     thumbprint,
+		"not_after_unix": notAfterUnix,
+	}
+
+	var user transport.User
+	path := "/users/" + strconv.FormatUint(userID, 10) + "/activate-with-cert-binding"
+	if err := t.postJSONDecode(ctx, "ActivateWithCertBinding", path, payload, &user); err != nil {
+		return nil, userNotFound(userID, err)
+	}
+
+	return &user, nil
+}
+
 // RemoveCertBinding withdraws an mTLS SPKI thumbprint from a user. Maps to
 // DELETE /users/{userID}/cert-bindings/{thumbprint}.
 //

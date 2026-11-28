@@ -377,6 +377,33 @@ func (s *Server) handleAddCertBinding(ctx context.Context, payload []byte) ([]by
 	return s.marshalUser(ctx, u)
 }
 
+// handleActivateWithCertBinding unmarshals an activation request (the
+// add-cert-binding payload), binds the thumbprint to the PENDING account and
+// moves it to active in one commit. It binds a key, so dispatch gives it
+// users:add_cert_binding and the certificate target rule applies; an account
+// not awaiting its first credential is refused with the ACCOUNT_NOT_PENDING
+// refusal.
+func (s *Server) handleActivateWithCertBinding(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.userSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "user"}
+	}
+
+	var req addCertBindingWireRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	if err := s.authMW.AuthorizeCertBindingTarget(ctx, s.userSvc, req.UserID); err != nil {
+		return nil, err
+	}
+	u, err := user.ActivateWithCertBindingOn(ctx, s.userSvc, req.UserID, req.Thumbprint, req.NotAfterUnix)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.marshalUser(ctx, u)
+}
+
 // handleRemoveCertBinding unmarshals a JSON remove-cert-binding request,
 // withdraws the mTLS SPKI thumbprint via the service layer, and returns a JSON
 // user response. Withdrawing the LAST binding returns the account to admission
