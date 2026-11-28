@@ -15,9 +15,11 @@
 package engine
 
 import (
+	"context"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	"github.com/jeremyhahn/go-qrdb/pkg/vector"
@@ -179,6 +181,72 @@ func TestMVCCEngine_VectorIndex_NilWhenUnconfiguredNonNilWhenConfigured(t *testi
 	}
 	if configured.VectorIndex() == nil {
 		t.Fatal("MVCCEngine.VectorIndex() after WithMVCCVectorIndex = nil, want non-nil")
+	}
+}
+
+// TestVectorRebuildQuery_KeepsEffectsCommittedDuringTheScan commits an
+// upsert of a new embedding and a delete between the rebuild's scan and its
+// publish: the rebuilt index must answer the new embedding and not the
+// deleted ID, on both engines.
+func TestVectorRebuildQuery_KeepsEffectsCommittedDuringTheScan(t *testing.T) {
+	engines := []struct {
+		name string
+		new  func(stg *memory.MemoryStorage) (Engine, *VectorIndexManager)
+	}{
+		{"mvcc", func(stg *memory.MemoryStorage) (Engine, *VectorIndexManager) {
+			eng, err := NewMVCCEngine(stg, WithMVCCVectorIndex("", nil))
+			if err != nil {
+				t.Fatalf("NewMVCCEngine: %v", err)
+			}
+			return eng, eng.VectorIndex()
+		}},
+		{"kv", func(stg *memory.MemoryStorage) (Engine, *VectorIndexManager) {
+			eng := NewKVEngine(stg, WithKVVectorIndex("", nil))
+			return eng, eng.VectorIndex()
+		}},
+	}
+	for _, tc := range engines {
+		t.Run(tc.name, func(t *testing.T) {
+			stg := memory.NewStorage()
+			t.Cleanup(func() { _ = stg.Close() })
+			eng, mgr := tc.new(stg)
+			createNamespace(t, eng, "ns", 2)
+			for id, emb := range map[uint64][]float32{1: {1, 0}, 2: {0, 1}} {
+				applyVectorCmd(t, eng, mustEncodeVector(protocol.EncodeVectorUpsert("ns", 1, protocol.VectorUpsertParams{
+					HasID: true, ID: id, Embedding: emb,
+				})))
+			}
+
+			fired := false
+			mgr.rebuildScanned = func(string) {
+				if fired {
+					return
+				}
+				fired = true
+				applyVectorCmd(t, eng, mustEncodeVector(protocol.EncodeVectorUpsert("ns", 2, protocol.VectorUpsertParams{
+					HasID: true, ID: 1, Embedding: []float32{-1, 0},
+				})))
+				applyVectorCmd(t, eng, mustEncodeVector(protocol.EncodeVectorDelete("ns", 2)))
+			}
+			if _, err := eng.Lookup(context.Background(), service.VectorRebuildQuery{Namespace: "ns"}); err != nil {
+				t.Fatalf("Lookup(VectorRebuildQuery): %v", err)
+			}
+			if !fired {
+				t.Fatal("rebuild never reached the scan hook")
+			}
+
+			res, err := eng.Lookup(context.Background(), service.VectorSearchQuery{Namespace: "ns", Query: []float32{-1, 0}, K: 2})
+			if err != nil {
+				t.Fatalf("Lookup(VectorSearchQuery): %v", err)
+			}
+			hits, ok := res.([]service.VectorSearchHit)
+			if !ok {
+				t.Fatalf("search = %T, want []service.VectorSearchHit", res)
+			}
+			if len(hits) != 1 || hits[0].ID != 1 || hits[0].Distance > 1e-3 {
+				t.Fatalf("hits = %+v, want only id 1 at its new embedding", hits)
+			}
+		})
 	}
 }
 

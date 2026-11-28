@@ -55,6 +55,14 @@ type vectorNamespaceIndex struct {
 	state vectorIndexState
 	live  vector.LiveIndex
 	rec   vector.NamespaceRecord
+
+	// rebuilding is set while warmNamespace loads or scans the committed
+	// records into live outside apply. An upsert or delete effect that
+	// arrives meanwhile is queued in pending, not applied, and replayed
+	// after the scan, so the scan can never overwrite a newer embedding
+	// with the one it read or reinsert an ID deleted after it read it.
+	rebuilding bool
+	pending    []vector.IndexEffect
 }
 
 // VectorIndexManager owns every namespace's in-memory ANN index for one
@@ -73,6 +81,10 @@ type VectorIndexManager struct {
 	// full rebuild, which is always correct, only slower to become ready.
 	dir string
 	enc *atrest.Encryptor
+
+	// rebuildScanned, when set (tests only), runs in warmNamespace after the
+	// load or scan and before the queued effects are replayed.
+	rebuildScanned func(namespace string)
 }
 
 // NewVectorIndexManager constructs an index manager. dir empty disables
@@ -146,7 +158,9 @@ func (m *VectorIndexManager) applyOne(e vector.IndexEffect) {
 			return // not warmed into this instance; a later Warm will pick it up
 		}
 		ns.mu.Lock()
-		if ns.live != nil {
+		if ns.rebuilding {
+			ns.pending = append(ns.pending, e)
+		} else if ns.live != nil {
 			if err := ns.live.Upsert(e.ID, e.Embedding); err != nil {
 				ns.state = vectorIndexWarming
 			}
@@ -159,7 +173,9 @@ func (m *VectorIndexManager) applyOne(e vector.IndexEffect) {
 			return
 		}
 		ns.mu.Lock()
-		if ns.live != nil {
+		if ns.rebuilding {
+			ns.pending = append(ns.pending, e)
+		} else if ns.live != nil {
 			if err := ns.live.Delete(e.ID); err != nil {
 				ns.state = vectorIndexWarming
 			}
@@ -292,22 +308,41 @@ func (m *VectorIndexManager) warmNamespace(stg storage.Storage, name string, rec
 	if err != nil {
 		return err
 	}
-	ns := &vectorNamespaceIndex{rec: rec, live: live, state: vectorIndexWarming}
+	// The load or scan runs outside apply (a Lookup, or after the apply
+	// that reconfigured the namespace), so effects committed meanwhile are
+	// queued (rebuilding) and replayed once the scan is done.
+	ns := &vectorNamespaceIndex{rec: rec, live: live, state: vectorIndexWarming, rebuilding: true}
 	m.set(name, ns)
 
-	if m.loadCheckpoint(stg, name, rec, live) {
-		ns.mu.Lock()
-		ns.state = vectorIndexReady
-		ns.mu.Unlock()
-		return nil
+	if !m.loadCheckpoint(stg, name, rec, live) {
+		if err := rebuildIndexFromStore(stg, name, live); err != nil {
+			ns.mu.Lock()
+			ns.rebuilding = false
+			ns.pending = nil
+			ns.mu.Unlock()
+			return err
+		}
 	}
-
-	if err := rebuildIndexFromStore(stg, name, live); err != nil {
-		return err
+	if m.rebuildScanned != nil {
+		m.rebuildScanned(name)
 	}
 	ns.mu.Lock()
+	defer ns.mu.Unlock()
+	ns.rebuilding = false
+	pending := ns.pending
+	ns.pending = nil
+	for _, e := range pending {
+		var err error
+		if e.Op == vector.IndexEffectDelete {
+			err = live.Delete(e.ID)
+		} else {
+			err = live.Upsert(e.ID, e.Embedding)
+		}
+		if err != nil {
+			return err // stays warming: Search refuses rather than answer stale
+		}
+	}
 	ns.state = vectorIndexReady
-	ns.mu.Unlock()
 	return nil
 }
 
