@@ -483,9 +483,9 @@ func (e *InvalidLifecycleError) Error() string {
 // into an authenticating account by a concurrent enable, and reporting the
 // refusal as a typed error is what lets a caller distinguish "you may not" from
 // "the store failed".
-// AccountNotPendingError is returned by ActivateWithCertBinding for an
-// account that is not awaiting its first credential: it is not pending, or
-// it already holds a certificate binding. Activation is the single point at
+// AccountNotPendingError is returned by ActivateWithCertBinding and
+// ActivatePending for an account that is not awaiting activation: it is not
+// pending, or (ActivateWithCertBinding) it already holds a certificate binding. Activation is the single point at
 // which an invited account gets a credential, so whichever activation
 // commits first wins and every other one is refused with this error.
 type AccountNotPendingError struct {

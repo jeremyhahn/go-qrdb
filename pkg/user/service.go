@@ -90,6 +90,17 @@ type CertActivator interface {
 	ActivateWithCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*User, error)
 }
 
+// PendingActivator activates a pending account whose credential the caller
+// established elsewhere (credential-first flows). qrdb's store and its
+// tenant-routed service implement it.
+type PendingActivator interface {
+	// ActivatePending moves a PENDING account to active in one conditional
+	// commit. Any other lifecycle -- including one committed between the
+	// call's read and its write -- is refused with *AccountNotPendingError
+	// and nothing is written.
+	ActivatePending(ctx context.Context, userID uint64) (*User, error)
+}
+
 // PendingExpirer is implemented by stores that can delete a pending account
 // whose TTL has run out, conditionally on that state. It is what
 // PendingReaper deletes through.
