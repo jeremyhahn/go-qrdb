@@ -171,13 +171,13 @@ const (
 	ciWorkflowName = "ci.yml"
 
 	// mainKeyedGroup is ci.yml's concurrency group (ci-template v1.53, ruling
-	// 1087): a PR ref is one group, so a newer push to a PR cancels that PR's
-	// older run, and on main a push is its own group main-push-{sha}
-	// (ci-template v1.61, handbook #144), so a later push to main never
-	// cancels an earlier commit's run; any other main event is main-{event}
-	// with no sha, so a newer such run cancels the older one. A schedule run is tested first and keeps
-	// schedule-{repository} (ci-template v1.29.3, ruling 255(10)/(11)(c)), so a
-	// repository has one schedule run at a time.
+	// 1087, with v1.61's main-push group): a PR ref is one group, so a newer
+	// push to a PR cancels that PR's older run. A push to main is grouped by its
+	// sha, main-push-{sha} (v1.61, adopted with v1.62 by the Tenant Agent's
+	// order of 2026-11-27 18:13Z), so no main push cancels another; any other
+	// event on main keeps main-{event} with no sha. A schedule run is tested
+	// first and keeps schedule-{repository} (ci-template v1.29.3, ruling
+	// 255(10)/(11)(c)), so a repository has one schedule run at a time.
 	mainKeyedGroup = "${{ github.workflow }}-${{ github.event_name == 'schedule' && format('schedule-{0}', github.repository) || github.ref == 'refs/heads/main' && github.event_name == 'push' && format('main-push-{0}', github.sha) || github.ref == 'refs/heads/main' && format('main-{0}', github.event_name) || github.ref }}"
 
 	// cancelLiteral is ci-template v1.23's cancel-in-progress. Gitea 1.27.1
@@ -1394,8 +1394,6 @@ func TestWorkflowTriggerProblems_CanFail(t *testing.T) {
 			strings.Replace(ciGood, "format('main-{0}', github.event_name)", "format('main-{0}-{1}', github.event_name, github.sha)", 1)},
 		"ci.yml schedule group per sha": {ciWorkflowName,
 			strings.Replace(ciGood, "format('schedule-{0}', github.repository)", "format('schedule-{0}-{1}', github.repository, github.sha)", 1)},
-		"ci.yml v1.60 main push group": {ciWorkflowName,
-			strings.Replace(ciGood, " && github.event_name == 'push' && format('main-push-{0}', github.sha) || github.ref == 'refs/heads/main'", "", 1)},
 		"ci.yml v1.22.1 group":  {ciWorkflowName, strings.Replace(ciGood, mainKeyedGroup, refKeyedGroup, 1)},
 		"ci.yml v1.22.1 block":  {ciWorkflowName, good},
 		"ci.yml no concurrency": {ciWorkflowName, "on:\n  pull_request:\n"},
