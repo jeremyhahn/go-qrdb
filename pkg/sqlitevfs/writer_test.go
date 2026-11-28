@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
+	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 )
 
 // memLocker is an in-memory lock.Locker over a mutex-guarded map. It keeps
@@ -169,6 +170,49 @@ func TestNewLockerWriterRefusals(t *testing.T) {
 func TestLockerWriterMapping(t *testing.T) {
 	for name, build := range writerBuilders() {
 		t.Run(name, func(t *testing.T) { testWriterMapping(t, build) })
+	}
+}
+
+// quotaLocker refuses every lock-record write with a quota refusal, as the
+// lock service does when the tenant's key or storage quota is exhausted.
+type quotaLocker struct {
+	*memLocker
+}
+
+func (quotaLocker) exceeded() error {
+	return &quota.ExceededError{TenantID: "t", Resource: quota.ResourceKeys, Current: 1, Limit: 1}
+}
+
+func (q quotaLocker) TryLock(context.Context, lock.LockOptions) (*lock.Lock, error) {
+	return nil, q.exceeded()
+}
+
+func (q quotaLocker) Extend(context.Context, string, int64) (*lock.Lock, error) {
+	return nil, q.exceeded()
+}
+
+// TestLockerWriterQuotaRefusalIsFull checks a quota refusal of the writer
+// lock record is ErrFull (SQLITE_FULL), while a held lock stays ErrBusy.
+func TestLockerWriterQuotaRefusalIsFull(t *testing.T) {
+	w := newWriter(t, quotaLocker{newMemLocker()}, "h")
+	var exceeded *quota.ExceededError
+	_, err := w.Acquire(t.Context(), "sqlite/app.db/lock")
+	if !errors.Is(err, ErrFull) || !errors.As(err, &exceeded) {
+		t.Fatalf("Acquire over quota = %v, want ErrFull wrapping quota.ExceededError", err)
+	}
+	if errors.Is(err, ErrBusy) {
+		t.Fatalf("Acquire over quota = %v, want no ErrBusy", err)
+	}
+	if err := w.Check(t.Context(), "sqlite/app.db/lock", 1); !errors.Is(err, ErrFull) || !errors.As(err, &exceeded) {
+		t.Fatalf("Check over quota = %v, want ErrFull wrapping quota.ExceededError", err)
+	}
+
+	locker := newMemLocker()
+	if _, err := newWriter(t, locker, "a").Acquire(t.Context(), "sqlite/app.db/lock"); err != nil {
+		t.Fatalf("first Acquire: %v", err)
+	}
+	if _, err := newWriter(t, locker, "b").Acquire(t.Context(), "sqlite/app.db/lock"); !errors.Is(err, ErrBusy) || errors.Is(err, ErrFull) {
+		t.Fatalf("Acquire of a held lock = %v, want ErrBusy", err)
 	}
 }
 

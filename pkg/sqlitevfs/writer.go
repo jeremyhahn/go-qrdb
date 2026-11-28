@@ -148,7 +148,8 @@ func (w *lockerWriter) Acquire(ctx context.Context, key string) (int64, error) {
 		if errors.As(err, &held) {
 			return 0, fmt.Errorf("%w: %q is held by %q", ErrBusy, key, held.HolderID)
 		}
-		return 0, fmt.Errorf("sqlitevfs: acquire writer lock %q: %w", key, err)
+		// A quota refusal of the lock record is SQLITE_FULL, not a lock error.
+		return 0, full(fmt.Errorf("sqlitevfs: acquire writer lock %q: %w", key, err))
 	}
 	return l.FencingToken, nil
 }
@@ -161,7 +162,7 @@ func (w *lockerWriter) Check(ctx context.Context, key string, token int64) error
 		if leaseLost(err) {
 			return fmt.Errorf("%w: lease on %q lost: %w", ErrBusy, key, err)
 		}
-		return fmt.Errorf("sqlitevfs: check writer lock %q: %w", key, err)
+		return full(fmt.Errorf("sqlitevfs: check writer lock %q: %w", key, err))
 	}
 	return nil
 }
