@@ -44,6 +44,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/util/metrics"
+	vectorindex "github.com/jeremyhahn/go-qrdb/pkg/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/vector/hnsw"
 )
 
@@ -401,27 +402,10 @@ func (v *vectorService) newNamespaceIndex(info *vector.NamespaceInfo, indexConfi
 // A parameter that does not parse is logged and left at its default; a
 // parsed m also sets MMax to twice it.
 func (v *vectorService) applyHNSWParams(config *hnsw.Config, params map[string]string) {
-	fields := map[string]*int{
-		"m":               &config.M,
-		"ef_construction": &config.EfConstruction,
-		"ef_search":       &config.EfSearch,
-	}
-	for name, field := range fields {
-		raw, ok := params[name]
-		if !ok {
-			continue
-		}
-		if _, err := fmt.Sscanf(raw, "%d", field); err != nil {
-			v.logger.WithFields(map[string]interface{}{
-				"parameter": name,
-				"value":     raw,
-				"error":     err,
-			}).Warn("failed to parse index parameter")
-			continue
-		}
-		if name == "m" {
-			config.MMax = config.M * 2
-		}
+	if err := vectorindex.ApplyHNSWParams(config, params); err != nil {
+		v.logger.WithFields(map[string]interface{}{
+			"error": err,
+		}).Warn("failed to parse index parameter")
 	}
 }
 

@@ -433,3 +433,48 @@ func TestSameLiveIndexShape(t *testing.T) {
 		})
 	}
 }
+
+// TestNewLiveIndex_HNSWReadsTheNamespaceSettings proves the engine's HNSW
+// index is built with the namespace's m, ef_construction and ef_search, not
+// the package defaults, and that a malformed value keeps its default.
+func TestNewLiveIndex_HNSWReadsTheNamespaceSettings(t *testing.T) {
+	rec := NamespaceRecord{Dimension: 2, DistanceMetric: DistanceCosine, IndexType: IndexHNSW,
+		IndexParams: map[string]string{"m": "8", "ef_construction": "120", "ef_search": "33"}}
+	idx, err := NewLiveIndex("ns", rec)
+	if err != nil {
+		t.Fatalf("NewLiveIndex: %v", err)
+	}
+	cfg := idx.(*hnswLiveIndex).idx.GetConfig()
+	if cfg.M != 8 || cfg.MMax != 16 || cfg.EfConstruction != 120 || cfg.EfSearch != 33 {
+		t.Fatalf("config = M %d MMax %d EfConstruction %d EfSearch %d, want 8/16/120/33",
+			cfg.M, cfg.MMax, cfg.EfConstruction, cfg.EfSearch)
+	}
+
+	def := hnsw.DefaultConfig()
+	rec.IndexParams = map[string]string{"m": "x", "ef_construction": "0", "ef_search": "-4"}
+	idx, err = NewLiveIndex("ns", rec)
+	if err != nil {
+		t.Fatalf("NewLiveIndex (malformed settings): %v", err)
+	}
+	cfg = idx.(*hnswLiveIndex).idx.GetConfig()
+	if cfg.M != def.M || cfg.EfConstruction != def.EfConstruction || cfg.EfSearch != def.EfSearch {
+		t.Fatalf("malformed settings changed the config: %+v, want defaults %+v", cfg, def)
+	}
+	var bad *InvalidHNSWParamError
+	if err := ApplyHNSWParams(hnsw.DefaultConfig(), rec.IndexParams); !errors.As(err, &bad) {
+		t.Fatalf("ApplyHNSWParams(malformed) = %v, want *InvalidHNSWParamError", err)
+	}
+}
+
+func TestSameLiveIndexShape_HNSWSettings(t *testing.T) {
+	base := NamespaceRecord{Dimension: 2, DistanceMetric: DistanceCosine, IndexType: IndexHNSW,
+		IndexParams: map[string]string{"m": "16", "ef_construction": "200", "ef_search": "50"}}
+	for _, key := range []string{"m", "ef_construction", "ef_search"} {
+		changed := base
+		changed.IndexParams = map[string]string{"m": "16", "ef_construction": "200", "ef_search": "50"}
+		changed.IndexParams[key] = "7"
+		if SameLiveIndexShape(base, changed) {
+			t.Errorf("SameLiveIndexShape = true after %s changed", key)
+		}
+	}
+}
