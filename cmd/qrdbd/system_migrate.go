@@ -182,6 +182,21 @@ func (m *daemonSystemMigrator) EnableEncryption(ctx context.Context, scope servi
 // sealSub.SealBarrier open to read the source data. The caller's deferred
 // sealSub.Close fires after the boot closure returns (LIFO, registered first),
 // i.e. after the recode completes.
+// migrationDatabases is the database catalog a system migration takes the
+// node-encrypted database stores from, and the close that releases their
+// store locks before the stores are re-encrypted. The close must be safe to
+// call again (the boot iteration closes the manager on its way out).
+type migrationDatabases struct {
+	manager *database.Manager
+	close   func() error
+}
+
+// storeDirs lists the store directories of every database the node barrier
+// encrypts (database.NodeEncryptedStoreDirs). No manager lists none.
+func (d migrationDatabases) storeDirs(ctx context.Context, walDir string) (pebbleDirs, fileDirs []string, err error) {
+	return database.NodeEncryptedStoreDirs(ctx, d.manager, walDir)
+}
+
 func handleSystemMigration(
 	req *systemMigrationRequest,
 	f *startFlags,
@@ -193,6 +208,7 @@ func handleSystemMigration(
 	memberRecord memberRecordCloser,
 	bootCancel context.CancelFunc,
 	sealSub *sealSubsystem,
+	databases migrationDatabases,
 ) (reboot bool, err error) {
 	// Defensive: daemonSystemMigrator.EnableEncryption already rejects a
 	// seal-disabled node with ErrMigrationProviderUnavailable before ever
@@ -203,6 +219,17 @@ func handleSystemMigration(
 	if sealSub == nil {
 		seal.DestroyCredentials(req.opts.Credentials)
 		rerr := &SystemMigrationSealDisabledError{}
+		req.done <- rerr
+		return false, rerr
+	}
+	// The node barrier also encrypts every system or prefix-tenant database
+	// in a store of its own (an explicit data_dir included), opened on this
+	// node or not. List them while the catalog is still served: a database
+	// store that cannot be migrated refuses before anything is torn down.
+	dbPebble, dbFile, lerr := databases.storeDirs(context.Background(), f.storageConfig.WALDir)
+	if lerr != nil {
+		seal.DestroyCredentials(req.opts.Credentials)
+		rerr := fmt.Errorf("system encryption migration: list database stores: %w", lerr)
 		req.done <- rerr
 		return false, rerr
 	}
@@ -244,6 +271,12 @@ func handleSystemMigration(
 			slog.Error("service node stop during migration failed", slog.Any("error", cerr))
 		}
 	}
+	// Close the databases to release the locks on their own stores.
+	if databases.close != nil {
+		if cerr := databases.close(); cerr != nil {
+			slog.Error("database close during migration failed", slog.Any("error", cerr))
+		}
+	}
 	// Release locks on the system host's stores: dedicated-db raft shards and
 	// per-tenant Hosts first (they may root under the same data tree), then the
 	// host itself (this seals the shared barrier underlying sealSub.SealBarrier).
@@ -265,6 +298,8 @@ func handleSystemMigration(
 	// must be re-encrypted or the keyed re-init fails to open it ("decryption
 	// failed").
 	stores := systemMigrationStores(f.dataDir, f.smType, f.smStorage)
+	stores.Pebble = append(stores.Pebble, dbPebble...)
+	stores.File = append(stores.File, dbFile...)
 	walDir := filepath.Join(f.dataDir, "wal")
 
 	rerr := recodeSystemBarrier(context.Background(), sealSub.SealBarrier, stores, walDir, req.opts, func() error { return sealSub.SealStoreRetirer.Retire(context.Background()) })

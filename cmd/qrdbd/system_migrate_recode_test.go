@@ -297,7 +297,7 @@ func TestHandleSystemMigration_Recycle(t *testing.T) {
 				t.Fatalf("server Start: %v", err)
 			}
 			reboot, err := handleSystemMigration(req, f, srv, &lifecycle.Node{}, nil, raftReg, tenantReg,
-				member, bootCancel, &sealSubsystem{SealBarrier: source})
+				member, bootCancel, &sealSubsystem{SealBarrier: source}, migrationDatabases{})
 
 			if reboot != tt.wantReboot {
 				t.Fatalf("reboot = %v, want %v (err %v)", reboot, tt.wantReboot, err)

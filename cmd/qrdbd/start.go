@@ -1665,7 +1665,10 @@ func runStart(f *startFlags) (err error) {
 			// in-process encryption migration's next iteration reopens them
 			// through the new factory instead of meeting them still open.
 			dbManager := newBootDatabaseManager(f.dataDir, dbDefaults)
-			defer func() { _ = dbManager.Close() }()
+			// Once: a system encryption migration closes the manager early
+			// to release its databases' store locks.
+			closeDBManager := sync.OnceValue(dbManager.Close)
+			defer func() { _ = closeDBManager() }()
 
 			// Build the seal subsystem BEFORE the state machine factory and
 			// before host construction. The data-plane Pebble instance is opened
@@ -3438,7 +3441,8 @@ func runStart(f *startFlags) (err error) {
 				// Noise port, and memberAnchorAdv's deferred Stop only runs when
 				// runStart itself returns, so release the port here.
 				memberAnchorAdv.Stop()
-				reboot, mErr := handleSystemMigration(req, f, srv, svcNode, host, raftBackendReg, tenantHostReg, memberRecord, bootCancel, sealSub)
+				reboot, mErr := handleSystemMigration(req, f, srv, svcNode, host, raftBackendReg, tenantHostReg, memberRecord, bootCancel, sealSub,
+					migrationDatabases{manager: dbManager, close: closeDBManager})
 				// handleSystemMigration stopped svcNode to release its store locks
 				// for re-encryption; nil it so the deferred Stop above is skipped.
 				svcNode = nil

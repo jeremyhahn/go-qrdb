@@ -334,7 +334,7 @@ func TestHandleSystemMigration_NilSealSubsystem_ReturnsTypedError(t *testing.T) 
 		done: make(chan error, 1),
 	}
 
-	reboot, err := handleSystemMigration(req, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	reboot, err := handleSystemMigration(req, nil, nil, nil, nil, nil, nil, nil, nil, nil, migrationDatabases{})
 
 	if reboot {
 		t.Error("reboot = true, want false")
