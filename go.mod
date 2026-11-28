@@ -70,6 +70,8 @@ require (
 	google.golang.org/protobuf v1.36.12
 	gopkg.in/src-d/go-errors.v1 v1.0.0
 	gopkg.in/yaml.v3 v3.0.1
+	modernc.org/libc v1.80.1
+	modernc.org/sqlite v1.63.0
 	software.sslmate.com/src/go-pkcs12 v0.7.4
 )
 
@@ -129,6 +131,7 @@ require (
 	github.com/dolthub/flatbuffers/v23 v23.3.3-dh.2 // indirect
 	github.com/dolthub/go-icu-regex v0.0.0-20260610153742-72563bc7ca83 // indirect
 	github.com/dolthub/jsonpath v0.0.2-0.20260807003725-336cd89c1c76 // indirect
+	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/envoyproxy/go-control-plane/envoy v1.40.0 // indirect
 	github.com/envoyproxy/protoc-gen-validate v1.3.3 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
@@ -173,6 +176,7 @@ require (
 	github.com/minio/minlz v1.1.0 // indirect
 	github.com/mschoch/smat v0.2.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
+	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/pelletier/go-toml/v2 v2.4.3 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/pkg/errors v0.9.1 // indirect
@@ -181,6 +185,7 @@ require (
 	github.com/prometheus/common v0.72.0 // indirect
 	github.com/prometheus/procfs v0.22.0 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
+	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
@@ -222,6 +227,8 @@ require (
 	google.golang.org/api v0.309.0 // indirect
 	google.golang.org/genproto v0.0.0-20261026165753-2ffab32bce7e // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20261026165753-2ffab32bce7e // indirect
+	modernc.org/mathutil v1.7.1 // indirect
+	modernc.org/memory v1.12.1 // indirect
 )
 
 replace github.com/jeremyhahn/go-qrdb/sdk/go => ./sdk/go

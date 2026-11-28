@@ -43,6 +43,9 @@ type TenantQuotas struct {
 	// MaxDedicatedWALGroups caps the number of dedicated-raft groups a tenant
 	// may grant a dedicated WAL. -1 = unlimited; 0 = default (no dedicated WAL).
 	MaxDedicatedWALGroups int64 `json:"max_dedicated_wal_groups"`
+	// MaxSQLiteDatabases caps the number of SQLite databases a tenant may hold
+	// in the sqlite-vfs page store (a soft bound). -1 or 0 = unlimited.
+	MaxSQLiteDatabases int64 `json:"max_sqlite_databases"`
 }
 
 // TenantEntitlements describes which isolation tiers and dedicated-storage
@@ -61,6 +64,9 @@ type TenantEntitlements struct {
 	// AllowDedicatedWAL permits a tenant to opt a dedicated-raft database into
 	// a dedicated WAL group (requires AllowDedicatedRaft).
 	AllowDedicatedWAL bool `json:"allow_dedicated_wal,omitempty"`
+	// AllowSQLiteVFS permits a tenant to create SQLite databases in the
+	// sqlite-vfs page store (the sqlite-vfs entitlement; fail-closed).
+	AllowSQLiteVFS bool `json:"allow_sqlite_vfs,omitempty"`
 	// AllowedVolumePools lists the named volume pools a volume/raft tenant
 	// may be placed on; the first entry is its default. Fail-closed: empty
 	// entitles no pool.

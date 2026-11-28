@@ -1,12 +1,13 @@
 # SQLite VFS backend: answers to the open questions that block a build decision
 
-> **Status: PROPOSED** · Scope: go-qrdb
-> Last verified: 2026-11-12
+> **Status: ACCEPTED — Q1-Q5 A adopted (Tenant Agent ruling 1115), 2026-11-22; SQLite engine dependency `modernc.org/sqlite` approved by owner ruling 1234 and in** · Scope: go-qrdb
+> Last verified: 2026-11-23
 > SPEC row: `sqlite-vfs` (future). This record answers the five open questions
 > of [../sqlite-vfs/architecture.md](../sqlite-vfs/architecture.md)
-> ("Open questions (blocking a build decision)"). Each question lists its
+> ("Decided questions"). Each question lists its
 > options, the dependency each option needs, a recommendation and the reason.
-> The architecture calls are the owner's; nothing here is built.
+> Q1-Q5 were adopted under ruling 1115; owner ruling 1234 approved the SQLite
+> engine dependency, `modernc.org/sqlite`.
 
 ## Problem
 
@@ -34,7 +35,8 @@ needs an API a lower project's main lacks.
 A SQLite engine binding is a third-party dependency, not a lower project:
 `modernc.org/sqlite` (pure Go) for tier 1, or `mattn/go-sqlite3` (CGo) in a
 separate Go module. Adding it is a `go.mod` change made by the build lane,
-not by this record.
+not by this record. Owner ruling 1234 approved `modernc.org/sqlite` (owner
+queue 288); it is in `go.mod` at v1.63.0.
 
 ## Q1. WAL-mode support
 
@@ -271,5 +273,80 @@ go-codec v1.5.1-alpha as tagged.
 
 ## Ruling
 
-None yet. The owner rules on Q1-Q5; this section then records the options
-chosen and what was built.
+The Tenant ordered the row ready; Q1-Q5 were then decided by convention under
+ruling 109 and adopted by Tenant Agent ruling 1115 (2026-11-22). Ruling 1115
+states Q2 A as a feature-gated, server-side prefix-move publish op that the
+namespace, confinement and quota wrappers rewrite, and holds the SQLite engine
+dependency for the owner (owner queue 288, approved by owner ruling 1234):
+
+- **Q1 = A**: batch-atomic only, no WAL, no `xShmMap`; the true journal mode
+  is reported.
+- **Q2 = A**: staged commit: chunked staging writes under
+  `sqlite/<db>/stage/<commit-id>/page/<pgno>`, invisible to readers, plus one
+  publish that moves them into `page/` and updates meta at one revision.
+- **Q3 = A**: serialized writer by default through a distributed lock with a
+  lease, `SQLITE_BUSY` at once on contention; optimistic mode per connection
+  by the `qrdb_concurrency=optimistic` VFS URI parameter.
+- **Q4 = A**: the namespace is ordinary keyspace for backup and PITR; restore
+  bumps the meta generation; a transaction that sees a changed generation
+  fails with `SQLITE_BUSY_SNAPSHOT`. Export/import (B) comes later as a
+  migration tool.
+- **Q5 = A**: pages count in the tenant's existing storage quota; exceeding
+  it fails the commit with `SQLITE_FULL`; a per-tenant database count cap and
+  the `sqlite-vfs` entitlement gate creation.
+
+Built so far (unwired):
+
+- the page store core in `pkg/sqlitevfs` (keys, meta, transactions over
+  `pkg/mvcc`);
+- the staged commit and publish for oversized transactions (Q2) and the meta
+  generation check (Q4);
+- the serialized writer lock with `SQLITE_BUSY` on contention and lease loss,
+  the meta change counter, and the sweep of abandoned stages (Q3);
+- the prefix-move publish op (Q2): `protocol.OpMVCCMovePrefix` behind the
+  `prefix-move` feature, `MVCCKVService.MovePrefix`, and its rewrites in the
+  namespace, hard-confinement and quota wrappers;
+- the page store's publish in the prefix form over `MovePrefix` and a
+  service-backed Backend (`ServiceBackend`), not yet constructed by the
+  server;
+- the writer lock over the server's lock service (`NewLockServiceWriter`),
+  with a Store over a (tenant, database) scope's resolved services tested on
+  every isolation type; nothing in the server constructs a Store yet;
+- quota (Q5): a commit or publish past the tenant's storage quota fails with
+  `ErrFull`, tested on every isolation type;
+- per-call context (ruling 109, o3): every `Backend` method takes the
+  caller's context, and a transaction reads with the context its `Begin`
+  was given;
+- drop fence (ruling 109, o4): a staged publish is one `OpGuarded` entry
+  carrying the database's drop-fence guard, so a publish resolved before
+  `DROP DATABASE` is refused at apply;
+- the optimistic read-set check on commit and publish (Q3);
+- the `sqlite-vfs` entitlement (`quota.FeatureSQLiteVFS`) and the
+  per-tenant database count cap (`quota.ResourceSQLiteDatabases`, counted
+  by `sqlitevfs.CountDatabases`) as a creation gate, `sqlitevfs.Admit`
+  (Q5). Opening an existing database needs neither. The cap is a soft
+  bound: two concurrent creators can both pass at the limit minus one, and
+  the storage quota is the hard bound;
+- the admin surface for both: `allow_sqlite_vfs` and `max_sqlite_databases`
+  on every transport, the SDKs, `qrdb tenant set-entitlement
+  --allow-sqlite-vfs`, `qrdb tenant update-quotas --max-sqlite-databases`
+  and the config defaults.
+
+Built since: the tier 1 binding on `modernc.org/sqlite` (owner ruling 1234),
+`moderncvfs.Register`, registering VFS `qrdb` over the page store
+([usage](../sqlite-vfs/usage.md)); and the Q4 A restore hook: a restore to
+a revision through a scope's MVCC service that changed a key under
+`sqlite/<db>/` restores that database through its page store in one commit
+that carries the generation bump past every earlier one
+(`Store.RestoreToRevision`, wrapped around every scope's MVCC service in
+`pkg/server`), on the prefix, volume and raft isolation types (o9); and the
+server's creation gate: every scope's transaction service and prefix move
+call `sqlitevfs.Admit` before a write that puts a database's meta record
+while none is live, a refusal writes nothing, and each create and drop
+moves the tenant's `sqlite_databases` usage by one, the counter the
+registry and the lifecycle quota service register for that resource (the
+server half of o1).
+
+Still to come: the client half of o1, a Store over an SDK client (the
+prefix move on every SDK transport, a Backend and writer lock over the Go
+SDK client, and the CLI path), in [docs/plans/926.md](../plans/926.md).

@@ -94,6 +94,16 @@ func lockKey(key string) string {
 	return lockKeyPrefix + key
 }
 
+// RecordKey returns the key under which a Locker over a key-value store
+// keeps the record of the lock named key. The record's create revision is
+// the lock's FencingToken, so a transaction on the same store can fence a
+// write on the holder still owning the lock: a compare that the record's
+// create revision equals the token fails once the lock was released, lost
+// or taken by another holder.
+func RecordKey(key string) string {
+	return lockKey(key)
+}
+
 // userKey strips the internal lock prefix from a fully-qualified key.
 func userKey(key string) string {
 	if len(key) > len(lockKeyPrefix) {

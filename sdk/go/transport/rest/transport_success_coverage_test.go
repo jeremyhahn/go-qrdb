@@ -17,6 +17,7 @@ package rest
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -315,6 +316,79 @@ func TestRESTMVCC_RestoreToRevision_GuardErrorStatus(t *testing.T) {
 	}
 	if reqErr.StatusCode != http.StatusNotImplemented {
 		t.Fatalf("StatusCode = %d, want %d", reqErr.StatusCode, http.StatusNotImplemented)
+	}
+}
+
+// TestMovePrefix_RoundTrip proves the move's binary src, dst, op and
+// compare bytes reach the server as base64 (RFC 4648) and the server's
+// revision comes back.
+func TestMovePrefix_RoundTrip(t *testing.T) {
+	src := []byte{0x00, 's', 0xff}
+	dst := []byte{0x00, 'd', 0xff}
+	val := []byte{0x00, 0x80, 0xff}
+
+	rt, rs, _ := newExtTransport(t)
+	var raw map[string]json.RawMessage
+	var got movePrefixWireRequest
+	rs.handle(exactPath(http.MethodPost, "/kv/move-prefix"), func(w http.ResponseWriter, r *http.Request) {
+		var body bytes.Buffer
+		if _, err := body.ReadFrom(r.Body); err != nil {
+			t.Errorf("read body: %v", err)
+		}
+		if err := json.Unmarshal(body.Bytes(), &raw); err != nil {
+			t.Errorf("decode raw: %v", err)
+		}
+		if err := json.Unmarshal(body.Bytes(), &got); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		writeJSON(w, movePrefixWireResponse{Revision: 42})
+	})
+
+	rev, err := rt.MovePrefix(context.Background(), &transport.MovePrefixRequest{
+		Src: src, Dst: dst, ExpectedKeys: 2,
+		Ops:      []transport.Op{{Type: transport.OpPut, Key: dst, Value: val}},
+		Compares: []transport.Compare{{Key: src, Target: transport.CompareModRevision, Result: transport.CompareEqual, ModRevision: 7}},
+	})
+	if err != nil {
+		t.Fatalf("MovePrefix: %v", err)
+	}
+	if rev != 42 {
+		t.Fatalf("revision = %d, want 42", rev)
+	}
+	if string(raw["src"]) != `"`+base64.StdEncoding.EncodeToString(src)+`"` || string(raw["dst"]) != `"`+base64.StdEncoding.EncodeToString(dst)+`"` {
+		t.Fatalf("body src=%s dst=%s, want base64", raw["src"], raw["dst"])
+	}
+	if !bytes.Equal(got.Src, src) || !bytes.Equal(got.Dst, dst) || got.ExpectedKeys != 2 {
+		t.Fatalf("server saw %+v", got)
+	}
+	if len(got.Ops) != 1 || !bytes.Equal(got.Ops[0].Key, dst) || !bytes.Equal(got.Ops[0].Value, val) {
+		t.Fatalf("server ops = %+v", got.Ops)
+	}
+	if len(got.Compares) != 1 || !bytes.Equal(got.Compares[0].Key, src) || got.Compares[0].ModRevision != 7 {
+		t.Fatalf("server compares = %+v", got.Compares)
+	}
+}
+
+func TestMovePrefix_CountMismatchIsAConflict(t *testing.T) {
+	rt, rs, _ := newExtTransport(t)
+	rs.handle(exactPath(http.MethodPost, "/kv/move-prefix"), func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		writeJSON(w, map[string]string{"error": "live count 3, expected 2"})
+	})
+
+	_, err := rt.MovePrefix(context.Background(), &transport.MovePrefixRequest{Src: []byte("a/"), Dst: []byte("b/"), ExpectedKeys: 2})
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) || reqErr.StatusCode != http.StatusConflict {
+		t.Fatalf("err = %v (%T), want a RequestError with 409", err, err)
+	}
+}
+
+func TestMovePrefix_NilRequest(t *testing.T) {
+	rt, _, _ := newExtTransport(t)
+	_, err := rt.MovePrefix(context.Background(), nil)
+	var nilErr *transport.NilRequestError
+	if !errors.As(err, &nilErr) {
+		t.Fatalf("err = %v, want a NilRequestError", err)
 	}
 }
 

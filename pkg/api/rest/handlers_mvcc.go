@@ -274,6 +274,104 @@ func (s *Server) handleRestoreToRevision(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, restoreResultToResponse(result))
 }
 
+// movePrefixRequest is the JSON body of POST /kv/move-prefix. Every key and
+// value is []byte, base64 on the wire, so a binary key or page value
+// round-trips byte-identical; types, targets and results take the
+// transaction verbs' names (POST /tx).
+type movePrefixRequest struct {
+	Src          []byte               `json:"src"`
+	Dst          []byte               `json:"dst"`
+	ExpectedKeys int64                `json:"expected_keys"`
+	Ops          []movePrefixOpJSON   `json:"ops,omitempty"`
+	Compares     []movePrefixCompJSON `json:"compares,omitempty"`
+}
+
+// movePrefixOpJSON is one op a MovePrefix applies in its revision.
+type movePrefixOpJSON struct {
+	Type     string `json:"type"`
+	Key      []byte `json:"key"`
+	Value    []byte `json:"value,omitempty"`
+	RangeEnd []byte `json:"range_end,omitempty"`
+	LeaseID  int64  `json:"lease_id,omitempty"`
+}
+
+// movePrefixCompJSON is one compare of a MovePrefix's read set.
+type movePrefixCompJSON struct {
+	Key            []byte `json:"key"`
+	Target         string `json:"target"`
+	Result         string `json:"result"`
+	Value          []byte `json:"value,omitempty"`
+	Version        int64  `json:"version,omitempty"`
+	CreateRevision int64  `json:"create_revision,omitempty"`
+	ModRevision    int64  `json:"mod_revision,omitempty"`
+}
+
+// movePrefixResponse is the JSON answer of POST /kv/move-prefix.
+type movePrefixResponse struct {
+	Revision int64 `json:"revision"`
+}
+
+// handleMovePrefix handles POST /kv/move-prefix -- every live key under src
+// re-homed under dst in one revision through the scoped MVCC service's
+// service.PrefixMover (go-qrdb#926).
+func (s *Server) handleMovePrefix(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	mvccSvc := s.mvccSvcFor(w, ctx)
+	if mvccSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "mvcc"})
+		}
+		return
+	}
+
+	var req movePrefixRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+
+	mover, ok := mvccSvc.(service.PrefixMover)
+	if !ok {
+		err := &service.PrefixMoveUnsupportedError{}
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+	ops := make([]service.Op, len(req.Ops))
+	for i, op := range req.Ops {
+		opType, err := parseOpType(op.Type)
+		if err != nil {
+			writeErrorJSON(w, mapHTTPError(err), err)
+			return
+		}
+		ops[i] = service.Op{Type: opType, Key: op.Key, Value: op.Value, RangeEnd: op.RangeEnd, LeaseID: op.LeaseID}
+	}
+	compares := make([]service.Compare, len(req.Compares))
+	for i, c := range req.Compares {
+		compares[i] = service.Compare{
+			Key:            c.Key,
+			Target:         parseCompareTarget(c.Target),
+			Result:         parseCompareResult(c.Result),
+			Value:          c.Value,
+			Version:        c.Version,
+			CreateRevision: c.CreateRevision,
+			ModRevision:    c.ModRevision,
+		}
+	}
+
+	rev, err := mover.MovePrefix(ctx, &service.MovePrefixRequest{
+		Src:          string(req.Src),
+		Dst:          string(req.Dst),
+		ExpectedKeys: req.ExpectedKeys,
+		Ops:          ops,
+		Compares:     compares,
+	})
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+	writeJSON(w, movePrefixResponse{Revision: rev})
+}
+
 // restoreChangeToResponse converts a service RestoreKeyChange to its JSON
 // response representation.
 func restoreChangeToResponse(c service.RestoreKeyChange) restoreKeyChangeResponse {

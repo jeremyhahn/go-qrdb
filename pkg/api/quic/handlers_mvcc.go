@@ -309,3 +309,48 @@ func (s *Server) handleRestoreToRevision(ctx context.Context, payload []byte) ([
 	}
 	return resp, nil
 }
+
+// handleMovePrefix moves every live key under one prefix to another in one
+// revision through the scoped MVCC service's service.PrefixMover
+// (go-qrdb#926); a scoped service without it answers
+// *service.PrefixMoveUnsupportedError.
+func (s *Server) handleMovePrefix(ctx context.Context, payload []byte) ([]byte, error) {
+	mvccSvc, svcErr := s.mvccSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
+	}
+
+	var req pb.MovePrefixRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	mover, ok := mvccSvc.(service.PrefixMover)
+	if !ok {
+		return nil, &service.PrefixMoveUnsupportedError{}
+	}
+	ops := make([]service.Op, len(req.GetOps()))
+	for i, op := range req.GetOps() {
+		ops[i] = protoToOp(op)
+	}
+	compares := make([]service.Compare, len(req.GetCompares()))
+	for i, c := range req.GetCompares() {
+		compares[i] = protoToCompare(c)
+	}
+	rev, err := mover.MovePrefix(ctx, &service.MovePrefixRequest{
+		Src:          string(req.GetSrc()),
+		Dst:          string(req.GetDst()),
+		ExpectedKeys: req.GetExpectedKeys(),
+		Ops:          ops,
+		Compares:     compares,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := proto.Marshal(&pb.MovePrefixResponse{Revision: rev})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}

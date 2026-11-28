@@ -312,6 +312,8 @@ func TestUpdateTenantQuotas_Success(t *testing.T) {
 			MaxDatabases:    10,
 			MaxKeys:         1000,
 			MaxStorageBytes: 1 << 30,
+
+			MaxSQLiteDatabases: 3,
 		},
 	})
 	if err != nil {
@@ -319,6 +321,9 @@ func TestUpdateTenantQuotas_Success(t *testing.T) {
 	}
 	if resp.Tenant.ID != "acme" {
 		t.Errorf("id: got %q, want %q", resp.Tenant.ID, "acme")
+	}
+	if resp.Tenant.Quotas == nil || resp.Tenant.Quotas.MaxSQLiteDatabases != 3 {
+		t.Errorf("MaxSQLiteDatabases: got %+v, want 3", resp.Tenant.Quotas)
 	}
 }
 
@@ -372,6 +377,7 @@ func TestUpdateTenantEntitlements_BarrierModesAndWALRoundTrip(t *testing.T) {
 		Entitlements: transport.TenantEntitlements{
 			AllowedBarrierModes: []string{"none", "passphrase", "shamir"},
 			AllowDedicatedWAL:   true,
+			AllowSQLiteVFS:      true,
 		},
 	})
 	if err != nil {
@@ -392,6 +398,9 @@ func TestUpdateTenantEntitlements_BarrierModesAndWALRoundTrip(t *testing.T) {
 	}
 	if !resp.Tenant.Entitlements.AllowDedicatedWAL {
 		t.Error("expected AllowDedicatedWAL true in response")
+	}
+	if !resp.Tenant.Entitlements.AllowSQLiteVFS {
+		t.Error("expected AllowSQLiteVFS true in response")
 	}
 }
 

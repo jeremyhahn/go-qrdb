@@ -106,7 +106,9 @@ tenants — see "Tenant isolation" below.
 - Locks are scoped per (tenant, database).
 - Each verb carries its own permission: `locks:acquire`, `locks:release`,
   `locks:extend`, `locks:status`, `locks:list`. `trylock` is authorized as
-  `locks:acquire`.
+  `locks:acquire`. The built-in Operator role holds all five, so a tenant
+  admin can grant them to a tenant role (`qrdb sqlite` takes a lock for every
+  page transaction).
 - **`HolderID` is caller-supplied and is not an authenticated identity.** It
   distinguishes holders for reentrancy; it is not an authorization input. Do not
   build a trust decision on it.

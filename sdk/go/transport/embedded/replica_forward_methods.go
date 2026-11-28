@@ -142,6 +142,14 @@ func (s *forwardingScope) GetRevision(ctx context.Context, a1 string, a2 ...tran
 	return r0, err
 }
 
+func (s *forwardingScope) MovePrefix(ctx context.Context, a1 *transport.MovePrefixRequest) (int64, error) {
+	r0, err := s.Transport.MovePrefix(ctx, a1)
+	if remote, ok := s.forwardTo(ctx, err); ok {
+		return remote.MovePrefix(ctx, a1)
+	}
+	return r0, err
+}
+
 func (s *forwardingScope) PutWithLease(ctx context.Context, a1 string, a2 []byte, a3 int64, a4 ...transport.WriteOption) (*transport.MVCCKeyValue, error) {
 	r0, err := s.Transport.PutWithLease(ctx, a1, a2, a3, a4...)
 	if remote, ok := s.forwardTo(ctx, err); ok {

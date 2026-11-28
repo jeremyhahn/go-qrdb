@@ -15,7 +15,9 @@
 package quic
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -186,6 +188,64 @@ func TestE2E_RestoreToRevision_BinaryRoundTrip(t *testing.T) {
 	}
 	if len(result.Changes) != 1 || string(result.Changes[0].Key) != string(binaryRespKey) {
 		t.Fatalf("expected round-tripped binary response key %v, got %+v", binaryRespKey, result.Changes)
+	}
+}
+
+func TestMovePrefix_RoundTrip(t *testing.T) {
+	src := []byte{0x00, 's', 0xff}
+	dst := []byte{0x00, 'd', 0xff}
+	val := []byte{0x00, 0x80, 0xff}
+
+	srv, tr := startE2EServer(t)
+	var got pb.MovePrefixRequest
+	srv.SetResponder("mvcc.MovePrefix", func(payload []byte) (uint16, []byte) {
+		if err := proto.Unmarshal(payload, &got); err != nil {
+			t.Errorf("server failed to unmarshal request: %v", err)
+		}
+		return wire.StatusOK, mustMarshal(&pb.MovePrefixResponse{Revision: 42})
+	})
+
+	rev, err := tr.MovePrefix(context.Background(), &transport.MovePrefixRequest{
+		Src: src, Dst: dst, ExpectedKeys: 2,
+		Ops:      []transport.Op{{Type: transport.OpPut, Key: dst, Value: val}},
+		Compares: []transport.Compare{{Key: src, Target: transport.CompareModRevision, Result: transport.CompareEqual, ModRevision: 7}},
+	})
+	if err != nil {
+		t.Fatalf("MovePrefix: %v", err)
+	}
+	if rev != 42 {
+		t.Fatalf("revision = %d, want 42", rev)
+	}
+	if !bytes.Equal(got.GetSrc(), src) || !bytes.Equal(got.GetDst(), dst) || got.GetExpectedKeys() != 2 {
+		t.Fatalf("server saw src=%v dst=%v expected=%d", got.GetSrc(), got.GetDst(), got.GetExpectedKeys())
+	}
+	if len(got.GetOps()) != 1 || !bytes.Equal(got.GetOps()[0].GetKey(), dst) || !bytes.Equal(got.GetOps()[0].GetValue(), val) {
+		t.Fatalf("server ops = %v", got.GetOps())
+	}
+	if len(got.GetCompares()) != 1 || !bytes.Equal(got.GetCompares()[0].GetKey(), src) {
+		t.Fatalf("server compares = %v", got.GetCompares())
+	}
+}
+
+func TestMovePrefix_CountMismatchIsAConflict(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	srv.SetResponder("mvcc.MovePrefix", func(_ []byte) (uint16, []byte) {
+		return wire.StatusAlreadyExists, []byte("live count 3, expected 2")
+	})
+
+	_, err := tr.MovePrefix(context.Background(), &transport.MovePrefixRequest{Src: []byte("a/"), Dst: []byte("b/"), ExpectedKeys: 2})
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) || reqErr.StatusCode != int(wire.StatusAlreadyExists) {
+		t.Fatalf("err = %v (%T), want a RequestError with StatusAlreadyExists", err, err)
+	}
+}
+
+func TestMovePrefix_NilRequest(t *testing.T) {
+	_, tr := startE2EServer(t)
+	_, err := tr.MovePrefix(context.Background(), nil)
+	var nilErr *transport.NilRequestError
+	if !errors.As(err, &nilErr) {
+		t.Fatalf("err = %v, want a NilRequestError", err)
 	}
 }
 

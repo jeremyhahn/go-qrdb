@@ -131,3 +131,74 @@ func TestNamespacedMVCC_Compact_ErrorPropagates(t *testing.T) {
 		t.Fatalf("Compact = %v, want the inner *service.RevisionCompactedError", err)
 	}
 }
+
+// movingMVCC records the prefix moves it is handed; err, when set, is what
+// each one returns.
+type movingMVCC struct {
+	service.MVCCKVServicer
+	moves []*service.MovePrefixRequest
+	err   error
+}
+
+func (m *movingMVCC) MovePrefix(_ context.Context, req *service.MovePrefixRequest) (int64, error) {
+	m.moves = append(m.moves, req)
+	if m.err != nil {
+		return 0, m.err
+	}
+	return 11, nil
+}
+
+func moveRequest() *service.MovePrefixRequest {
+	return &service.MovePrefixRequest{
+		Src: "s/1/", Dst: "p/", ExpectedKeys: 2,
+		Ops: []service.Op{
+			{Type: service.OpPut, Key: []byte("meta"), Value: []byte("m2")},
+			{Type: service.OpDelete, Key: []byte("p/9")},
+		},
+		Compares: []service.Compare{
+			{Key: []byte("p/1"), Target: service.CompareModRevision, Result: service.CompareLess, ModRevision: 5},
+		},
+	}
+}
+
+func TestNamespacedMVCC_MovePrefix_PrefixesEveryKey(t *testing.T) {
+	inner := &movingMVCC{}
+	w := newNamespacedMVCCService(inner, "acme/db/", nil)
+	req := moveRequest()
+	rev, err := w.MovePrefix(context.Background(), req)
+	if err != nil || rev != 11 || len(inner.moves) != 1 {
+		t.Fatalf("MovePrefix = (%d, %v) after %d forwards, want (11, nil) after one", rev, err, len(inner.moves))
+	}
+	got := inner.moves[0]
+	if got.Src != "acme/db/s/1/" || got.Dst != "acme/db/p/" || got.ExpectedKeys != 2 ||
+		string(got.Ops[0].Key) != "acme/db/meta" || string(got.Ops[0].Value) != "m2" ||
+		string(got.Ops[1].Key) != "acme/db/p/9" || got.Ops[1].Type != service.OpDelete {
+		t.Fatalf("forwarded %+v, want every key under acme/db/", got)
+	}
+	if len(got.Compares) != 1 || string(got.Compares[0].Key) != "acme/db/p/1" ||
+		got.Compares[0].Result != service.CompareLess || got.Compares[0].ModRevision != 5 {
+		t.Fatalf("forwarded compares %+v, want every compare key under acme/db/", got.Compares)
+	}
+	if req.Src != "s/1/" || string(req.Ops[0].Key) != "meta" || string(req.Compares[0].Key) != "p/1" {
+		t.Fatalf("the caller's request was modified: %+v", req)
+	}
+}
+
+func TestNamespacedMVCC_MovePrefix_DedicatedViewForwardsUnchanged(t *testing.T) {
+	inner := &movingMVCC{}
+	req := moveRequest()
+	if _, err := newNamespacedMVCCService(inner, "", nil).MovePrefix(context.Background(), req); err != nil {
+		t.Fatalf("MovePrefix: %v", err)
+	}
+	if len(inner.moves) != 1 || inner.moves[0].Src != "s/1/" || string(inner.moves[0].Ops[0].Key) != "meta" {
+		t.Fatalf("an empty-prefix view rewrote the move: %+v", inner.moves)
+	}
+}
+
+func TestNamespacedMVCC_MovePrefix_RefusesAnInnerWithoutIt(t *testing.T) {
+	_, err := newNamespacedMVCCService(&globalOnlyMVCC{}, "acme/db/", nil).MovePrefix(context.Background(), moveRequest())
+	var unsupported *service.PrefixMoveUnsupportedError
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("MovePrefix = %v (%T), want *service.PrefixMoveUnsupportedError", err, err)
+	}
+}

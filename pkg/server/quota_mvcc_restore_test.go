@@ -281,3 +281,56 @@ func TestQuotaMVCCService_RestoreForwardsForce(t *testing.T) {
 		t.Fatalf("expected a pricing call and an apply call, got %d", len(inner.forceFlags))
 	}
 }
+
+func TestQuotaMVCCService_MovePrefixReservesOnlyExtraPutBytes(t *testing.T) {
+	inner := &movingMVCC{}
+	acct, _ := newTestAccountant(t, nil)
+	svc := newQuotaMVCCService(inner, acct, "t1", 100)
+
+	if _, err := svc.MovePrefix(context.Background(), moveRequest()); err != nil {
+		t.Fatalf("MovePrefix: %v", err)
+	}
+	if len(inner.moves) != 1 {
+		t.Fatalf("forwarded %d moves, want one", len(inner.moves))
+	}
+	// Only the extra put's value ("m2") is charged; the moved bytes were
+	// charged when staged.
+	if got := acct.Usage("t1"); got != 2 {
+		t.Fatalf("usage = %d, want 2", got)
+	}
+}
+
+func TestQuotaMVCCService_MovePrefixRefusedOverLimit(t *testing.T) {
+	inner := &movingMVCC{}
+	acct, _ := newTestAccountant(t, nil)
+	svc := newQuotaMVCCService(inner, acct, "t1", 1)
+
+	_, err := svc.MovePrefix(context.Background(), moveRequest())
+	var exceeded *quota.ExceededError
+	if !errors.As(err, &exceeded) {
+		t.Fatalf("expected *quota.ExceededError, got %#v", err)
+	}
+	if len(inner.moves) != 0 || acct.Usage("t1") != 0 {
+		t.Fatalf("a refused move forwarded %d moves, usage %d", len(inner.moves), acct.Usage("t1"))
+	}
+}
+
+func TestQuotaMVCCService_MovePrefixReleasesOnInnerError(t *testing.T) {
+	fault := errors.New("move failed")
+	inner := &movingMVCC{err: fault}
+	acct, _ := newTestAccountant(t, nil)
+	svc := newQuotaMVCCService(inner, acct, "t1", 100)
+
+	if _, err := svc.MovePrefix(context.Background(), moveRequest()); !errors.Is(err, fault) {
+		t.Fatalf("MovePrefix = %v, want the inner error", err)
+	}
+	if got := acct.Usage("t1"); got != 0 {
+		t.Fatalf("usage = %d, want 0 after a failed move", got)
+	}
+
+	_, err := newQuotaMVCCService(&globalOnlyMVCC{}, acct, "t1", 100).MovePrefix(context.Background(), moveRequest())
+	var unsupported *service.PrefixMoveUnsupportedError
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("MovePrefix over an inner without it = %v, want *service.PrefixMoveUnsupportedError", err)
+	}
+}

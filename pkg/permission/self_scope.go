@@ -262,6 +262,7 @@ func selfScopedPermissions() []Permission {
 		MVCCPutWithLease,
 		MVCCRange,
 		MVCCRestore,
+		MVCCMovePrefix,
 
 		// orchestrator
 		OrchestratorHealth,

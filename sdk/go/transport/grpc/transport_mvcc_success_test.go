@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	googlegrpc "google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 
 	grpcpkg "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -436,6 +437,93 @@ func TestGRPCMVCC_RestoreToRevision_NilRequest(t *testing.T) {
 	_, err := tr.RestoreToRevision(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected error for nil request")
+	}
+}
+
+// movingMVCCServicer is the MVCC fake with a PrefixMover: it records the
+// request the server decoded and answers rev or err.
+type movingMVCCServicer struct {
+	*fakeMVCCServicer
+	rev int64
+	err error
+	got *service.MovePrefixRequest
+}
+
+func (m *movingMVCCServicer) MovePrefix(_ context.Context, req *service.MovePrefixRequest) (int64, error) {
+	if m.err != nil {
+		return 0, m.err
+	}
+	m.got = req
+	return m.rev, nil
+}
+
+func startMovingMVCCServer(t *testing.T, mover *movingMVCCServicer) (*Transport, func()) {
+	t.Helper()
+	mover.fakeMVCCServicer = &fakeMVCCServicer{mockKVService: newMockKVService()}
+	srv := googlegrpc.NewServer()
+	grpcpkg.RegisterService(srv, newMockKVService(), newMockAdminService(), grpcpkg.WithRegisterMVCC(mover))
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = srv.Serve(lis) }()
+	tr, cleanup := connectMVCCTransport(t, lis.Addr().String())
+	return tr, func() { cleanup(); srv.Stop() }
+}
+
+func TestMovePrefix_RoundTrip(t *testing.T) {
+	src := []byte{0x00, 's', 0xff}
+	dst := []byte{0x00, 'd', 0xff}
+	val := []byte{0x00, 0x80, 0xff}
+	mover := &movingMVCCServicer{rev: 42}
+	tr, stop := startMovingMVCCServer(t, mover)
+	defer stop()
+
+	rev, err := tr.MovePrefix(context.Background(), &transport.MovePrefixRequest{
+		Src: src, Dst: dst, ExpectedKeys: 2,
+		Ops:      []transport.Op{{Type: transport.OpPut, Key: dst, Value: val}},
+		Compares: []transport.Compare{{Key: src, Target: transport.CompareModRevision, Result: transport.CompareEqual, ModRevision: 7}},
+	})
+	if err != nil {
+		t.Fatalf("MovePrefix: %v", err)
+	}
+	if rev != 42 {
+		t.Fatalf("revision = %d, want 42", rev)
+	}
+	got := mover.got
+	if got == nil || got.Src != string(src) || got.Dst != string(dst) || got.ExpectedKeys != 2 {
+		t.Fatalf("server saw %+v", got)
+	}
+	if len(got.Ops) != 1 || string(got.Ops[0].Key) != string(dst) || string(got.Ops[0].Value) != string(val) {
+		t.Fatalf("server ops = %+v", got.Ops)
+	}
+	if len(got.Compares) != 1 || string(got.Compares[0].Key) != string(src) || got.Compares[0].ModRevision != 7 {
+		t.Fatalf("server compares = %+v", got.Compares)
+	}
+}
+
+func TestMovePrefix_CountMismatchIsAConflict(t *testing.T) {
+	mover := &movingMVCCServicer{err: &service.CommandConflictError{Message: "live count 3, expected 2"}}
+	tr, stop := startMovingMVCCServer(t, mover)
+	defer stop()
+
+	_, err := tr.MovePrefix(context.Background(), &transport.MovePrefixRequest{Src: []byte("a/"), Dst: []byte("b/"), ExpectedKeys: 2})
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) || reqErr.StatusCode != int(codes.AlreadyExists) {
+		t.Fatalf("err = %v (%T), want a RequestError with AlreadyExists", err, err)
+	}
+}
+
+func TestMovePrefix_NilRequest(t *testing.T) {
+	addr, stop := startMVCCServer(t)
+	defer stop()
+	tr, cleanup := connectMVCCTransport(t, addr)
+	defer cleanup()
+
+	_, err := tr.MovePrefix(context.Background(), nil)
+	var nilErr *transport.NilRequestError
+	if !errors.As(err, &nilErr) {
+		t.Fatalf("err = %v, want a NilRequestError", err)
 	}
 }
 

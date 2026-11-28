@@ -1762,6 +1762,9 @@ func buildDatabaseQuotaOpts(tenantSvc tenant.TenantServicer, log *slog.Logger) [
 	quotaSvc.RegisterCounter(quota.ResourceTotalReplicas, func(ctx context.Context, tenantID string) (int64, error) {
 		return tenantSvc.GetQuotaUsage(ctx, tenantID, quota.ResourceTotalReplicas)
 	})
+	quotaSvc.RegisterCounter(quota.ResourceSQLiteDatabases, func(ctx context.Context, tenantID string) (int64, error) {
+		return tenantSvc.GetQuotaUsage(ctx, tenantID, quota.ResourceSQLiteDatabases)
+	})
 	// ResourceReplicasPerGroup is a per-group cap evaluated against a zero
 	// current usage; the counter always reports zero so a CheckN reduces to
 	// "requested replicas <= MaxReplicasPerGroup".

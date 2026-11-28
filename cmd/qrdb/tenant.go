@@ -388,6 +388,7 @@ func newTenantUpdateQuotasCmd() *cobra.Command {
 		maxVectorDims        int64
 		maxTSMetrics         int64
 		systemBarrierQuota   int64
+		maxSQLiteDatabases   int64
 	)
 
 	cmd := &cobra.Command{
@@ -413,6 +414,7 @@ func newTenantUpdateQuotasCmd() *cobra.Command {
 					MaxVectorDims:        maxVectorDims,
 					MaxTSMetrics:         maxTSMetrics,
 					SystemBarrierQuota:   systemBarrierQuota,
+					MaxSQLiteDatabases:   maxSQLiteDatabases,
 				},
 			}
 
@@ -440,6 +442,7 @@ func newTenantUpdateQuotasCmd() *cobra.Command {
 	cmd.Flags().Int64Var(&maxVectorDims, "max-vector-dims", 0, "Maximum vector dimensions")
 	cmd.Flags().Int64Var(&maxTSMetrics, "max-ts-metrics", 0, "Maximum number of time-series metrics")
 	cmd.Flags().Int64Var(&systemBarrierQuota, "system-barrier-quota", 0, "Bytes an isolated tenant may consume via the shared system barrier (0 = option unavailable, -1 = unlimited)")
+	cmd.Flags().Int64Var(&maxSQLiteDatabases, "max-sqlite-databases", 0, "Maximum number of SQLite databases in the sqlite-vfs page store (0 or -1 = unlimited)")
 
 	return cmd
 }
@@ -455,6 +458,7 @@ func newTenantSetEntitlementCmd() *cobra.Command {
 		allowSystemManagedBarrier bool
 		allowedBarrierModes       []string
 		allowedVolumePools        []string
+		allowSQLiteVFS            bool
 	)
 
 	cmd := &cobra.Command{
@@ -472,6 +476,7 @@ func newTenantSetEntitlementCmd() *cobra.Command {
 					AllowSystemManagedBarrier: allowSystemManagedBarrier,
 					AllowedBarrierModes:       allowedBarrierModes,
 					AllowedVolumePools:        allowedVolumePools,
+					AllowSQLiteVFS:            allowSQLiteVFS,
 				},
 			}
 
@@ -490,6 +495,7 @@ func newTenantSetEntitlementCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&allowSystemManagedBarrier, "allow-system-managed-barrier", false, "Permit opting a dedicated-isolation tenant into system-managed barrier auto-unseal")
 	cmd.Flags().StringSliceVar(&allowedBarrierModes, "allowed-barrier-modes", nil, "Comma-separated dedicated-barrier sealing strategies the tenant may select (e.g. none,passphrase,shamir or an xkms hardware id); empty = software defaults")
 	cmd.Flags().StringSliceVar(&allowedVolumePools, "allowed-volume-pools", nil, "Comma-separated named volume pools the tenant may be placed on; the first is its default. Empty = no pool, fail-closed.")
+	cmd.Flags().BoolVar(&allowSQLiteVFS, "allow-sqlite-vfs", false, "Permit creating SQLite databases in the sqlite-vfs page store")
 
 	return cmd
 }

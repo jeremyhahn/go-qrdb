@@ -302,6 +302,7 @@ func (s *Server) handleTenantUpdateQuotas(ctx context.Context, payload []byte) (
 		MaxTSMetrics:          pbQ.GetMaxTsMetrics(),
 		SystemBarrierQuota:    pbQ.GetSystemBarrierQuota(),
 		MaxDedicatedWALGroups: pbQ.GetMaxDedicatedWalGroups(),
+		MaxSQLiteDatabases:    pbQ.GetMaxSqliteDatabases(),
 	}
 
 	if err := s.authorizeTenantTarget(ctx, req.GetId(), permission.TenantsSetQuotas); err != nil {
@@ -352,6 +353,7 @@ func (s *Server) handleTenantUpdateEntitlements(ctx context.Context, payload []b
 		AllowSystemManagedBarrier: pbE.GetAllowSystemManagedBarrier(),
 		AllowedBarrierModes:       pbE.GetAllowedBarrierModes(),
 		AllowDedicatedWAL:         pbE.GetAllowDedicatedWal(),
+		AllowSQLiteVFS:            pbE.GetAllowSqliteVfs(),
 		AllowedVolumePools:        pbE.GetAllowedVolumePools(),
 	}
 
@@ -408,6 +410,7 @@ func tenantInfoToProto(info *tenant.TenantInfo) *pb.TenantResponse {
 			MaxTsMetrics:          info.Quotas.MaxTSMetrics,
 			SystemBarrierQuota:    info.Quotas.SystemBarrierQuota,
 			MaxDedicatedWalGroups: info.Quotas.MaxDedicatedWALGroups,
+			MaxSqliteDatabases:    info.Quotas.MaxSQLiteDatabases,
 		}
 	}
 	if info.Entitlements != nil {
@@ -418,6 +421,7 @@ func tenantInfoToProto(info *tenant.TenantInfo) *pb.TenantResponse {
 			AllowSystemManagedBarrier: info.Entitlements.AllowSystemManagedBarrier,
 			AllowedBarrierModes:       info.Entitlements.AllowedBarrierModes,
 			AllowDedicatedWal:         info.Entitlements.AllowDedicatedWAL,
+			AllowSqliteVfs:            info.Entitlements.AllowSQLiteVFS,
 			AllowedVolumePools:        info.Entitlements.AllowedVolumePools,
 		}
 	}

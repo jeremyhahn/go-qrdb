@@ -284,6 +284,7 @@ func registerAdminGrants() {
 		// tenant's data. It stays ScopeSelf, so a tenant Admin restores only
 		// their own tenant's keys.
 		MVCCRestore,
+		MVCCMovePrefix,
 		// Database lifecycle in the Admin's own tenant (ScopeSelf;
 		// databases:barrier_status is ScopeSelfStrict). An Admin answers for
 		// its tenant's data, and under the grant rule (go-qrdb#1278) a role
@@ -434,6 +435,7 @@ func registerOperatorGrants() {
 		// auditor that can rewrite live keys from history is no longer an
 		// independent observer (FIPS 140-3 AS10.10).
 		MVCCRestore,
+		MVCCMovePrefix,
 		// Transaction
 		TransactionExecute,
 		// Batch
@@ -443,6 +445,11 @@ func registerOperatorGrants() {
 		// Lease
 		LeaseGrant, LeaseRevoke,
 		LeaseKeepAlive, LeaseTTL, LeaseList,
+		// Distributed locks. They are tenant-scoped like leases; without
+		// them no tenant role can be granted the lock verbs, so a tenant
+		// cannot take the sqlite-vfs writer lock `qrdb sqlite` holds for
+		// every page transaction.
+		LocksAcquire, LocksRelease, LocksExtend, LocksStatus, LocksList,
 		// Index
 		IndexCreate, IndexDrop,
 		IndexQuery, IndexScan,

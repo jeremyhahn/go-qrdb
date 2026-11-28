@@ -1080,6 +1080,20 @@ is refused with the entitlement or quota error, never downgraded to the shared
 WAL. On any other backend the flag is ignored. A strict tenant's database
 requires one (§ "Strict isolation").
 
+A tenant creates SQLite databases in the sqlite-vfs page store only with the
+`allow_sqlite_vfs` entitlement (`TenantEntitlements` field 8, default `false`),
+and holds at most `max_sqlite_databases` of them (`TenantQuotas` field 17;
+`0` or `-1` is unlimited). An operator sets both on any transport with
+`qrdb tenant set-entitlement --allow-sqlite-vfs` and
+`qrdb tenant update-quotas --max-sqlite-databases N`; config sets the cluster
+defaults (`tenant.default_entitlements.allow_sqlite_vfs`,
+`tenant.default_quotas.max_sqlite_databases`). The database count cap is a soft
+bound ([../sqlite-vfs/architecture.md](../sqlite-vfs/architecture.md)): two
+concurrent creators can both pass at the limit minus one, so it limits growth
+and the storage quota stays the hard bound. It gates only the creation of a
+new database, and a database the tenant already
+holds opens with neither the entitlement nor a free slot.
+
 ## Deployment requirement
 
 **The tenant service must be configured in production.**

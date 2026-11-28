@@ -158,11 +158,18 @@ func rawKeysOf(t *testing.T, stores ...storage.Storage) []string {
 // state machine and are separated only by the composite namespace.
 func prefixLockScene(t *testing.T) *lockScene {
 	t.Helper()
+	return prefixLockSceneWith(t, &isolationTenantServicer{isolation: tenant.IsolationPrefix})
+}
+
+// prefixLockSceneWith is prefixLockScene over the tenant servicer ts (which
+// must answer IsolationPrefix) and extra registry options.
+func prefixLockSceneWith(t *testing.T, ts tenant.TenantServicer, opts ...RESTRegistryOption) *lockScene {
+	t.Helper()
 	stg, svcs := newLockDataPlane(t, lockTestDB)
 	dbReg := NewDatabaseServiceRegistry(lockTestDB)
 	dbReg.Register(lockTestDB, svcs)
 	reg := NewRESTServiceRegistry(dbReg, nil, tenantid.System,
-		WithTenantServicer(&isolationTenantServicer{isolation: tenant.IsolationPrefix}),
+		append([]RESTRegistryOption{WithTenantServicer(ts)}, opts...)...,
 	)
 	return &lockScene{
 		registry: reg,
@@ -177,6 +184,13 @@ func prefixLockScene(t *testing.T) *lockScene {
 // Host construction, which tenant_host_test.go covers.
 func volumeLockScene(t *testing.T) *lockScene {
 	t.Helper()
+	return volumeLockSceneWith(t, &isolationTenantServicer{isolation: tenant.IsolationVolume})
+}
+
+// volumeLockSceneWith is volumeLockScene over the tenant servicer ts (which
+// must answer IsolationVolume) and extra registry options.
+func volumeLockSceneWith(t *testing.T, ts tenant.TenantServicer, opts ...RESTRegistryOption) *lockScene {
+	t.Helper()
 	stgA, svcsA := newLockDataPlane(t, lockTestDB)
 	stgB, svcsB := newLockDataPlane(t, lockTestDB)
 
@@ -187,8 +201,7 @@ func volumeLockScene(t *testing.T) *lockScene {
 	dbReg := NewDatabaseServiceRegistry(lockTestDB)
 	dbReg.Register(lockTestDB, svcsA)
 	reg := NewRESTServiceRegistry(dbReg, nil, tenantid.System,
-		WithTenantServicer(&isolationTenantServicer{isolation: tenant.IsolationVolume}),
-		withTenantHostRegistry(hosts),
+		append([]RESTRegistryOption{WithTenantServicer(ts), withTenantHostRegistry(hosts)}, opts...)...,
 	)
 	return &lockScene{
 		registry: reg,
@@ -227,6 +240,13 @@ func (staticRaftInfo) recordedIncarnation(context.Context, string, string) (stri
 // isolation rests entirely on which store the servicer reaches.
 func raftLockScene(t *testing.T) *lockScene {
 	t.Helper()
+	return raftLockSceneWith(t, &isolationTenantServicer{isolation: tenant.IsolationRaft})
+}
+
+// raftLockSceneWith is raftLockScene over the tenant servicer ts (which must
+// answer IsolationRaft) and extra registry options.
+func raftLockSceneWith(t *testing.T, ts tenant.TenantServicer, opts ...RESTRegistryOption) *lockScene {
+	t.Helper()
 	stgA, svcsA := newLockDataPlane(t, lockTestDB)
 	stgB, svcsB := newLockDataPlane(t, lockTestDB)
 
@@ -243,8 +263,7 @@ func raftLockScene(t *testing.T) *lockScene {
 	dbReg := NewDatabaseServiceRegistry(lockTestDB)
 	dbReg.Register(lockTestDB, svcsA)
 	reg := NewRESTServiceRegistry(dbReg, nil, tenantid.System,
-		WithTenantServicer(&isolationTenantServicer{isolation: tenant.IsolationRaft}),
-		withRaftBackendFactory(f),
+		append([]RESTRegistryOption{WithTenantServicer(ts), withRaftBackendFactory(f)}, opts...)...,
 	)
 	return &lockScene{
 		registry: reg,
@@ -257,6 +276,20 @@ var lockScenes = map[string]func(*testing.T) *lockScene{
 	"prefix": prefixLockScene,
 	"volume": volumeLockScene,
 	"raft":   raftLockScene,
+}
+
+// lockSceneWith builds a lock scene over a caller's tenant servicer (which
+// must answer isolation) and extra registry options.
+type lockSceneWith struct {
+	isolation tenant.IsolationType
+	build     func(t *testing.T, ts tenant.TenantServicer, opts ...RESTRegistryOption) *lockScene
+}
+
+// lockScenesWith has lockScenes' keys, each scene built by its *With variant.
+var lockScenesWith = map[string]lockSceneWith{
+	"prefix": {isolation: tenant.IsolationPrefix, build: prefixLockSceneWith},
+	"volume": {isolation: tenant.IsolationVolume, build: volumeLockSceneWith},
+	"raft":   {isolation: tenant.IsolationRaft, build: raftLockSceneWith},
 }
 
 // lockSvcFor resolves a tenant's LockServicer or fails the test.

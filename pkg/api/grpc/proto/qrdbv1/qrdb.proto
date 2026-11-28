@@ -120,6 +120,13 @@ service QRDBService {
         option (qrdb.v1.permission) = "mvcc:restore";
     }
 
+    // MovePrefix moves every key under src to the same suffix under dst in
+    // one revision, together with ops, after compares hold and the live
+    // count under src equals expected_keys; otherwise nothing is written.
+    rpc MovePrefix(MovePrefixRequest) returns (MovePrefixResponse) {
+        option (qrdb.v1.permission) = "mvcc:move_prefix";
+    }
+
     // -----------------------------------------------------------------------
     // Transaction operations
     // -----------------------------------------------------------------------
@@ -1997,6 +2004,23 @@ message RestoreRevisionResponse {
     int64 skipped = 5;
     int64 conflicted = 6;
     bool dry_run = 7;
+}
+
+// MovePrefixRequest re-homes every live key under src to dst in one
+// revision. expected_keys is the live count under src the caller staged;
+// ops are applied in the same revision and compares are the caller's read
+// set, evaluated before src is read.
+message MovePrefixRequest {
+    bytes src = 1;
+    bytes dst = 2;
+    int64 expected_keys = 3;
+    repeated Op ops = 4;
+    repeated Compare compares = 5;
+}
+
+// MovePrefixResponse carries the revision the move committed at.
+message MovePrefixResponse {
+    int64 revision = 1;
 }
 
 // ===========================================================================
@@ -5043,6 +5067,10 @@ message TenantQuotas {
     // max_dedicated_wal_groups caps the number of dedicated-raft groups a tenant
     // may grant a dedicated WAL. -1 = unlimited; 0 = default (no dedicated WAL).
     int64 max_dedicated_wal_groups = 16;
+    // max_sqlite_databases caps the number of SQLite databases a tenant may
+    // hold in the sqlite-vfs page store (Q5 A; a soft bound, counted at
+    // admission). -1 = unlimited; 0 = default (unlimited).
+    int64 max_sqlite_databases = 17;
 }
 
 // TenantEntitlements describes which isolation tiers and dedicated-storage
@@ -5064,6 +5092,10 @@ message TenantEntitlements {
     // catalog) a volume/raft tenant may be placed on. The first entry is
     // the tenant's default pool. Fail-closed: empty entitles no pool.
     repeated string allowed_volume_pools    = 7;
+    // allow_sqlite_vfs permits a tenant to create SQLite databases in the
+    // sqlite-vfs page store (the sqlite-vfs entitlement, Q5 A). Fail-closed:
+    // false refuses every new SQLite database.
+    bool allow_sqlite_vfs                   = 8;
 }
 
 // TenantRefusal is the answering node's own view of why it will not serve

@@ -54,6 +54,13 @@ type Quotas struct {
 	// capacity lever for the 4d Option C per-tenant WAL feature. -1 means
 	// unlimited; 0 means use the system default (which is 0 — opt-in only).
 	MaxDedicatedWALGroups int64 `json:"max_dedicated_wal_groups"`
+	// MaxSQLiteDatabases caps the number of SQLite databases a tenant may
+	// keep in its sqlite-vfs page store (docs/sqlite-vfs/architecture.md, Q5
+	// A). It is a soft bound on growth: two concurrent creators can both pass
+	// at the limit minus one, and the storage quota is the hard bound. -1
+	// means unlimited; 0 means use the system default (as for
+	// MaxDedicatedWALGroups).
+	MaxSQLiteDatabases int64 `json:"max_sqlite_databases"`
 
 	// SystemBarrierQuota governs whether an ISOLATED tenant may opt to use the
 	// shared SYSTEM barrier for its data instead of a dedicated barrier, and how
@@ -81,6 +88,7 @@ type Quotas struct {
 	CurrentVectorDims         int64 `json:"current_vector_dims,omitempty"`
 	CurrentTSMetrics          int64 `json:"current_ts_metrics,omitempty"`
 	CurrentDedicatedWALGroups int64 `json:"current_dedicated_wal_groups,omitempty"`
+	CurrentSQLiteDatabases    int64 `json:"current_sqlite_databases,omitempty"`
 	// CurrentSystemBarrierBytes tracks how much system-tenant storage this tenant
 	// is consuming via the "use the system barrier" option, checked against
 	// SystemBarrierQuota.
@@ -144,6 +152,10 @@ const (
 	// system-barrier WAL (the default) without this feature; the feature only
 	// permits opting an individual group into its own barrier-encrypted WAL.
 	FeatureDedicatedWAL = "dedicated_wal"
+	// FeatureSQLiteVFS gates a tenant's ability to create a SQLite database
+	// in the sqlite-vfs page store (docs/sqlite-vfs/architecture.md, Q5 A).
+	// Opening a database that already exists needs no entitlement.
+	FeatureSQLiteVFS = "sqlite-vfs"
 )
 
 // Entitlements describes which isolation tiers and dedicated-storage features a
@@ -201,6 +213,12 @@ type Entitlements struct {
 	// NDJSON export, which is a per-node operator choice, not a tenant
 	// entitlement.
 	AllowReplicatedAudit bool `json:"allow_replicated_audit,omitempty"`
+
+	// AllowSQLiteVFS permits a tenant to create SQLite databases in the
+	// sqlite-vfs page store (FeatureSQLiteVFS). False (the secure default)
+	// refuses creation with an EntitlementError; existing databases still
+	// open.
+	AllowSQLiteVFS bool `json:"allow_sqlite_vfs,omitempty"`
 }
 
 // defaultBarrierModes are the built-in software sealing strategies an isolated
@@ -276,6 +294,8 @@ func (e *Entitlements) AllowsFeature(feature string) bool {
 		return e.AllowSystemManagedBarrier
 	case FeatureDedicatedWAL:
 		return e.AllowDedicatedWAL
+	case FeatureSQLiteVFS:
+		return e.AllowSQLiteVFS
 	default:
 		return false
 	}
@@ -331,6 +351,10 @@ const (
 	// ResourceDedicatedWALGroups limits the number of dedicated-raft groups a
 	// tenant may run with a per-tenant-KEY WAL (4d Option C).
 	ResourceDedicatedWALGroups
+	// ResourceSQLiteDatabases limits the number of SQLite databases a tenant
+	// may keep in its sqlite-vfs page store (a soft bound, see
+	// Quotas.MaxSQLiteDatabases).
+	ResourceSQLiteDatabases
 )
 
 // resourceNames maps each Resource to its human-readable string name.
@@ -350,6 +374,7 @@ var resourceNames = map[Resource]string{
 	ResourceVectorDims:         "vector_dims",
 	ResourceTSMetrics:          "ts_metrics",
 	ResourceDedicatedWALGroups: "dedicated_wal_groups",
+	ResourceSQLiteDatabases:    "sqlite_databases",
 }
 
 // String returns the string representation of the resource type.
@@ -377,6 +402,7 @@ var resourceLimits = map[Resource]func(*Quotas) int64{
 	ResourceVectorDims:         func(q *Quotas) int64 { return q.MaxVectorDims },
 	ResourceTSMetrics:          func(q *Quotas) int64 { return q.MaxTSMetrics },
 	ResourceDedicatedWALGroups: func(q *Quotas) int64 { return q.MaxDedicatedWALGroups },
+	ResourceSQLiteDatabases:    func(q *Quotas) int64 { return q.MaxSQLiteDatabases },
 }
 
 // resourceCurrentUsage maps each Resource to its current-usage accessor.
@@ -398,6 +424,7 @@ var resourceCurrentUsage = map[Resource]func(*Quotas) int64{
 	ResourceVectorDims:         func(q *Quotas) int64 { return q.CurrentVectorDims },
 	ResourceTSMetrics:          func(q *Quotas) int64 { return q.CurrentTSMetrics },
 	ResourceDedicatedWALGroups: func(q *Quotas) int64 { return q.CurrentDedicatedWALGroups },
+	ResourceSQLiteDatabases:    func(q *Quotas) int64 { return q.CurrentSQLiteDatabases },
 }
 
 // resourceSetCurrent maps each Resource to a setter that mutates the
@@ -419,6 +446,7 @@ var resourceSetCurrent = map[Resource]func(*Quotas, int64){
 	ResourceVectorDims:         func(q *Quotas, v int64) { q.CurrentVectorDims = v },
 	ResourceTSMetrics:          func(q *Quotas, v int64) { q.CurrentTSMetrics = v },
 	ResourceDedicatedWALGroups: func(q *Quotas, v int64) { q.CurrentDedicatedWALGroups = v },
+	ResourceSQLiteDatabases:    func(q *Quotas, v int64) { q.CurrentSQLiteDatabases = v },
 }
 
 // Limit returns the configured limit for the given resource. Returns

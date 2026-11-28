@@ -136,6 +136,29 @@ type RestoreRevisionRequest struct {
 	Force bool `json:"force,omitempty"`
 }
 
+// MovePrefixRequest moves every live key under Src to the same suffix under
+// Dst in one MVCC revision, together with Ops, once every Compare holds and
+// the live key count under Src equals ExpectedKeys. Src and Dst must be
+// non-empty and neither may lie under the other. The SQLite page store
+// publishes a staged commit with it (go-qrdb#926).
+type MovePrefixRequest struct {
+	// Src is the prefix whose live keys move.
+	Src []byte `json:"src"`
+
+	// Dst is the prefix the keys move to; each keeps its suffix.
+	Dst []byte `json:"dst"`
+
+	// ExpectedKeys is the live key count under Src the move requires; a
+	// different count refuses the move as a CommandConflictError.
+	ExpectedKeys int64 `json:"expected_keys"`
+
+	// Ops are written in the same revision as the move.
+	Ops []Op `json:"ops,omitempty"`
+
+	// Compares must all hold for the move to apply.
+	Compares []Compare `json:"compares,omitempty"`
+}
+
 // RestoreKeyChange is one entry in a restore plan: the change that would be
 // (or was) applied to a single key. The restored value is deliberately not
 // carried here -- only its length (ValueBytes) -- so a plan is not a bulk

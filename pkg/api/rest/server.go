@@ -2084,6 +2084,7 @@ func (s *Server) registerRoutes() {
 	s.route(http.MethodPost, "/kv/compact", permission.MVCCCompact, s.handleCompact)
 	s.route(http.MethodGet, "/kv/revision", permission.MVCCCurrentRevision, s.handleCurrentRevision)
 	s.route(http.MethodPost, "/kv/restore", permission.MVCCRestore, s.handleRestoreToRevision)
+	s.route(http.MethodPost, "/kv/move-prefix", permission.MVCCMovePrefix, s.handleMovePrefix)
 	s.routeIf(s.kvSvc != nil, http.MethodGet, "/kv/scan", permission.KVRange, s.handleKVScan)
 
 	// Guarded write verbs (go-qrdb#126). Registered unconditionally like the

@@ -136,6 +136,15 @@ const ImportStaging feature.Feature = "import-staging"
 // proposed only once every replica of the group can apply it.
 const RangeDelete feature.Feature = "range-delete"
 
+// PrefixMove is protocol.OpMVCCMovePrefix: the move of every live key under a
+// source prefix to the same suffix under a destination prefix, with a few
+// extra puts and single-key deletes, as one entry at one revision -- the
+// sqlite-vfs staged-commit publish (Q2 A of docs/decisions/sqlite-vfs-build.md,
+// Tenant Agent ruling 1115). It is proposed only once every replica of the
+// group can apply it; its apply carries no build tag, so every binary that
+// carries it advertises it.
+const PrefixMove feature.Feature = "prefix-move"
+
 // TransactionReads is a read (protocol.OpMVCCRange) in a transaction branch,
 // answered in the transaction's apply result beside its succeeded flag. A
 // replica built before reads refuses the op while its peers answer it, so a
@@ -302,7 +311,7 @@ const IndexRescope feature.Feature = "index-rescope"
 
 // supported lists the features this binary implements. A new feature is
 // added here, and to nothing else in this package.
-var supported = []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads, VerifiableLogAudit, PendingUserTTL, VerifiableLogDrop, VerifiableLogSealed, OrderedUniqueCheck, IndexRescope}
+var supported = []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, PrefixMove, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads, VerifiableLogAudit, PendingUserTTL, VerifiableLogDrop, VerifiableLogSealed, OrderedUniqueCheck, IndexRescope}
 
 // Supported returns the features this binary implements.
 func Supported() []feature.Feature {

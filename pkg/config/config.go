@@ -493,6 +493,10 @@ type TenantQuotaDefaults struct {
 	MaxStorageBytes       int64 `yaml:"max_storage_bytes"`
 	MaxDatabaseSizeBytes  int64 `yaml:"max_database_size_bytes"`
 	MaxDedicatedWALGroups int64 `yaml:"max_dedicated_wal_groups"`
+	// MaxSQLiteDatabases caps a tenant's SQLite databases in the sqlite-vfs
+	// page store. 0 (the default) or -1 = unlimited, so no cap appears on
+	// upgrade; the sqlite-vfs entitlement is what gates creation.
+	MaxSQLiteDatabases int64 `yaml:"max_sqlite_databases"`
 	// SystemBarrierQuota governs an isolated tenant's use of the shared system
 	// barrier (bytes): 0 (default) makes the option unavailable, -1 unlimited,
 	// >0 a cap accounted against the system tenant's storage.
@@ -509,6 +513,7 @@ func (d TenantQuotaDefaults) ToQuotas() *quota.Quotas {
 		MaxStorageBytes:       d.MaxStorageBytes,
 		MaxDatabaseSizeBytes:  d.MaxDatabaseSizeBytes,
 		MaxDedicatedWALGroups: d.MaxDedicatedWALGroups,
+		MaxSQLiteDatabases:    d.MaxSQLiteDatabases,
 		SystemBarrierQuota:    d.SystemBarrierQuota,
 	}
 }
@@ -521,6 +526,9 @@ type TenantEntitlementDefaults struct {
 	AllowVolumeStorage        bool     `yaml:"allow_volume_storage"`
 	AllowSystemManagedBarrier bool     `yaml:"allow_system_managed_barrier"`
 	AllowDedicatedWAL         bool     `yaml:"allow_dedicated_wal"`
+	// AllowSQLiteVFS grants the sqlite-vfs entitlement by default. False (the
+	// default) fails closed: no tenant may create a SQLite database.
+	AllowSQLiteVFS bool `yaml:"allow_sqlite_vfs"`
 	// AllowedBarrierModes lists the dedicated-barrier sealing strategies an
 	// isolated tenant may select (e.g. none/passphrase/shamir or an xkms hardware
 	// strategy id). Empty permits the built-in software defaults and fail-closes
@@ -555,6 +563,7 @@ func (d TenantEntitlementDefaults) ToEntitlements() *quota.Entitlements {
 		AllowVolumeStorage:        d.AllowVolumeStorage,
 		AllowSystemManagedBarrier: d.AllowSystemManagedBarrier,
 		AllowDedicatedWAL:         d.AllowDedicatedWAL,
+		AllowSQLiteVFS:            d.AllowSQLiteVFS,
 		AllowedBarrierModes:       d.AllowedBarrierModes,
 		AllowedVolumePools:        d.AllowedVolumePools,
 		AllowReplicatedAudit:      d.AllowReplicatedAudit,

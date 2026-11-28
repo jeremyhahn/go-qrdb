@@ -17,8 +17,11 @@ package service
 import (
 	"errors"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
+	"google.golang.org/protobuf/proto"
 
 	dberrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -432,6 +435,31 @@ func TestLeaderAddress_IgnoresEveryOtherError(t *testing.T) {
 	for _, err := range []error{nil, ErrNotStored, &MemberNotObserverError{ShardID: 1, ReplicaID: 7}} {
 		if addr, ok := LeaderAddress(err); ok {
 			t.Errorf("LeaderAddress(%v) = %q, true; want not a not-leader refusal", err, addr)
+		}
+	}
+}
+
+// TestWriteGuardRefused_BinaryKeyRoundTripsThroughErrorInfo proves a guard
+// key that is not UTF-8 crosses the wire as protobuf string metadata and
+// decodes to the same key.
+func TestWriteGuardRefused_BinaryKeyRoundTripsThroughErrorInfo(t *testing.T) {
+	for _, key := range []string{"sqlite/db/writer", "\xff\x00sqlite/\xfe\x80", ""} {
+		md := (&WriteGuardRefusedError{Key: key}).Metadata()
+		for name, value := range md {
+			if !utf8.ValidString(value) {
+				t.Fatalf("metadata %q = %q is not UTF-8", name, value)
+			}
+		}
+		raw, err := proto.Marshal(&errdetails.ErrorInfo{Reason: ReasonWriteGuardRefused, Metadata: md})
+		if err != nil {
+			t.Fatalf("marshal ErrorInfo for key %q: %v", key, err)
+		}
+		var info errdetails.ErrorInfo
+		if err := proto.Unmarshal(raw, &info); err != nil {
+			t.Fatalf("unmarshal ErrorInfo for key %q: %v", key, err)
+		}
+		if got := WriteGuardRefusedFromMetadata(info.GetMetadata()); got.Key != key {
+			t.Fatalf("key %q decodes to %q", key, got.Key)
 		}
 	}
 }

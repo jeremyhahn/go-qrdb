@@ -536,6 +536,9 @@ func toolTenantUpdateQuotas() mcp.Tool {
 		mcp.WithNumber("max_dedicated_wal_groups",
 			mcp.Description("Maximum dedicated-raft groups the tenant may opt into a per-tenant-key WAL. -1 = unlimited."),
 		),
+		mcp.WithNumber("max_sqlite_databases",
+			mcp.Description("Maximum SQLite databases the tenant may hold in the sqlite-vfs page store (a soft bound). 0 or -1 = unlimited."),
+		),
 	)
 }
 
@@ -567,6 +570,7 @@ func handleTenantUpdateQuotas(svc tenant.TenantServicer, mw *authmw.AuthMiddlewa
 			MaxTSMetrics:          int64(mcp.ParseInt(req, "max_ts_metrics", 0)),
 			SystemBarrierQuota:    int64(mcp.ParseInt(req, "system_barrier_quota", 0)),
 			MaxDedicatedWALGroups: int64(mcp.ParseInt(req, "max_dedicated_wal_groups", 0)),
+			MaxSQLiteDatabases:    int64(mcp.ParseInt(req, "max_sqlite_databases", 0)),
 		}
 
 		info, err := svc.UpdateQuotas(ctx, id, q)
@@ -605,6 +609,9 @@ func toolTenantUpdateEntitlements() mcp.Tool {
 		),
 		mcp.WithBoolean("allow_dedicated_wal",
 			mcp.Description("Whether the tenant may opt a dedicated-raft database into a per-tenant-key WAL."),
+		),
+		mcp.WithBoolean("allow_sqlite_vfs",
+			mcp.Description("Whether the tenant may create SQLite databases in the sqlite-vfs page store (the sqlite-vfs entitlement)."),
 		),
 		mcp.WithString("allowed_barrier_modes",
 			mcp.Description("Comma-separated dedicated-barrier sealing strategies the tenant may select (e.g. \"none,passphrase,shamir\")."),
@@ -648,6 +655,7 @@ func handleTenantUpdateEntitlements(svc tenant.TenantServicer, mw *authmw.AuthMi
 			AllowVolumeStorage:        mcp.ParseBoolean(req, "allow_volume_storage", false),
 			AllowSystemManagedBarrier: mcp.ParseBoolean(req, "allow_system_managed_barrier", false),
 			AllowDedicatedWAL:         mcp.ParseBoolean(req, "allow_dedicated_wal", false),
+			AllowSQLiteVFS:            mcp.ParseBoolean(req, "allow_sqlite_vfs", false),
 			AllowedBarrierModes:       barrierModes,
 		}
 

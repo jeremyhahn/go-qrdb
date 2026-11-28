@@ -616,6 +616,7 @@ func TestHandleTenantUpdateQuotas_ExtendedFieldsRoundTrip(t *testing.T) {
 			MaxDatabaseSizeBytes:  1 << 30,
 			SystemBarrierQuota:    2048,
 			MaxDedicatedWalGroups: 4,
+			MaxSqliteDatabases:    3,
 		},
 	})
 	resp, err := srv.handleTenantUpdateQuotas(context.Background(), payload)
@@ -635,6 +636,9 @@ func TestHandleTenantUpdateQuotas_ExtendedFieldsRoundTrip(t *testing.T) {
 	if captured.MaxDedicatedWALGroups != 4 {
 		t.Errorf("expected MaxDedicatedWALGroups 4, got %d", captured.MaxDedicatedWALGroups)
 	}
+	if captured.MaxSQLiteDatabases != 3 {
+		t.Errorf("expected MaxSQLiteDatabases 3, got %d", captured.MaxSQLiteDatabases)
+	}
 
 	var tenantResp pb.TenantResponse
 	if err := proto.Unmarshal(resp, &tenantResp); err != nil {
@@ -645,6 +649,9 @@ func TestHandleTenantUpdateQuotas_ExtendedFieldsRoundTrip(t *testing.T) {
 	}
 	if tenantResp.GetQuotas().GetMaxDedicatedWalGroups() != 4 {
 		t.Errorf("expected response MaxDedicatedWalGroups 4, got %d", tenantResp.GetQuotas().GetMaxDedicatedWalGroups())
+	}
+	if tenantResp.GetQuotas().GetMaxSqliteDatabases() != 3 {
+		t.Errorf("expected response MaxSqliteDatabases 3, got %d", tenantResp.GetQuotas().GetMaxSqliteDatabases())
 	}
 }
 
@@ -734,6 +741,7 @@ func TestHandleTenantUpdateEntitlements_EveryFieldRoundTrips(t *testing.T) {
 		AllowedBarrierModes:       []string{"none", "passphrase", "shamir"},
 		AllowDedicatedWal:         true,
 		AllowedVolumePools:        []string{"fast", "bulk"},
+		AllowSqliteVfs:            true,
 	}
 	payload, _ := proto.Marshal(&pb.TenantUpdateEntitlementsRequest{Id: "acme", Entitlements: want})
 
@@ -825,12 +833,14 @@ func TestTenantInfoToProto_WithEntitlementsAndExtendedQuotas(t *testing.T) {
 			MaxDatabases:          3,
 			SystemBarrierQuota:    4096,
 			MaxDedicatedWALGroups: 2,
+			MaxSQLiteDatabases:    5,
 		},
 		Entitlements: &quota.Entitlements{
 			AllowedIsolationModes: []string{"barrier"},
 			AllowDedicatedRaft:    true,
 			AllowedBarrierModes:   []string{"none", "passphrase", "shamir"},
 			AllowDedicatedWAL:     true,
+			AllowSQLiteVFS:        true,
 		},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -860,6 +870,12 @@ func TestTenantInfoToProto_WithEntitlementsAndExtendedQuotas(t *testing.T) {
 	}
 	if !got.GetEntitlements().GetAllowDedicatedWal() {
 		t.Error("expected AllowDedicatedWal true")
+	}
+	if !got.GetEntitlements().GetAllowSqliteVfs() {
+		t.Error("expected AllowSqliteVfs true")
+	}
+	if got.GetQuotas().GetMaxSqliteDatabases() != 5 {
+		t.Errorf("expected MaxSqliteDatabases 5, got %d", got.GetQuotas().GetMaxSqliteDatabases())
 	}
 }
 

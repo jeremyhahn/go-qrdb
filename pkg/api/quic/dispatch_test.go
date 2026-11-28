@@ -67,6 +67,7 @@ var expectedMethods = []string{
 	"mvcc.Compact",
 	"mvcc.CurrentRevision",
 	"mvcc.RestoreToRevision",
+	"mvcc.MovePrefix",
 
 	// Transaction (1)
 	"tx.Transaction",
@@ -300,6 +301,7 @@ func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
 func TestBuildHandlers_MethodCount(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 
+	// 217 = 216 + mvcc.MovePrefix, the atomic prefix move (go-qrdb#926).
 	// 216 = 207 + the nine group.* IAM group methods (go-qrdb#1651).
 	// 207 = 206 + role.ListPermissionCatalog (docs/18 V12).
 	// 206 = 203 + cert.DelegationPolicyPut, cert.DelegationPolicyList and
@@ -385,7 +387,7 @@ func TestBuildHandlers_MethodCount(t *testing.T) {
 	// kv.CompareAndDelete, kv.CompareAndSwap — go-qrdb#124), and the 161 was
 	// 160 plus user.GetByEmail, the canonical login-key lookup (go-qrdb#190).
 	// The 2 watch methods remain on the streaming path, not the unary table.
-	const wantCount = 219
+	const wantCount = 220
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}
@@ -477,7 +479,7 @@ func TestBuildHandlers_CategoryCounts(t *testing.T) {
 	expectedCounts := map[string]int{
 		"kv":       8,
 		"admin":    24,
-		"mvcc":     7,
+		"mvcc":     8,
 		"tx":       1,
 		"batch":    5,
 		"lease":    5,

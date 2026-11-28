@@ -342,6 +342,13 @@ type MVCCClient interface {
 	// logical undo, never a Raft rewind. Exactly one of req.Prefix and
 	// req.Keys must be set.
 	RestoreToRevision(ctx context.Context, req *RestoreRevisionRequest) (*RestoreRevisionResult, error)
+
+	// MovePrefix moves every live key under req.Src to req.Dst in one
+	// revision with req.Ops, once req.Compares hold and the live count
+	// under Src equals req.ExpectedKeys, and returns that revision. A
+	// count mismatch or failed compare is a CommandConflictError; a
+	// server whose scope cannot move a prefix answers Unimplemented.
+	MovePrefix(ctx context.Context, req *MovePrefixRequest) (int64, error)
 }
 
 // ---------------------------------------------------------------------------

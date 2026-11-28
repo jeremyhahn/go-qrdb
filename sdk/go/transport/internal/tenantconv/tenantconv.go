@@ -86,6 +86,7 @@ func ToTenantInfo(resp *pb.TenantResponse) transport.TenantInfo {
 			MaxTSMetrics:          pbQ.GetMaxTsMetrics(),
 			SystemBarrierQuota:    pbQ.GetSystemBarrierQuota(),
 			MaxDedicatedWALGroups: pbQ.GetMaxDedicatedWalGroups(),
+			MaxSQLiteDatabases:    pbQ.GetMaxSqliteDatabases(),
 		}
 	}
 
@@ -97,6 +98,7 @@ func ToTenantInfo(resp *pb.TenantResponse) transport.TenantInfo {
 			AllowSystemManagedBarrier: pbE.GetAllowSystemManagedBarrier(),
 			AllowedBarrierModes:       pbE.GetAllowedBarrierModes(),
 			AllowDedicatedWAL:         pbE.GetAllowDedicatedWal(),
+			AllowSQLiteVFS:            pbE.GetAllowSqliteVfs(),
 			AllowedVolumePools:        pbE.GetAllowedVolumePools(),
 		}
 	}

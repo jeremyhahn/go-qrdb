@@ -759,6 +759,8 @@ func TestHandleTenantUpdateQuotas_Success(t *testing.T) {
 		"id":            "acme",
 		"max_databases": float64(5),
 		"max_keys":      float64(1000),
+
+		"max_sqlite_databases": float64(3),
 	})
 	result, err := handler(context.Background(), req)
 	if err != nil {
@@ -775,6 +777,42 @@ func TestHandleTenantUpdateQuotas_Success(t *testing.T) {
 	}
 	if info.ID != "acme" {
 		t.Errorf("expected id 'acme', got %q", info.ID)
+	}
+	if info.Quotas == nil || info.Quotas.MaxSQLiteDatabases != 3 {
+		t.Errorf("expected MaxSQLiteDatabases 3, got %+v", info.Quotas)
+	}
+}
+
+func TestHandleTenantUpdateEntitlements_SQLiteVFS(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+		want bool
+	}{
+		{"granted", map[string]any{"id": "acme", "allow_sqlite_vfs": true}, true},
+		{"omitted", map[string]any{"id": "acme"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := handleTenantUpdateEntitlements(newMockTenantService(), nil)
+			req := buildCallToolRequest(t, "qrdb_tenant_update_entitlements", tc.args)
+			result, err := handler(context.Background(), req)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if result.IsError {
+				t.Fatalf("unexpected error result: %s", resultText(t, result))
+			}
+			var info tenant.TenantInfo
+			if jsonErr := json.Unmarshal([]byte(resultText(t, result)), &info); jsonErr != nil {
+				t.Fatalf("unmarshal: %v", jsonErr)
+			}
+			if info.Entitlements == nil {
+				t.Fatal("entitlements should not be nil")
+			}
+			if info.Entitlements.AllowSQLiteVFS != tc.want {
+				t.Fatalf("AllowSQLiteVFS = %v, want %v", info.Entitlements.AllowSQLiteVFS, tc.want)
+			}
+		})
 	}
 }
 

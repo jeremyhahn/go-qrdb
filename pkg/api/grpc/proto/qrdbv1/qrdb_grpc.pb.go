@@ -49,6 +49,7 @@ const (
 	QRDBService_Compact_FullMethodName                            = "/qrdb.v1.QRDBService/Compact"
 	QRDBService_CurrentRevision_FullMethodName                    = "/qrdb.v1.QRDBService/CurrentRevision"
 	QRDBService_RestoreToRevision_FullMethodName                  = "/qrdb.v1.QRDBService/RestoreToRevision"
+	QRDBService_MovePrefix_FullMethodName                         = "/qrdb.v1.QRDBService/MovePrefix"
 	QRDBService_Transaction_FullMethodName                        = "/qrdb.v1.QRDBService/Transaction"
 	QRDBService_Batch_FullMethodName                              = "/qrdb.v1.QRDBService/Batch"
 	QRDBService_ImportBegin_FullMethodName                        = "/qrdb.v1.QRDBService/ImportBegin"
@@ -359,6 +360,10 @@ type QRDBServiceClient interface {
 	// never a Raft rewind. Exactly one of RestoreRevisionRequest.prefix and
 	// .keys must be set.
 	RestoreToRevision(ctx context.Context, in *RestoreRevisionRequest, opts ...grpc.CallOption) (*RestoreRevisionResponse, error)
+	// MovePrefix moves every key under src to the same suffix under dst in
+	// one revision, together with ops, after compares hold and the live
+	// count under src equals expected_keys; otherwise nothing is written.
+	MovePrefix(ctx context.Context, in *MovePrefixRequest, opts ...grpc.CallOption) (*MovePrefixResponse, error)
 	// Transaction executes an atomic compare-and-swap transaction.
 	Transaction(ctx context.Context, in *TransactionRequest, opts ...grpc.CallOption) (*TransactionResponse, error)
 	// Batch executes multiple operations atomically.
@@ -1204,6 +1209,16 @@ func (c *qRDBServiceClient) RestoreToRevision(ctx context.Context, in *RestoreRe
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RestoreRevisionResponse)
 	err := c.cc.Invoke(ctx, QRDBService_RestoreToRevision_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) MovePrefix(ctx context.Context, in *MovePrefixRequest, opts ...grpc.CallOption) (*MovePrefixResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(MovePrefixResponse)
+	err := c.cc.Invoke(ctx, QRDBService_MovePrefix_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -3858,6 +3873,10 @@ type QRDBServiceServer interface {
 	// never a Raft rewind. Exactly one of RestoreRevisionRequest.prefix and
 	// .keys must be set.
 	RestoreToRevision(context.Context, *RestoreRevisionRequest) (*RestoreRevisionResponse, error)
+	// MovePrefix moves every key under src to the same suffix under dst in
+	// one revision, together with ops, after compares hold and the live
+	// count under src equals expected_keys; otherwise nothing is written.
+	MovePrefix(context.Context, *MovePrefixRequest) (*MovePrefixResponse, error)
 	// Transaction executes an atomic compare-and-swap transaction.
 	Transaction(context.Context, *TransactionRequest) (*TransactionResponse, error)
 	// Batch executes multiple operations atomically.
@@ -4603,6 +4622,9 @@ func (UnimplementedQRDBServiceServer) CurrentRevision(context.Context, *emptypb.
 }
 func (UnimplementedQRDBServiceServer) RestoreToRevision(context.Context, *RestoreRevisionRequest) (*RestoreRevisionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RestoreToRevision not implemented")
+}
+func (UnimplementedQRDBServiceServer) MovePrefix(context.Context, *MovePrefixRequest) (*MovePrefixResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method MovePrefix not implemented")
 }
 func (UnimplementedQRDBServiceServer) Transaction(context.Context, *TransactionRequest) (*TransactionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Transaction not implemented")
@@ -5668,6 +5690,24 @@ func _QRDBService_RestoreToRevision_Handler(srv interface{}, ctx context.Context
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QRDBServiceServer).RestoreToRevision(ctx, req.(*RestoreRevisionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_MovePrefix_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(MovePrefixRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).MovePrefix(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_MovePrefix_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).MovePrefix(ctx, req.(*MovePrefixRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -10393,6 +10433,10 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RestoreToRevision",
 			Handler:    _QRDBService_RestoreToRevision_Handler,
+		},
+		{
+			MethodName: "MovePrefix",
+			Handler:    _QRDBService_MovePrefix_Handler,
 		},
 		{
 			MethodName: "Transaction",

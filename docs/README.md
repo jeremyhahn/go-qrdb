@@ -74,7 +74,7 @@ the code, the document is wrong and gets fixed — never the reverse.
 | [databases](databases/) | multi-database lifecycle, per-database protocol, raft and barrier config |
 | [storage-engines](storage-engines/) | the `Engine` interface, file/memory/pebble/namespace, volume pools; object-storage LSM target design *(ruled, not yet implemented)* |
 | [volume-pools](volume-pools/) | *(ruled; Phase 1 build in progress)* named volume pools: per-node mounts, tenant placement, entitlements and capacity, management, the `VolumeProvider` seam |
-| [sqlite-vfs](sqlite-vfs/) | *(future, not implemented)* qrdb as a drop-in SQLite storage backend through a custom VFS; design only, in `architecture.md` |
+| [sqlite-vfs](sqlite-vfs/) | *(partly built)* qrdb as a drop-in SQLite storage backend through a custom VFS: tier 1 (Go library on `modernc.org/sqlite`) and the restore hook are built, see [usage.md](sqlite-vfs/usage.md); the server constructing a Store for a remote caller is not; design in `architecture.md` |
 | [backup-restore](backup-restore/) | shard snapshots, verification, selective restore |
 | [clustering](clustering/) | peer discovery, cluster formation, membership, node admin, rebalance |
 | [cluster-verification](cluster-verification/) | what "Raft clustering and storage proven" means: the gate and exit criteria, workload, ledger, history, nemesis faults, the soak and its evidence bundle, `make cluster-proof` |
@@ -119,8 +119,9 @@ the code, the document is wrong and gets fixed — never the reverse.
 
 **Every implemented feature has a `docs/<feature>/` folder with all
 five files.** The portfolio view is derived, not maintained — count
-`docs/*/architecture.md`. A future feature's folder may hold only its
-`architecture.md` design ([sqlite-vfs](sqlite-vfs/)).
+`docs/*/architecture.md`. A feature still being built may hold only its
+`architecture.md` design and the usage it has so far ([sqlite-vfs](sqlite-vfs/):
+`architecture.md` and [usage.md](sqlite-vfs/usage.md)).
 
 Some documents are **companions**, not duplicates: they carry
 deeper reference material the five-file layout points at rather than restates.

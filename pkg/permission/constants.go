@@ -65,6 +65,14 @@ const (
 	// it writes and is confined to the caller's tenant and database namespace
 	// by server.namespacedMVCCService, so it is declared ScopeSelf.
 	MVCCRestore Permission = "mvcc:restore"
+	// MVCCMovePrefix grants the atomic prefix move: every key under one
+	// prefix of the caller's namespace re-homed under another in a single
+	// revision, guarded by the caller's read set (the SQLite page store
+	// publishes a staged commit with it, go-qrdb#926). It is a write that
+	// can replace a whole key range, so it is granted where mvcc:restore is,
+	// and like a restore it is confined to the caller's tenant and database
+	// namespace by server.namespacedMVCCService (ScopeSelf).
+	MVCCMovePrefix Permission = "mvcc:move_prefix"
 )
 
 // ---------------------------------------------------------------------------
@@ -1108,7 +1116,7 @@ var categories = []Category{
 		Permissions: []Permission{
 			MVCCPutWithLease, MVCCGetRevision, MVCCGetAtRevision,
 			MVCCRange, MVCCCompact, MVCCCurrentRevision,
-			MVCCRestore,
+			MVCCRestore, MVCCMovePrefix,
 		},
 	},
 	{

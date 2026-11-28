@@ -41,6 +41,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/sqlitevfs"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
@@ -453,6 +454,15 @@ func New(kvSvc service.KVServicer, adminSvc service.AdminServicer, opts ...Optio
 	t.mvccSvc = service.NewHardConfinedMVCC(t.mvccSvc)
 	t.txSvc = service.NewHardConfinedTransaction(t.txSvc)
 	t.batchSvc = service.NewHardConfinedBatch(t.batchSvc)
+	// The default database's KV and batch services are not the server
+	// registry's, which the network transports reach through
+	// withSQLiteKeyGuard, so they refuse SQLite keys here: only the gated
+	// transaction service and the prefix move write a SQLite database.
+	// The MVCC service gets the same write guards, and its restore rewrites
+	// each SQLite database whole, under the database's writer lock.
+	t.kvSvc = sqlitevfs.GuardKV(t.kvSvc)
+	t.batchSvc = sqlitevfs.GuardBatch(t.batchSvc)
+	t.mvccSvc = sqlitevfs.GuardMVCC(t.mvccSvc, t.txSvc, t.sqliteRestoreLocks)
 	t.watchSvc = service.NewHardConfinedWatch(t.watchSvc)
 	if t.countWatch {
 		t.watchSvc = service.NewCountedWatch(t.watchSvc)
@@ -465,6 +475,15 @@ func New(kvSvc service.KVServicer, adminSvc service.AdminServicer, opts ...Optio
 		t.scopeDataPlane(t, transport.DefaultDatabaseScope)
 	}
 	return t, nil
+}
+
+// sqliteRestoreLocks is the lock service a restore of a SQLite database
+// takes the database's writer lock through.
+func (t *Transport) sqliteRestoreLocks() (sqlitevfs.LockServiceLocker, error) {
+	if t.lockSvc == nil {
+		return nil, &NilServiceError{Service: "LockServicer"}
+	}
+	return t.lockSvc, nil
 }
 
 // admitWatch wraps svc so every event it delivers is re-admitted through
@@ -558,6 +577,7 @@ var requestHandlers = map[string]requestHandler{
 	"Compact":                            handleCompact,
 	"CurrentRevision":                    handleCurrentRevision,
 	"RestoreToRevision":                  handleRestoreToRevision,
+	"MovePrefix":                         handleMovePrefix,
 	"ExecuteTransaction":                 handleExecuteTransaction,
 	"ExecuteBatch":                       handleExecuteBatch,
 	"Watch":                              handleWatch,
@@ -1750,6 +1770,7 @@ func (t *Transport) ImportCommit(ctx context.Context, sessionID string) (*transp
 		return nil, &NilServiceError{Service: "BatchServicer"}
 	}
 
+	// t.batchSvc is sqlitevfs.GuardBatch's: it refuses imported SQLite rows.
 	result, err := t.batchSvc.ImportCommit(ctx, sessionID)
 	if err != nil {
 		return nil, translateError(err)

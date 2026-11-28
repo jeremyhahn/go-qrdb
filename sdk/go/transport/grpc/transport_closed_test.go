@@ -280,6 +280,9 @@ func TestGRPCMVCC_AfterClose(t *testing.T) {
 	if _, err := tr.RestoreToRevision(context.Background(), &transport.RestoreRevisionRequest{Revision: 1}); !errors.As(err, &ce) {
 		t.Errorf("RestoreToRevision: %v", err)
 	}
+	if _, err := tr.MovePrefix(context.Background(), &transport.MovePrefixRequest{Src: []byte("a/"), Dst: []byte("b/"), ExpectedKeys: 1}); !errors.As(err, &ce) {
+		t.Errorf("MovePrefix: %v", err)
+	}
 }
 
 // ===========================================================================

@@ -226,6 +226,7 @@ var quicToEmbeddedMethod = map[string]string{
 	"mvcc.PutWithLease":                   "PutWithLease",
 	"mvcc.Range":                          "Range",
 	"mvcc.RestoreToRevision":              "RestoreToRevision",
+	"mvcc.MovePrefix":                     "MovePrefix",
 	"rag.DeleteDocument":                  "RAGDeleteDocument",
 	"rag.IngestDocument":                  "RAGIngestDocument",
 	"rag.ListDocuments":                   "RAGListDocuments",

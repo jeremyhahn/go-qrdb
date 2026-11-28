@@ -15,6 +15,7 @@
 package service
 
 import (
+	"encoding/base64"
 	"errors"
 	"strconv"
 	"time"
@@ -217,6 +218,49 @@ func (e *WriteGuardError) Is(target error) bool {
 type WriteGuardRefusedError struct {
 	// Key is the key of the compare that did not hold.
 	Key string
+}
+
+// The reasons of the write refusals a server puts on the wire, so a remote
+// client rebuilds the typed error rather than a bare Aborted or
+// AlreadyExists status (REST sends 409 for both).
+const (
+	// ReasonWriteGuardRefused is the reason of a *WriteGuardRefusedError.
+	ReasonWriteGuardRefused = "WRITE_GUARD_REFUSED"
+	// ReasonCommandConflict is the reason of a *CommandConflictError.
+	ReasonCommandConflict = "COMMAND_CONFLICT"
+)
+
+// The metadata names of the write refusals.
+const (
+	// metadataKeyBase64 carries a guard key as standard base64, since a key
+	// is arbitrary bytes and wire metadata values must be UTF-8.
+	metadataKeyBase64 = "key_base64"
+	metadataMessage   = "message"
+)
+
+// Metadata encodes the refusal for the wire.
+func (e *WriteGuardRefusedError) Metadata() map[string]string {
+	return map[string]string{metadataKeyBase64: base64.StdEncoding.EncodeToString([]byte(e.Key))}
+}
+
+// WriteGuardRefusedFromMetadata rebuilds the error Metadata encoded. A key
+// that is not valid base64 is left empty.
+func WriteGuardRefusedFromMetadata(md map[string]string) *WriteGuardRefusedError {
+	key, err := base64.StdEncoding.DecodeString(md[metadataKeyBase64])
+	if err != nil {
+		return &WriteGuardRefusedError{}
+	}
+	return &WriteGuardRefusedError{Key: string(key)}
+}
+
+// Metadata encodes the refusal for the wire.
+func (e *CommandConflictError) Metadata() map[string]string {
+	return map[string]string{metadataMessage: e.Message}
+}
+
+// CommandConflictFromMetadata rebuilds the error Metadata encoded.
+func CommandConflictFromMetadata(md map[string]string) *CommandConflictError {
+	return &CommandConflictError{Message: md[metadataMessage]}
 }
 
 // Error returns a human-readable description.
@@ -1432,6 +1476,28 @@ type CompactPrefixInvalidError struct {
 // Error returns a human-readable description.
 func (e *CompactPrefixInvalidError) Error() string {
 	return "service: compaction prefix " + strconv.Quote(e.Prefix) + " is not one database's keyspace"
+}
+
+// PrefixMoveInvalidError is returned when a MovePrefix request is not a
+// well-formed prefix move: an empty or overlapping prefix, an expected key
+// count below 1, or an extra op that is not a put or a single-key delete.
+type PrefixMoveInvalidError struct {
+	Src, Dst string
+	Reason   string
+}
+
+// Error returns a human-readable description.
+func (e *PrefixMoveInvalidError) Error() string {
+	return "service: prefix move " + strconv.Quote(e.Src) + " -> " + strconv.Quote(e.Dst) + " refused: " + e.Reason
+}
+
+// PrefixMoveUnsupportedError is returned by a wrapper whose inner servicer
+// cannot move a prefix server side; it never falls back to per-key writes.
+type PrefixMoveUnsupportedError struct{}
+
+// Error returns a human-readable description.
+func (e *PrefixMoveUnsupportedError) Error() string {
+	return "service: this store does not support a server-side prefix move"
 }
 
 // CompactRevisionInvalidError is returned when Compact names a revision below

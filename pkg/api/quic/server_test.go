@@ -207,7 +207,7 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		"mvcc.PutWithLease": true, "mvcc.GetRevision": true,
 		"mvcc.GetAtRevision": true, "mvcc.Range": true,
 		"mvcc.Compact": true, "mvcc.CurrentRevision": true,
-		"mvcc.RestoreToRevision": true,
+		"mvcc.RestoreToRevision": true, "mvcc.MovePrefix": true,
 		// Transaction
 		"tx.Transaction": true,
 		// Batch
@@ -503,7 +503,7 @@ func TestBuildHandlers_MVCCMethods(t *testing.T) {
 	mvccMethods := []string{
 		"mvcc.PutWithLease", "mvcc.GetRevision", "mvcc.GetAtRevision",
 		"mvcc.Range", "mvcc.Compact", "mvcc.CurrentRevision",
-		"mvcc.RestoreToRevision",
+		"mvcc.RestoreToRevision", "mvcc.MovePrefix",
 	}
 	for _, m := range mvccMethods {
 		if _, ok := srv.handlers[m]; !ok {

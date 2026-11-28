@@ -46,10 +46,12 @@ func TestToTenantInfo_Full(t *testing.T) {
 			MaxKeys:               100,
 			SystemBarrierQuota:    2,
 			MaxDedicatedWalGroups: 3,
+			MaxSqliteDatabases:    4,
 		},
 		Entitlements: &pb.TenantEntitlements{
 			AllowDedicatedRaft:  true,
 			AllowDedicatedWal:   true,
+			AllowSqliteVfs:      true,
 			AllowedBarrierModes: []string{"passphrase"},
 		},
 	}
@@ -59,11 +61,13 @@ func TestToTenantInfo_Full(t *testing.T) {
 		t.Fatalf("scalar fields wrong: %+v", got)
 	}
 	if got.Quotas == nil || got.Quotas.MaxDatabases != 5 || got.Quotas.MaxKeys != 100 ||
-		got.Quotas.SystemBarrierQuota != 2 || got.Quotas.MaxDedicatedWALGroups != 3 {
+		got.Quotas.SystemBarrierQuota != 2 || got.Quotas.MaxDedicatedWALGroups != 3 ||
+		got.Quotas.MaxSQLiteDatabases != 4 {
 		t.Fatalf("quotas wrong: %+v", got.Quotas)
 	}
 	if got.Entitlements == nil || !got.Entitlements.AllowDedicatedRaft ||
-		!got.Entitlements.AllowDedicatedWAL || len(got.Entitlements.AllowedBarrierModes) != 1 {
+		!got.Entitlements.AllowDedicatedWAL || !got.Entitlements.AllowSQLiteVFS ||
+		len(got.Entitlements.AllowedBarrierModes) != 1 {
 		t.Fatalf("entitlements wrong: %+v", got.Entitlements)
 	}
 	if !got.CreatedAt.Equal(time.Date(2026, 6, 27, 8, 0, 0, 0, time.UTC)) {

@@ -77,6 +77,17 @@ type ReservedKeyError struct {
 	Range bool
 }
 
+// SQLiteKeyError refuses a plain kv or batch write to a key of a SQLite
+// database (sqlite/<db>/...); those keys are written only through the
+// SQLite VFS transactions, which admit and count the databases they create.
+type SQLiteKeyError struct {
+	Key string
+}
+
+func (e *SQLiteKeyError) Error() string {
+	return fmt.Sprintf("kv: key %q belongs to a SQLite database and is written only through the SQLite VFS", e.Key)
+}
+
 func (e *ReservedKeyError) Error() string {
 	if e.Range {
 		return fmt.Sprintf("kv: delete range overlaps the reserved verifiable-log keyspace %q", e.Key)

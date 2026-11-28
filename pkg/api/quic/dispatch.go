@@ -195,6 +195,7 @@ func (s *Server) buildHandlers() {
 	s.handle("mvcc.Compact", permission.MVCCCompact, s.handleCompact)
 	s.handle("mvcc.CurrentRevision", permission.MVCCCurrentRevision, s.handleCurrentRevision)
 	s.handle("mvcc.RestoreToRevision", permission.MVCCRestore, s.handleRestoreToRevision)
+	s.handle("mvcc.MovePrefix", permission.MVCCMovePrefix, s.handleMovePrefix)
 
 	// Transaction
 	s.handle("tx.Transaction", permission.TransactionExecute, s.handleTransaction)
