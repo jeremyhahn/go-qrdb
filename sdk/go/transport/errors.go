@@ -619,7 +619,7 @@ const ReasonAccountNotPending = "ACCOUNT_NOT_PENDING"
 const (
 	accountNotPendingKeyUserID        = "user_id"
 	accountNotPendingKeyLifecycle     = "lifecycle"
-	accountNotPendingKeyHasCredential = "has_credential"
+	accountNotPendingKeyHasCredential = "has_credential" //nolint:gosec // G101: a wire detail key name, not a credential
 )
 
 // Metadata encodes e as structured-refusal metadata.
