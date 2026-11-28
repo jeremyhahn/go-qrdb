@@ -315,6 +315,26 @@ func (t *Transport) EnableUser(ctx context.Context, id uint64) error {
 	return t.userSvc.EnableUser(ctx, id)
 }
 
+// ActivatePending moves a pending account to active via the embedded user
+// service. It takes EnableUser's permission.
+func (t *Transport) ActivatePending(ctx context.Context, userID uint64) (*transport.User, error) {
+	ctx, err := t.admit(ctx, "ActivatePending")
+	if err != nil {
+		return nil, err
+	}
+	if t.userSvc == nil {
+		return nil, &transport.NotImplementedError{Method: "ActivatePending"}
+	}
+	if err := t.authorizeUserTarget(ctx, userID, permission.UsersEnable); err != nil {
+		return nil, err
+	}
+	u, err := user.ActivatePendingOn(ctx, t.userSvc, userID)
+	if err != nil {
+		return nil, err
+	}
+	return userToTransport(ctx, t.userAuthFactorSvc, u)
+}
+
 // DisableUser deactivates a user account via the embedded user service.
 func (t *Transport) DisableUser(ctx context.Context, id uint64) error {
 	ctx, err := t.admit(ctx, "DisableUser")

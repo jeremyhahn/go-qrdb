@@ -74,10 +74,10 @@ func (s *kvUserStore) ActivateWithCertBinding(ctx context.Context, userID uint64
 			return nil, &StoreError{Op: "activate_with_cert_binding", Detail: "unmarshal", Err: uerr}
 		}
 		if existing.Lifecycle != LifecyclePending {
-			return nil, &AccountNotPendingError{ID: existing.ID, Lifecycle: existing.Lifecycle}
+			return nil, &AccountNotPendingError{ID: existing.ID, Lifecycle: string(existing.Lifecycle)}
 		}
 		if len(existing.CertBindings) > 0 {
-			return nil, &AccountNotPendingError{ID: existing.ID, Lifecycle: existing.Lifecycle, HasCredential: true}
+			return nil, &AccountNotPendingError{ID: existing.ID, Lifecycle: string(existing.Lifecycle), HasCredential: true}
 		}
 
 		// A thumbprint resolves to exactly one identity within a tenant, the
@@ -138,56 +138,15 @@ func (s *kvUserStore) ActivateWithCertBinding(ctx context.Context, userID uint64
 	return nil, lastConflict
 }
 
-var _ PendingActivator = (*kvUserStore)(nil)
-
-// ActivatePending implements PendingActivator: it moves a PENDING account to
-// active in one commit conditional on the record it read. Any other
-// lifecycle is refused with *AccountNotPendingError and nothing is written;
-// a lost commit re-reads, so a transition committed between the read and the
-// write is refused on the re-read rather than overwritten.
-func (s *kvUserStore) ActivatePending(ctx context.Context, userID uint64) (*User, error) {
-	if _, ok := s.store.(kvstore.AtomicKVStore); !ok {
-		return nil, &StoreError{Op: "activate_pending", Detail: "conditional commit", Err: ErrStoreNotAtomic}
+// ActivateWithCertBindingOn runs svc's ActivateWithCertBinding: the entry
+// every transport's authenticated activation handler calls (go-qrdb#1764),
+// so each answers the same way for a user service that cannot activate. A
+// svc that is not a CertActivator is refused with ErrActivationUnsupported
+// and nothing is written.
+func ActivateWithCertBindingOn(ctx context.Context, svc UserServicer, userID uint64, thumbprint string, notAfterUnix int64) (*User, error) {
+	activator, ok := svc.(CertActivator)
+	if !ok {
+		return nil, &StoreError{Op: "activate_with_cert_binding", Detail: "user service", Err: ErrActivationUnsupported}
 	}
-	if userID == 0 {
-		return nil, &ValidationError{Field: "id", Reason: "must not be zero"}
-	}
-
-	var lastConflict error
-	for attempt := 0; attempt < certBindingMutationAttempts; attempt++ {
-		base, err := s.store.Get(ctx, primaryKey(userID))
-		if err != nil {
-			return nil, &StoreError{Op: "activate_pending", Detail: "primary lookup", Err: err}
-		}
-		if base == nil {
-			return nil, &UserNotFoundError{ID: userID}
-		}
-		existing := &User{}
-		if uerr := json.Unmarshal(base, existing); uerr != nil {
-			return nil, &StoreError{Op: "activate_pending", Detail: "unmarshal", Err: uerr}
-		}
-		if existing.Lifecycle != LifecyclePending {
-			return nil, &AccountNotPendingError{ID: existing.ID, Lifecycle: existing.Lifecycle}
-		}
-
-		updated, uerr := s.updateUserAt(ctx, &UpdateUserRequest{
-			ID:        userID,
-			Lifecycle: LifecycleActive,
-		}, base)
-		if uerr == nil {
-			s.emitAudit(ctx, "activate_pending", userID, map[string]any{
-				"username": updated.Username,
-				"tenantID": updated.TenantID,
-			})
-			return updated, nil
-		}
-		var lost *ConcurrentUpdateError
-		if !errors.As(uerr, &lost) {
-			return nil, uerr
-		}
-		lastConflict = uerr
-	}
-
-	// Exhausted the bound: report the conflict, never a false activation.
-	return nil, lastConflict
+	return activator.ActivateWithCertBinding(ctx, userID, thumbprint, notAfterUnix)
 }

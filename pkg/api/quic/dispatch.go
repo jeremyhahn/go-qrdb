@@ -283,6 +283,7 @@ func (s *Server) buildHandlers() {
 	s.handle("user.Delete", permission.UsersDelete, s.handleDeleteUser)
 	s.handle("user.List", permission.UsersList, s.handleListUsers)
 	s.handle("user.Enable", permission.UsersEnable, s.handleEnableUser)
+	s.handle("user.ActivatePending", permission.UsersEnable, s.handleActivatePending)
 	s.handle("user.Disable", permission.UsersDisable, s.handleDisableUser)
 	s.handle("user.Suspend", permission.UsersSuspend, s.handleSuspendUser)
 	s.handle("user.Unsuspend", permission.UsersUnsuspend, s.handleUnsuspendUser)

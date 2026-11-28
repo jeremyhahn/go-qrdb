@@ -65,7 +65,7 @@ func TestActivatePending_RefusesAnAccountThatIsNotPending(t *testing.T) {
 		before, _ := s.store.Get(ctx, primaryKey(u.ID))
 		_, err := s.ActivatePending(ctx, u.ID)
 		var np *AccountNotPendingError
-		if !errors.As(err, &np) || np.ID != u.ID || np.Lifecycle != u.Lifecycle {
+		if !errors.As(err, &np) || np.ID != u.ID || np.Lifecycle != string(u.Lifecycle) {
 			t.Fatalf("%s: err = %v, want *AccountNotPendingError for %s", u.Username, err, u.Lifecycle)
 		}
 		after, _ := s.store.Get(ctx, primaryKey(u.ID))
@@ -93,7 +93,7 @@ func TestActivatePending_RefusesADisableCommittedBetweenReadAndWrite(t *testing.
 
 	_, err = s.ActivatePending(ctx, u.ID)
 	var np *AccountNotPendingError
-	if !errors.As(err, &np) || np.Lifecycle != LifecycleDisabled {
+	if !errors.As(err, &np) || np.Lifecycle != string(LifecycleDisabled) {
 		t.Fatalf("err = %v, want *AccountNotPendingError for disabled", err)
 	}
 	if !racing.fired.Load() {

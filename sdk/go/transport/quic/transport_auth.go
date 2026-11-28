@@ -662,6 +662,36 @@ func (t *Transport) EnableUser(ctx context.Context, id uint64) error {
 	return nil
 }
 
+// activatePendingWireRequest is the user.ActivatePending payload.
+type activatePendingWireRequest struct {
+	UserID uint64 `json:"user_id"`
+}
+
+// ActivatePending moves a pending account to active via the QUIC
+// user.ActivatePending method.
+func (t *Transport) ActivatePending(ctx context.Context, userID uint64) (*transport.User, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	payload, err := json.Marshal(activatePendingWireRequest{UserID: userID})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ActivatePending", Err: &MarshalError{Err: err}}
+	}
+
+	data, err := t.call(ctx, "user.ActivatePending", payload)
+	if err != nil {
+		return nil, mapUserNotFound("ActivatePending", userID, err)
+	}
+
+	var wire userWireResponse
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return nil, &transport.RequestError{Method: "ActivatePending", Err: &UnmarshalError{Err: err}}
+	}
+
+	return wireToUser(&wire), nil
+}
+
 // DisableUser deactivates a user account via the QUIC user.Disable
 // method.
 func (t *Transport) DisableUser(ctx context.Context, id uint64) error {

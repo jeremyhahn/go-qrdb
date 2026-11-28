@@ -252,6 +252,7 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 //   - PUT    /users/{id}         -> update user
 //   - DELETE /users/{id}         -> delete user
 //   - POST   /users/{id}/enable  -> enable user
+//   - POST   /users/{id}/activate -> activate a pending account
 //   - POST   /users/{id}/disable -> disable user
 //   - POST   /users/{id}/cert-bindings              -> enrol a cert binding
 //   - DELETE /users/{id}/cert-bindings/{thumbprint} -> withdraw one
@@ -332,6 +333,15 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			s.handleEnableUser(w, r, id)
+			return
+		}
+		if seg, found := strings.CutSuffix(rest, "/activate"); found && seg != "" {
+			id, err := parseUserID(seg)
+			if err != nil {
+				writeErrorJSON(w, mapHTTPError(err), err)
+				return
+			}
+			s.handleActivatePending(w, r, id)
 			return
 		}
 		if seg, found := strings.CutSuffix(rest, "/disable"); found && seg != "" {
@@ -627,6 +637,23 @@ func (s *Server) handleEnableUser(w http.ResponseWriter, r *http.Request, id uin
 	}
 
 	writeJSON(w, okResponse{Status: "ok"})
+}
+
+// handleActivatePending handles POST /users/{id}/activate -- moves a PENDING
+// account to active in one conditional commit. It is the lifecycle transition
+// to active, so it takes users:enable; any other lifecycle is refused 412
+// with the ACCOUNT_NOT_PENDING code and nothing is written.
+func (s *Server) handleActivatePending(w http.ResponseWriter, r *http.Request, id uint64) {
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	u, err := user.ActivatePendingOn(ctx, s.userSvc, id)
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+
+	s.writeUserJSON(ctx, w, http.StatusOK, u)
 }
 
 // handleDisableUser handles POST /users/{id}/disable -- deactivates a user.

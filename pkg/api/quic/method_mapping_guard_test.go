@@ -154,6 +154,7 @@ var expectedMethodPerms = map[string]permission.Permission{
 	"user.Delete":                        permission.UsersDelete,
 	"user.List":                          permission.UsersList,
 	"user.Enable":                        permission.UsersEnable,
+	"user.ActivatePending":               permission.UsersEnable,
 	"user.Disable":                       permission.UsersDisable,
 	"user.Suspend":                       permission.UsersSuspend,
 	"user.Unsuspend":                     permission.UsersUnsuspend,

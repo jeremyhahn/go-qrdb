@@ -59,6 +59,7 @@ var targetResolvedOperations = map[string]struct{}{
 	"AddCertBinding":                  {},
 	"RemoveCertBinding":               {},
 	"UpdateUser":                      {},
+	"ActivatePending":                 {},
 	"DeleteUser":                      {},
 	"ListUsers":                       {},
 	"EnableUser":                      {},

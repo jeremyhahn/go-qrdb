@@ -272,6 +272,23 @@ func (s *qrdbServiceServer) EnableUser(ctx context.Context, req *pb.EnableUserRe
 	return &emptypb.Empty{}, nil
 }
 
+// ActivatePending moves a pending account to active in one conditional
+// commit. It is the lifecycle transition to active, so it takes EnableUser's
+// users:enable permission (the RPC's option); any other lifecycle is refused
+// with the ACCOUNT_NOT_PENDING refusal.
+func (s *qrdbServiceServer) ActivatePending(ctx context.Context, req *pb.ActivatePendingRequest) (*pb.UserResponse, error) {
+	if s.userSvc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "user"})
+	}
+
+	u, err := user.ActivatePendingOn(ctx, s.userSvc, req.GetUserId())
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+
+	return s.userResponse(ctx, u)
+}
+
 // DisableUser deactivates a user account.
 func (s *qrdbServiceServer) DisableUser(ctx context.Context, req *pb.DisableUserRequest) (*emptypb.Empty, error) {
 	if s.userSvc == nil {

@@ -89,12 +89,12 @@ var coordinationPermissions = []permission.Permission{
 // objstore node can create a user on any transport. A role alone has no such
 // problem and is what the embedded cell needs: its identity is bound
 // directly via auth.WithIdentity, with no user lookup at all.
-func seedCoordinationIdentity(t *testing.T, n *node.Node) string {
+func seedCoordinationIdentity(t *testing.T, n *node.Node, perms []permission.Permission) string {
 	t.Helper()
 	r, err := n.Services().Role.CreateRole(boundedCtx(t), &role.CreateRoleRequest{
 		Name:        "coordination-matrix",
 		TenantID:    tenantid.System,
-		Permissions: coordinationPermissions,
+		Permissions: perms,
 	})
 	if err != nil {
 		t.Fatalf("create role: %v", err)
@@ -127,6 +127,13 @@ func createMatrixUser(t *testing.T, n *node.Node, roleID string) {
 // context is unmodified.
 func (c cell) bootClient(t *testing.T) (*sdk.Client, context.Context) {
 	t.Helper()
+	return c.bootClientGranting(t, coordinationPermissions)
+}
+
+// bootClientGranting is bootClient with the acting identity's role holding
+// exactly perms, for suites that call a surface beyond coordination.
+func (c cell) bootClientGranting(t *testing.T, perms []permission.Permission) (*sdk.Client, context.Context) {
+	t.Helper()
 	cfg := c.config(t)
 
 	var serverOpts []server.ServerOption
@@ -151,7 +158,7 @@ func (c cell) bootClient(t *testing.T) (*sdk.Client, context.Context) {
 	if c.mode == raft {
 		awaitWritable(t, c, n.Client().KV())
 	}
-	roleID := seedCoordinationIdentity(t, n)
+	roleID := seedCoordinationIdentity(t, n, perms)
 	if !c.transport.remote() {
 		ctx := tenant.WithTenantID(auth.WithIdentity(boundedCtx(t), &auth.Identity{
 			Subject:  "matrix",

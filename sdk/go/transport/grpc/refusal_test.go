@@ -187,3 +187,18 @@ func TestMapGRPCError_notFoundWithoutRefusalIsAMissingKey(t *testing.T) {
 		t.Fatalf("mapGRPCError() = %#v, want KeyNotFoundError{Key: k}", got)
 	}
 }
+
+func TestMapGRPCError_accountNotPendingRefusalIsTyped(t *testing.T) {
+	want := &transport.AccountNotPendingError{ID: 42, Lifecycle: "active"}
+	st, err := status.New(codes.FailedPrecondition, want.Error()).WithDetails(&errdetails.ErrorInfo{
+		Domain: transport.RefusalDomain, Reason: transport.ReasonAccountNotPending, Metadata: want.Metadata(),
+	})
+	if err != nil {
+		t.Fatalf("WithDetails: %v", err)
+	}
+	got := mapGRPCError("ActivateWithCertBinding", st.Err())
+	refusal, ok := errors.AsType[*transport.AccountNotPendingError](got)
+	if !ok || *refusal != *want {
+		t.Fatalf("refusal = %+v, want %+v", refusal, want)
+	}
+}

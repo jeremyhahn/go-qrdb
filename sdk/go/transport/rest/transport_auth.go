@@ -433,6 +433,22 @@ func (t *Transport) EnableUser(ctx context.Context, id uint64) error {
 	return userNotFound(id, t.postJSON(ctx, "EnableUser", "/users/"+strconv.FormatUint(id, 10)+"/enable", nil))
 }
 
+// ActivatePending moves a pending account to active. Maps to
+// POST /users/{userID}/activate.
+func (t *Transport) ActivatePending(ctx context.Context, userID uint64) (*transport.User, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	var user transport.User
+	path := "/users/" + strconv.FormatUint(userID, 10) + "/activate"
+	if err := t.postJSONDecode(ctx, "ActivatePending", path, nil, &user); err != nil {
+		return nil, userNotFound(userID, err)
+	}
+
+	return &user, nil
+}
+
 // DisableUser deactivates a user account. Maps to POST /users/{id}/disable.
 func (t *Transport) DisableUser(ctx context.Context, id uint64) error {
 	if t.closed.Load() {

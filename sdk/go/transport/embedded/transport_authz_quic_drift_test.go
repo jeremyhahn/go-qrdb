@@ -390,6 +390,7 @@ var quicMethodExclusions = map[string]string{
 	"user.Suspend":                       "target-resolved",
 	"user.Unsuspend":                     "target-resolved",
 	"user.Enable":                        "target-resolved",
+	"user.ActivatePending":               "target-resolved",
 	"user.Get":                           "target-resolved",
 	"user.GetByEmail":                    "target-resolved",
 	"user.GetByUsername":                 "target-resolved",

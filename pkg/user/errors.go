@@ -483,29 +483,17 @@ func (e *InvalidLifecycleError) Error() string {
 // into an authenticating account by a concurrent enable, and reporting the
 // refusal as a typed error is what lets a caller distinguish "you may not" from
 // "the store failed".
-// AccountNotPendingError is returned by ActivateWithCertBinding and
-// ActivatePending for an account that is not awaiting activation: it is not
-// pending, or (ActivateWithCertBinding) it already holds a certificate binding. Activation is the single point at
+// AccountNotPendingError is returned by ActivateWithCertBinding for an
+// account that is not awaiting its first credential: it is not pending, or
+// it already holds a certificate binding. Activation is the single point at
 // which an invited account gets a credential, so whichever activation
 // commits first wins and every other one is refused with this error.
-type AccountNotPendingError struct {
-	// ID is the account.
-	ID uint64
-
-	// Lifecycle is the state the account holds.
-	Lifecycle Lifecycle
-
-	// HasCredential reports a pending account that already holds a binding.
-	HasCredential bool
-}
-
-// Error returns a human-readable description of the refusal.
-func (e *AccountNotPendingError) Error() string {
-	if e.HasCredential {
-		return "user: account " + strconv.FormatUint(e.ID, 10) + " already holds a certificate binding"
-	}
-	return "user: account " + strconv.FormatUint(e.ID, 10) + " is " + string(e.Lifecycle) + ", not pending"
-}
+//
+// It IS the SDK's type -- an alias of transport.AccountNotPendingError -- so
+// the refusal an in-process caller receives is the one every remote
+// transport rebuilds from its structured refusal (go-qrdb#1764). Lifecycle
+// holds the account's Lifecycle as a string.
+type AccountNotPendingError = transport.AccountNotPendingError
 
 type LifecycleTransitionError struct {
 	// ID is the user whose transition was refused.

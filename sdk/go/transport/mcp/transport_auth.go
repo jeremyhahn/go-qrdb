@@ -606,6 +606,28 @@ func (t *Transport) EnableUser(ctx context.Context, id uint64) error {
 	return mapUserNotFound(id, err)
 }
 
+// ActivatePending moves a pending account to active. Calls the
+// qrdb_user_activate_pending tool.
+func (t *Transport) ActivatePending(ctx context.Context, userID uint64) (*transport.User, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	text, err := t.callTool(ctx, "qrdb_user_activate_pending", map[string]any{
+		"user_id": strconv.FormatUint(userID, 10),
+	})
+	if err != nil {
+		return nil, mapUserNotFound(userID, err)
+	}
+
+	var raw serverUser
+	if jsonErr := json.Unmarshal([]byte(text), &raw); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "ActivatePending", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return serverUserToTransport(&raw), nil
+}
+
 // DisableUser deactivates a user account. Calls the qrdb_user_disable
 // MCP tool.
 func (t *Transport) DisableUser(ctx context.Context, id uint64) error {

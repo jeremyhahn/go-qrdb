@@ -250,7 +250,7 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		"user.GetByEmail":          true,
 		"user.GetByCertThumbprint": true, "user.AddCertBinding": true,
 		"user.RemoveCertBinding": true, "user.Update": true,
-		"user.Delete": true, "user.List": true, "user.Enable": true,
+		"user.Delete": true, "user.List": true, "user.Enable": true, "user.ActivatePending": true,
 		"user.Disable": true, "user.Suspend": true, "user.Unsuspend": true,
 		// IAM group management
 		"group.Create": true, "group.Get": true, "group.GetByName": true,
