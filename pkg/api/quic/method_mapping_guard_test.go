@@ -159,6 +159,7 @@ var expectedMethodPerms = map[string]permission.Permission{
 	"user.Unsuspend":                     permission.UsersUnsuspend,
 	"user.GetByCertThumbprint":           permission.UsersGetByCertThumbprint,
 	"user.AddCertBinding":                permission.UsersAddCertBinding,
+	"user.ActivateWithCertBinding":       permission.UsersAddCertBinding,
 	"user.RemoveCertBinding":             permission.UsersRemoveCertBinding,
 	"group.Create":                       permission.GroupsCreate,
 	"group.Get":                          permission.GroupsRead,
