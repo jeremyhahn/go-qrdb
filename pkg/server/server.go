@@ -1761,8 +1761,13 @@ func (s *Server) wireCompactionPolicies() {
 // wireTenantHostShards gives the tenant Host registry the raft backend
 // factory, so an IsolationVolume tenant's encryption migration re-encrypts the
 // dedicated raft shards the tenant runs beside its Host -- its home group --
-// under the same tenant barrier. It is a no-op unless the server has both.
+// under the same tenant barrier, and the database manager, so the migration
+// also re-encrypts the tenant's materialized databases' own stores. Each
+// half is a no-op unless the server has the registry and that dependency.
 func (s *Server) wireTenantHostShards() {
+	if s.opts.tenantHosts != nil && s.opts.dbManager != nil {
+		s.opts.tenantHosts.databases.Store(s.opts.dbManager)
+	}
 	if s.opts.tenantHosts != nil && s.opts.raftBackend != nil {
 		s.opts.tenantHosts.raftShards.Store(s.opts.raftBackend)
 	}

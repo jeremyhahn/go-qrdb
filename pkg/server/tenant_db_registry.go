@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -104,6 +105,13 @@ type TenantHostRegistry struct {
 	// tenant barrier, so the tenant's migration re-encrypts them with its Host's
 	// stores. It is nil until the server that serves this registry wires it.
 	raftShards atomic.Pointer[RaftBackendFactory]
+
+	// databases is the server's database manager, whose barrier and volume
+	// tenants' materialized databases keep stores of their own under the
+	// tenant barrier, so the tenant's migration re-encrypts them with its
+	// Host's stores. It is nil until the server that serves this registry
+	// wires it.
+	databases atomic.Pointer[database.Manager]
 
 	// startGate admits each Host build against a whole-node seal's pause
 	// (ShardPauser.beginStart); ShardPauser.SetTenants installs it. Unset, it

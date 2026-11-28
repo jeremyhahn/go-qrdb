@@ -1818,6 +1818,29 @@ func (m *Manager) Close() error {
 	return firstErr
 }
 
+// CloseTenant closes every open database of tenantID and drops it from the
+// open-database map, releasing its store's locks; the next access opens it
+// again (Get, Open), through the factory's current encryptor. A tenant's
+// encryption migration calls it before re-encrypting the tenant's database
+// stores. The first close error is returned; every database is dropped.
+func (m *Manager) CloseTenant(tenantID string) error {
+	var firstErr error
+	m.databases.Range(func(key, value any) bool {
+		if key.(dbKey).tenant != tenantID { //nolint:errcheck // type assertion on a key this container only ever holds
+			return true
+		}
+		db := value.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
+		if status := db.Status(); status == StatusOpen || status == StatusSealed {
+			if err := db.Close(); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+		m.databases.Delete(key)
+		return true
+	})
+	return firstErr
+}
+
 // OpenAll opens on this node every database the catalog lists in the system
 // store: the system tenant's and every shared tenant's. An isolated tenant's
 // databases are recorded in its home store and are opened on first access,

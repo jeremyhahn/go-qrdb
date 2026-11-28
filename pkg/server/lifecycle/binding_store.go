@@ -219,6 +219,14 @@ func (f *LocalBindingFactory) materializes(isolation tenant.IsolationType) bool 
 	}
 }
 
+// StorageWALDir reports the node's storage.wal_dir, under which a
+// materialized Pebble binding keeps its write-ahead log (BindingWALDir):
+// the encryption migrations, which move a store directory alone, refuse
+// such a store (database.BindingWALReporter).
+func (f *LocalBindingFactory) StorageWALDir() string {
+	return f.storageCfg.WALDir
+}
+
 // Create opens cfg's backend. A qualifying database gets a
 // *MaterializedBinding over its own store; any other is opened by the
 // embedded factory at dataDir, unchanged.
