@@ -32,6 +32,42 @@ func (e *StoreMigrationUnsupportedError) Error() string {
 // a *StoreMigrationUnsupportedError. The daemon and the embedded node both
 // enumerate through here.
 func NodeEncryptedStoreDirs(ctx context.Context, m *Manager, walDir string) (pebbleDirs, fileDirs []string, err error) {
+	return encryptedStoreDirs(ctx, m, walDir, func(b *Binding) bool { return b.Encryptor == EncryptorNode })
+}
+
+// BindingWALReporter is implemented by a BackendFactory whose Pebble
+// bindings keep their write-ahead log outside their store directory when
+// the node sets storage.wal_dir: StorageWALDir returns that directory, ""
+// when every log lives under its store.
+type BindingWALReporter interface {
+	StorageWALDir() string
+}
+
+// TenantEncryptedStoreDirs lists the store directories of every database
+// tenantID's own barrier encrypts at rest -- a barrier or volume tenant's
+// materialized databases -- so the tenant's encryption migration
+// re-encrypts them with its Host's stores. It refuses, like
+// NodeEncryptedStoreDirs, a store the migration cannot move: an objstore
+// database, or a Pebble store whose log the factory keeps under
+// storage.wal_dir (BindingWALReporter).
+func TenantEncryptedStoreDirs(ctx context.Context, m *Manager, tenantID string) (pebbleDirs, fileDirs []string, err error) {
+	if m == nil {
+		return nil, nil, nil
+	}
+	walDir := ""
+	if r, ok := m.factory.(BindingWALReporter); ok {
+		walDir = r.StorageWALDir()
+	}
+	// A raft binding's group runs on the tenant's own Host or its dedicated
+	// shards, whose stores the tenant migration already re-encrypts.
+	return encryptedStoreDirs(ctx, m, walDir, func(b *Binding) bool {
+		return b.Encryptor == EncryptorTenant && b.TenantID == tenantID && b.Backend != BackendRaft
+	})
+}
+
+// encryptedStoreDirs lists the store directories of the bindings keep
+// selects; see NodeEncryptedStoreDirs.
+func encryptedStoreDirs(ctx context.Context, m *Manager, walDir string, keep func(*Binding) bool) (pebbleDirs, fileDirs []string, err error) {
 	if m == nil {
 		return nil, nil, nil
 	}
@@ -40,7 +76,7 @@ func NodeEncryptedStoreDirs(ctx context.Context, m *Manager, walDir string) (peb
 		return nil, nil, err
 	}
 	for _, b := range bindings {
-		if b.Encryptor != EncryptorNode || b.DataRoot == "" {
+		if !keep(b) || b.DataRoot == "" {
 			continue
 		}
 		switch b.Backend {
