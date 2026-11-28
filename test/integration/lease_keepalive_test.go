@@ -315,10 +315,11 @@ func TestLease_TTLResponseClassification(t *testing.T) {
 	}
 	unconfirmed := `{"error":"clusterseal: this node cannot confirm the cluster seal state; retry","code":"` +
 		replicaforward.ReasonSealStateUnconfirmed + `"}`
-	var queue []reply
+	// replies hands each fixture from the test goroutine to the handler
+	// goroutine; the channel is the only state they share.
+	replies := make(chan reply, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		next := queue[0]
-		queue = queue[1:]
+		next := <-replies
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(next.status)
 		_, _ = w.Write([]byte(next.body))
@@ -327,7 +328,7 @@ func TestLease_TTLResponseClassification(t *testing.T) {
 
 	classify := func(t *testing.T, r reply) (leaseResult, error) {
 		t.Helper()
-		queue = append(queue, r)
+		replies <- r
 		resp, err := srv.Client().Get(srv.URL)
 		if err != nil {
 			t.Fatalf("GET: %v", err)
