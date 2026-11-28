@@ -121,7 +121,10 @@ func (s *sqliteRestoreMVCC) MovePrefix(ctx context.Context, req *service.MovePre
 	if err != nil {
 		return 0, err
 	}
-	live, err := s.gate.admit(ctx, moved, req.Ops)
+	// The moved metas and the extra ops commit in one transaction, so
+	// every database they create counts against the cap together.
+	ops := append(append(make([]service.Op, 0, len(moved)+len(req.Ops)), moved...), req.Ops...)
+	live, err := s.gate.admit(ctx, ops)
 	if err != nil {
 		return 0, err
 	}
@@ -133,7 +136,7 @@ func (s *sqliteRestoreMVCC) MovePrefix(ctx context.Context, req *service.MovePre
 	}
 	// The move is committed; a usage record failure is returned with the
 	// committed revision, never dropped.
-	return rev, s.gate.record(ctx, live, append(moved, req.Ops...))
+	return rev, s.gate.record(ctx, live, ops)
 }
 
 // movedMeta returns the meta-record writes the move itself makes: a delete

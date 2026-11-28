@@ -446,6 +446,54 @@ func TestSQLiteAdmitMovePrefix_MovedMetaIsGated(t *testing.T) {
 	}
 }
 
+// TestSQLiteAdmitMovePrefix_MoveAndExtraPutCountTogether proves the
+// databases a prefix move creates and those its extra puts create commit in
+// one transaction, so they count against MaxSQLiteDatabases together.
+func TestSQLiteAdmitMovePrefix_MoveAndExtraPutCountTogether(t *testing.T) {
+	for name, build := range lockScenes {
+		t.Run(name, func(t *testing.T) {
+			fakes := &admitFakes{allowed: true, max: 1}
+			svcs := gatedServices(t, build(t).registry, lockTenantA, fakes)
+			seed := []service.Op{{Type: service.OpPut, Key: []byte("seed/" + wiringDB + "/meta"), Value: []byte("staged")}}
+			if resp, err := svcs.Transaction.Execute(t.Context(), nil, seed, nil); err != nil || resp == nil || !resp.Succeeded {
+				t.Fatalf("seed: %+v, %v", resp, err)
+			}
+			otherMeta, err := sqlitevfs.MetaKey("other")
+			if err != nil {
+				t.Fatalf("MetaKey: %v", err)
+			}
+			mover := svcs.MVCC.(service.PrefixMover)
+			withPut := &service.MovePrefixRequest{
+				Src: "seed/", Dst: "sqlite/", ExpectedKeys: 1,
+				Ops: []service.Op{{Type: service.OpPut, Key: otherMeta, Value: []byte("extra")}},
+			}
+			var exceeded *quota.ExceededError
+			if _, err := mover.MovePrefix(t.Context(), withPut); !errors.As(err, &exceeded) {
+				t.Fatalf("move plus an extra create past the cap = %v, want quota.ExceededError", err)
+			}
+			w := gatedStore(t, svcs)
+			assertNoMeta(t, w)
+			rev, err := w.backend.Revision(t.Context())
+			if err != nil {
+				t.Fatalf("Revision: %v", err)
+			}
+			if _, found, err := w.backend.GetAt(t.Context(), otherMeta, rev); err != nil || found {
+				t.Fatalf("extra meta after a refused move: found %v, %v; want none", found, err)
+			}
+			if usage, _ := fakes.counts(); usage != 0 {
+				t.Fatalf("usage after a refused move = %d, want 0", usage)
+			}
+
+			if _, err := mover.MovePrefix(t.Context(), &service.MovePrefixRequest{Src: "seed/", Dst: "sqlite/", ExpectedKeys: 1}); err != nil {
+				t.Fatalf("move alone under the cap: %v", err)
+			}
+			if usage, _ := fakes.counts(); usage != 1 {
+				t.Fatalf("usage after the move = %d, want 1", usage)
+			}
+		})
+	}
+}
+
 // TestSQLiteAdmitMovePrefix_UsageErrorIsReturned proves a committed move
 // whose usage record fails returns that error to the caller instead of
 // dropping it.
