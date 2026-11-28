@@ -680,6 +680,7 @@ func WithPlacementInfoSource(store *placement.Store, localNodeID string, resolve
 			fallback:          f.dbInfo,
 			timeout:           placementResolveTimeout,
 			localRootResolver: res,
+			isolation:         f.isolation,
 			logger:            f.logger,
 		}
 	}
@@ -2271,6 +2272,10 @@ type placementRaftInfoSource struct {
 	fallback          raftDatabaseInfoSource
 	timeout           time.Duration
 	localRootResolver LocalRootResolver
+	// isolation reports a tenant's isolation mode, which decides whether an
+	// explicit data_dir must lie under the tenant root. Nil checks every
+	// explicit data_dir against the root.
+	isolation TenantIsolationLookup
 	// logger records the refusals databaseInfo cannot return. Nil is
 	// slog.Default().
 	logger *slog.Logger
@@ -2367,12 +2372,43 @@ func (s *placementRaftInfoSource) databaseAndPlacementInfo(tenantID, db string) 
 		return 0, "", nil, false, derr
 	}
 	if hasExplicit {
-		if err := database.CheckDataDirUnderTenantRoot(db, explicit, tenantRoot); err != nil {
-			return 0, "", nil, false, err
+		// Only a volume or raft tenant has a data root of its own that an
+		// explicit data_dir must lie under (docs/databases/architecture.md);
+		// a prefix or barrier tenant's data_dir is honored as created, the
+		// rule database.ResolveBinding applies at create.
+		ownsRoot, oerr := s.tenantOwnsRoot(resolveCtx, tenantID)
+		if oerr != nil {
+			return 0, "", nil, false, oerr
+		}
+		if ownsRoot {
+			if err := database.CheckDataDirUnderTenantRoot(db, explicit, tenantRoot); err != nil {
+				return 0, "", nil, false, err
+			}
 		}
 		return p.ShardID, filepath.Clean(explicit), p, true, nil
 	}
 	return p.ShardID, filepath.Join(tenantRoot, "databases", db), p, true, nil
+}
+
+// tenantOwnsRoot reports whether the tenant has a data root of its own
+// (volume, raft isolation) that an explicit data_dir must lie under. A
+// prefix or barrier tenant's group root is a node directory, not the
+// tenant's. Without an isolation lookup every tenant is treated as owning
+// its root, so an explicit data_dir is always checked.
+func (s *placementRaftInfoSource) tenantOwnsRoot(ctx context.Context, tenantID string) (bool, error) {
+	if s.isolation == nil {
+		return true, nil
+	}
+	iso, err := s.isolation(ctx, tenantID)
+	if err != nil {
+		return false, err
+	}
+	switch iso {
+	case tenant.IsolationPrefix, tenant.IsolationBarrier:
+		return false, nil
+	default:
+		return true, nil
+	}
 }
 
 // placementInfo returns the full Placement for (tenantID, db) when an entry

@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // memKV is an in-memory placement.KV for factory placement-source tests.
@@ -362,6 +363,54 @@ func TestPlacementInfoSource_RecordedExplicitDataDir(t *testing.T) {
 	_, dataDir, _, ok, err = newSrc(failing).databaseAndPlacementInfo("rt", "orders")
 	if !errors.Is(err, readErr) || ok || dataDir != "" {
 		t.Fatalf("failing catalog read: (%q, ok %v, %v); want the read error, no directory", dataDir, ok, err)
+	}
+}
+
+// TestPlacementInfoSource_ExplicitDataDirFollowsIsolation pins the group-start
+// half of the create rule (database.ResolveBinding): an explicit data_dir of a
+// prefix or barrier tenant, which has no data root of its own, is honored
+// wherever the operator put it; one of a volume or raft tenant must lie under
+// the tenant root.
+func TestPlacementInfoSource_ExplicitDataDirFollowsIsolation(t *testing.T) {
+	isolations := map[string]tenant.IsolationType{
+		"pfx": tenant.IsolationPrefix, "bar": tenant.IsolationBarrier,
+		"vol": tenant.IsolationVolume, "rt": tenant.IsolationRaft,
+	}
+	lookup := func(_ context.Context, id string) (tenant.IsolationType, error) { return isolations[id], nil }
+	nodeDir := t.TempDir()
+	resolver := IsolationRootResolver(lookup, nodeDir, poolRootResolver)
+	store := newPlacementStore(t)
+	fallback := newFakeRaftInfoSource()
+	fallback.dataDirs = map[raftShardKey]string{}
+	const outside = "/srv/operator/orders"
+	for i, id := range []string{"pfx", "bar", "vol", "rt"} {
+		if err := store.Put(context.Background(), &placement.Placement{
+			TenantID: id, Database: "orders", ShardID: uint64(7100 + i), RF: 1, LeaderReplicaID: 1,
+			Replicas: []placement.Replica{{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1"}},
+		}); err != nil {
+			t.Fatalf("Put %s: %v", id, err)
+		}
+		fallback.dataDirs[raftShardKey{tenantID: id, database: "orders"}] = outside
+	}
+	f := &RaftBackendFactory{dbInfo: fallback}
+	WithTenantIsolation(lookup)(f)
+	WithPlacementInfoSource(store, "local:1", resolver)(f)
+	src, ok := f.dbInfo.(*placementRaftInfoSource)
+	if !ok {
+		t.Fatalf("dbInfo = %T, want *placementRaftInfoSource", f.dbInfo)
+	}
+	for _, id := range []string{"pfx", "bar"} {
+		_, dataDir, _, ok, err := src.databaseAndPlacementInfo(id, "orders")
+		if err != nil || !ok || dataDir != outside {
+			t.Fatalf("%s tenant: (%q, ok %v, %v); want the explicit %s honored", id, dataDir, ok, err, outside)
+		}
+	}
+	for _, id := range []string{"vol", "rt"} {
+		_, dataDir, _, ok, err := src.databaseAndPlacementInfo(id, "orders")
+		var outsideErr *database.DataDirOutsideTenantRootError
+		if !errors.As(err, &outsideErr) || ok {
+			t.Fatalf("%s tenant: (%q, ok %v, %v); want *DataDirOutsideTenantRootError", id, dataDir, ok, err)
+		}
 	}
 }
 
