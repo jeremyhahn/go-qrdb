@@ -1003,14 +1003,22 @@ func TestWebTransport_NegotiationFailureOpensNoSession(t *testing.T) {
 		"no WT_ENABLED":       {broken(func(hs *wtHandshake) { hs.wtEnabled = false }), malformed},
 		"no H3_DATAGRAM":      {broken(func(hs *wtHandshake) { hs.h3Datagram = false }), malformed},
 		"no reset_stream_at":  {broken(func(hs *wtHandshake) { hs.resetStreamAt = false }), malformed},
-		// quic-go's http3.Server closes the connection: SETTINGS_H3_DATAGRAM
+		// Two refusals race here, and either is correct: quic-go's
+		// http3.Server closes the connection because SETTINGS_H3_DATAGRAM
 		// without the max_datagram_frame_size transport parameter is
-		// H3_SETTINGS_ERROR (RFC 9297 section 2.1.1).
+		// H3_SETTINGS_ERROR (RFC 9297 section 2.1.1), and the requirement
+		// check resets the CONNECT with H3_MESSAGE_ERROR before Upgrade. The
+		// handler count below proves neither opened a session.
 		"no QUIC datagrams": {broken(func(hs *wtHandshake) { hs.quicDatagram = false }), func(t *testing.T, status int, body string, err error) {
 			var appErr *quic.ApplicationError
-			if !errors.As(err, &appErr) || appErr.ErrorCode != quic.ApplicationErrorCode(http3.ErrCodeSettingsError) || !appErr.Remote {
-				t.Fatalf("status %d (%s), err %v; want the server's H3_SETTINGS_ERROR", status, body, err)
+			if errors.As(err, &appErr) && appErr.ErrorCode == quic.ApplicationErrorCode(http3.ErrCodeSettingsError) && appErr.Remote {
+				return
 			}
+			var streamErr *quic.StreamError
+			if errors.As(err, &streamErr) && streamErr.ErrorCode == quic.StreamErrorCode(http3.ErrCodeMessageError) && streamErr.Remote {
+				return
+			}
+			t.Fatalf("status %d (%s), err %v; want the server's H3_SETTINGS_ERROR or H3_MESSAGE_ERROR stream reset", status, body, err)
 		}},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -1031,6 +1039,7 @@ func TestWebTransportClientRequirements_EachIsRequired(t *testing.T) {
 	full := func() (*http3.Settings, quic.ConnectionState) {
 		var cs quic.ConnectionState
 		cs.SupportsStreamResetPartialDelivery.Remote = true
+		cs.SupportsDatagrams.Remote = true
 		return &http3.Settings{EnableDatagrams: true, Other: map[uint64]uint64{settingsWTEnabled: 1}}, cs
 	}
 	s, cs := full()
@@ -1049,6 +1058,9 @@ func TestWebTransportClientRequirements_EachIsRequired(t *testing.T) {
 		"no reset_stream_at": {func(_ *http3.Settings, cs *quic.ConnectionState) {
 			cs.SupportsStreamResetPartialDelivery.Remote = false
 		}, "the reset_stream_at transport parameter"},
+		"no QUIC datagrams": {func(_ *http3.Settings, cs *quic.ConnectionState) {
+			cs.SupportsDatagrams.Remote = false
+		}, "the max_datagram_frame_size transport parameter"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, cs := full()

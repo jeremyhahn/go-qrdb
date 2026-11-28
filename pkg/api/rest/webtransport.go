@@ -150,9 +150,12 @@ const settingsWTEnabled = 0x2c7cf000
 // parameters that draft-ietf-webtrans-http3-16 section 3.1 requires, checked
 // before Upgrade runs: a CONNECT from a client that lacks one is malformed and
 // its stream is reset with H3_MESSAGE_ERROR (RFC 9114 section 4.1.2).
-// webtransport-go's Upgrade still checks the :protocol token (400), and
-// quic-go's http3.Server closes a connection whose SETTINGS_H3_DATAGRAM is not
-// backed by the max_datagram_frame_size transport parameter (H3_SETTINGS_ERROR).
+// The max_datagram_frame_size transport parameter (RFC 9221, the QUIC
+// datagrams that SETTINGS_H3_DATAGRAM rests on) is checked here too: quic-go's
+// http3.Server closes such a connection with H3_SETTINGS_ERROR (RFC 9297
+// section 2.1.1), but on its own goroutine, so without this check Upgrade can
+// open a session before that close lands. webtransport-go's Upgrade still
+// checks the :protocol token (400).
 var webTransportClientRequirements = []struct {
 	name string
 	met  func(*http3.Settings, quic.ConnectionState) bool
@@ -161,6 +164,9 @@ var webTransportClientRequirements = []struct {
 	{"SETTINGS_H3_DATAGRAM", func(s *http3.Settings, _ quic.ConnectionState) bool { return s.EnableDatagrams }},
 	{"the reset_stream_at transport parameter", func(_ *http3.Settings, cs quic.ConnectionState) bool {
 		return cs.SupportsStreamResetPartialDelivery.Remote
+	}},
+	{"the max_datagram_frame_size transport parameter", func(_ *http3.Settings, cs quic.ConnectionState) bool {
+		return cs.SupportsDatagrams.Remote
 	}},
 }
 
