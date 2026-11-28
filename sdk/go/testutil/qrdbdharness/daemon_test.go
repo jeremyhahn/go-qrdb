@@ -230,6 +230,58 @@ func TestBuildBinaryCompilesAndCaches(t *testing.T) {
 	}
 }
 
+// TestBuildBinaryWithReleaseVersionStampsTheRelease builds a module that
+// shares go-qrdb's module path and its pkg/release.version symbol, so the
+// -X flag WithReleaseVersion passes lands exactly where it does in qrdbd;
+// each version is its own cached build.
+func TestBuildBinaryWithReleaseVersionStampsTheRelease(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"go.mod":              "module github.com/jeremyhahn/go-qrdb\n\ngo 1.26\n",
+		"pkg/release/r.go":    "package release\n\nvar version = \"dev\"\n\nfunc Version() string { return version }\n",
+		"cmd/stamped/main.go": "package main\n\nimport (\n\t\"fmt\"\n\n\t\"github.com/jeremyhahn/go-qrdb/pkg/release\"\n)\n\nfunc main() { fmt.Print(release.Version()) }\n",
+	}
+	for name, contents := range files {
+		p := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
+			t.Fatalf("mkdir %s: %v", name, err)
+		}
+		if err := os.WriteFile(p, []byte(contents), fileMode); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	t.Setenv("GOWORK", "off")
+
+	run := func(opts ...BuildOption) (string, string) {
+		t.Helper()
+		bin, err := BuildBinary("./cmd/stamped", append([]BuildOption{WithRepoRoot(dir), WithBuildTags("harness_build_test")}, opts...)...)
+		if err != nil {
+			t.Fatalf("BuildBinary: %v", err)
+		}
+		out, err := exec.Command(bin).Output() // #nosec G204 -- the test's own binary
+		if err != nil {
+			t.Fatalf("run %s: %v", bin, err)
+		}
+		return bin, string(out)
+	}
+
+	devBin, got := run()
+	if got != "dev" {
+		t.Fatalf("unstamped release = %q, want dev", got)
+	}
+	n1Bin, got := run(WithReleaseVersion("0.59.0-alpha"))
+	if got != "0.59.0-alpha" {
+		t.Fatalf("stamped release = %q, want 0.59.0-alpha", got)
+	}
+	n2Bin, got := run(WithReleaseVersion("0.60.0-alpha"))
+	if got != "0.60.0-alpha" {
+		t.Fatalf("stamped release = %q, want 0.60.0-alpha", got)
+	}
+	if devBin == n1Bin || n1Bin == n2Bin {
+		t.Fatalf("release versions share a cached build: %q %q %q", devBin, n1Bin, n2Bin)
+	}
+}
+
 func TestBuildBinaryReportsCompilerOutput(t *testing.T) {
 	dir := newBuildableModule(t)
 

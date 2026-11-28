@@ -33,6 +33,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 )
 
 const (
@@ -150,7 +151,7 @@ func (s *leaseStore) ListMembers(context.Context) ([]cluster.Member, error) {
 // running node does.
 func (s *leaseStore) advertise(t *testing.T, id uint64, addr string, features ...string) {
 	t.Helper()
-	a, err := cluster.NewAdvertiser(s, cluster.Member{NodeID: id, Address: addr, Features: features}, cluster.AdvertiseConfig{})
+	a, err := cluster.NewAdvertiser(s, cluster.Member{NodeID: id, Address: addr, Features: features, ReleaseVersion: release.Version()}, cluster.AdvertiseConfig{})
 	require.NoError(t, err)
 	require.NoError(t, a.Register(context.Background()))
 }
@@ -197,6 +198,16 @@ func (k *memKV) ListStale(_ context.Context, prefix string) ([]string, error) {
 
 // listLocked lists the keys under prefix, or fails with err when it is set.
 // The caller holds k.mu.
+func (k *memKV) Delete(_ context.Context, key string) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.putErr != nil {
+		return k.putErr
+	}
+	delete(k.data, key)
+	return nil
+}
+
 func (k *memKV) listLocked(prefix string, err error) ([]string, error) {
 	if err != nil {
 		return nil, err
@@ -249,6 +260,46 @@ func newGate(t *testing.T, members MembershipSource) *Gate {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = g.Close() })
 	return g
+}
+
+// startAdmissionGate starts replica 1 for release admission alone over kv
+// and an unleased store, with every member recorded at 0.59.
+func startAdmissionGate(t *testing.T) (*Gate, *memKV, *leaseStore) {
+	t.Helper()
+	t.Cleanup(release.SetForTesting("0.59.0-alpha"))
+	kv, store := newMemKV(), newLeaseStore()
+	allOnRelease(t, kv, "0.59.0-alpha")
+	joiner := AdvertisementPrefix + "1"
+	_, err := kv.PutIfAbsent(context.Background(), joiner, []byte(`{"node_id":1}`))
+	require.NoError(t, err)
+	g := newGate(t, threeNodes())
+	require.NoError(t, g.StartAdmission(context.Background(), kv, store))
+	assert.False(t, kv.has(joiner), "the member's own joiner record outlived its release record")
+	var cfg *ConfigError
+	require.ErrorAs(t, g.StartAdmission(context.Background(), kv, store), &cfg)
+	require.ErrorAs(t, g.Start(context.Background(), kv, store), &cfg)
+	return g, kv, store
+}
+
+func TestStartAdmission_AdmitsAnAnnouncedSameReleaseCandidate(t *testing.T) {
+	g, _, store := startAdmissionGate(t)
+	store.advertiseRelease(t, 4, "n4:7000", "0.59.0-alpha")
+	binding, err := g.AdmitReplicaAt(systemShard, "n4:7000")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"0.59.0-alpha"}, binding.CandidateReleases)
+	assert.False(t, g.Activated(GuardedWrites), "an admission-only gate activated a feature")
+}
+
+func TestStartAdmission_RefusesAReleaseGap(t *testing.T) {
+	g, _, store := startAdmissionGate(t)
+	store.advertiseRelease(t, 5, "n5:7000", "0.61.0-alpha")
+	_, err := g.AdmitReplicaAt(systemShard, "n5:7000")
+	var gap *release.GapError
+	require.ErrorAs(t, err, &gap)
+
+	_, err = g.AdmitReplicaAt(systemShard, "n6:7000")
+	var unannounced *UnannouncedCandidateError
+	require.ErrorAs(t, err, &unannounced)
 }
 
 // eventually polls cond for up to two seconds.
@@ -511,6 +562,9 @@ func TestGate_ActivationWriteFailureIsNotActivation(t *testing.T) {
 	m := &fakeMembers{groups: map[uint64]GroupMembership{}}
 	m.set(systemShard, 1, map[uint64]string{1: "n1:7000"})
 	kv := newMemKV()
+	// The release is on record already, so only the activation write fails.
+	_, err := kv.PutIfAbsent(context.Background(), ReleasePrefix+"1/"+release.Version(), []byte("n1:7000"))
+	require.NoError(t, err)
 	kv.putErr = errors.New("not leader")
 	g := newGate(t, m)
 	require.NoError(t, g.Start(context.Background(), kv, newLeaseStore()))
@@ -547,9 +601,18 @@ func TestNew_Validates(t *testing.T) {
 }
 
 // The advertised names are exactly this binary's features.
+// testTaggedFeatures are the features a test-only build tag appends to
+// supported (upgrade_probe_test.go under qrdb_upgrade_probe).
+var testTaggedFeatures []feature.Feature
+
 func TestSupported(t *testing.T) {
-	assert.Equal(t, []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads, VerifiableLogAudit, PendingUserTTL, VerifiableLogDrop, VerifiableLogSealed, OrderedUniqueCheck, IndexRescope}, Supported())
-	assert.Equal(t, []string{string(GuardedWrites), string(ClusterShardIDs), string(PrefixCompaction), string(NodeCompaction), string(ClusterSeal), string(ImportStaging), string(RangeDelete), string(AuditAppend), string(VectorEngine), string(TimeSeriesRetention), string(LeaseCheckpoint), string(PerNodeBarrierKeys), string(VerifiableLog), string(RollingMigration), string(TenantUndo), string(VerifiableLogKeys), string(VectorManhattan), string(CommandCaps), string(LockCreateRevisionToken), string(TransactionReads), string(VerifiableLogAudit), string(PendingUserTTL), string(VerifiableLogDrop), string(VerifiableLogSealed), string(OrderedUniqueCheck), string(IndexRescope)}, SupportedNames())
+	want := append([]feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads, VerifiableLogAudit, PendingUserTTL, VerifiableLogDrop, VerifiableLogSealed, OrderedUniqueCheck, IndexRescope}, testTaggedFeatures...)
+	wantNames := []string{string(GuardedWrites), string(ClusterShardIDs), string(PrefixCompaction), string(NodeCompaction), string(ClusterSeal), string(ImportStaging), string(RangeDelete), string(AuditAppend), string(VectorEngine), string(TimeSeriesRetention), string(LeaseCheckpoint), string(PerNodeBarrierKeys), string(VerifiableLog), string(RollingMigration), string(TenantUndo), string(VerifiableLogKeys), string(VectorManhattan), string(CommandCaps), string(LockCreateRevisionToken), string(TransactionReads), string(VerifiableLogAudit), string(PendingUserTTL), string(VerifiableLogDrop), string(VerifiableLogSealed), string(OrderedUniqueCheck), string(IndexRescope)}
+	for _, f := range testTaggedFeatures {
+		wantNames = append(wantNames, string(f))
+	}
+	assert.Equal(t, want, Supported())
+	assert.Equal(t, wantNames, SupportedNames())
 }
 
 // TestCheckActivated_AdoptsTenantUndoActivation pins that this binary
@@ -1055,17 +1118,22 @@ func (s failingRefreshStore) ListMembers(ctx context.Context) ([]cluster.Member,
 	return nil, errors.New("unavailable")
 }
 
-// onceReadableKV reads its activations for Start and fails every later read.
+// onceReadableKV serves Start's linearizable reads (the activations, and
+// the release intents retireIntents and the restart check list) and fails
+// every read after Start returned.
 type onceReadableKV struct {
 	*memKV
-	reads atomic.Int32
+	// unreadable is set once Start returned: Start's own reads (the
+	// release history and intents, read more than once) succeed, and
+	// every later read fails.
+	unreadable atomic.Bool
 }
 
 func (k *onceReadableKV) ListAll(ctx context.Context, prefix string) ([]string, error) {
-	if k.reads.Add(1) == 1 {
-		return k.memKV.ListAll(ctx, prefix)
+	if k.unreadable.Load() {
+		return nil, errors.New("not leader")
 	}
-	return nil, errors.New("not leader")
+	return k.memKV.ListAll(ctx, prefix)
 }
 
 // A refresh whose advertisement list and activation read both fail keeps the
@@ -1081,7 +1149,9 @@ func TestGate_RefreshSurvivesUnreadableStores(t *testing.T) {
 		RefreshInterval: time.Millisecond,
 	})
 	require.NoError(t, err)
-	require.NoError(t, g.Start(context.Background(), &onceReadableKV{memKV: newMemKV()}, store))
+	kv := &onceReadableKV{memKV: newMemKV()}
+	require.NoError(t, g.Start(context.Background(), kv, store))
+	kv.unreadable.Store(true)
 
 	store.lists.await(t, 3)
 	require.NoError(t, g.Close())

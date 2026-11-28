@@ -112,6 +112,12 @@ type Envelope struct {
 	Nonce []byte `json:"nonce"`
 	// IssuedAt is the leader's seal time (UTC); used for the freshness window.
 	IssuedAt time.Time `json:"issued_at"`
+	// ReleaseVersion is the sender's release (pkg/release.Version). It
+	// travels in plaintext but is bound into the HPKE info, so a peer that
+	// rewrites it makes Open fail; the receiving transport checks it with
+	// release.Check and refuses a sender whose release is not adjacent
+	// (SPEC rolling upgrades, clause (2)).
+	ReleaseVersion string `json:"release_version"`
 }
 
 // Delivery errors. Callers match these with errors.Is.

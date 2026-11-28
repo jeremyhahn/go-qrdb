@@ -16,6 +16,7 @@ package quic
 
 import (
 	"context"
+	"errors"
 
 	quicgo "github.com/quic-go/quic-go"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 )
 
 // withConnectionState injects the QUIC connection's TLS state into the
@@ -200,6 +202,13 @@ func authzStatus(err error) uint16 {
 // chain did identify, and a store it could not reach is a fault to retry --
 // so QUIC tells the caller what REST, gRPC and MCP tell it.
 func authnStatus(err error) uint16 {
+	// A forward from a node across a release gap is a precondition the
+	// cluster does not meet, not a failed authentication: the typed
+	// *release.GapError answers FAILED_PRECONDITION, as on gRPC.
+	var gap *release.GapError
+	if errors.As(err, &gap) {
+		return wire.StatusFailedPrecondition
+	}
 	if st, ok := quicStatusByClass[authmw.ClassifyAuthError(err)]; ok {
 		return st
 	}

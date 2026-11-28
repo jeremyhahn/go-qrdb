@@ -114,8 +114,20 @@ type Node struct {
 	// Data is the node's data directory on the node host, or a docker volume
 	// name. First boot needs it empty.
 	Data string `json:"data"`
+	// Image is the qrdbd image this node runs, with its tag. Empty is the
+	// inventory's Image. A mixed-version cluster (the rolling-upgrade
+	// matrix) gives some nodes another release's image.
+	Image string `json:"image,omitempty"`
 	// Vars are free values for the Docker template.
 	Vars map[string]string `json:"vars,omitempty"`
+}
+
+// ImageOf is the image node n runs: its own Image, else the inventory's.
+func (inv Inventory) ImageOf(n Node) string {
+	if n.Image != "" {
+		return n.Image
+	}
+	return inv.Image
 }
 
 // nodeName is a node name: it becomes part of a container name.

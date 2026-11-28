@@ -148,6 +148,44 @@ func (a *HostAdapter) AdmitReplica(shardID uint64, raftAddr string) error {
 	return a.gate.AdmitReplica(shardID, raftAddr)
 }
 
+// AdmitReplicaAt is AdmitReplica returning, with the verdict, the
+// system-shard configuration it checked (not Required when none binds; see
+// featuregate.Gate.AdmitReplicaAt), for the add to be bound to.
+func (a *HostAdapter) AdmitReplicaAt(shardID uint64, raftAddr string) (featuregate.ConfigBinding, error) {
+	if a.gate == nil {
+		return featuregate.ConfigBinding{}, nil
+	}
+	return a.gate.AdmitReplicaAt(shardID, raftAddr)
+}
+
+// CheckConfigBinding compares an admission binding with the system shard's
+// current configuration (featuregate.Gate.CheckConfigBinding); an ungated
+// adapter binds nothing.
+func (a *HostAdapter) CheckConfigBinding(shardID uint64, b featuregate.ConfigBinding) error {
+	if a.gate == nil {
+		return nil
+	}
+	return a.gate.CheckConfigBinding(shardID, b)
+}
+
+// ProposeBound runs propose under the gate's per-node proposal lock with the
+// binding rechecked first (featuregate.Gate.ProposeBound); an ungated adapter
+// binds nothing and runs propose directly with the closed
+// featuregate.Unfenced stop, so propose resolves no ambiguous outcome and
+// reports no pending. ctx bounds the wait for the gate's lock; an ungated
+// adapter takes no lock and returns ctx.Err() without running propose when
+// ctx has already ended.
+func (a *HostAdapter) ProposeBound(ctx context.Context, shardID uint64, b featuregate.ConfigBinding, propose func(stop <-chan struct{}) (pending <-chan struct{}, err error)) error {
+	if a.gate == nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		_, err := propose(featuregate.Unfenced)
+		return err
+	}
+	return a.gate.ProposeBound(ctx, shardID, b, propose)
+}
+
 // FeatureEnabled reports whether every replica of shardID's group can apply
 // commands that use feature. With a feature gate the gate decides. Without
 // one, a host with no transport -- every replica is this process -- and a

@@ -41,6 +41,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 )
 
@@ -659,8 +660,8 @@ func TestSMFactories_Keys(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestVersionVariables(t *testing.T) {
-	if version == "" {
-		t.Fatal("version should not be empty")
+	if release.Version() == "" {
+		t.Fatal("release version should not be empty")
 	}
 	if gitCommit == "" {
 		t.Fatal("gitCommit should not be empty")

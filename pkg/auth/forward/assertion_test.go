@@ -25,6 +25,9 @@ import (
 	"net/url"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 )
 
 // nodeCert builds a self-consistent ECDSA P-256 certificate carrying a
@@ -268,6 +271,68 @@ func TestSign_DeterministicAssertionBytes(t *testing.T) {
 	}
 	if ab1 != ab2 {
 		t.Fatalf("assertion bytes not deterministic:\n%s\n%s", ab1, ab2)
+	}
+}
+
+// TestNewCallerAssertion_AnnouncesTheRelease proves every forward announces
+// the forwarding node's release inside the signed assertion (rolling-upgrades
+// clause (2) on the replica-forwarding channel): NewCallerAssertion,
+// Binding.Assertion and SignCaller all stamp release.Version(), the field
+// round-trips through Sign/Verify, and it is covered by the signature, so a
+// forwarder cannot claim another release after signing.
+func TestNewCallerAssertion_AnnouncesTheRelease(t *testing.T) {
+	restore := release.SetForTesting("0.59.0")
+	defer restore()
+
+	cert, key := nodeCert(t, tdom, nodeID)
+	now := time.Now()
+	body := []byte("hello")
+
+	a := NewCallerAssertion("alice", "acme", method, path, BodyDigest(body), nodeID, now, DefaultTTL)
+	if a.ReleaseVersion != "0.59.0" {
+		t.Fatalf("NewCallerAssertion release = %q, want 0.59.0", a.ReleaseVersion)
+	}
+	b := RPCBinding("grpc", "/qrdb.v1.KV/Put", body)
+	if got := b.Assertion("alice", "acme", nodeID, now).ReleaseVersion; got != "0.59.0" {
+		t.Fatalf("Binding.Assertion release = %q, want 0.59.0", got)
+	}
+
+	ab, sb, err := SignCaller(&auth.Identity{Subject: "alice", TenantID: "acme"}, b, key, nodeID, now)
+	if err != nil {
+		t.Fatalf("SignCaller: %v", err)
+	}
+	got, err := VerifyBinding(ab, sb, cert, tdom, now, b)
+	if err != nil {
+		t.Fatalf("VerifyBinding: %v", err)
+	}
+	if got.ReleaseVersion != "0.59.0" {
+		t.Fatalf("SignCaller/VerifyBinding release = %q, want 0.59.0", got.ReleaseVersion)
+	}
+
+	ab, sb, err = Sign(a, key)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	v, err := Verify(ab, sb, cert, tdom, now, method, path, BodyDigest(body))
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if v.ReleaseVersion != "0.59.0" {
+		t.Fatalf("Sign/Verify release = %q, want 0.59.0", v.ReleaseVersion)
+	}
+
+	// The same assertion announcing another release, presented with the
+	// signature over the original, fails the signature check.
+	rewritten := a
+	rewritten.ReleaseVersion = "0.61.0"
+	rab, _, err := Sign(rewritten, key)
+	if err != nil {
+		t.Fatalf("sign rewritten: %v", err)
+	}
+	_, verr := Verify(rab, sb, cert, tdom, now, method, path, BodyDigest(body))
+	var sErr *ForwardAssertionSignatureError
+	if !errors.As(verr, &sErr) {
+		t.Fatalf("rewritten release_version: expected signature error, got %v", verr)
 	}
 }
 

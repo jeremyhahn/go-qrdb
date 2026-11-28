@@ -18,7 +18,7 @@ COVER_DIR     := coverage
 BUILD_VERSION := $(shell cat VERSION 2>/dev/null || echo "0.0.1-alpha")
 GIT_COMMIT    := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_DATE    := $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
-LDFLAGS       := -X main.version=$(BUILD_VERSION) -X main.gitCommit=$(GIT_COMMIT) -X main.buildDate=$(BUILD_DATE)
+LDFLAGS       := -X main.version=$(BUILD_VERSION) -X github.com/jeremyhahn/go-qrdb/pkg/release.version=$(BUILD_VERSION) -X main.gitCommit=$(GIT_COMMIT) -X main.buildDate=$(BUILD_DATE)
 
 # Pinned tool versions, shared with the CI image's toolchain stage.
 TOOL_PINS := scripts/tool-pins.sh
@@ -453,7 +453,7 @@ check-public-proto:
 TEST_PKGS := ./pkg/... ./cmd/... ./test/buildgates/...
 
 .PHONY: test
-test: test-clusterproof
+test: test-clusterproof test-upgrade-probe
 	$(GOTEST) $(TAG_FLAG) $(TEST_PKGS)
 
 # Unit legs: CI splits the unit suites into parallel legs by measured wall time; `rest` and `sdk` take every package no leg names.
@@ -531,6 +531,13 @@ test-fips-leg:
 .PHONY: test-clusterproof
 test-clusterproof:
 	cd test/clusterproof && $(GOTEST) -tags "$(MIN_TAGS),clusterproof" ./...
+
+# Unit tests of the synthetic N+1 release behind the test-only qrdb_upgrade_probe tag (docs/rolling-upgrades/engineering.md).
+UPGRADE_PROBE_PKGS := ./pkg/service/ ./pkg/store/ ./pkg/cluster/featuregate/ ./pkg/api/quic/wire/
+
+.PHONY: test-upgrade-probe
+test-upgrade-probe:
+	$(GOTEST) -tags "$(strip $(BUILD_TAGS)) qrdb_upgrade_probe" $(UPGRADE_PROBE_PKGS)
 
 # The vanguard blocker probe; run it at every vanguard release (docs/api-server/architecture.md).
 .PHONY: check-vanguard-probe
@@ -1913,6 +1920,7 @@ vet-tags:
 test-tags:
 	GOTEST="$(GO) test" GOLIST="$(GO) list" ./scripts/test-tags.sh "$(TEST_TAGS_SETS)" "$(TEST_TAGS_PKGS)"
 	$(GO) test -count=1 -tags=$(CODEC_CBOR_TAGS) $(CODEC_CBOR_TEST_PKGS)
+	$(MAKE) --no-print-directory test-upgrade-probe
 
 # print-tag-sets prints the declared combinations, one per line.
 .PHONY: print-tag-sets

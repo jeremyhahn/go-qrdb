@@ -17,6 +17,7 @@ package middleware
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"strings"
 
 	"google.golang.org/grpc"
@@ -24,10 +25,12 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 )
 
 // UnaryInterceptor returns a grpc.UnaryServerInterceptor that performs
@@ -415,5 +418,12 @@ func injectDPoP(ctx context.Context, fullMethod string) context.Context {
 // unrecognised failure, for the same reason mapHTTPAuthError answers 401: the
 // interceptors authenticate as well as authorize.
 func mapGRPCAuthError(err error) error {
+	// A forward from a node across a release gap is a precondition the
+	// cluster does not meet, not a failed authentication: answer
+	// FAILED_PRECONDITION with the gap naming both releases.
+	var gap *release.GapError
+	if errors.As(err, &gap) {
+		return status.Error(codes.FailedPrecondition, gap.Error())
+	}
 	return GRPCError(err, codes.Unauthenticated)
 }

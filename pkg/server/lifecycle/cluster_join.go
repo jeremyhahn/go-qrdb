@@ -137,7 +137,7 @@ func StartClusterJoin(ctx context.Context, n *Node, c ClusterJoinConfig) (*Clust
 		return j, nil
 	}
 	var advertiser clusterenroll.FeatureAdvertiser
-	if a := joinadvertise.New(n.Lease, n.MVCC); a != nil {
+	if a := joinadvertise.New(n.Lease, n.MVCC, n.KV); a != nil {
 		advertiser = a
 	}
 	srv, err := clusterenroll.StartJoinServer(n.ClusterCAProv, clusterenroll.JoinServerOptions{

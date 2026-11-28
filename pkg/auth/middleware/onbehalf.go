@@ -20,13 +20,19 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
 	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 )
+
+// releaseChannelReplicaForwarding names the replica-forwarding channel in a
+// release gap refusal (release.GapError.Channel).
+const releaseChannelReplicaForwarding = "replica-forwarding"
 
 // authSourceMetadataKey / authSourceOnBehalf mark an identity that arrived as
 // a forwarded on-behalf assertion rather than from a credential presented on
@@ -189,6 +195,20 @@ func (m *AuthMiddleware) authenticateOnBehalfBinding(ctx context.Context, peerCe
 		// unauthorized error: never fall back to node-identity auth, and
 		// never leak which check failed (reconnaissance oracle).
 		return ctx, nil, &auth.AuthError{Code: "unauthorized", Message: "on-behalf assertion rejected"}
+	}
+
+	// Rolling-upgrades clauses (2) and (3) on the replica-forwarding channel:
+	// the forwarder announced its release inside the signed assertion, and a
+	// release that is not adjacent to this node's is refused with the typed
+	// gap rather than served. This runs only after the signature, binding,
+	// peer and node-id checks all passed, so naming both releases is no
+	// reconnaissance oracle.
+	if err := release.Check(releaseChannelReplicaForwarding, assertion.ReleaseVersion); err != nil {
+		slog.Warn("auth/middleware: refused a forward across a release gap",
+			"local_release", release.Version(),
+			"peer_release", assertion.ReleaseVersion,
+			"forwarder_node_id", assertion.ForwarderNodeID)
+		return ctx, nil, err
 	}
 
 	// A caller that authenticated with a tenant-issued delegation is rebuilt

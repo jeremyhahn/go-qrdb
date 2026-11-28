@@ -19,11 +19,13 @@ import (
 	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -57,6 +59,33 @@ func TestQUICOnBehalf_ValidAuthenticatesAsTheCaller(t *testing.T) {
 	}
 	if id := auth.IdentityFromContext(got); id == nil || id.Subject != obAliceSubject || id.TenantID != "acme" || !isOnBehalfIdentity(id) {
 		t.Fatalf("identity = %+v; want the asserted caller, marked on-behalf", id)
+	}
+}
+
+// TestQUICOnBehalf_ReleaseGapIsTypedRefusal proves the QUIC ingress refuses
+// a forward from a node across a release gap with the typed
+// *release.GapError on the replica-forwarding channel, which the QUIC server
+// answers FAILED_PRECONDITION, and admits no identity.
+func TestQUICOnBehalf_ReleaseGapIsTypedRefusal(t *testing.T) {
+	cert, key := obNodeCert(t, obNodeID)
+	payload := []byte("kv put payload")
+	var (
+		ctx    context.Context
+		ab, sb string
+	)
+	asRelease("0.61.0", func() struct{} { ctx, ab, sb = quicOnBehalf(t, cert, key, "kv.Put", payload); return struct{}{} })
+	t.Cleanup(release.SetForTesting("0.59.0"))
+
+	got, err := quicOBMiddleware().AuthenticateQUICOnBehalf(ctx, "kv.Put", payload, ab, sb)
+	var gap *release.GapError
+	if !errors.As(err, &gap) {
+		t.Fatalf("AuthenticateQUICOnBehalf = %v (%T); want *release.GapError", err, err)
+	}
+	if gap.Channel != "replica-forwarding" || gap.Local != "0.59.0" || gap.Peer != "0.61.0" {
+		t.Fatalf("gap = %+v; want replica-forwarding, local 0.59.0, peer 0.61.0", gap)
+	}
+	if id := auth.IdentityFromContext(got); id != nil {
+		t.Fatalf("identity %+v admitted across a release gap", id)
 	}
 }
 

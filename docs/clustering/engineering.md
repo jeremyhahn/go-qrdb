@@ -448,6 +448,8 @@ func New(cfg Config) (*Gate, error)
 func (g *Gate) Enabled(shardID uint64, f Feature) bool
 func (g *Gate) Supports(raftAddr string, f Feature) bool
 func (g *Gate) AdmitReplica(shardID uint64, raftAddr string) error // *UnsupportedReplicaError
+func (g *Gate) AdmitReplicaAt(shardID uint64, raftAddr string) (ConfigBinding, error) // *release.GapError, *UnannouncedCandidateError, *UnknownMemberReleaseError, *UnsupportedReplicaError, *StoreError
+func (g *Gate) CheckConfigBinding(shardID uint64, b ConfigBinding) error // *StaleConfigurationError, *StoreError
 func (g *Gate) Activated(f Feature) bool
 func (g *Gate) AdvertisedSelf() (Self, error)
 func (g *Gate) CheckActivated(ctx context.Context, kv ActivationKV) error
@@ -483,12 +485,13 @@ func HostMembership(h ShardMembershipReader) MembershipSource
   barrier, so the advertisement proposes nothing while the barrier is sealed
   ([../barrier-seal/engineering.md](../barrier-seal/engineering.md)). `qrdbd` does this synchronously after provisioning, so a refused
   binary never serves; `sdk/go/node` does it in the background once the system
-  shard has a leader, because a clustered node is built before its peers. It
-  cannot refuse to start after the fact, so under a refusal it never
-  advertises, logs the error, and reports itself **degraded**: the gate keeps
-  the refusal (`Gate.Refusal`) and `raftbackend.HostAdapter.HealthCheck` turns
-  an `ok` verdict into `degraded`, which every transport's health check
-  serves. A `qrdbd` node with no gate still runs `featuregate.CheckActivated`
+  shard has a leader, because a clustered node is built before its peers. Under
+  a refusal it quarantines itself (`Node.quarantine`), the embedded
+  equivalent of `qrdbd` exiting: it keeps the refusal (`Node.Refusal`),
+  withdraws its member record and feature advertisement, and closes its Raft
+  host, so it no longer votes or replicates; its seal probe
+  (`Node.refusalProbe`) then reports it sealed, so the embedded transport
+  refuses every data-plane call with the refusal. A `qrdbd` node with no gate still runs `featuregate.CheckActivated`
   at startup.
 - **Admission** is `service.ReplicaAdmitter` (`AdmitReplica`), implemented by
   `raftbackend.HostAdapter` and `qrdbd`'s raft host adapter from the gate.
@@ -499,6 +502,44 @@ func HostMembership(h ShardMembershipReader) MembershipSource
   `AddObserver`; the placement scheduler drops refused candidates
   (`placement.WithReplicaFilter`, wired in `lifecycle.BuildServices`). A refusal
   is REST 409 and gRPC/QUIC `FailedPrecondition`.
+- **Release admission.** On the system shard, `AdmitReplicaAt` compares the
+  candidate's announced releases with every committed member's live or
+  recorded release (`__sys:cluster/features/releases/`), read afresh from the
+  stores, not the caches. A candidate with no live advertisement is refused
+  (`UnannouncedCandidateError`); a candidate or member whose live record
+  carries no release is refused with the release gap (`*release.GapError`). The returned `ConfigBinding` (`ConfigChangeID`,
+  `Required`, `Candidate`, `ReleaseDigest`) is passed by
+  `AdminService.AddMember`/`AddObserverMember` as the add's
+  `configChangeIndex` and run through `Gate.ProposeBound`, which holds one
+  per-node lock from the `CheckConfigBinding` recheck until the add commits or
+  is refused; `ErrStaleConfigChange` or `*StaleConfigurationError` re-admits
+  once. go-quicraft v0.24.3-alpha compares `configChangeIndex` in
+  `Host.requestConfigChange` before queuing but not on the Raft worker, and
+  skips index 0; it accepts a config change only on the shard leader and
+  refuses a second while one is uncommitted, so the lock serializes
+  concurrent additions through the leader from recheck to commit, and the
+  later one is refused with `*release.GapError` (REST 409). An add whose
+  result times out ambiguously (go-quicraft's `*MaybeAppliedError`: it may
+  still commit) returns its error at once but keeps the lock until
+  `AdminService.resolveAdd` settles it definitively: go-quicraft completes a
+  `RequestState` once, and the timed-out wait may have been that completion,
+  so nothing waits on it again. `resolveAdd` reads the membership
+  linearizably until it sees the replica, the configuration change ID move
+  past the bound one, the host close, or the gate close (`Gate.ProposeBound`
+  passes the gate's stop, which also cancels the attempt in flight),
+  re-proposing the add under the same binding meanwhile to force an outcome,
+  so no later add is rechecked against a membership it may yet change. An add
+  nothing fences (no gate, a binding that is not `Required`) gets the closed
+  `featuregate.Unfenced` stop and is not resolved. Across leaders and
+  against restarts, a release intent claimed before the proposal and
+  listed linearizably after it serialises admission: of two non-adjacent
+  adds through different leaders at least one is refused, and
+  `EnforceRelease` records a restart's release before it lists the
+  intents. An intent is retired once its candidate records a release, or by
+  its own claimant when no add of that claimant is in flight; a configuration
+  change ID past its bound one does not retire it; see
+  [../rolling-upgrades/engineering.md](../rolling-upgrades/engineering.md)
+  "Admission across leaders and restarts".
 - **Withdrawal.** `qrdbd` closes the advertiser and the gate explicitly in its
   signal and migration branches, before it stops the servers and the host, so
   the lease is revoked while the host can still propose. After a crash the
@@ -559,12 +600,15 @@ func HostMembership(h ShardMembershipReader) MembershipSource
   the operator's `member add` sees a live advertisement and admits the node
   exactly as it would a long-running one. The record is a stopgap, not a
   substitute for the node's own advertisement: it lapses with its lease, and
-  once the node is a member and running, its own gate replaces it. A
+  once the node is a member and running, its own gate replaces it. When the
+state machine has no lease support, `joinadvertise.New` writes the joiner
+record with a plain Put instead; such a record does not lapse, and the member
+deletes it once its own release is recorded (`Gate.StartAdmission`, which a
+node without leases starts in place of `Gate.Start`). A
   `FeatureAdvertiser` failure is logged, not fatal -- the certificate
   `HandleJoinRequest` already issued is still returned, and `member add`
   simply surfaces the same refusal it always would with no advertiser
-  configured at all (a state machine type with no lease support, see
-  `joinadvertise.New`'s own doc comment). A node that registers through
+  configured at all. A node that registers through
   **dynamic membership** from a client of the running cluster, with its
   features in the registration, does not need this: its registration
   record is exactly the live advertisement `Supports` reads, published

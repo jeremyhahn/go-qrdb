@@ -21,6 +21,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 )
 
@@ -55,12 +56,15 @@ func (n *Node) startMemberRecord(host leaderReporter, cfg *qrdbconfig.Config) {
 		Address:      cfg.Raft.RaftAddress,
 		APIEndpoints: endpoints,
 		Features:     featuregate.SupportedNames(),
+		// ReleaseVersion lets peers refuse a release gap
+		// (featuregate.Gate.AdmitReplica).
+		ReleaseVersion: release.Version(),
 	}
 	ctx := n.background()
 	n.memberWG.Add(1)
 	go func() {
 		defer n.memberWG.Done()
-		for ctx.Err() == nil {
+		for ctx.Err() == nil && n.Refusal() == nil {
 			if _, ok, lerr := host.LeaderID(shard.ShardKV); lerr == nil && ok {
 				adv, aerr := client.NewNodeAdvertiser(self, cluster.AdvertiseConfig{}, cluster.WithAdvertiseSealProbe(n))
 				if aerr != nil {
@@ -69,6 +73,14 @@ func (n *Node) startMemberRecord(host leaderReporter, cfg *qrdbconfig.Config) {
 				}
 				if serr := adv.Start(ctx); serr == nil {
 					n.memberAdv.Store(adv)
+					// A quarantine (Node.quarantine) that ran while the
+					// record was starting withdraws it here.
+					if n.Refusal() != nil {
+						if stale := n.memberAdv.Swap(nil); stale != nil {
+							_ = stale.Close()
+						}
+						return
+					}
 					logger.Info("member record published", slog.Uint64("node_id", cfg.Raft.ReplicaID))
 					return
 				}

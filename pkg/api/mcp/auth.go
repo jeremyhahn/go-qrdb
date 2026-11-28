@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -34,6 +35,7 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/initproof"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 )
 
 // authHTTPContext authenticates the mTLS peer of an incoming MCP HTTP request
@@ -211,7 +213,14 @@ var anonymousAdmission = map[string]func(s *Server, req anonymousRequest, authEr
 // could not finish checking a credential: that caller is told to retry, not
 // handed the anonymous view of a server it may be entitled to see more of.
 func admitWhenUnauthenticated(_ *Server, _ anonymousRequest, authErr error) bool {
-	return authmw.HTTPStatus(authErr, http.StatusUnauthorized) == http.StatusUnauthorized
+	return !isReleaseGap(authErr) && authmw.HTTPStatus(authErr, http.StatusUnauthorized) == http.StatusUnauthorized
+}
+
+// isReleaseGap reports whether the auth chain refused a replica forward
+// because the forwarder runs a non-adjacent release (*release.GapError).
+func isReleaseGap(err error) bool {
+	var gap *release.GapError
+	return errors.As(err, &gap)
 }
 
 // admitPublicToolCall admits a call to a declared public tool whatever the
@@ -234,7 +243,9 @@ type anonymousAdmittedKey struct{}
 // The per-tool gate still runs on every call, so an admitted request reaches
 // nothing but the public set.
 func (s *Server) admitAnonymous(r *http.Request, authErr error) (*http.Request, bool) {
-	if !s.toolPerms.HasPublic() || r.Method != http.MethodPost || r.Body == nil {
+	// A forward refused for a release gap is refused outright, public tool
+	// or not: a cluster serves nothing across a gap.
+	if isReleaseGap(authErr) || !s.toolPerms.HasPublic() || r.Method != http.MethodPost || r.Body == nil {
 		return nil, false
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxAnonymousRequestBodyBytes+1))
@@ -268,7 +279,18 @@ func (s *Server) admitAnonymous(r *http.Request, authErr error) (*http.Request, 
 // The body is REST's JSON error ({"error": <the refusal>}), so the client
 // learns why it was refused -- a suspended or disabled account, a revoked
 // certificate -- exactly as a REST caller does.
+//
+// A replica forward across a release gap (*release.GapError,
+// rolling-upgrades clause (3)) is answered 409 with the gap as the body,
+// as REST answers it: the assertion verified, so it is neither a failed
+// authentication nor something re-authorizing can cure.
 func writeAuthenticationRefusal(w http.ResponseWriter, err error, bearerChallenge string) {
+	var gap *release.GapError
+	if errors.As(err, &gap) {
+		slog.Warn("mcp: forward refused across a release gap", "error", err)
+		authmw.WriteJSONError(w, http.StatusConflict, gap.Error())
+		return
+	}
 	status := authmw.HTTPStatus(err, http.StatusUnauthorized)
 	if status == http.StatusUnauthorized {
 		// Debug: a misconfigured client is diagnosable without log spam.

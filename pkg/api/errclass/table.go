@@ -52,6 +52,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/rag"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/rowlock"
@@ -684,6 +685,12 @@ var placementRules = []rule{
 	// uses: the request is well formed and conflicts with the node's release,
 	// which the operator resolves by upgrading it (go-qrdb#482).
 	as(&featuregate.UnsupportedReplicaError{}, FailedPrecondition),
+	// A system-shard candidate with no live advertisement: the operator enrols the node first.
+	as(&featuregate.UnannouncedCandidateError{}, FailedPrecondition),
+	// A peer runs a release that is not adjacent to this node's (SPEC row
+	// rolling-upgrades): the request is well formed and the operator
+	// resolves it by running an adjacent release.
+	as(&release.GapError{}, FailedPrecondition),
 	// A promote names a replica that is not a committed observer: absent,
 	// already a voter, or a witness.
 	as(&service.MemberNotObserverError{}, FailedPrecondition),

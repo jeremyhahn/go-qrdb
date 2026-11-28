@@ -19,6 +19,7 @@ package container
 import (
 	"context"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -75,7 +76,7 @@ func (c *Cluster) Identities(ctx context.Context) (map[uint64]string, error) {
 		out, err := c.run(ctx, n, "node-identity", []string{
 			"run", "--rm", "--network", "none",
 			"-v", n.TLSDir + ":" + tlsMount + ":ro",
-			c.inv.Image, "node-identity", "--cert", tlsMount + "/node.pem",
+			c.inv.ImageOf(n), "node-identity", "--cert", tlsMount + "/node.pem",
 		})
 		if err != nil {
 			return nil, err
@@ -99,15 +100,15 @@ func (c *Cluster) Start(ctx context.Context, identities map[uint64]string) error
 		}
 	}
 	for _, n := range c.inv.Nodes {
-		if _, err := c.run(ctx, n, "start", c.startArgv(n, identities)); err != nil {
+		if _, err := c.run(ctx, n, "start", c.startArgv(n, c.inv.ImageOf(n), identities)); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// startArgv is the docker run command that starts n.
-func (c *Cluster) startArgv(n Node, identities map[uint64]string) []string {
+// startArgv is the docker run command that starts n on image.
+func (c *Cluster) startArgv(n Node, image string, identities map[uint64]string) []string {
 	peers := make([]string, len(c.inv.Nodes))
 	members := make([]string, len(c.inv.Nodes))
 	for i, m := range c.inv.Nodes {
@@ -133,7 +134,7 @@ func (c *Cluster) startArgv(n Node, identities map[uint64]string) []string {
 	return append(argv,
 		"-v", n.TLSDir+":"+tlsMount+":ro",
 		"-v", n.Data+":"+dataMount,
-		c.inv.Image,
+		image,
 		"start", "--config", imageConfig,
 		"--listen", "0.0.0.0:"+strconv.Itoa(RaftPort),
 		"--raft-address", n.RaftAddress(),
@@ -155,6 +156,35 @@ func (c *Cluster) startArgv(n Node, identities map[uint64]string) []string {
 // Logs returns the last tail lines n's container logged.
 func (c *Cluster) Logs(ctx context.Context, n Node, tail int) (string, error) {
 	return c.run(ctx, n, "logs", []string{"logs", "--tail", strconv.Itoa(tail), n.Container()})
+}
+
+// Replace rolls node n onto image: it force-removes n's container (an
+// absent one is not an error) and starts it again on the same data
+// directory or volume, with the same flags, from image. The inventory
+// records image as n's from then on, so a later Start or Identities uses
+// it too. It is the rolling-upgrade step: N to N+1, or N+1 back to N.
+func (c *Cluster) Replace(ctx context.Context, n Node, image string, identities map[uint64]string) error {
+	i := slices.IndexFunc(c.inv.Nodes, func(m Node) bool { return m.ReplicaID == n.ReplicaID })
+	if i < 0 {
+		return &ConfigError{Field: "node", Reason: "no member " + n.Name}
+	}
+	if image == "" {
+		return &ConfigError{Field: "image", Reason: "empty image for " + n.Name}
+	}
+	if _, ok := identities[n.ReplicaID]; !ok {
+		return &ConfigError{Field: "identities", Reason: "no member identity for " + n.Name}
+	}
+	n = c.inv.Nodes[i]
+	if _, err := c.run(ctx, n, "remove", []string{"rm", "-f", n.Container()}); err != nil && !containerAbsent(err) {
+		return err
+	}
+	if _, err := c.run(ctx, n, "start", c.startArgv(n, image, identities)); err != nil {
+		return err
+	}
+	// A copy, so an Inventory handed out earlier keeps what it said.
+	c.inv.Nodes = slices.Clone(c.inv.Nodes)
+	c.inv.Nodes[i].Image = image
+	return nil
 }
 
 // Remove force-removes every node's container, whether or not it is

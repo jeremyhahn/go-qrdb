@@ -253,3 +253,95 @@ func TestRunRenderFailure(t *testing.T) {
 		t.Errorf("render failure: got %v after %d runs", err, len(r.runs))
 	}
 }
+
+func TestStartUsesPerNodeImage(t *testing.T) {
+	inv := testInventory(t)
+	inv.Nodes[1].Image = "qrdbd:next"
+	r := &fakeRunner{}
+	if err := newTestCluster(t, inv, r).Start(context.Background(), identities(inv)); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"qrdbd:test", "qrdbd:next", "qrdbd:test"}
+	for i, run := range r.runs {
+		// The image is the argument docker run's command follows.
+		if at := slices.Index(run, "start"); at < 1 || run[at-1] != want[i] {
+			t.Errorf("node %d argv %q, want image %s", i+1, run, want[i])
+		}
+	}
+	r.runs = nil
+	r.replies = []reply{{match: "node-identity", out: testIdentity + "\n"}}
+	if _, err := newTestCluster(t, inv, r).Identities(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(r.runs[1], "qrdbd:next") {
+		t.Errorf("node-identity argv %q, want qrdbd:next", r.runs[1])
+	}
+}
+
+func TestReplaceKeepsDataVolume(t *testing.T) {
+	inv := testInventory(t)
+	r := &fakeRunner{}
+	c := newTestCluster(t, inv, r)
+	ids := identities(inv)
+	if err := c.Start(context.Background(), ids); err != nil {
+		t.Fatal(err)
+	}
+	before := slices.Clone(r.runs[1])
+	r.runs = nil
+	if err := c.Replace(context.Background(), inv.Nodes[1], "qrdbd:next", ids); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.runs) != 2 || !slices.Equal(r.runs[0], []string{"docker", "rm", "-f", "clusterproof-n2"}) {
+		t.Fatalf("replace runs %q, want rm then run", r.runs)
+	}
+	after := r.runs[1]
+	if !slices.Contains(after, "/srv/n2/data:"+dataMount) {
+		t.Errorf("replace argv %q lost the data volume", after)
+	}
+	// The same start, image aside.
+	swapped := slices.Clone(before)
+	swapped[slices.Index(swapped, "qrdbd:test")] = "qrdbd:next"
+	if !slices.Equal(after, swapped) {
+		t.Errorf("replace argv\n %q\nwant\n %q", after, swapped)
+	}
+	if got := c.Inventory().ImageOf(c.Inventory().Nodes[1]); got != "qrdbd:next" {
+		t.Errorf("inventory image after replace = %q", got)
+	}
+	if inv.Nodes[1].Image != "" {
+		t.Errorf("replace mutated the caller's inventory: %q", inv.Nodes[1].Image)
+	}
+
+	// Rolling back is the same step; an absent container is not an error.
+	r.runs = nil
+	r.replies = []reply{{match: "rm", out: "Error response from daemon: No such container: clusterproof-n2", err: errors.New("exit status 1")}}
+	if err := c.Replace(context.Background(), inv.Nodes[1], "qrdbd:test", ids); err != nil {
+		t.Fatalf("replace absent: %v", err)
+	}
+	if !slices.Equal(r.runs[1], before) {
+		t.Errorf("roll back argv %q, want %q", r.runs[1], before)
+	}
+}
+
+func TestReplaceRefuses(t *testing.T) {
+	inv := testInventory(t)
+	ids := identities(inv)
+	stranger := Node{Name: "x", ReplicaID: 9}
+	var ce *ConfigError
+	for name, call := range map[string]func(*Cluster) error{
+		"stranger":    func(c *Cluster) error { return c.Replace(context.Background(), stranger, "qrdbd:next", ids) },
+		"empty image": func(c *Cluster) error { return c.Replace(context.Background(), inv.Nodes[0], "", ids) },
+		"no identity": func(c *Cluster) error {
+			return c.Replace(context.Background(), inv.Nodes[0], "qrdbd:next", map[uint64]string{})
+		},
+	} {
+		r := &fakeRunner{}
+		if err := call(newTestCluster(t, inv, r)); !errors.As(err, &ce) || len(r.runs) != 0 {
+			t.Errorf("%s: got %v after %d runs, want ConfigError before any run", name, err, len(r.runs))
+		}
+	}
+	r := &fakeRunner{replies: []reply{{match: "run", err: errors.New("daemon down")}}}
+	var cmd *CommandError
+	if err := newTestCluster(t, inv, r).Replace(context.Background(), inv.Nodes[0], "qrdbd:next", ids); !errors.As(err, &cmd) {
+		t.Errorf("start failure: got %v, want CommandError", err)
+	}
+}

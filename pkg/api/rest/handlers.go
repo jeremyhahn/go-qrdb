@@ -38,6 +38,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
@@ -695,7 +696,8 @@ func (s *Server) handleKVScan(w http.ResponseWriter, r *http.Request) {
 
 // membershipChangeStatus is the HTTP status for a failed membership change
 // (add, add-observer, promote, remove): the status pkg/api/errclass gives a
-// member-identity refusal, a feature-gate admission refusal or a transient
+// member-identity refusal, a feature-gate admission refusal, a release-gap
+// refusal or a transient
 // (Unavailable) Raft condition when the failure is one of those, else 500. Deliberately
 // narrower than a blanket mapHTTPError(err): a membership change reaches
 // go-quicraft directly, and errclass's Unclassified default (500) is the
@@ -708,6 +710,14 @@ func membershipChangeStatus(err error) int {
 	}
 	var ure *featuregate.UnsupportedReplicaError
 	if errors.As(err, &ure) {
+		return mapHTTPError(err)
+	}
+	var uce *featuregate.UnannouncedCandidateError
+	if errors.As(err, &uce) {
+		return mapHTTPError(err)
+	}
+	var gap *release.GapError
+	if errors.As(err, &gap) {
 		return mapHTTPError(err)
 	}
 	var noe *service.MemberNotObserverError

@@ -34,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -235,10 +236,35 @@ func (s *Sender) Deliver(ctx context.Context, target placement.Replica, meta key
 		return errors.Join(ErrDelivery, err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusConflict {
+		return deliveryConflict(resp.Body)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return ErrDelivery
 	}
 	return nil
+}
+
+// maxRefusalBytes bounds the refusal body Deliver reads from a receiver.
+const maxRefusalBytes = 4 << 10
+
+// deliveryConflict turns a receiver's 409 into the sender's error: a
+// *release.GapError (joined with ErrDelivery) naming both releases when the
+// receiver refused on a release gap (it carries its release_version only
+// then), else ErrDelivery.
+func deliveryConflict(body io.Reader) error {
+	var refusal struct {
+		ReleaseVersion string `json:"release_version"`
+	}
+	if err := json.NewDecoder(io.LimitReader(body, maxRefusalBytes)).Decode(&refusal); err != nil ||
+		refusal.ReleaseVersion == "" {
+		return ErrDelivery
+	}
+	return errors.Join(ErrDelivery, &release.GapError{
+		Channel: keyDeliveryChannel,
+		Local:   release.Version(),
+		Peer:    refusal.ReleaseVersion,
+	})
 }
 
 // ownKeyOnEveryNode is the strategies whose barrier every serving node

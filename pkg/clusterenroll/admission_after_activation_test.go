@@ -140,14 +140,22 @@ func (s *mvccAdvertisementStore) ListMembers(ctx context.Context) ([]cluster.Mem
 
 var _ cluster.MembershipStore = (*mvccAdvertisementStore)(nil)
 
-// noGroupMembership is a featuregate.MembershipSource that knows no group:
-// every GroupMembership call fails closed, which is exactly what decide()
-// needs to see for the test shard so that only the pre-activated feature --
-// not an incidental per-group agreement -- is what AdmitReplica's refusal or
-// admission turns on.
-type noGroupMembership struct{}
+// noGroupMembership is a featuregate.MembershipSource for a joiner that is
+// not yet a member of anything. The system shard is known, as it is on a
+// real host, and does not list this node, so the gate reads the joiner as
+// not yet a member (featuregate.NotAMemberError) and leaves it to admission,
+// exactly as the real store reports it. Every other group fails closed,
+// which is what decide() needs to see for the test shard so that only the
+// pre-activated feature -- not an incidental per-group agreement -- is what
+// AdmitReplica's refusal or admission turns on.
+type noGroupMembership struct {
+	systemShard uint64
+}
 
-func (noGroupMembership) GroupMembership(uint64) (featuregate.GroupMembership, error) {
+func (m noGroupMembership) GroupMembership(shardID uint64) (featuregate.GroupMembership, error) {
+	if shardID == m.systemShard {
+		return featuregate.GroupMembership{}, nil
+	}
 	return featuregate.GroupMembership{}, errors.New("no group membership known in this test")
 }
 
@@ -231,7 +239,7 @@ func TestAdmission_JoinerIsAdmittedWhileAFeatureGateIsActive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build CSR: %v", err)
 	}
-	advertiser := joinadvertise.New(leaseSvc, mvccSvc)
+	advertiser := joinadvertise.New(leaseSvc, mvccSvc, nil)
 	if advertiser == nil {
 		t.Fatal("joinadvertise.New returned nil with both services configured")
 	}
@@ -254,7 +262,7 @@ func TestAdmission_JoinerIsAdmittedWhileAFeatureGateIsActive(t *testing.T) {
 	gate, err := featuregate.New(featuregate.Config{
 		Self:          featuregate.Self{ReplicaID: 1, Address: "10.0.0.1:63001"},
 		SystemShardID: systemShard,
-		Members:       noGroupMembership{},
+		Members:       noGroupMembership{systemShard: systemShard},
 	})
 	if err != nil {
 		t.Fatalf("featuregate.New: %v", err)

@@ -55,6 +55,7 @@ type noActivations struct{}
 func (noActivations) PutIfAbsent(context.Context, string, []byte) (bool, error) { return false, nil }
 func (noActivations) ListAll(context.Context, string) ([]string, error)         { return nil, nil }
 func (noActivations) ListStale(context.Context, string) ([]string, error)       { return nil, nil }
+func (noActivations) Delete(context.Context, string) error                      { return nil }
 
 // gatedRaftHost is a RaftHost whose admission is the node's real feature
 // gate, as qrdbd's raft host adapter's is.

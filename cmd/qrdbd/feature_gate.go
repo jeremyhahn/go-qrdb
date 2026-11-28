@@ -45,7 +45,13 @@ import (
 // self-advertisement is ever attempted, so a node on such a state machine
 // boots and serves without advertising its own features or watching for
 // newly-activated ones -- exactly as if no gate had been built at all --
-// rather than exiting over an accelerator this build never required.
+// rather than exiting over an accelerator this build never required. The
+// release history and the joiners' records the enrolling member writes
+// (joinadvertise) are not leased on such a state machine, so the gate is
+// started for release admission alone (Gate.StartAdmission): it runs the
+// restart release check, records this node's release, and admits a
+// system-shard member add only from an announced, adjacent release, on
+// every state machine. The returned closer closes the gate.
 func startFeatureGate(ctx context.Context, gate *featuregate.Gate, svc *lifecycle.Node, leaders server.LeaderSource, nodeSeal cluster.SealProbe) (io.Closer, error) {
 	if gate == nil {
 		err := server.WhileSystemShardSettling(ctx, leaders, "feature gate activation check", func(actx context.Context) error {
@@ -72,7 +78,14 @@ func startFeatureGate(ctx context.Context, gate *featuregate.Gate, svc *lifecycl
 			slog.Warn("feature-gate self-advertisement unavailable on this state machine; "+
 				"booting without it",
 				slog.String("reason", unsupported.Message))
-			return nopCloser{}, nil
+			// The release history and the joiners' unleased records need
+			// no lease, so release admission still runs.
+			if err := server.WhileSystemShardSettling(ctx, leaders, "release admission start", func(actx context.Context) error {
+				return gate.StartAdmission(actx, svc.KV, client.NewMembershipStoreAt(featuregate.AdvertisementPrefix))
+			}); err != nil {
+				return nil, err
+			}
+			return gate, nil
 		}
 		return nil, err
 	}

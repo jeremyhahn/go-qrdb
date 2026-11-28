@@ -17,6 +17,7 @@ package quic
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"slices"
 	"sync"
 	"testing"
@@ -127,6 +128,39 @@ func TestQUICListener_GetConfigForClientHook_RefusesHTTPOnlyClient(t *testing.T)
 		t.Fatalf("a client offering only h2 completed a handshake, negotiating %q", conn.ConnectionState().TLS.NegotiatedProtocol)
 	}
 	assertProtos(t, "hook's per-connection config", perConn, httpProtos)
+}
+
+// TestQUICListener_RefusesGapProtocolWithAlert120 is the ALPN leg of the
+// rolling-upgrades version-gap refusal (T5): a peer that offers only a
+// frame protocol this release does not speak -- two releases ahead -- is
+// refused by the TLS no_application_protocol alert (120), which QUIC
+// carries as the crypto error 0x100+120, never a decode failure.
+func TestQUICListener_RefusesGapProtocolWithAlert120(t *testing.T) {
+	bundle := generateIntegrationTLS(t)
+	addr := startHookedServer(t, bundle.serverCfg)
+
+	conn, err := dialALPN(addr, bundle.clientCfg, "qrdb-quic/5")
+	if err == nil {
+		_ = conn.CloseWithError(0, "test done")
+		t.Fatalf("a client offering only qrdb-quic/5 completed a handshake, negotiating %q", conn.ConnectionState().TLS.NegotiatedProtocol)
+	}
+	var te *quicgo.TransportError
+	if !errors.As(err, &te) {
+		t.Fatalf("dial offering qrdb-quic/5 = %v (%T), want a *quic.TransportError", err, err)
+	}
+	if te.ErrorCode != quicgo.TransportErrorCode(0x178) {
+		t.Fatalf("transport error code = %#x, want 0x178 (no_application_protocol)", uint64(te.ErrorCode))
+	}
+
+	// The same listener still serves the current protocol.
+	ok, err := dialALPN(addr, bundle.clientCfg, wire.Protocols...)
+	if err != nil {
+		t.Fatalf("dial offering wire.Protocols: %v", err)
+	}
+	defer func() { _ = ok.CloseWithError(0, "test done") }()
+	if got := ok.ConnectionState().TLS.NegotiatedProtocol; got != wire.Protocols[0] {
+		t.Fatalf("negotiated %q, want %q", got, wire.Protocols[0])
+	}
 }
 
 // TestQUICListener_SharedTrustPoolConfig_LeavesSharedConfigUntouched builds

@@ -17,7 +17,9 @@ package service
 import (
 	"bytes"
 	"context"
+	"errors"
 
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
@@ -78,11 +80,69 @@ type ReplicaAdmitter interface {
 
 // admitReplica asks h, when it gates features, whether a replica of shardID
 // may be added on raftAddr.
-func admitReplica(h any, shardID uint64, raftAddr string) error {
-	if a, ok := h.(ReplicaAdmitter); ok {
-		return a.AdmitReplica(shardID, raftAddr)
+func admitReplica(h any, shardID uint64, raftAddr string) (featuregate.ConfigBinding, error) {
+	if a, ok := h.(configBoundAdmitter); ok {
+		return a.AdmitReplicaAt(shardID, raftAddr)
 	}
-	return nil
+	if a, ok := h.(ReplicaAdmitter); ok {
+		return featuregate.ConfigBinding{}, a.AdmitReplica(shardID, raftAddr)
+	}
+	return featuregate.ConfigBinding{}, nil
+}
+
+// proposeBound runs propose, the add bound to b, which returns once the add
+// commits or is refused, or with a non-nil pending channel once its wait ends
+// with the outcome unknown (closed once the outcome is definitive, or once
+// stop closes and propose gives up resolving it). go-quicraft makes the
+// change-ID comparison for a non-zero configChangeIndex but skips it for 0,
+// and makes no release comparison at all, so every Required binding goes
+// through the host's featuregate.Gate.ProposeBound: it compares the change ID
+// (for 0 too) and whether a compared member's release changed since admission
+// (a restart on another release changes no configuration), and holds the
+// gate's per-node lock from that recheck through the add's outcome (past
+// propose's return while pending is open), so no other bound add through this
+// node commits in between; its stop closes when the gate closes. With no gate
+// or a binding that is not Required, nothing is fenced: propose gets an
+// already closed stop, so it resolves nothing and returns no pending.
+// ctx bounds the wait for the gate's lock, which an ambiguous add's fence
+// can hold: a request whose ctx ends first returns ctx.Err() and proposes
+// nothing. Unfenced, propose is skipped only when ctx has already ended.
+func proposeBound(ctx context.Context, h any, shardID uint64, b featuregate.ConfigBinding, propose func(stop <-chan struct{}) (pending <-chan struct{}, err error)) error {
+	if b.Required {
+		if a, ok := h.(configBoundAdmitter); ok {
+			return a.ProposeBound(ctx, shardID, b, propose)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_, err := propose(featuregate.Unfenced)
+	return err
+}
+
+// staleConfiguration reports whether err refuses an add because the
+// configuration it was bound to changed after admission.
+func staleConfiguration(err error) bool {
+	var stale *featuregate.StaleConfigurationError
+	return errors.Is(err, quicraft.ErrStaleConfigChange) || errors.As(err, &stale)
+}
+
+// configBoundAdmitter is a ReplicaAdmitter that also returns the
+// system-shard configuration its release check compared against
+// (featuregate.Gate.AdmitReplicaAt; not Required for another shard, or when
+// no membership was compared), and compares a binding with the current
+// configuration (featuregate.Gate.CheckConfigBinding). AddMember passes the
+// binding's change ID as the add's configChangeIndex, so go-quicraft refuses
+// the add as stale when the membership changed after admission, and
+// compares a binding to change ID 0 itself, which go-quicraft cannot.
+// ProposeBound runs that comparison and the proposal through its result
+// under the gate's per-node lock (featuregate.Gate.ProposeBound), passing
+// propose a stop that closes when the gate closes; it waits for that lock
+// only until ctx ends.
+type configBoundAdmitter interface {
+	AdmitReplicaAt(shardID uint64, raftAddr string) (featuregate.ConfigBinding, error)
+	CheckConfigBinding(shardID uint64, b featuregate.ConfigBinding) error
+	ProposeBound(ctx context.Context, shardID uint64, b featuregate.ConfigBinding, propose func(stop <-chan struct{}) (pending <-chan struct{}, err error)) error
 }
 
 // WriteGuard is a precondition carried by every write proposed under a

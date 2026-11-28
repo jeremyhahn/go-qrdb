@@ -16,6 +16,12 @@ package clusterkeys
 
 import "errors"
 
+// keyDeliveryChannel names the key-delivery channel in a *release.GapError:
+// the receiver checks the envelope's announced release against its own
+// with release.Check under this name, and the sender reports a refusal on a
+// release gap under it (SPEC rolling upgrades, clauses (2)-(3)).
+const keyDeliveryChannel = "key-delivery"
+
 // Sentinel errors for the cluster-peer key transport layer.
 // Callers match these with errors.Is.
 var (

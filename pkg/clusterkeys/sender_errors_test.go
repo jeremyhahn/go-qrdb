@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterkeys"
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 )
 
 // followerMeta is the delivery metadata addressed to the replica "follower".
@@ -116,5 +117,65 @@ func TestSender_Deliver_PostTransportFails(t *testing.T) {
 	err = sender.Deliver(context.Background(), replica, followerMeta(), []byte("key"))
 	if !errors.Is(err, clusterkeys.ErrDelivery) {
 		t.Fatalf("Deliver = %v, want ErrDelivery for a dropped connection", err)
+	}
+}
+
+// conflictReceiver serves the follower's node key and answers every
+// key-delivery POST with 409 and the given JSON body.
+func conflictReceiver(t *testing.T, body string) (*clusterkeys.Sender, placement.Replica) {
+	t.Helper()
+	ca := newTestCA(t)
+	follower := newTestNodeCert(t, ca, "cluster.local", "follower")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/cluster/nodekey" {
+			w.Header().Set("Content-Type", "application/x-pem-file")
+			_, _ = w.Write(follower.pem)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+
+	resolver := &staticURLResolver{raftAddr: "follower:9000", adminURL: srv.URL}
+	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", nil, newTestLogger())
+	if err != nil {
+		t.Fatalf("NewSender: %v", err)
+	}
+	return sender, placement.Replica{ReplicaID: 2, NodeID: "follower", RaftAddr: "follower:9000"}
+}
+
+// TestSender_Deliver_ReleaseGapIsTyped pins SPEC rolling upgrades clause
+// (3) on the sender: a receiver refusing on a release gap (409 carrying its
+// release) surfaces as a *release.GapError naming both releases, still
+// ErrDelivery.
+func TestSender_Deliver_ReleaseGapIsTyped(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.58.0-alpha"))
+	sender, replica := conflictReceiver(t, `{"error":"release gap","release_version":"0.60.0-alpha"}`)
+
+	err := sender.Deliver(context.Background(), replica, followerMeta(), []byte("key"))
+	want := release.GapError{Channel: "key-delivery", Local: "0.58.0-alpha", Peer: "0.60.0-alpha"}
+	var gap *release.GapError
+	if !errors.As(err, &gap) || *gap != want {
+		t.Fatalf("Deliver across a release gap = %v, want %+v", err, want)
+	}
+	if !errors.Is(err, clusterkeys.ErrDelivery) {
+		t.Fatalf("Deliver across a release gap = %v, want ErrDelivery too", err)
+	}
+}
+
+// TestSender_Deliver_PlainConflictIsUntyped pins that a 409 without a
+// release is a plain ErrDelivery.
+func TestSender_Deliver_PlainConflictIsUntyped(t *testing.T) {
+	sender, replica := conflictReceiver(t, `{"error":"conflict"}`)
+
+	err := sender.Deliver(context.Background(), replica, followerMeta(), []byte("key"))
+	if !errors.Is(err, clusterkeys.ErrDelivery) {
+		t.Fatalf("Deliver = %v, want ErrDelivery", err)
+	}
+	var gap *release.GapError
+	if errors.As(err, &gap) {
+		t.Fatalf("Deliver = %v, want no *release.GapError without a release", err)
 	}
 }

@@ -23,6 +23,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 )
 
 func mustP256(t *testing.T) *ecdsa.PrivateKey {
@@ -192,6 +194,38 @@ func TestOpen_TamperedIssuedAtWithinWindow(t *testing.T) {
 	env.IssuedAt = env.IssuedAt.Add(time.Second)
 	if _, err := r.Open(env); !errors.Is(err, ErrDecrypt) {
 		t.Fatalf("tampered IssuedAt: expected ErrDecrypt, got %v", err)
+	}
+}
+
+// TestSeal_AnnouncesTheRelease pins that a sealed envelope carries the
+// sender's release (pkg/release.Version), the version the receiving
+// transport checks for adjacency (SPEC rolling upgrades, clause (2)).
+func TestSeal_AnnouncesTheRelease(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.59.0-alpha"))
+	recip := mustP256(t)
+	env, err := Seal(&recip.PublicKey, goodMeta(), []byte("secret-key-material-bytes-32byte"))
+	if err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	if env.ReleaseVersion != release.Version() {
+		t.Fatalf("ReleaseVersion = %q, want %q", env.ReleaseVersion, release.Version())
+	}
+}
+
+// TestOpen_RewrittenReleaseFailsDecrypt pins that the announced release is
+// bound into the HPKE info: a peer that rewrites it makes Open fail closed.
+func TestOpen_RewrittenReleaseFailsDecrypt(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.59.0-alpha"))
+	recip := mustP256(t)
+	meta := goodMeta()
+	env, err := Seal(&recip.PublicKey, meta, []byte("secret-key-material-bytes-32byte"))
+	if err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	r := newReceiver(t, recip, meta.TargetNodeID, env.IssuedAt)
+	env.ReleaseVersion = "0.60.0-alpha"
+	if _, err := r.Open(env); !errors.Is(err, ErrDecrypt) {
+		t.Fatalf("rewritten release: expected ErrDecrypt, got %v", err)
 	}
 }
 
@@ -385,18 +419,21 @@ func TestOpen_MalformedEnvelope(t *testing.T) {
 func TestSealInfo_DistinctPerContext(t *testing.T) {
 	nonce := bytes.Repeat([]byte{1}, nonceLen)
 	at := time.Unix(1700000000, 0).UTC()
-	base := sealInfo(goodMeta(), nonce, at)
+	base := sealInfo(goodMeta(), "0.59.0", nonce, at)
 
 	other := goodMeta()
 	other.ShardID = 43
-	if bytes.Equal(base, sealInfo(other, nonce, at)) {
+	if bytes.Equal(base, sealInfo(other, "0.59.0", nonce, at)) {
 		t.Fatal("different shard must yield different info")
 	}
-	if bytes.Equal(base, sealInfo(goodMeta(), nonce, at.Add(time.Nanosecond))) {
+	if bytes.Equal(base, sealInfo(goodMeta(), "0.59.0", nonce, at.Add(time.Nanosecond))) {
 		t.Fatal("different IssuedAt must yield different info")
 	}
+	if bytes.Equal(base, sealInfo(goodMeta(), "0.60.0", nonce, at)) {
+		t.Fatal("different release must yield different info")
+	}
 	// Determinism.
-	if !bytes.Equal(base, sealInfo(goodMeta(), nonce, at)) {
+	if !bytes.Equal(base, sealInfo(goodMeta(), "0.59.0", nonce, at)) {
 		t.Fatal("sealInfo must be deterministic")
 	}
 }

@@ -88,6 +88,12 @@ type Member struct {
 	// predates feature advertisement carries none, which is exactly what it
 	// supports.
 	Features []string `json:"features,omitempty"`
+
+	// ReleaseVersion is the Semantic Versioning 2.0.0 release of the
+	// member's binary (pkg/release.Version). Peers admit only adjacent
+	// releases (pkg/release.Adjacent). A stamped node refuses a record
+	// whose ReleaseVersion is empty.
+	ReleaseVersion string `json:"release_version,omitempty"`
 }
 
 // MemberEventType distinguishes member join from member leave events.

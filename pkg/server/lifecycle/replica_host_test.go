@@ -213,6 +213,7 @@ func (gateNoActivations) PutIfAbsent(context.Context, string, []byte) (bool, err
 }
 func (gateNoActivations) ListAll(context.Context, string) ([]string, error)   { return nil, nil }
 func (gateNoActivations) ListStale(context.Context, string) ([]string, error) { return nil, nil }
+func (gateNoActivations) Delete(context.Context, string) error                { return nil }
 
 // TestReplicaHost_GateRefusesAnUnsupportingNode pins the admission branch of
 // a gated host: the dedicated group's replicas advertise every feature, so a

@@ -524,12 +524,67 @@ group's committed log, which would already contain the new command. Gating on
 cluster-wide activation rather than a group's current membership is what
 keeps a half-upgraded cluster working and never diverging.
 
+A cluster runs only **adjacent releases**: nodes on the same major.minor
+release (any patch level), on consecutive minor releases of one major, or on
+the last minor of major M and the first minor (`(M+1).0`) of the next. Upgrade
+one minor release at a time; to cross several, roll the whole cluster through
+each in turn. Every `qrdbd` built by `make build` or the Docker image carries
+its release (`qrdbd version` prints it) and announces it when it enrols and in
+its membership advertisement. A node whose release is not adjacent is refused
+at both points with `release.GapError`, which names the channel
+(`enrollment`, `raft-membership`, `key-delivery` or `replica-forwarding`) and both releases: a
+joining node is refused before its join token is consumed, so the same token
+works once the node runs an adjacent release (REST 409; the joiner exits with
+the error), and a membership change that would place a replica on such a node
+is refused (gRPC and QUIC `FAILED_PRECONDITION`). A node whose release is not
+adjacent cannot receive a dedicated tenant's key either: the key-delivery
+envelope announces the sender's release, and the receiver refuses a gap
+before it decrypts anything (REST 409), so the sender gets the gap. A request
+a node forwards to a replica or to the leader carries the forwarding node's
+release inside its signed on-behalf assertion, and a node whose release is not
+adjacent refuses it with the gap (REST 409, gRPC and QUIC
+`FAILED_PRECONDITION`) instead of serving it. The QUIC API negotiates its frame
+protocol through TLS ALPN from the list a release speaks (today
+`qrdb-quic/3`); a client offering none of them is refused in the handshake
+with TLS alert 120 (`no_application_protocol`, QUIC error `0x178`), and the
+Go SDK reports that as a typed, non-retryable refusal. A node embedded through
+the Go SDK that the release check refuses after it is built is quarantined:
+it withdraws its advertisements, closes its Raft host, refuses every
+data-plane call with the refusal (`Node.Refusal` returns it), and needs a
+release that fits and a restart.
+
+Release admission is checked against the system-shard membership it read and
+rechecked immediately before the membership change is proposed, so a
+concurrent addition, or a member restarted onto another release, between
+admission and the proposal makes the add retry its admission once and be
+refused. Concurrent additions through the leader are serialized from that
+recheck to the change's commit, so of two additions from opposite sides of the
+cluster's release (for example a 0.58 and a 0.60 node into an all-0.59
+cluster) the later one is refused with the release gap (HTTP 409).
+Concurrent additions from either side of the release, through any leader, and
+a restart onto a non-adjacent release during an addition are refused with the
+release gap (HTTP 409).
+
+While the upgrade is under way the cluster is **mixed**: some nodes run the
+old release (N) and some the new one (N+1). A mixed cluster serves every
+transport (REST, gRPC, QUIC, MCP, Unix socket) on every node, and a write sent
+to a follower is forwarded to the leader whichever release each of them runs:
+an N+1 follower forwards to an N leader and an N follower to an N+1 leader, so
+moving leadership during the upgrade (`qrdb admin member transfer-leadership`)
+is safe. An operation that needs the new feature takes the old path, or is
+refused as not yet active, until activation; nothing the N nodes cannot apply
+is proposed. Tenant barriers keep working too: a raft-isolated tenant created
+while the leader runs either release is served on every node under that node's
+own key.
+
 When every node advertises the feature, the cluster **activates** it, and
 activation is permanent. **After activation, no node may be started or added on
 an older release** -- neither an existing node rolled back nor a new one. A
 release that knows about feature activation refuses to start with an error
-naming the feature, and the cluster refuses to add a replica on a node that does
-not advertise it (see below), but a release without feature activation can do
+naming the feature (`featuregate.UnsupportedFeatureError`: "the cluster has
+activated feature ..., which this binary does not implement"); start the node
+on the new release again and it rejoins with its data. The cluster also
+refuses to add a replica on a node that does not advertise it (see below), but a release without feature activation can do
 neither; roll forward instead.
 
 A new node is added only once it advertises every feature the cluster uses.
@@ -543,7 +598,11 @@ short-lived (15-minute) advertisement on its behalf as part of the join,
 naming the features the joiner's own binary claims. `qrdb admin member add`
 then sees a live advertisement and admits it, the same as any other node. If
 `member add` does not happen within that window the advertisement lapses;
-run the join again to get a fresh one. From the Go SDK, a node can instead be
+run the join again to get a fresh one. An add attempted after the
+advertisement lapsed is refused with `featuregate.UnannouncedCandidateError`
+(REST 409, gRPC and QUIC `FAILED_PRECONDITION`) rather than admitted without a
+release check. On a state machine without leases the joiner's record does
+not expire, and the member removes it once it runs. From the Go SDK, a node can instead be
 registered through dynamic membership over a client of the running cluster,
 with its features in the registration published before the add.
 
@@ -576,9 +635,11 @@ a new member if the release notes call out a bootstrap wire change.
 **A node refuses to start: "the cluster has activated feature ...".** The
 cluster activated a feature this node's release does not implement. Install a
 release that does; activation cannot be undone. A node embedded in an
-application through the Go SDK cannot refuse to start after it is built:
-it logs the same error, takes no part in the feature, and reports its health
-as `degraded` until it is upgraded.
+application through the Go SDK that the release check refuses (an activated
+feature it lacks, or a release gap to the cluster's members) is quarantined:
+it withdraws its advertisements, closes its Raft host (it neither votes nor
+replicates), and refuses every data-plane call with the refusal, which
+`Node.Refusal` returns. Install a release that fits and restart it.
 
 **Writes stall while reads keep working, and `slow raft WAL fsync` is
 logged.** A follower's disk is slow to fsync its write-ahead log. The leader

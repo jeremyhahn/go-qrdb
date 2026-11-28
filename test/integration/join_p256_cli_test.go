@@ -214,14 +214,14 @@ func runJoinSuiteRow(t *testing.T, fips bool, flags func(noiseAddr, joinAddr str
 	}
 
 	founderLog := &logCapture{}
-	node1 := startFoundingSelfIssuedCANode(t, raftPorts[0], adminPorts[0], grpcPorts[0], noisePorts[0], joinPorts[0],
+	node1 := startFoundingSelfIssuedCANode(t, buildBinary(t), raftPorts[0], adminPorts[0], grpcPorts[0], noisePorts[0], joinPorts[0],
 		peers12, fmt.Sprintf("2=%s", node2Identity), peerAdminURLs, founderLog)
 
 	node1CAKeyPath := filepath.Join(node1.dataDir, "ca-key.pem")
 	node2LeafPEM := signCertWithCA(t, node1.caPath, node1CAKeyPath, nodeLeafTemplate("node2"), &node2Key.PublicKey)
 	node2AdminKey, _, _ := generateNodeKeypairAndIdentity(t)
 	node2AdminCertPEM := signCertWithCA(t, node1.caPath, node1CAKeyPath, adminCertTemplate(t), &node2AdminKey.PublicKey)
-	node2 := startSecondFounderExplicitTLS(t, raftPorts[1], adminPorts[1], grpcPorts[1],
+	node2 := startSecondFounderExplicitTLS(t, buildBinary(t), raftPorts[1], adminPorts[1], grpcPorts[1],
 		peers12, fmt.Sprintf("1=%s", node1.identity), node1.caPath, node2LeafPEM, node2KeyPEM, peerAdminURLs)
 
 	daemonsUnderFIPS(false)
@@ -246,7 +246,7 @@ func runJoinSuiteRow(t *testing.T, fips bool, flags func(noiseAddr, joinAddr str
 		fmt.Sprintf("127.0.0.1:%d", noisePorts[0]),
 		fmt.Sprintf("127.0.0.1:%d", joinPorts[0]),
 		founderLog, t)
-	node3 := startJoiningSelfIssuedCANode(t, 3, raftPorts[2], adminPorts[2], grpcPorts[2], noisePorts[2], joinPorts[2],
+	node3 := startJoiningSelfIssuedCANode(t, buildBinary(t), 3, raftPorts[2], adminPorts[2], grpcPorts[2], noisePorts[2], joinPorts[2],
 		peers123, memberIDs13, node1, token3, peerAdminURLs, transport...)
 	daemonsUnderFIPS(false)
 

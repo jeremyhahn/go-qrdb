@@ -91,7 +91,7 @@ func JoinCSRHTTP(ctx context.Context, opts *JoinHTTPClientOptions, csrDER []byte
 	}
 	defer client.CloseIdleConnections()
 
-	req := JoinRequest{Token: opts.Token, CSRDER: csrDER, NodeURI: nodeURI, ReplicaID: opts.ReplicaID, Features: opts.Features}
+	req := JoinRequest{Token: opts.Token, CSRDER: csrDER, NodeURI: nodeURI, ReplicaID: opts.ReplicaID, Features: opts.Features, ReleaseVersion: joinerRelease()}
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, &FetchError{Method: "join-http", Err: err}
@@ -119,7 +119,7 @@ func JoinCSRHTTP(ctx context.Context, opts *JoinHTTPClientOptions, csrDER []byte
 		return nil, &FetchError{Method: "join-http", Err: err}
 	}
 	if jr.Error != "" {
-		return nil, &JoinRefusedError{Reason: jr.Error}
+		return nil, joinRefusal(&jr)
 	}
 	if jr.Pending {
 		return nil, &JoinPendingError{RequestID: jr.RequestID}

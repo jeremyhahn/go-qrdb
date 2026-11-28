@@ -18,6 +18,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"sync"
@@ -32,6 +33,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
@@ -178,9 +180,71 @@ func TestStartFeatureGate_DegradesWhenLeaseIsUnavailable(t *testing.T) {
 
 	closer, err := startFeatureGate(context.Background(), g, svc, nil, nil)
 	require.NoError(t, err)
+	assert.Same(t, g, closer, "the closer does not close the admission gate")
 	require.NoError(t, closer.Close())
 	assert.False(t, g.Activated(featuregate.GuardedWrites),
-		"a degraded gate never started, so it tracks no activation locally")
+		"an admission-only gate tracks no activation locally")
+}
+
+// TestStartFeatureGate_LeaselessNodeAdmitsAnAnnouncedMember covers a system
+// shard add on a state machine without leases: the joiner's unleased record
+// announces its release, and the gate admits it.
+func TestStartFeatureGate_LeaselessNodeAdmitsAnAnnouncedMember(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.59.0-alpha"))
+	joiner, err := json.Marshal(cluster.Member{NodeID: 2, Address: "127.0.0.1:63101", Features: featuregate.SupportedNames(), ReleaseVersion: "0.59.0-alpha"})
+	require.NoError(t, err)
+	store := map[string][]byte{featuregate.AdvertisementPrefix + "2": joiner}
+	svc := gateServices(store)
+	svc.Lease = &leaseUnsupportedServicer{}
+	g := soloGate(t)
+	t.Cleanup(func() { _ = g.Close() })
+
+	closer, err := startFeatureGate(context.Background(), g, svc, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = closer.Close() })
+	_, err = g.AdmitReplicaAt(shard.ShardKV, "127.0.0.1:63101")
+	require.NoError(t, err)
+	_, err = g.AdmitReplicaAt(shard.ShardKV, "127.0.0.1:63102")
+	var unannounced *featuregate.UnannouncedCandidateError
+	require.ErrorAs(t, err, &unannounced)
+}
+
+// TestStartFeatureGate_LeaselessNodeEnforcesTheReleaseGap: a node on a
+// state machine without leases ("memory", "disk") boots without the
+// advertisement, but not without the release check: restarted across a
+// release gap it is refused, and on an adjacent release its release is
+// recorded.
+func TestStartFeatureGate_LeaselessNodeEnforcesTheReleaseGap(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.60.0-alpha"))
+	for name, tc := range map[string]struct {
+		last    string
+		refused bool
+	}{
+		"release gap":      {last: "0.58.0-alpha", refused: true},
+		"adjacent release": {last: "0.59.0-alpha"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := map[string][]byte{featuregate.ReleasePrefix + "1/" + tc.last: []byte("127.0.0.1:63100")}
+			svc := gateServices(store)
+			svc.Lease = &leaseUnsupportedServicer{}
+			g := soloGate(t)
+			t.Cleanup(func() { _ = g.Close() })
+
+			closer, err := startFeatureGate(context.Background(), g, svc, nil, nil)
+			_, recorded := store[featuregate.ReleasePrefix+"1/0.60.0-alpha"]
+			if tc.refused {
+				var gap *release.GapError
+				require.ErrorAs(t, err, &gap)
+				assert.Nil(t, closer)
+				require.ErrorAs(t, g.Refusal(), &gap)
+				assert.False(t, recorded, "a refused binary records no release")
+				return
+			}
+			require.NoError(t, err)
+			require.NoError(t, closer.Close())
+			assert.True(t, recorded, "the leaseless node records its release")
+		})
+	}
 }
 
 // countingCloser counts withdrawals and fails each one with err.

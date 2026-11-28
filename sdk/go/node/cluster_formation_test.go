@@ -572,27 +572,27 @@ func TestRunningCluster_AddReplica_Identity(t *testing.T) {
 	defer cancel()
 
 	// Every founder advertises guarded-writes, so once the leader's gate has
-	// seen their advertisements it refuses a replica on any node without a
-	// live advertisement of its own (featuregate.Gate.AdmitReplica). Each
-	// subtest runs against that settled contract, never against a race with
-	// the founders' advertisements.
+	// adopted the activation it judges every candidate by the features the
+	// group requires (featuregate.Gate.AdmitReplica). Each subtest runs
+	// against that settled contract, never against a race with the
+	// founders' advertisements.
 	//
-	// The refusal alone does not show the leader has seen every founder: the
-	// gate refuses as soon as it adopts an activation another founder
-	// committed, which can precede the founder advertisements in its own
-	// view. A subtest that names a founder's address (the identity conflict
-	// on replica 2) needs that founder admitted, so the wait observes both.
+	// On the system shard an address with no live advertisement is refused
+	// as unannounced from the start (featuregate.UnannouncedCandidateError),
+	// before and after the activation, so that refusal no longer shows the
+	// activation was seen: the wait checks the gate's activation directly.
+	// A subtest that names a founder's address (the identity conflict on
+	// replica 2) needs that founder admitted, so the wait observes both.
 	const unadvertised = "127.0.0.1:9"
 	gate := nodes[leader-1].featureGate
 	if gate == nil {
 		t.Fatal("the leader gates no features")
 	}
 	// unsettled reports what the leader's gate has yet to see, or "" once
-	// it refuses the unadvertised address and admits every founder.
+	// it has adopted the guarded-writes activation and admits every founder.
 	unsettled := func() string {
-		var unsupported *featuregate.UnsupportedReplicaError
-		if err := gate.AdmitReplica(shard.ShardKV, unadvertised); !errors.As(err, &unsupported) {
-			return "admitted a replica on " + unadvertised + ", which advertises nothing"
+		if !gate.Activated(featuregate.GuardedWrites) {
+			return "has not adopted the " + string(featuregate.GuardedWrites) + " activation"
 		}
 		for _, f := range founders {
 			if err := gate.AdmitReplica(shard.ShardKV, f.addr); err != nil {
@@ -615,15 +615,15 @@ func TestRunningCluster_AddReplica_Identity(t *testing.T) {
 		<-poll.C
 	}
 
-	t.Run("node without a feature advertisement is refused", func(t *testing.T) {
+	t.Run("node without any advertisement is refused", func(t *testing.T) {
 		identity, err := MemberIdentityFromPEM(replicas[3].cert.CertPEM)
 		if err != nil {
 			t.Fatalf("MemberIdentityFromPEM: %v", err)
 		}
 		err = admin.AddMember(ctx, shard.ShardKV, 9, unadvertised, identity)
-		var unsupported *featuregate.UnsupportedReplicaError
-		if !errors.As(err, &unsupported) || unsupported.ShardID != shard.ShardKV || unsupported.Address != unadvertised {
-			t.Fatalf("AddMember = %v, want *featuregate.UnsupportedReplicaError for shard %d on %s", err, shard.ShardKV, unadvertised)
+		var unannounced *featuregate.UnannouncedCandidateError
+		if !errors.As(err, &unannounced) || unannounced.ShardID != shard.ShardKV || unannounced.Address != unadvertised {
+			t.Fatalf("AddMember = %v, want *featuregate.UnannouncedCandidateError for shard %d on %s", err, shard.ShardKV, unadvertised)
 		}
 	})
 
@@ -714,11 +714,11 @@ func TestRunningCluster_AddReplica_Identity(t *testing.T) {
 func advertiseJoiner(ctx context.Context, t *testing.T, leader *Node, replicaID uint64, addr string) {
 	t.Helper()
 	svc := leader.svcNode.Load()
-	advertiser := joinadvertise.New(svc.Lease, svc.MVCC)
+	advertiser := joinadvertise.New(svc.Lease, svc.MVCC, nil)
 	if advertiser == nil {
 		t.Fatal("the leader has no lease or MVCC service to advertise through")
 	}
-	if err := advertiser.AdvertiseJoiner(ctx, replicaID, addr, featuregate.SupportedNames()); err != nil {
+	if err := advertiser.AdvertiseJoiner(ctx, replicaID, addr, featuregate.SupportedNames(), ""); err != nil {
 		t.Fatalf("AdvertiseJoiner(%d, %s): %v", replicaID, addr, err)
 	}
 	deadline := time.Now().Add(clusterFormationBudget)

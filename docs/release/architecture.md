@@ -46,6 +46,8 @@ tested together. A release whose tags point at different commits, or that
 lacks one of them, is *skewed*. `go get` can resolve a skewed release, and
 once a consumer has recorded it in `go.sum` nobody can take it back.
 
+This equality is about module tags: which `go-qrdb` and `sdk/go` versions a consumer builds together. Whether two running `qrdbd` releases may share one cluster during an upgrade is a different rule, the adjacency rule of [rolling upgrades](../rolling-upgrades/engineering.md#adjacent-releases), and every node-to-node channel refuses a release outside it with a typed error.
+
 ## Who creates a tag
 
 **The project agent, by hand, with `make release-alpha`**, any time CI is

@@ -858,7 +858,7 @@ func TestDeliverApprovedJoin_AdvertisesTheJoinerOnSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseCertificateRequest: %v", err)
 	}
-	record := &pendingJoinRecord{ID: "deliver-advertise", BoundNodeURI: boundNodeURI, ReplicaID: 7, Features: []string{"vector"}}
+	record := &pendingJoinRecord{ID: "deliver-advertise", BoundNodeURI: boundNodeURI, ReplicaID: 7, Features: []string{"vector"}, ReleaseVersion: "0.59.0-alpha"}
 	advertiser := &fakeFeatureAdvertiser{}
 
 	resp := deliverApprovedJoin(ctx, provider, store, record, csr, advertiser)
@@ -870,5 +870,89 @@ func TestDeliverApprovedJoin_AdvertisesTheJoinerOnSuccess(t *testing.T) {
 	}
 	if len(advertiser.features) != 1 || advertiser.features[0] != "vector" {
 		t.Fatalf("advertiser features = %v, want [vector]", advertiser.features)
+	}
+	if advertiser.release != "0.59.0-alpha" {
+		t.Fatalf("advertiser release = %q, want the approved joiner's %q", advertiser.release, "0.59.0-alpha")
+	}
+}
+
+// TestSubmitPendingJoinRequest_StoresTheJoinerRelease: the tokenless
+// queue record keeps the joiner's announced release through the replicated
+// store, so the approval that later advertises the joiner hands it on.
+func TestSubmitPendingJoinRequest_StoresTheJoinerRelease(t *testing.T) {
+	ctx := context.Background()
+	store := kvstore.NewMemoryKVStore()
+	record, err := SubmitPendingJoinRequest(ctx, store, &JoinRequest{
+		CSRDER: []byte("release-carrying-csr"), ReplicaID: 7, ReleaseVersion: "0.59.0-alpha",
+	}, 0)
+	if err != nil {
+		t.Fatalf("SubmitPendingJoinRequest: %v", err)
+	}
+	data, err := store.Get(ctx, pendingJoinKey(record.ID))
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	stored, err := unmarshalPendingJoin(data)
+	if err != nil {
+		t.Fatalf("unmarshalPendingJoin: %v", err)
+	}
+	if stored.ReleaseVersion != "0.59.0-alpha" {
+		t.Fatalf("stored ReleaseVersion = %q, want %q", stored.ReleaseVersion, "0.59.0-alpha")
+	}
+}
+
+// TestHandleTokenlessJoin_PollWithChangedReleaseRefused proves a re-poll of
+// an approved CSR announcing a different release than the one it was queued
+// with is refused before any signing or admission, and that the same CSR
+// re-polled with the queued release still delivers.
+func TestHandleTokenlessJoin_PollWithChangedReleaseRefused(t *testing.T) {
+	ctx := context.Background()
+	provider := newTestClusterCAProvider(t)
+	store := kvstore.NewMemoryKVStore()
+	claimedNodeURI := "spiffe://" + testTrustDomain + "/node/release-change"
+	nodeKey, csrDER := buildMatchingJoinCSR(t, claimedNodeURI)
+	csr, err := x509.ParseCertificateRequest(csrDER)
+	if err != nil {
+		t.Fatalf("ParseCertificateRequest: %v", err)
+	}
+	newReq := func(release string) *JoinRequest {
+		return &JoinRequest{CSRDER: csrDER, NodeURI: claimedNodeURI, ReplicaID: 9, ReleaseVersion: release}
+	}
+	advertiser := &fakeFeatureAdvertiser{}
+
+	queued := handleTokenlessJoin(ctx, provider, store, csr, newReq("0.58.0-alpha"), advertiser)
+	if !queued.Pending || queued.RequestID == "" {
+		t.Fatalf("first tokenless poll = %+v, want Pending with a request ID", queued)
+	}
+	if _, err := ApproveJoinRequest(ctx, store, testTrustDomain, queued.RequestID, "release-change", "operator-1"); err != nil {
+		t.Fatalf("ApproveJoinRequest: %v", err)
+	}
+
+	refused := handleTokenlessJoin(ctx, provider, store, csr, newReq("0.60.0-alpha"), advertiser)
+	if refused.Error == "" || len(refused.CertPEM) != 0 || refused.Pending {
+		t.Fatalf("poll with a changed release = %+v, want an error and no certificate", refused)
+	}
+	if advertiser.callCount() != 0 {
+		t.Fatalf("advertiser calls after a refused poll = %d, want 0", advertiser.callCount())
+	}
+	data, err := store.Get(ctx, pendingJoinKey(queued.RequestID))
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	stored, err := unmarshalPendingJoin(data)
+	if err != nil {
+		t.Fatalf("unmarshalPendingJoin: %v", err)
+	}
+	if stored.Status != pendingStatusApproved || len(stored.CertPEM) != 0 {
+		t.Fatalf("record after a refused poll = status %q cert %d bytes, want approved with no cert", stored.Status, len(stored.CertPEM))
+	}
+
+	delivered := handleTokenlessJoin(ctx, provider, store, csr, newReq("0.58.0-alpha"), advertiser)
+	if delivered.Error != "" || len(delivered.CertPEM) == 0 {
+		t.Fatalf("poll with the queued release = %+v, want a signed leaf", delivered)
+	}
+	assertLeafChainsToCA(t, provider, delivered.CertPEM, nodeKey)
+	if advertiser.callCount() != 1 || advertiser.release != "0.58.0-alpha" {
+		t.Fatalf("advertiser calls = %d release = %q, want one call with %q", advertiser.callCount(), advertiser.release, "0.58.0-alpha")
 	}
 }
