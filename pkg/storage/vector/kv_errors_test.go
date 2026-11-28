@@ -118,7 +118,7 @@ func TestKVVectorStorage_KVFaultsPropagate(t *testing.T) {
 			return err
 		},
 		"create":  func(s *KVVectorStorage) error { return s.CreateNamespace(ctx, &NamespaceInfo{Name: "ns2"}) },
-		"update":  func(s *KVVectorStorage) error { return s.UpdateNamespace(ctx, "ns", &NamespaceUpdate{}) },
+		"update":  func(s *KVVectorStorage) error { return updateErr(s.UpdateNamespace(ctx, "ns", &NamespaceUpdate{})) },
 		"drop-ns": func(s *KVVectorStorage) error { return s.DeleteNamespace(ctx, "ns") },
 		"list-ns": func(s *KVVectorStorage) error {
 			_, err := s.ListNamespaces(ctx)
@@ -269,7 +269,7 @@ func TestKVVectorStorage_CorruptRecordsRefused(t *testing.T) {
 	if _, err := s.ListNamespaces(ctx); err == nil {
 		t.Fatal("ListNamespaces over a corrupt record succeeded")
 	}
-	if err := s.UpdateNamespace(ctx, "ns", &NamespaceUpdate{}); err == nil {
+	if err := updateErr(s.UpdateNamespace(ctx, "ns", &NamespaceUpdate{})); err == nil {
 		t.Fatal("UpdateNamespace over a corrupt record succeeded")
 	}
 	if err := mem.Put(ctx, kvIDKey("ns"), []byte{1, 2, 3}); err != nil {
@@ -316,9 +316,9 @@ func TestKVVectorStorage_RefusesInvalidArguments(t *testing.T) {
 		{"batch delete empty", s.BatchDeleteVectors(ctx, "ns", nil), ErrEmptyBatch},
 		{"create nil", s.CreateNamespace(ctx, nil), ErrInvalidNamespace},
 		{"create unnamed", s.CreateNamespace(ctx, &NamespaceInfo{}), ErrInvalidNamespace},
-		{"update unnamed", s.UpdateNamespace(ctx, "", &NamespaceUpdate{}), ErrInvalidNamespace},
-		{"update nil", s.UpdateNamespace(ctx, "ns", nil), ErrInvalidNamespace},
-		{"update missing", s.UpdateNamespace(ctx, "ns", &NamespaceUpdate{}), ErrNamespaceNotFound},
+		{"update unnamed", updateErr(s.UpdateNamespace(ctx, "", &NamespaceUpdate{})), ErrInvalidNamespace},
+		{"update nil", updateErr(s.UpdateNamespace(ctx, "ns", nil)), ErrInvalidNamespace},
+		{"update missing", updateErr(s.UpdateNamespace(ctx, "ns", &NamespaceUpdate{})), ErrNamespaceNotFound},
 		{"drop missing", s.DeleteNamespace(ctx, "ns"), ErrNamespaceNotFound},
 	}
 	for _, c := range checks {
@@ -390,7 +390,7 @@ func TestKVVectorStorage_ClosedAndCanceledEverywhere(t *testing.T) {
 	closed["batch-ids"] = idsErr
 	closed["scan-filters-none"] = filtersErr
 	closed["create"] = s.CreateNamespace(ctx, &NamespaceInfo{Name: "ns"})
-	closed["update"] = s.UpdateNamespace(ctx, "ns", &NamespaceUpdate{})
+	closed["update"] = updateErr(s.UpdateNamespace(ctx, "ns", &NamespaceUpdate{}))
 	closed["drop"] = s.DeleteNamespace(ctx, "ns")
 	closed["compact"] = s.Compact(ctx, "ns")
 	closed["tombstones"] = s.CleanupTombstones(ctx, 0)

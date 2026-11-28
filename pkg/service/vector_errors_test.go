@@ -258,7 +258,8 @@ func TestTenantRoutedVectorStorage_HomeRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, all, 3)
 
-	require.NoError(t, r.UpdateNamespace(ctx, ns, &vector.NamespaceUpdate{Metadata: map[string]string{"m": "1"}}))
+	_, err = r.UpdateNamespace(ctx, ns, &vector.NamespaceUpdate{Metadata: map[string]string{"m": "1"}})
+	require.NoError(t, err)
 	info, err := r.GetNamespaceInfo(ctx, ns)
 	require.NoError(t, err)
 	require.Equal(t, ns, info.Name)
@@ -328,7 +329,8 @@ func TestTenantRoutedVectorStorage_RefusesEveryMethod(t *testing.T) {
 			return r.CreateNamespace(ctx, &vector.NamespaceInfo{Name: ns, Dimension: 2})
 		},
 		"update": func(ctx context.Context, r *tenantRoutedVectorStorage) error {
-			return r.UpdateNamespace(ctx, ns, &vector.NamespaceUpdate{})
+			_, err := r.UpdateNamespace(ctx, ns, &vector.NamespaceUpdate{})
+			return err
 		},
 		"delete namespace": func(ctx context.Context, r *tenantRoutedVectorStorage) error { return r.DeleteNamespace(ctx, ns) },
 		"info": func(ctx context.Context, r *tenantRoutedVectorStorage) error {

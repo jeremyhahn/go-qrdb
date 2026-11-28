@@ -247,6 +247,7 @@ func (v *vectorService) noteHomeWrite(ctx context.Context, st vector.Storage, sc
 // bound to what it validated or read, on whichever replica it runs.
 type guardedVectorWriter interface {
 	UpsertVectorChecked(ctx context.Context, namespace string, vec *vector.VectorValue, check func(*vector.NamespaceInfo) error) error
+	BatchUpsertVectorsChecked(ctx context.Context, namespace string, vecs []*vector.VectorValue, check func(*vector.NamespaceInfo) error) error
 	UpdateVector(ctx context.Context, namespace string, id uint64, update func(*vector.VectorValue) (*vector.VectorValue, error)) (*vector.VectorValue, error)
 }
 
@@ -265,6 +266,26 @@ func (v *vectorService) upsertVectorChecked(ctx context.Context, scoped string, 
 		err = g.UpsertVectorChecked(ctx, scoped, vec, check)
 	} else {
 		err = st.UpsertVector(ctx, scoped, vec)
+	}
+	if err != nil {
+		return err
+	}
+	v.noteHomeWrite(ctx, st, scoped)
+	return nil
+}
+
+// batchUpsertVectorsChecked is upsertVectorChecked for a batch: on a guarded
+// store check judges the namespace record the batch commits to, under the
+// same guard as the write.
+func (v *vectorService) batchUpsertVectorsChecked(ctx context.Context, scoped string, vecs []*vector.VectorValue, check func(*vector.NamespaceInfo) error) error {
+	st, err := v.storageForNamespace(ctx, scoped)
+	if err != nil {
+		return err
+	}
+	if g, ok := st.(guardedVectorWriter); ok {
+		err = g.BatchUpsertVectorsChecked(ctx, scoped, vecs, check)
+	} else {
+		err = st.BatchUpsertVectors(ctx, scoped, vecs)
 	}
 	if err != nil {
 		return err
@@ -391,10 +412,10 @@ func (r *tenantRoutedVectorStorage) CreateNamespace(ctx context.Context, info *v
 	return st.CreateNamespace(ctx, info)
 }
 
-func (r *tenantRoutedVectorStorage) UpdateNamespace(ctx context.Context, namespace string, update *vector.NamespaceUpdate) error {
+func (r *tenantRoutedVectorStorage) UpdateNamespace(ctx context.Context, namespace string, update *vector.NamespaceUpdate) (bool, error) {
 	st, err := r.v.storageForNamespace(ctx, namespace)
 	if err != nil {
-		return err
+		return false, err
 	}
 	return st.UpdateNamespace(ctx, namespace, update)
 }

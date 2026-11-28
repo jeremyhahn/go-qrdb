@@ -87,18 +87,19 @@ func newMockVectorStorage() *mockVectorStorage {
 	}
 }
 
-func (m *mockVectorStorage) UpdateNamespace(ctx context.Context, namespace string, update *vector.NamespaceUpdate) error {
+func (m *mockVectorStorage) UpdateNamespace(ctx context.Context, namespace string, update *vector.NamespaceUpdate) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	data, exists := m.namespaces[namespace]
 	if !exists {
-		return vector.ErrNamespaceNotFound
+		return false, vector.ErrNamespaceNotFound
 	}
-	data.info.IndexConfig = update.IndexConfig
-	data.info.Metadata = update.Metadata
-	data.info.UpdatedAt = update.UpdatedAt
-	return nil
+	merged, requiresRebuild := vector.ApplyNamespaceUpdate(data.info, update)
+	data.info.IndexConfig = merged.IndexConfig
+	data.info.Metadata = merged.Metadata
+	data.info.UpdatedAt = merged.UpdatedAt
+	return requiresRebuild, nil
 }
 
 func (m *mockVectorStorage) CreateNamespace(ctx context.Context, info *vector.NamespaceInfo) error {
@@ -2642,6 +2643,45 @@ func TestVectorHome_ConcurrentMetadataMergesAcrossReplicasAllSurvive(t *testing.
 	require.Error(t, err, "an update of a missing vector is refused")
 }
 
+// TestVectorHome_ConcurrentNamespacePatchesAcrossReplicasAllSurvive proves
+// two services sharing one home that patch disjoint namespace metadata keys
+// at once both keep their key: each CAS attempt merges the patch against
+// the record it guards, not against a copy read before the write.
+func TestVectorHome_ConcurrentNamespacePatchesAcrossReplicasAllSurvive(t *testing.T) {
+	home := sharedHome{kv: kvstoretest.NewGuardedMemoryStore()}
+	nodeA, _ := newHomedVectorService(t, home)
+	nodeB, _ := newHomedVectorService(t, home)
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+
+	_, err := nodeA.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: "docs", Dimension: 2, DistanceMetric: "cosine"})
+	require.NoError(t, err)
+	_, err = nodeA.UpdateNamespace(ctx, &UpdateNamespaceRequest{Namespace: "docs", Metadata: map[string]interface{}{"base": "0"}})
+	require.NoError(t, err)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		node := nodeA
+		if i%2 == 1 {
+			node = nodeB
+		}
+		wg.Add(1)
+		go func(node VectorService, key string) {
+			defer wg.Done()
+			_, err := node.UpdateNamespace(ctx, &UpdateNamespaceRequest{Namespace: "docs", Metadata: map[string]interface{}{key: "1"}})
+			assert.NoError(t, err)
+		}(node, fmt.Sprintf("k%d", i))
+	}
+	wg.Wait()
+
+	got, err := nodeB.GetNamespaceInfo(ctx, &GetNamespaceInfoRequest{Namespace: "docs"})
+	require.NoError(t, err)
+	require.Len(t, got.Metadata, 17, "base and k0..k15: %v", got.Metadata)
+	require.Equal(t, "0", got.Metadata["base"])
+	for i := 0; i < 16; i++ {
+		require.Equal(t, "1", got.Metadata[fmt.Sprintf("k%d", i)])
+	}
+}
+
 // TestVectorHome_UpsertRacingRecreateIsRefused is the Codex P1 at
 // storage/vector/kv.go:228: node B validates a 2-dimension namespace,
 // node A deletes and re-creates it with 3 dimensions before B commits, and
@@ -2670,6 +2710,43 @@ func TestVectorHome_UpsertRacingRecreateIsRefused(t *testing.T) {
 	require.Error(t, err, "the recreated namespace holds no vector of the old dimension")
 	_, err = nodeB.UpsertVector(ctx, &UpsertVectorRequest{Namespace: "docs", ID: 1, Vector: []float32{0, 1, 2}})
 	require.NoError(t, err, "a write validated against the new incarnation lands")
+}
+
+// TestVectorHome_BatchUpsertRacingRecreateIsRefused is the Codex P1 at
+// kv.go:452: a batch validated against one incarnation of a home-backed
+// namespace must not land in a namespace recreated with another dimension
+// between that validation and the commit.
+func TestVectorHome_BatchUpsertRacingRecreateIsRefused(t *testing.T) {
+	mem := kvstoretest.NewGuardedMemoryStore()
+	hook := &vectorReadHookKV{GuardedMemoryStore: mem}
+	nodeA, _ := newHomedVectorService(t, sharedHome{kv: mem})
+	nodeB, _ := newHomedVectorService(t, sharedHome{kv: hook})
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+
+	_, err := nodeA.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: "docs", Dimension: 2, DistanceMetric: "cosine"})
+	require.NoError(t, err)
+	hook.onVectorRead = func() {
+		_, err := nodeA.DeleteNamespace(ctx, &DeleteNamespaceRequest{Namespace: "docs"})
+		require.NoError(t, err)
+		_, err = nodeA.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: "docs", Dimension: 3, DistanceMetric: "cosine"})
+		require.NoError(t, err)
+	}
+	_, err = nodeB.BatchUpsert(ctx, &BatchUpsertRequest{Namespace: "docs", Vectors: []*VectorData{
+		{ID: 1, Vector: []float32{0, 1}},
+		{ID: 2, Vector: []float32{1, 0}},
+	}})
+	var mismatch *DimensionMismatchError
+	require.ErrorAs(t, err, &mismatch, "the batch validated the old incarnation")
+	require.Nil(t, hook.onVectorRead, "the recreate ran between validation and commit")
+
+	for _, id := range []uint64{1, 2} {
+		_, err = nodeA.GetVector(ctx, &GetVectorRequest{Namespace: "docs", ID: id, IncludeVector: true})
+		require.Error(t, err, "the recreated namespace holds no vector of the old dimension")
+	}
+	_, err = nodeB.BatchUpsert(ctx, &BatchUpsertRequest{Namespace: "docs", Vectors: []*VectorData{
+		{ID: 1, Vector: []float32{0, 1, 2}},
+	}})
+	require.NoError(t, err, "a batch validated against the new incarnation lands")
 }
 
 func TestVectorService_PrefixTenantStaysNodeWide(t *testing.T) {

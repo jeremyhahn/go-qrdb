@@ -81,7 +81,7 @@ func TestKVVectorStorage_NamespaceLifecycle(t *testing.T) {
 	if err := s.DeleteNamespace(ctx, "ns"); !errors.Is(err, ErrNamespaceNotFound) {
 		t.Fatalf("DeleteNamespace unknown = %v, want ErrNamespaceNotFound", err)
 	}
-	if err := s.UpdateNamespace(ctx, "ns", &NamespaceUpdate{}); !errors.Is(err, ErrNamespaceNotFound) {
+	if err := updateErr(s.UpdateNamespace(ctx, "ns", &NamespaceUpdate{})); !errors.Is(err, ErrNamespaceNotFound) {
 		t.Fatalf("UpdateNamespace unknown = %v, want ErrNamespaceNotFound", err)
 	}
 	if err := s.CreateNamespace(ctx, &NamespaceInfo{}); !errors.Is(err, ErrInvalidNamespace) {
@@ -109,7 +109,7 @@ func TestKVVectorStorage_NamespaceLifecycle(t *testing.T) {
 	}
 
 	upd := &NamespaceUpdate{IndexConfig: map[string]string{"m": "16"}, Metadata: map[string]string{"k": "v"}, UpdatedAt: 42}
-	if err := s.UpdateNamespace(ctx, "ns", upd); err != nil {
+	if err := updateErr(s.UpdateNamespace(ctx, "ns", upd)); err != nil {
 		t.Fatalf("UpdateNamespace: %v", err)
 	}
 	got, _ = s.GetNamespaceInfo(ctx, "ns")
@@ -432,6 +432,64 @@ func TestKVVectorStorage_CheckedUpsertBindsTheValidatedIncarnation(t *testing.T)
 	}
 	if err := b.UpsertVectorChecked(ctx, "ns", &VectorValue{}, nil); !errors.Is(err, ErrInvalidID) {
 		t.Fatalf("zero id = %v, want ErrInvalidID", err)
+	}
+}
+
+// TestKVVectorStorage_CheckedBatchUpsertBindsTheValidatedIncarnation is the
+// batch form: a recreate between the check and the commit stores nothing,
+// and the check judges the record the batch commits to.
+func TestKVVectorStorage_CheckedBatchUpsertBindsTheValidatedIncarnation(t *testing.T) {
+	ctx := context.Background()
+	mem := kvstoretest.NewGuardedMemoryStore()
+	a := newKVStorage(t, mem)
+	b := newKVStorage(t, mem)
+	if err := a.CreateNamespace(ctx, &NamespaceInfo{Name: "ns", Dimension: 2}); err != nil {
+		t.Fatal(err)
+	}
+	checks := 0
+	check := func(info *NamespaceInfo) error {
+		checks++
+		if info.Dimension != 2 {
+			return fmt.Errorf("dimension %d, want 2", info.Dimension)
+		}
+		if checks == 1 {
+			if err := a.DeleteNamespace(ctx, "ns"); err != nil {
+				t.Fatalf("racing delete: %v", err)
+			}
+			if err := a.CreateNamespace(ctx, &NamespaceInfo{Name: "ns", Dimension: 3}); err != nil {
+				t.Fatalf("racing create: %v", err)
+			}
+		}
+		return nil
+	}
+	batch := []*VectorValue{kvVec(1, nil), kvVec(2, nil)}
+	if err := b.BatchUpsertVectorsChecked(ctx, "ns", batch, check); !errors.Is(err, ErrNamespaceNotFound) {
+		t.Fatalf("checked batch racing a recreate = %v, want ErrNamespaceNotFound", err)
+	}
+	if vecs, err := a.ScanNamespace(ctx, "ns", nil); err != nil || len(vecs) != 0 {
+		t.Fatalf("recreated namespace = %d vectors, %v; want none", len(vecs), err)
+	}
+
+	refused := errors.New("refused")
+	if err := b.BatchUpsertVectorsChecked(ctx, "ns", batch, func(*NamespaceInfo) error { return refused }); !errors.Is(err, refused) {
+		t.Fatalf("refusing check = %v, want its error", err)
+	}
+	if vecs, err := a.ScanNamespace(ctx, "ns", nil); err != nil || len(vecs) != 0 {
+		t.Fatalf("refused batch stored %d vectors, %v", len(vecs), err)
+	}
+	if err := b.BatchUpsertVectorsChecked(ctx, "ns", []*VectorValue{{ID: 5, Embedding: []float32{1, 2, 3}}}, func(info *NamespaceInfo) error {
+		if info.Dimension != 3 {
+			return fmt.Errorf("dimension %d, want 3", info.Dimension)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("checked batch: %v", err)
+	}
+	if _, err := a.GetVector(ctx, "ns", 5); err != nil {
+		t.Fatalf("checked batch vector: %v", err)
+	}
+	if err := b.BatchUpsertVectorsChecked(ctx, "missing", batch, nil); !errors.Is(err, ErrNamespaceNotFound) {
+		t.Fatalf("checked batch into a missing namespace = %v, want ErrNamespaceNotFound", err)
 	}
 }
 

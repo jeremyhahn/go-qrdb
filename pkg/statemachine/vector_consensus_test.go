@@ -76,15 +76,16 @@ func newMockVectorStorage() *mockVectorStorage {
 	}
 }
 
-func (m *mockVectorStorage) UpdateNamespace(_ context.Context, namespace string, update *vectorStorage.NamespaceUpdate) error {
+func (m *mockVectorStorage) UpdateNamespace(_ context.Context, namespace string, update *vectorStorage.NamespaceUpdate) (bool, error) {
 	info, ok := m.namespaces[namespace]
 	if !ok {
-		return vectorStorage.ErrNamespaceNotFound
+		return false, vectorStorage.ErrNamespaceNotFound
 	}
-	info.IndexConfig = update.IndexConfig
-	info.Metadata = update.Metadata
-	info.UpdatedAt = update.UpdatedAt
-	return nil
+	merged, requiresRebuild := vectorStorage.ApplyNamespaceUpdate(info, update)
+	info.IndexConfig = merged.IndexConfig
+	info.Metadata = merged.Metadata
+	info.UpdatedAt = merged.UpdatedAt
+	return requiresRebuild, nil
 }
 
 func (m *mockVectorStorage) CreateNamespace(_ context.Context, info *vectorStorage.NamespaceInfo) error {

@@ -22,7 +22,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"maps"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -435,6 +434,16 @@ func (s *KVVectorStorage) DeleteVector(ctx context.Context, namespace string, id
 
 // BatchUpsertVectors validates every vector, then writes each one.
 func (s *KVVectorStorage) BatchUpsertVectors(ctx context.Context, namespace string, vecs []*VectorValue) error {
+	return s.BatchUpsertVectorsChecked(ctx, namespace, vecs, nil)
+}
+
+// BatchUpsertVectorsChecked is BatchUpsertVectors with check run against the
+// namespace record read under the write's guard, as UpsertVectorChecked does
+// for one vector: the record is guarded alongside the incarnation, so a
+// namespace deleted and recreated with another geometry after the caller's
+// own read fails check (or the guard) and stores nothing, instead of the
+// batch landing in a namespace it was never validated against.
+func (s *KVVectorStorage) BatchUpsertVectorsChecked(ctx context.Context, namespace string, vecs []*VectorValue, check func(*NamespaceInfo) error) error {
 	if err := s.checkOpenCtx(ctx); err != nil {
 		return err
 	}
@@ -449,16 +458,32 @@ func (s *KVVectorStorage) BatchUpsertVectors(ctx context.Context, namespace stri
 			return ErrInvalidID
 		}
 	}
-	return s.commit(ctx, namespace, func(inc []byte) ([]kvstore.KV, error) {
+	return s.commitGuarded(ctx, namespace, func(inc []byte) ([]kvstore.Guard, []kvstore.KV, error) {
+		raw, err := s.kv.Get(ctx, kvNamespaceKey(namespace))
+		if err != nil {
+			return nil, nil, err
+		}
+		if raw == nil {
+			return nil, nil, ErrNamespaceNotFound
+		}
+		if check != nil {
+			si, err := schema.DecodeNamespaceInfo(raw)
+			if err != nil {
+				return nil, nil, err
+			}
+			if err := check(fromSchemaNamespaceInfo(si)); err != nil {
+				return nil, nil, err
+			}
+		}
 		writes := make([]kvstore.KV, 0, len(vecs)+1)
 		for _, vec := range vecs {
 			put, err := vectorPut(namespace, inc, vec)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			writes = append(writes, put)
 		}
-		return writes, nil
+		return []kvstore.Guard{{Key: kvNamespaceKey(namespace), Value: raw}}, writes, nil
 	})
 }
 
@@ -653,49 +678,49 @@ func (s *KVVectorStorage) CreateNamespace(ctx context.Context, info *NamespaceIn
 // metadata lands first wins and every other one is ErrNamespaceExists.
 // UpdateNamespace replaces the namespace's index parameters and metadata in
 // place; its vectors are untouched.
-func (s *KVVectorStorage) UpdateNamespace(ctx context.Context, namespace string, update *NamespaceUpdate) error {
+func (s *KVVectorStorage) UpdateNamespace(ctx context.Context, namespace string, update *NamespaceUpdate) (bool, error) {
 	if err := s.checkOpen(); err != nil {
-		return err
+		return false, err
 	}
 	if namespace == "" || update == nil {
-		return ErrInvalidNamespace
+		return false, ErrInvalidNamespace
 	}
 	for {
 		if err := ctx.Err(); err != nil {
-			return err
+			return false, err
 		}
 		inc, err := s.readIncarnation(ctx, namespace)
 		if err != nil {
-			return err
+			return false, err
 		}
 		raw, err := s.kv.Get(ctx, kvNamespaceKey(namespace))
 		if err != nil {
-			return err
+			return false, err
 		}
 		if inc == nil || raw == nil {
-			return ErrNamespaceNotFound
+			return false, ErrNamespaceNotFound
 		}
 		si, err := schema.DecodeNamespaceInfo(raw)
 		if err != nil {
-			return err
+			return false, err
 		}
-		info := fromSchemaNamespaceInfo(si)
-		info.IndexConfig = maps.Clone(update.IndexConfig)
-		info.Metadata = maps.Clone(update.Metadata)
-		info.UpdatedAt = update.UpdatedAt
+		// The patch is merged against the record this attempt guards, so a
+		// patch another node committed since (of other keys) is kept, and a
+		// lost CAS re-merges against the record that won.
+		info, requiresRebuild := ApplyNamespaceUpdate(fromSchemaNamespaceInfo(si), update)
 		value, err := schema.EncodeNamespaceInfo(toSchemaNamespaceInfo(info))
 		if err != nil {
-			return err
+			return false, err
 		}
 		applied, err := s.kv.PutAllIfAllUnchanged(ctx, []kvstore.Guard{
 			{Key: kvIncKey(namespace), Value: inc},
 			{Key: kvNamespaceKey(namespace), Value: raw},
 		}, []kvstore.KV{{Key: kvNamespaceKey(namespace), Value: value}})
 		if err != nil {
-			return err
+			return false, err
 		}
 		if applied {
-			return nil
+			return requiresRebuild, nil
 		}
 	}
 }

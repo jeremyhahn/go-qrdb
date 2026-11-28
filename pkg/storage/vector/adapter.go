@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -937,14 +936,14 @@ func (s *PebbleVectorStorage) CreateNamespace(ctx context.Context, info *Namespa
 
 // UpdateNamespace replaces the namespace's index parameters and metadata in
 // place, durably, without touching a vector or the ID sequence.
-func (s *PebbleVectorStorage) UpdateNamespace(ctx context.Context, namespace string, update *NamespaceUpdate) error {
+func (s *PebbleVectorStorage) UpdateNamespace(ctx context.Context, namespace string, update *NamespaceUpdate) (bool, error) {
 	if !s.enter() {
-		return ErrStorageClosed
+		return false, ErrStorageClosed
 	}
 	defer s.leave()
 
 	if namespace == "" || update == nil {
-		return ErrInvalidNamespace
+		return false, ErrInvalidNamespace
 	}
 
 	s.nsMu.Lock()
@@ -952,31 +951,28 @@ func (s *PebbleVectorStorage) UpdateNamespace(ctx context.Context, namespace str
 
 	cached, exists := s.nsCache[namespace]
 	if !exists {
-		return ErrNamespaceNotFound
+		return false, ErrNamespaceNotFound
 	}
 
 	// The cached record is shared with readers holding a copy of its
-	// pointer, so the update is written to a fresh record and swapped in.
-	updated := *cached
-	updated.IndexConfig = maps.Clone(update.IndexConfig)
-	updated.Metadata = maps.Clone(update.Metadata)
-	updated.UpdatedAt = update.UpdatedAt
+	// pointer, so the patch is applied to a fresh record and swapped in.
+	updated, requiresRebuild := ApplyNamespaceUpdate(cached, update)
 
-	value, err := schema.EncodeNamespaceInfo(toSchemaNamespaceInfo(&updated))
+	value, err := schema.EncodeNamespaceInfo(toSchemaNamespaceInfo(updated))
 	if err != nil {
-		return err
+		return false, err
 	}
 	key := schema.EncodeNamespaceMetaKey(namespace)
 	if err := s.durably(func(o *pebble.WriteOptions) error {
 		return s.db.Set(key, value, o)
 	}); err != nil {
 		s.metrics.errors.Inc()
-		return err
+		return false, err
 	}
 
-	s.nsCache[namespace] = &updated
+	s.nsCache[namespace] = updated
 	s.metrics.namespaceOps.Inc()
-	return nil
+	return requiresRebuild, nil
 }
 
 // DeleteNamespace deletes a namespace and all its vectors.

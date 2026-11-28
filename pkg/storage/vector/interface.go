@@ -93,43 +93,44 @@ const (
 	FilterNotIn
 )
 
-// NamespaceUpdate carries the fields of a namespace that an in-place update
-// replaces. Each map replaces the stored one whole: the caller computes any
-// merge, so storage never has to decide what an absent key means.
+// NamespaceUpdate is an in-place patch of a namespace's mutable fields: each
+// key of IndexConfig and Metadata is set over the stored record, and every key
+// it does not name is left as it is. Storage applies the patch (with
+// ApplyNamespaceUpdate) to the record its write replaces, never to a copy the
+// caller read earlier, so two patches of disjoint keys -- from two nodes
+// sharing one store -- both survive whichever commits first.
 type NamespaceUpdate struct {
-	// IndexConfig replaces the namespace's index parameters.
+	// IndexConfig holds the index parameters to set.
 	IndexConfig map[string]string
 
-	// Metadata replaces the namespace's metadata.
+	// Metadata holds the metadata keys to set.
 	Metadata map[string]string
 
 	// UpdatedAt is the update timestamp in Unix nanoseconds.
 	UpdatedAt int64
 }
 
-// MergeNamespaceUpdate builds the update that sets each key of indexConfig and
-// metadata over info's stored values, leaving every key they do not name as
-// it is. requiresRebuild reports that an index parameter was added or
-// changed, so an index built under the old parameters no longer matches.
-func MergeNamespaceUpdate(info *NamespaceInfo, indexConfig, metadata map[string]string, updatedAt int64) (update *NamespaceUpdate, requiresRebuild bool) {
-	mergedIndex := make(map[string]string, len(info.IndexConfig)+len(indexConfig))
-	maps.Copy(mergedIndex, info.IndexConfig)
-	for k, val := range indexConfig {
-		if current, ok := mergedIndex[k]; !ok || current != val {
+// ApplyNamespaceUpdate returns a copy of info with update's keys set over its
+// own; info itself is left untouched. requiresRebuild reports that an index
+// parameter was added or changed, so an index built under the old parameters
+// no longer matches.
+func ApplyNamespaceUpdate(info *NamespaceInfo, update *NamespaceUpdate) (merged *NamespaceInfo, requiresRebuild bool) {
+	out := *info
+	out.IndexConfig = make(map[string]string, len(info.IndexConfig)+len(update.IndexConfig))
+	maps.Copy(out.IndexConfig, info.IndexConfig)
+	for k, val := range update.IndexConfig {
+		if current, ok := out.IndexConfig[k]; !ok || current != val {
 			requiresRebuild = true
 		}
-		mergedIndex[k] = val
+		out.IndexConfig[k] = val
 	}
 
-	mergedMeta := make(map[string]string, len(info.Metadata)+len(metadata))
-	maps.Copy(mergedMeta, info.Metadata)
-	maps.Copy(mergedMeta, metadata)
+	out.Metadata = make(map[string]string, len(info.Metadata)+len(update.Metadata))
+	maps.Copy(out.Metadata, info.Metadata)
+	maps.Copy(out.Metadata, update.Metadata)
 
-	return &NamespaceUpdate{
-		IndexConfig: mergedIndex,
-		Metadata:    mergedMeta,
-		UpdatedAt:   updatedAt,
-	}, requiresRebuild
+	out.UpdatedAt = update.UpdatedAt
+	return &out, requiresRebuild
 }
 
 // Storage is the main interface for vector storage operations.
@@ -148,10 +149,13 @@ type Storage interface {
 
 	// Namespace Operations
 	CreateNamespace(ctx context.Context, info *NamespaceInfo) error
-	// UpdateNamespace replaces a namespace's mutable fields in place and
-	// leaves its vectors, dimension, metric and index type untouched. It
-	// returns ErrNamespaceNotFound when the namespace does not exist.
-	UpdateNamespace(ctx context.Context, namespace string, update *NamespaceUpdate) error
+	// UpdateNamespace applies the patch update to a namespace's mutable
+	// fields in place, against the record the write replaces, and leaves its
+	// vectors, dimension, metric and index type untouched. requiresRebuild
+	// reports that the applied patch added or changed an index parameter
+	// (see ApplyNamespaceUpdate). It returns ErrNamespaceNotFound when the
+	// namespace does not exist.
+	UpdateNamespace(ctx context.Context, namespace string, update *NamespaceUpdate) (requiresRebuild bool, err error)
 	DeleteNamespace(ctx context.Context, namespace string) error
 	ListNamespaces(ctx context.Context) ([]NamespaceInfo, error)
 	GetNamespaceInfo(ctx context.Context, namespace string) (*NamespaceInfo, error)

@@ -830,8 +830,12 @@ func (v *VectorConsensusFSM) applyUpdateNamespace(ctx context.Context, cmd *Vect
 	for k, val := range cmd.Metadata {
 		metadata[k] = fmt.Sprintf("%v", val)
 	}
-	update, requiresRebuild := vectorStorage.MergeNamespaceUpdate(info, cmd.IndexParams, metadata, cmd.Timestamp)
-	if err := v.storage.UpdateNamespace(ctx, cmd.Namespace, update); err != nil {
+	requiresRebuild, err := v.storage.UpdateNamespace(ctx, cmd.Namespace, &vectorStorage.NamespaceUpdate{
+		IndexConfig: cmd.IndexParams,
+		Metadata:    metadata,
+		UpdatedAt:   cmd.Timestamp,
+	})
+	if err != nil {
 		return sm.Result{}, err
 	}
 

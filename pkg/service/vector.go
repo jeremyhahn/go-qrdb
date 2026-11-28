@@ -1331,24 +1331,38 @@ func (v *vectorService) UpdateNamespace(ctx context.Context, req *UpdateNamespac
 
 	metadata := convertToStringMap(req.Metadata)
 	now := time.Now().UnixNano()
-	update, requiresRebuild := vector.MergeNamespaceUpdate(info, req.IndexConfig, metadata, now)
+	// The request is a patch: storage (or the state machine) applies it to
+	// the record its write replaces, so another node's patch of other keys,
+	// committed since the read above, is kept. requiresRebuild is the
+	// applied merge's.
+	update := &vector.NamespaceUpdate{IndexConfig: req.IndexConfig, Metadata: metadata, UpdatedAt: now}
+	var requiresRebuild bool
 
 	v.logger.WithFields(map[string]interface{}{
-		"namespace":        req.Namespace,
-		"scoped":           scoped,
-		"requires_rebuild": requiresRebuild,
+		"namespace": req.Namespace,
+		"scoped":    scoped,
 	}).Debug("updating namespace")
 
 	if v.raftNode != nil {
 		cmd := statemachine.NewUpdateNamespaceCommand(scoped, req.IndexConfig, req.Metadata, v.nodeID)
 		cmd.Dimension = req.Dimension
-		if _, err := v.proposeToRaft(ctx, cmd); err != nil {
+		var result sm.Result
+		if _, err := v.proposeToRaftResult(ctx, cmd, &result); err != nil {
 			if v.metrics != nil {
 				v.metrics.operationErrors.With("update_namespace", "raft_error").Inc()
 			}
 			return nil, err
 		}
-	} else if err := v.routed.UpdateNamespace(ctx, scoped, update); err != nil {
+		// The state machine reports the merge it applied; an apply with no
+		// storage behind it reports nothing and changed nothing.
+		if len(result.Data) > 0 {
+			var applied statemachine.UpdateNamespaceResult
+			if err := applied.Decode(result.Data); err != nil {
+				return nil, err
+			}
+			requiresRebuild = applied.RequiresRebuild
+		}
+	} else if requiresRebuild, err = v.routed.UpdateNamespace(ctx, scoped, update); err != nil {
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("update_namespace", "storage_error").Inc()
 		}
@@ -2111,8 +2125,25 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 		added = float64(distinct - stored)
 	}
 
-	if err := v.routed.BatchUpsertVectors(ctx, scoped, vecs); err != nil {
+	// The write re-validates the namespace record it commits to, so a
+	// namespace deleted and re-created since the check above (another
+	// replica's, or another dimension) refuses the whole batch.
+	if err := v.batchUpsertVectorsChecked(ctx, scoped, vecs, func(info *vector.NamespaceInfo) error {
+		if err := checkStoredGeometry(scoped, info); err != nil {
+			return err
+		}
+		return validateBatchDimensions(req.Vectors, info.Dimension)
+	}); err != nil {
 		v.writeMu.Unlock()
+		if mismatch, ok := errors.AsType[*DimensionMismatchError](err); ok {
+			if v.metrics != nil {
+				v.metrics.operationErrors.With("batch_upsert", "invalid_dimension").Inc()
+			}
+			return nil, mismatch
+		}
+		if geometry, ok := errors.AsType[*UnsupportedNamespaceGeometryError](err); ok {
+			return nil, geometry
+		}
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("batch_upsert", "storage_error").Inc()
 		}

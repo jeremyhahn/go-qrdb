@@ -130,8 +130,8 @@ func (m *vecMockStorage) ScanNamespace(ctx context.Context, namespace string, op
 	return nil, nil
 }
 
-func (m *vecMockStorage) UpdateNamespace(ctx context.Context, namespace string, update *vector.NamespaceUpdate) error {
-	return nil
+func (m *vecMockStorage) UpdateNamespace(ctx context.Context, namespace string, update *vector.NamespaceUpdate) (bool, error) {
+	return false, nil
 }
 
 func (m *vecMockStorage) CreateNamespace(ctx context.Context, info *vector.NamespaceInfo) error {

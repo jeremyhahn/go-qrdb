@@ -16,7 +16,6 @@ package vector
 
 import (
 	"context"
-	"maps"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -391,24 +390,25 @@ func (s *MemoryVectorStorage) CreateNamespace(ctx context.Context, info *Namespa
 
 // UpdateNamespace replaces the namespace's index parameters and metadata in
 // place; its vectors are untouched.
-func (s *MemoryVectorStorage) UpdateNamespace(ctx context.Context, namespace string, update *NamespaceUpdate) error {
+func (s *MemoryVectorStorage) UpdateNamespace(ctx context.Context, namespace string, update *NamespaceUpdate) (bool, error) {
 	if err := s.checkOpen(); err != nil {
-		return err
+		return false, err
 	}
 	if namespace == "" || update == nil {
-		return ErrInvalidNamespace
+		return false, ErrInvalidNamespace
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ns, exists := s.registry[namespace]
 	if !exists {
-		return ErrNamespaceNotFound
+		return false, ErrNamespaceNotFound
 	}
-	ns.info.IndexConfig = maps.Clone(update.IndexConfig)
-	ns.info.Metadata = maps.Clone(update.Metadata)
-	ns.info.UpdatedAt = update.UpdatedAt
-	return nil
+	merged, requiresRebuild := ApplyNamespaceUpdate(&ns.info, update)
+	ns.info.IndexConfig = merged.IndexConfig
+	ns.info.Metadata = merged.Metadata
+	ns.info.UpdatedAt = merged.UpdatedAt
+	return requiresRebuild, nil
 }
 
 // DeleteNamespace removes namespace's registry entry and every vector stored
