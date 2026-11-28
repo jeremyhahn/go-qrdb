@@ -44,9 +44,11 @@ type ShardLifecycle interface {
 	Close(tenantID, db string) error
 
 	// CloseAndPurge stops the named shard (as Close does) and removes its
-	// on-disk dataDir subtree. It is a no-op for an unknown (tenantID, db)
-	// pair.
-	CloseAndPurge(tenantID, db string) error
+	// on-disk dataDir subtree, when the shard running under the name is
+	// shardID: a delete or demotion read for one incarnation never purges a
+	// database created again under the same name on a new shard. It is a
+	// no-op for an unknown (tenantID, db) pair.
+	CloseAndPurge(tenantID, db string, shardID uint64) error
 
 	// CloseAndPurgeStarted is CloseAndPurge for the one start s names (a
 	// ListStarted entry): a no-op when the shard running under s's name is
@@ -409,9 +411,9 @@ func (r *TenantShardReconciler) ReconcileOnce(ctx context.Context) {
 // of the shard — unlike graceful process shutdown (CloseAll), which must
 // never purge because the data must survive for the next restart's
 // re-attach.
-func (r *TenantShardReconciler) closeDemoted(tenantID, db string) error {
+func (r *TenantShardReconciler) closeDemoted(tenantID, db string, shardID uint64) error {
 	if r.purgeOnDemotion {
-		return r.factory.CloseAndPurge(tenantID, db)
+		return r.factory.CloseAndPurge(tenantID, db, shardID)
 	}
 	return r.factory.Close(tenantID, db)
 }
@@ -846,17 +848,25 @@ func (r *TenantShardReconciler) handleEvent(ctx context.Context, ev placement.Ev
 			break
 		}
 		// This node is no longer in the replica set — demotion (M1).
-		if err := r.closeDemoted(ev.TenantID, ev.Database); err != nil {
+		if err := r.closeDemoted(ev.TenantID, ev.Database, ev.Placement.ShardID); err != nil {
 			r.logger.Warn("placement reconciler: shard close on demotion failed",
 				slog.String("tenant", ev.TenantID),
 				slog.String("database", ev.Database),
 				slog.Any("error", err))
 		}
 	case placement.EventDelete:
+		if ev.Placement == nil {
+			// The delete names no incarnation, so it cannot tell the
+			// dropped database's shard from one created again under the
+			// name. A pass purges only a start whose placement is gone
+			// (ReconcileOnce, closeListed).
+			r.queuePass(ctx, "placement delete without its prior value")
+			break
+		}
 		r.logger.Info("placement reconciler: placement deleted, closing the database's shard",
 			slog.String("tenant", ev.TenantID),
 			slog.String("database", ev.Database))
-		if err := r.closeDemoted(ev.TenantID, ev.Database); err != nil {
+		if err := r.closeDemoted(ev.TenantID, ev.Database, ev.Placement.ShardID); err != nil {
 			r.logger.Warn("placement reconciler: shard close on delete failed",
 				slog.String("tenant", ev.TenantID),
 				slog.String("database", ev.Database),

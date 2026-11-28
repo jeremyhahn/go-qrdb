@@ -1841,12 +1841,21 @@ func (f *RaftBackendFactory) Close(tenantID, db string) error {
 // encrypted-at-rest retention gap: a demoted replica's ciphertext previously
 // remained on disk indefinitely after RebalanceService MOVE, scale-down, or
 // DropForTenant. It is a no-op for an unknown (tenant, db) pair.
-func (f *RaftBackendFactory) CloseAndPurge(tenantID, db string) error {
+//
+// shardID binds the purge to the incarnation the caller read (the shard the
+// deleted or demoting placement named): a delete event delivered after the
+// database was created again under the same name finds a shard with another
+// ID cached and leaves it, and its data, alone.
+func (f *RaftBackendFactory) CloseAndPurge(tenantID, db string, shardID uint64) error {
 	f.mu.Lock()
 	key := raftShardKey{tenantID: tenantID, database: db}
 	f.awaitStartsLocked(func(k raftShardKey, _ *startingShard) bool { return k == key })
 	f.awaitPurgeLocked(key)
 	rs, ok := f.shards[key]
+	if ok && rs.shardID != shardID {
+		f.mu.Unlock()
+		return nil
+	}
 	// Forget the key even when no shard is cached: a start planned with mu
 	// released may have read the placement this purge follows, and holds
 	// neither a cached shard nor a start in flight for the purge to find.

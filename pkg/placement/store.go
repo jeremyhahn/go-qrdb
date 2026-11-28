@@ -139,8 +139,11 @@ type Event struct {
 	TenantID string
 	Database string
 
-	// Placement is the decoded placement for an EventPut; nil for an
-	// EventDelete (or when the prior value could not be decoded).
+	// Placement is the decoded placement for an EventPut. For an
+	// EventDelete it is the placement that was removed, so a consumer can
+	// bind the delete to that incarnation's shard (Placement.ShardID) and
+	// not to whatever runs under the name now; it is nil when the prior
+	// value was not delivered or could not be decoded.
 	Placement *Placement
 }
 
@@ -770,7 +773,7 @@ func translateEvent(ev WatchEvent) (Event, bool) {
 	if ev.Deleted {
 		var p Placement
 		if len(ev.PrevValue) > 0 && json.Unmarshal(ev.PrevValue, &p) == nil {
-			return Event{Type: EventDelete, TenantID: p.TenantID, Database: p.Database}, true
+			return Event{Type: EventDelete, TenantID: p.TenantID, Database: p.Database, Placement: &p}, true
 		}
 		tenantID, database, ok := splitPlacementKey(ev.Key)
 		if !ok {

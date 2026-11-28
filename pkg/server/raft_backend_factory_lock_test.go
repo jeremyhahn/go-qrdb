@@ -620,7 +620,7 @@ func TestRaftBackendFactory_PurgeDuringReadDropsThePlan(t *testing.T) {
 	held.awaitHeld(t)
 	delete(src.entries, raftShardKey{tenantID: "rt", database: "a"})
 	within(t, "CloseAndPurge of the database being planned", func() {
-		if err := f.CloseAndPurge("rt", "a"); err != nil {
+		if err := f.CloseAndPurge("rt", "a", 1001); err != nil {
 			t.Errorf("CloseAndPurge(a) = %v, want nil", err)
 		}
 	})

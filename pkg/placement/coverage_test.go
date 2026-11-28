@@ -16,6 +16,7 @@ package placement
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 )
@@ -258,6 +259,23 @@ func TestTranslateEvent_DeleteFromKey(t *testing.T) {
 	ev, ok := translateEvent(WatchEvent{Deleted: true, Key: placementKey("acme", "orders")})
 	if !ok || ev.Type != EventDelete || ev.TenantID != "acme" || ev.Database != "orders" {
 		t.Fatalf("translateEvent = (%+v,%v), want EventDelete acme/orders", ev, ok)
+	}
+	if ev.Placement != nil {
+		t.Fatalf("a delete without its prior value carries placement %+v, want nil", ev.Placement)
+	}
+}
+
+// TestTranslateEvent_DeleteCarriesThePriorPlacement proves a delete with its
+// prior value names the removed incarnation's shard, so a consumer binds the
+// delete to that shard and not to a database recreated under the name.
+func TestTranslateEvent_DeleteCarriesThePriorPlacement(t *testing.T) {
+	prev, err := json.Marshal(Placement{TenantID: "acme", Database: "orders", ShardID: 42})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev, ok := translateEvent(WatchEvent{Deleted: true, Key: placementKey("acme", "orders"), PrevValue: prev})
+	if !ok || ev.Type != EventDelete || ev.Placement == nil || ev.Placement.ShardID != 42 {
+		t.Fatalf("translateEvent = (%+v,%v), want EventDelete carrying shard 42", ev, ok)
 	}
 }
 

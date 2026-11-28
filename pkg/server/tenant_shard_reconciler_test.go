@@ -94,7 +94,7 @@ func (f *fakeShardLifecycle) Close(tenantID, db string) error {
 // CloseAndPurge mirrors RaftBackendFactory.CloseAndPurge: it stops the shard
 // (same bookkeeping as Close, so existing tests asserting closeCount() after
 // a demotion continue to hold) and additionally records the purge.
-func (f *fakeShardLifecycle) CloseAndPurge(tenantID, db string) error {
+func (f *fakeShardLifecycle) CloseAndPurge(tenantID, db string, _ uint64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	key := raftShardKey{tenantID: tenantID, database: db}
@@ -106,7 +106,7 @@ func (f *fakeShardLifecycle) CloseAndPurge(tenantID, db string) error {
 
 // CloseAndPurgeStarted purges by name: the fake keeps no start identity.
 func (f *fakeShardLifecycle) CloseAndPurgeStarted(s StartedShard) error {
-	return f.CloseAndPurge(s.TenantID, s.Database)
+	return f.CloseAndPurge(s.TenantID, s.Database, 0)
 }
 
 func (f *fakeShardLifecycle) ListStarted() []StartedShard {
@@ -1566,7 +1566,7 @@ func TestTenantShardReconciler_DemotionCloseFailureKeepsShard(t *testing.T) {
 
 	r.ReconcileOnce(ctx)
 	r.handleEvent(ctx, placement.Event{Type: placement.EventPut, TenantID: "acme", Database: "orders", Placement: demoted})
-	r.handleEvent(ctx, placement.Event{Type: placement.EventDelete, TenantID: "acme", Database: "orders"})
+	r.handleEvent(ctx, placement.Event{Type: placement.EventDelete, TenantID: "acme", Database: "orders", Placement: demoted})
 	if !factory.isStarted("acme", "orders") || factory.closeCount() != 0 {
 		t.Fatalf("a failed close must keep the shard started (closed %d)", factory.closeCount())
 	}
@@ -1584,13 +1584,44 @@ func TestTenantShardReconciler_EventDelete_PurgesByDefault(t *testing.T) {
 	r := NewTenantShardReconciler(store, factory, "local:1", nil)
 
 	r.handleEvent(context.Background(), placement.Event{
+		Type:      placement.EventDelete,
+		TenantID:  "acme",
+		Database:  "orders",
+		Placement: &placement.Placement{TenantID: "acme", Database: "orders", ShardID: 7},
+	})
+
+	if factory.purgeCount() != 1 {
+		t.Errorf("purgeCount() = %d, want 1 (EventDelete purges by default)", factory.purgeCount())
+	}
+}
+
+// TestTenantShardReconciler_EventDeleteWithoutPriorValueDoesNotPurgeByName
+// proves a delete that names no incarnation (no prior placement value) never
+// purges by name -- the shard under the name may be a recreated database's --
+// and queues a pass instead, which purges only a start whose placement is
+// gone.
+func TestTenantShardReconciler_EventDeleteWithoutPriorValueDoesNotPurgeByName(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	factory.mu.Lock()
+	factory.started[raftShardKey{tenantID: "acme", database: "orders"}] = true
+	factory.mu.Unlock()
+
+	store, _ := placement.NewStore(newMemKV())
+	r := NewTenantShardReconciler(store, factory, "local:1", nil)
+
+	r.handleEvent(context.Background(), placement.Event{
 		Type:     placement.EventDelete,
 		TenantID: "acme",
 		Database: "orders",
 	})
 
-	if factory.purgeCount() != 1 {
-		t.Errorf("purgeCount() = %d, want 1 (EventDelete purges by default)", factory.purgeCount())
+	if factory.purgeCount() != 0 || !factory.isStarted("acme", "orders") {
+		t.Fatalf("purgeCount() = %d, started = %v; want the shard kept", factory.purgeCount(), factory.isStarted("acme", "orders"))
+	}
+	select {
+	case <-r.kick:
+	default:
+		t.Fatal("a delete without its prior value queued no reconcile pass")
 	}
 }
 
@@ -1608,9 +1639,10 @@ func TestTenantShardReconciler_PlacementDeletePurgesAPrefixTenantGroup(t *testin
 
 	r, _ := newTestReconciler(t, factory, nil)
 	r.handleEvent(context.Background(), placement.Event{
-		Type:     placement.EventDelete,
-		TenantID: "prefix-t",
-		Database: "orders",
+		Type:      placement.EventDelete,
+		TenantID:  "prefix-t",
+		Database:  "orders",
+		Placement: &placement.Placement{TenantID: "prefix-t", Database: "orders", ShardID: 9},
 	})
 
 	if factory.purgeCount() != 1 {

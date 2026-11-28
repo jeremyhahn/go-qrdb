@@ -115,7 +115,7 @@ func TestRaftBackendFactory_CloseAndPurge_RemovesDataDir(t *testing.T) {
 		t.Fatalf("precondition: the shard's data dir %q must exist: %v", dataDir, err)
 	}
 
-	if err := f.CloseAndPurge("rp", "app"); err != nil {
+	if err := f.CloseAndPurge("rp", "app", 1103); err != nil {
 		t.Fatalf("CloseAndPurge: %v", err)
 	}
 	if _, err := os.Stat(dataDir); !os.IsNotExist(err) {
@@ -152,7 +152,7 @@ func TestRaftBackendFactory_CloseAndPurge_RefusesADirectoryOutsideThisNodesPool(
 		t.Fatalf("precondition: the shard's data dir %q must exist: %v", foreignDir, err)
 	}
 
-	err := f.CloseAndPurge("rp", "app")
+	err := f.CloseAndPurge("rp", "app", 1105)
 	var outside *seal.DataRootOutsideLocalRootsError
 	if !errors.As(err, &outside) || outside.DataRoot != foreignDir {
 		t.Fatalf("CloseAndPurge = %v, want *seal.DataRootOutsideLocalRootsError for %s", err, foreignDir)
@@ -168,10 +168,25 @@ func TestRaftBackendFactory_CloseAndPurge_RefusesADirectoryOutsideThisNodesPool(
 func TestRaftBackendFactory_CloseAndPurge_UnknownIsNoop(t *testing.T) {
 	f, _, dataDir := startLocalRaftShard(t, "rp", "app", 1104)
 
-	if err := f.CloseAndPurge("rp", "other"); err != nil {
+	if err := f.CloseAndPurge("rp", "other", 1104); err != nil {
 		t.Fatalf("CloseAndPurge(unknown) = %v, want nil", err)
 	}
 	if _, err := os.Stat(dataDir); err != nil {
 		t.Fatalf("an unrelated shard's data dir was touched: %v", err)
+	}
+	// A delete bound to an earlier incarnation of the same name (shard
+	// 1099, dropped before app was created again on 1104) arrives late: it
+	// must leave the recreated database's shard and data alone.
+	if err := f.CloseAndPurge("rp", "app", 1099); err != nil {
+		t.Fatalf("CloseAndPurge(stale incarnation) = %v, want nil", err)
+	}
+	if _, err := os.Stat(dataDir); err != nil {
+		t.Fatalf("a stale incarnation's delete purged the recreated database's data dir: %v", err)
+	}
+	f.mu.Lock()
+	rs, cached := f.shards[raftShardKey{tenantID: "rp", database: "app"}]
+	f.mu.Unlock()
+	if !cached || rs.shardID != 1104 {
+		t.Fatal("a stale incarnation's delete stopped the recreated database's shard")
 	}
 }

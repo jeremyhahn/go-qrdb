@@ -72,7 +72,7 @@ func TestRaftBackendFactory_PurgeHoldsOffARecreate(t *testing.T) {
 		case <-done:
 		}
 	}
-	if err := f.CloseAndPurge(tenantID, db); err != nil {
+	if err := f.CloseAndPurge(tenantID, db, oldShard); err != nil {
 		t.Fatalf("CloseAndPurge: %v", err)
 	}
 	r := <-recreated
@@ -133,7 +133,7 @@ func TestRaftBackendFactory_PurgeRemovesTheReplicasLogData(t *testing.T) {
 		t.Fatalf("precondition: EntryRange count %d, err %v; want the replica's entries", count, err)
 	}
 
-	if err := f.CloseAndPurge(tenantID, db); err != nil {
+	if err := f.CloseAndPurge(tenantID, db, shardID); err != nil {
 		t.Fatalf("CloseAndPurge: %v", err)
 	}
 	if _, ok, err := mux.GetBootstrap(shardID, replicaID); err == nil && ok {
