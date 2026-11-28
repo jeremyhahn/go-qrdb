@@ -1252,6 +1252,64 @@ func TestDropForTenant_ReclaimsAStrandedProvisionalRecord(t *testing.T) {
 	}
 }
 
+// TestDropForTenant_SystemTenantReclaimsAStrandedProvisionalRecord proves
+// the system-tenant drop reaches the manager's provisional reclaim: a name
+// left by a refused create whose cleanup failed is dropped and can be
+// created again, on the same manager and after a reopen.
+func TestDropForTenant_SystemTenantReclaimsAStrandedProvisionalRecord(t *testing.T) {
+	for _, reopen := range []bool{false, true} {
+		t.Run(map[bool]string{false: "same manager", true: "after reopen"}[reopen], func(t *testing.T) {
+			dir := t.TempDir()
+			mgr := databasetest.NewManager(newCoverageLogger(), dir)
+			t.Cleanup(func() { _ = mgr.Close() })
+			cat := databasetest.Catalog(mgr.DataDir())
+
+			mgr.SetCatalog(deleteRefusingCatalog{Catalog: cat, err: errors.New("catalog delete timed out")})
+			refused := database.WithCreateGuard(context.Background(), func(context.Context) error { return errors.New("refused") })
+			_, err := mgr.CreateWithCredentials(refused,
+				database.DatabaseConfig{TenantID: tenantid.System, Name: "orders", Backend: database.BackendMemory}, seal.Credentials{})
+			var orphan *database.CatalogOrphanError
+			if !errors.As(err, &orphan) {
+				t.Fatalf("refused create = %v, want *database.CatalogOrphanError", err)
+			}
+			mgr.SetCatalog(cat)
+
+			if reopen {
+				if err := mgr.Close(); err != nil {
+					t.Fatalf("Close: %v", err)
+				}
+				mgr = databasetest.NewManager(newCoverageLogger(), dir)
+				t.Cleanup(func() { _ = mgr.Close() })
+				cat = databasetest.Catalog(mgr.DataDir())
+			}
+			meta, err := cat.Get(context.Background(), tenantid.System, "orders")
+			if err != nil {
+				t.Fatalf("catalog Get of the stranded record: %v", err)
+			}
+			if !meta.Provisional {
+				t.Fatal("stranded record is not provisional; the test would not exercise the reclaim")
+			}
+
+			svc := NewDatabaseService(mgr)
+			ctx := tenant.WithTenantID(context.Background(), tenantid.System)
+			if err := svc.DropForTenant(ctx, "orders"); err != nil {
+				t.Fatalf("DropForTenant of the stranded name: %v", err)
+			}
+			var notFound *database.NotFoundError
+			if _, err := cat.Get(context.Background(), tenantid.System, "orders"); !errors.As(err, &notFound) {
+				t.Fatalf("catalog Get after the reclaim = %v, want *database.NotFoundError", err)
+			}
+			if err := svc.DropForTenant(ctx, "orders"); !errors.As(err, &notFound) {
+				t.Fatalf("second DropForTenant = %v, want *database.NotFoundError", err)
+			}
+			if _, err := mgr.CreateWithCredentials(context.Background(),
+				database.DatabaseConfig{TenantID: tenantid.System, Name: "orders", Backend: database.BackendMemory}, seal.Credentials{}); err != nil {
+				t.Fatalf("create after the reclaim: %v", err)
+			}
+		})
+	}
+}
+
 // strictRaftTenant is a raft-isolated tenant whose own isolation policy is
 // strict (docs/multi-tenancy/engineering.md phase 5, G1).
 func strictRaftTenant() *tenant.TenantInfo {

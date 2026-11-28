@@ -2398,6 +2398,15 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 		// never metered against a quota nor given a placement entry
 		// (CreateForTenant serves tenants), so there is nothing to release.
 		if _, err := s.ownedDatabase(ctx, name); err != nil {
+			// A name with no open database may still be a stranded
+			// provisional record the system tenant owns (a refused create
+			// whose cleanup could not remove it): manager.DropForTenant
+			// reclaims only a provisional record keyed to the system tenant
+			// and returns the original *NotFoundError otherwise.
+			var notFound *database.NotFoundError
+			if errors.As(err, &notFound) {
+				return s.manager.DropForTenant(ctx, name)
+			}
 			return err
 		}
 		return s.Drop(ctx, name)
