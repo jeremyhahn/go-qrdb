@@ -17,6 +17,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"maps"
 	"math"
 	"path/filepath"
 	"strings"
@@ -641,6 +642,43 @@ func TestVectorUpdateMetadata_ReplacesMetadataWithoutTouchingTheEmbedding(t *tes
 		}
 		if old != nil {
 			t.Fatal("stale metadata index entry survived an update-metadata")
+		}
+	})
+}
+
+func TestVectorUpdateMetadata_MergeAppliesAgainstTheStoredRecord(t *testing.T) {
+	forEachVectorEngine(t, func(t *testing.T, eng Engine, stg storage.Storage) {
+		createNamespace(t, eng, "ns", 1)
+		applyVectorCmd(t, eng, mustEncodeVector(protocol.EncodeVectorUpsert("ns", 1, protocol.VectorUpsertParams{
+			HasID: true, ID: 1, Embedding: []float32{5}, Metadata: map[string]string{"a": "1", "b": "1", "c": "1"},
+		})))
+
+		result := applyVectorCmd(t, eng, mustEncodeVector(protocol.EncodeVectorUpdateMetadata(protocol.VectorUpdateMetadataParams{
+			Name: "ns", ID: 1, TimestampUnixNano: 2, Metadata: map[string]string{"b": "2"},
+			Merge: true, DeleteKeys: []string{"c"},
+		})))
+		if _, refused := protocol.DecodeAppError(result.Data); refused {
+			t.Fatalf("update metadata refused: %+v", result)
+		}
+
+		data, err := stg.Get(vector.VectorKey("ns", 1))
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		rec, err := vector.DecodeVectorRecord(data)
+		if err != nil {
+			t.Fatalf("DecodeVectorRecord: %v", err)
+		}
+		want := map[string]string{"a": "1", "b": "2"}
+		if !maps.Equal(rec.Metadata, want) {
+			t.Fatalf("metadata = %v, want %v", rec.Metadata, want)
+		}
+		gone, err := stg.Get(vector.MetadataKey("ns", "c", "1", 1))
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if gone != nil {
+			t.Fatal("deleted key's metadata index entry survived")
 		}
 	})
 }

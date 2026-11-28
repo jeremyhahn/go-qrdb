@@ -15,6 +15,7 @@
 package engine
 
 import (
+	"maps"
 	"math"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
@@ -551,9 +552,25 @@ func applyVectorUpdateMetadata(batch storage.Batch, payload []byte) (sm.Result, 
 		return sm.Result{}, err
 	}
 
+	// The merge runs here, against the record this batch reads, so a
+	// metadata update never re-sends (and so never reverts) an embedding or
+	// metadata another writer committed after the caller read the vector.
+	metadata := p.Metadata
+	if p.Merge {
+		metadata = make(map[string]string, len(old.Metadata)+len(p.Metadata))
+		maps.Copy(metadata, old.Metadata)
+		maps.Copy(metadata, p.Metadata)
+		for _, k := range p.DeleteKeys {
+			delete(metadata, k)
+		}
+		if len(metadata) == 0 {
+			metadata = nil
+		}
+	}
+
 	record := vector.VectorRecord{
 		Embedding:         old.Embedding,
-		Metadata:          p.Metadata,
+		Metadata:          metadata,
 		CreatedAtUnixNano: old.CreatedAtUnixNano,
 		UpdatedAtUnixNano: p.TimestampUnixNano,
 	}
@@ -564,7 +581,7 @@ func applyVectorUpdateMetadata(batch storage.Batch, payload []byte) (sm.Result, 
 	if err := batch.Set(vector.VectorKey(p.Name, p.ID), data); err != nil {
 		return sm.Result{}, err
 	}
-	if err := replaceMetadataIndex(batch, p.Name, p.ID, old.Metadata, p.Metadata); err != nil {
+	if err := replaceMetadataIndex(batch, p.Name, p.ID, old.Metadata, metadata); err != nil {
 		return sm.Result{}, err
 	}
 	if err := appendMutationLog(batch, p.Name, rec, vector.MutationUpdate, p.ID); err != nil {

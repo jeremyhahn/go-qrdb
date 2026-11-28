@@ -263,3 +263,92 @@ func TestHostVectorStorage_ReservedIndexConfigKeyIsRefused(t *testing.T) {
 		t.Fatal("an IndexConfig key with the reserved qrdb. prefix was accepted")
 	}
 }
+
+// newTwoHostVectorServices returns two vector services proposing to one
+// apply host, as two daemons' services share one replicated group: neither
+// one's writeMu orders the other's writes.
+func newTwoHostVectorServices(t *testing.T) (service.VectorService, service.VectorService) {
+	t.Helper()
+	eng, err := engine.NewMVCCEngine(memory.NewStorage(), engine.WithMVCCVectorIndex("", nil))
+	if err != nil {
+		t.Fatalf("NewMVCCEngine: %v", err)
+	}
+	if err := eng.WarmVectorIndex(); err != nil {
+		t.Fatalf("WarmVectorIndex: %v", err)
+	}
+	host := backend.NewLocalBackend(eng)
+	open := func() service.VectorService {
+		svc, err := service.NewVectorService(nil, hostVecLogger(t), service.WithVectorApplyHost(host, shard.ShardKV))
+		if err != nil {
+			t.Fatalf("NewVectorService: %v", err)
+		}
+		t.Cleanup(func() { closeVectorService(svc) })
+		return svc
+	}
+	return open(), open()
+}
+
+func TestHostVectorStorage_MetadataUpdateKeepsAConcurrentEmbedding(t *testing.T) {
+	ctx := context.Background()
+	a, b := newTwoHostVectorServices(t)
+	if _, err := a.CreateNamespace(ctx, &service.CreateNamespaceRequest{Namespace: "ns", Dimension: 2}); err != nil {
+		t.Fatalf("CreateNamespace: %v", err)
+	}
+	if _, err := a.UpsertVector(ctx, &service.UpsertVectorRequest{
+		Namespace: "ns", ID: 1, Vector: []float32{1, 0}, Metadata: map[string]interface{}{"k": "x", "gone": "y"},
+	}); err != nil {
+		t.Fatalf("UpsertVector: %v", err)
+	}
+
+	// A reads the vector, B commits a new embedding, then A updates the
+	// metadata: the update must not carry A's stale embedding back.
+	if _, err := a.GetVector(ctx, &service.GetVectorRequest{Namespace: "ns", ID: 1, IncludeVector: true}); err != nil {
+		t.Fatalf("GetVector: %v", err)
+	}
+	if _, err := b.UpsertVector(ctx, &service.UpsertVectorRequest{
+		Namespace: "ns", ID: 1, Vector: []float32{0, 1}, Metadata: map[string]interface{}{"k": "x", "gone": "y", "b": "1"},
+	}); err != nil {
+		t.Fatalf("UpsertVector(B): %v", err)
+	}
+	if _, err := a.UpdateMetadata(ctx, &service.UpdateVectorMetadataRequest{
+		Namespace: "ns", ID: 1, Metadata: map[string]interface{}{"k": "z"}, MergeMetadata: true, DeleteKeys: []string{"gone"},
+	}); err != nil {
+		t.Fatalf("UpdateMetadata: %v", err)
+	}
+
+	got, err := b.GetVector(ctx, &service.GetVectorRequest{Namespace: "ns", ID: 1, IncludeVector: true, IncludeMetadata: true})
+	if err != nil {
+		t.Fatalf("GetVector: %v", err)
+	}
+	if len(got.Vector) != 2 || got.Vector[0] != 0 || got.Vector[1] != 1 {
+		t.Fatalf("embedding = %v, want B's [0 1]", got.Vector)
+	}
+	if got.Metadata["k"] != "z" || got.Metadata["b"] != "1" || got.Metadata["gone"] != nil {
+		t.Fatalf("metadata = %v, want k=z, b=1 kept, gone deleted", got.Metadata)
+	}
+}
+
+func TestHostVectorStorage_MetadataUpdateDoesNotUndoAConcurrentDelete(t *testing.T) {
+	ctx := context.Background()
+	a, b := newTwoHostVectorServices(t)
+	if _, err := a.CreateNamespace(ctx, &service.CreateNamespaceRequest{Namespace: "ns", Dimension: 2}); err != nil {
+		t.Fatalf("CreateNamespace: %v", err)
+	}
+	if _, err := a.UpsertVector(ctx, &service.UpsertVectorRequest{Namespace: "ns", ID: 1, Vector: []float32{1, 0}}); err != nil {
+		t.Fatalf("UpsertVector: %v", err)
+	}
+	if _, err := a.GetVector(ctx, &service.GetVectorRequest{Namespace: "ns", ID: 1}); err != nil {
+		t.Fatalf("GetVector: %v", err)
+	}
+	if _, err := b.DeleteVector(ctx, &service.DeleteVectorRequest{Namespace: "ns", ID: 1}); err != nil {
+		t.Fatalf("DeleteVector(B): %v", err)
+	}
+	if _, err := a.UpdateMetadata(ctx, &service.UpdateVectorMetadataRequest{
+		Namespace: "ns", ID: 1, Metadata: map[string]interface{}{"k": "v"},
+	}); err == nil {
+		t.Fatal("UpdateMetadata of a deleted vector succeeded")
+	}
+	if _, err := b.GetVector(ctx, &service.GetVectorRequest{Namespace: "ns", ID: 1}); err == nil {
+		t.Fatal("UpdateMetadata re-created a deleted vector")
+	}
+}

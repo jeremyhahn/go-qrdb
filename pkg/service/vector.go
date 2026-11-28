@@ -3457,6 +3457,14 @@ func (v *vectorService) ListVectors(ctx context.Context, req *ListVectorsRequest
 	}, nil
 }
 
+// vectorMetadataUpdater is a vector store that applies a metadata-only
+// update itself, merging against the committed record at apply time
+// (hostVectorStorage). UpdateMetadata uses it instead of a read and an
+// upsert of the whole vector.
+type vectorMetadataUpdater interface {
+	UpdateVectorMetadata(ctx context.Context, namespace string, id uint64, metadata map[string]string, merge bool, deleteKeys []string, updatedAt int64) error
+}
+
 // UpdateMetadata updates only the metadata of a vector without modifying the vector values.
 func (v *vectorService) UpdateMetadata(ctx context.Context, req *UpdateVectorMetadataRequest) (*UpdateVectorMetadataResponse, error) {
 	start := time.Now()
@@ -3484,6 +3492,26 @@ func (v *vectorService) UpdateMetadata(ctx context.Context, req *UpdateVectorMet
 	// the ID cannot land between them and be overwritten.
 	v.writeMu.Lock()
 	defer v.writeMu.Unlock()
+
+	// A replicated store applies the update itself: the merge runs against
+	// the committed record at apply time and the embedding is never read
+	// or re-sent, so another service instance's upsert or delete of the ID
+	// committed after this call started is never reverted (writeMu only
+	// orders writers inside this instance).
+	if updater, ok := v.storage.(vectorMetadataUpdater); ok {
+		var deleteKeys []string
+		if req.MergeMetadata {
+			deleteKeys = req.DeleteKeys
+		}
+		now := time.Now().UnixNano()
+		if err := updater.UpdateVectorMetadata(ctx, scoped, req.ID, convertToStringMap(req.Metadata), req.MergeMetadata, deleteKeys, now); err != nil {
+			return nil, vectorStorageError("update vector metadata", req.Namespace, req.ID, err)
+		}
+		if v.metrics != nil {
+			v.metrics.operationDuration.With("update_metadata").Observe(time.Since(start).Seconds())
+		}
+		return &UpdateVectorMetadataResponse{ID: req.ID, Version: 1, Timestamp: now, Success: true}, nil
+	}
 
 	existingVector, err := v.storage.GetVector(ctx, scoped, req.ID)
 	if err != nil {

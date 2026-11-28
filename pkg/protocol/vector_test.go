@@ -15,6 +15,7 @@
 package protocol
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 )
@@ -324,6 +325,36 @@ func TestEncodeDecodeVectorUpdateMetadata_RoundTrips(t *testing.T) {
 	}
 	if !reflect.DeepEqual(want, got) {
 		t.Fatalf("round trip = %+v, want %+v", got, want)
+	}
+}
+
+func TestEncodeDecodeVectorUpdateMetadata_MergeAndDeleteKeysRoundTrip(t *testing.T) {
+	want := VectorUpdateMetadataParams{
+		Name:              "docs",
+		ID:                9,
+		TimestampUnixNano: 123,
+		Metadata:          map[string]string{"k": "v"},
+		Merge:             true,
+		DeleteKeys:        []string{"a", "b"},
+	}
+	cmd, err := EncodeVectorUpdateMetadata(want)
+	if err != nil {
+		t.Fatalf("EncodeVectorUpdateMetadata: %v", err)
+	}
+	got, err := DecodeVectorUpdateMetadata(cmd[1:])
+	if err != nil {
+		t.Fatalf("DecodeVectorUpdateMetadata: %v", err)
+	}
+	if !reflect.DeepEqual(want, got) {
+		t.Fatalf("round trip = %+v, want %+v", got, want)
+	}
+}
+
+func TestEncodeVectorUpdateMetadata_DeleteKeysWithoutMergeIsRefused(t *testing.T) {
+	_, err := EncodeVectorUpdateMetadata(VectorUpdateMetadataParams{Name: "docs", ID: 1, DeleteKeys: []string{"a"}})
+	var invalid *InvalidCommandError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("err = %v, want *InvalidCommandError", err)
 	}
 }
 

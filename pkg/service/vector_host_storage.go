@@ -342,6 +342,23 @@ func (s *hostVectorStorage) UpsertVector(ctx context.Context, namespace string, 
 	return s.propose(ctx, cmd, encErr)
 }
 
+// UpdateVectorMetadata proposes OpVectorUpdateMetadata: the merge with the
+// stored metadata (when merge is set) and the removal of deleteKeys run at
+// apply time against the committed record, and the embedding is never read
+// or re-sent, so a concurrent upsert or delete of the ID is never reverted.
+// A vector missing at apply is refused as not found, never re-created.
+func (s *hostVectorStorage) UpdateVectorMetadata(ctx context.Context, namespace string, id uint64, metadata map[string]string, merge bool, deleteKeys []string, updatedAt int64) error {
+	cmd, encErr := protocol.EncodeVectorUpdateMetadata(protocol.VectorUpdateMetadataParams{
+		Name:              hostNamespace(namespace),
+		ID:                id,
+		TimestampUnixNano: updatedAt,
+		Metadata:          metadata,
+		Merge:             merge,
+		DeleteKeys:        deleteKeys,
+	})
+	return s.propose(ctx, cmd, encErr)
+}
+
 // BatchUpsertVectors proposes one OpVectorBatchUpsert, all or nothing.
 func (s *hostVectorStorage) BatchUpsertVectors(ctx context.Context, namespace string, vecs []*vector.VectorValue) error {
 	if len(vecs) == 0 {
