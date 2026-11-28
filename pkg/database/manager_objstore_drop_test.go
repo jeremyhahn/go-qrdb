@@ -129,3 +129,76 @@ func TestManager_DropReclaimsProviderObjectsInEveryBackendState(t *testing.T) {
 		}
 	}
 }
+
+// TestManager_DropReclaimsProviderObjectsNeverUsedInThisProcess: a database
+// written by an earlier Manager and loaded by OpenAll in the next one is
+// dropped before this process touches its backend -- a barrier database
+// stays sealed, never unsealed here -- and the drop still reclaims every
+// provider and journal object, raw store and barrier wrapped.
+func TestManager_DropReclaimsProviderObjectsNeverUsedInThisProcess(t *testing.T) {
+	for _, barrier := range []bool{false, true} {
+		name := "raw store"
+		if barrier {
+			name = "barrier wrapped"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			root := filepath.Join(t.TempDir(), "objects")
+			dataDir := t.TempDir()
+			// Each Manager gets its own barrier manager, as a restarted
+			// process does.
+			opts := func() []database.ManagerOption {
+				o := []database.ManagerOption{database.WithBackendFactory(objstoredb.NewBackendFactory())}
+				if barrier {
+					o = append(o, database.WithBarrierManager(objstoreDropBarrierManager(t)))
+				}
+				return o
+			}
+			first := databasetest.NewManager(nil, dataDir, opts()...)
+			cfg := localObjstore("blobs", root)
+			var db *database.Database
+			var err error
+			if barrier {
+				cfg.DataDir = t.TempDir()
+				cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"}
+				db, err = first.CreateWithCredentials(ctx, cfg, seal.MustCredentials(ctx, []byte("test-password")))
+			} else {
+				db, err = first.Create(cfg)
+			}
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			if err := db.Backend().Put(ctx, []byte("key"), []byte("v")); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			if err := first.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			if len(objects(t, root)) == 0 {
+				t.Fatal("no objects written to the provider")
+			}
+
+			next := databasetest.NewManager(nil, dataDir, opts()...)
+			t.Cleanup(func() { _ = next.Close() })
+			if err := next.OpenAll(ctx); err != nil {
+				t.Fatalf("OpenAll: %v", err)
+			}
+			loaded, err := next.Get("blobs")
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if barrier && loaded.Status() != database.StatusSealed {
+				t.Fatalf("status after OpenAll = %s; the barrier database must come up sealed", loaded.Status())
+			}
+			if err := next.Drop(ctx, "blobs"); err != nil {
+				t.Fatalf("Drop: %v", err)
+			}
+			if left := objects(t, root); len(left) != 0 {
+				t.Fatalf("Drop left provider objects: %v", left)
+			}
+			if left := objects(t, root+".journal"); len(left) != 0 {
+				t.Fatalf("Drop left journal objects: %v", left)
+			}
+		})
+	}
+}
