@@ -353,7 +353,6 @@ func (s *Server) handleVectorCreateNamespace(ctx context.Context, payload []byte
 		DistanceMetric: metric,
 		IndexType:      protoIndexTypeToString[req.GetIndexType()],
 		IndexConfig:    indexConfig,
-		ShardID:        req.GetShardId(),
 	})
 	if err != nil {
 		return nil, err
@@ -434,7 +433,6 @@ func (s *Server) handleVectorDeleteNamespace(ctx context.Context, payload []byte
 
 	_, err := vectorSvc.DeleteNamespace(ctx, &service.DeleteNamespaceRequest{
 		Namespace: req.GetNamespace(),
-		ShardID:   req.GetShardId(),
 	})
 	if err != nil {
 		return nil, err
@@ -455,9 +453,7 @@ func (s *Server) handleVectorListNamespaces(ctx context.Context, payload []byte)
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	resp, err := vectorSvc.ListNamespaces(ctx, &service.ListNamespacesRequest{
-		ShardID: req.GetShardId(),
-	})
+	resp, err := vectorSvc.ListNamespaces(ctx, &service.ListNamespacesRequest{})
 	if err != nil {
 		return nil, err
 	}
@@ -491,7 +487,6 @@ func (s *Server) handleVectorGetNamespaceInfo(ctx context.Context, payload []byt
 
 	info, err := vectorSvc.GetNamespaceInfo(ctx, &service.GetNamespaceInfoRequest{
 		Namespace: req.GetNamespace(),
-		ShardID:   req.GetShardId(),
 	})
 	if err != nil {
 		return nil, err
@@ -553,7 +548,6 @@ func (s *Server) handleVectorUpsert(ctx context.Context, payload []byte) ([]byte
 		ID:        id,
 		Vector:    req.GetVector(),
 		Metadata:  metadata,
-		ShardID:   req.GetShardId(),
 	})
 	if err != nil {
 		return nil, err
@@ -593,7 +587,6 @@ func (s *Server) handleVectorGet(ctx context.Context, payload []byte) ([]byte, e
 		IncludeVector:   true,
 		IncludeMetadata: true,
 		Consistency:     vectorConsistencyFromWire(req.GetConsistency()),
-		ShardID:         req.GetShardId(),
 	})
 	if err != nil {
 		return nil, err
@@ -631,7 +624,6 @@ func (s *Server) handleVectorDelete(ctx context.Context, payload []byte) ([]byte
 	_, err = vectorSvc.DeleteVector(ctx, &service.DeleteVectorRequest{
 		Namespace: req.GetNamespace(),
 		ID:        id,
-		ShardID:   req.GetShardId(),
 	})
 	if err != nil {
 		return nil, err
@@ -665,7 +657,6 @@ func (s *Server) handleVectorBatchUpsert(ctx context.Context, payload []byte) ([
 	resp, err := vectorSvc.BatchUpsert(ctx, &service.BatchUpsertRequest{
 		Namespace: req.GetNamespace(),
 		Vectors:   vectors,
-		ShardID:   req.GetShardId(),
 	})
 	if err != nil {
 		return nil, err
@@ -701,7 +692,6 @@ func (s *Server) handleVectorBatchDelete(ctx context.Context, payload []byte) ([
 	resp, err := vectorSvc.BatchDeleteVectors(ctx, &service.BatchDeleteVectorsRequest{
 		Namespace: req.GetNamespace(),
 		IDs:       ids,
-		ShardID:   req.GetShardId(),
 	})
 	if err != nil {
 		return nil, err
@@ -741,7 +731,6 @@ func (s *Server) handleVectorList(ctx context.Context, payload []byte) ([]byte, 
 		Namespace: req.GetNamespace(),
 		Limit:     int(req.GetLimit()),
 		Cursor:    req.GetCursor(),
-		ShardID:   req.GetShardId(),
 	})
 	if err != nil {
 		return nil, err
@@ -794,7 +783,6 @@ func (s *Server) handleVectorUpdateMetadata(ctx context.Context, payload []byte)
 		Namespace: req.GetNamespace(),
 		ID:        id,
 		Metadata:  metadata,
-		ShardID:   req.GetShardId(),
 	})
 	if err != nil {
 		return nil, err
@@ -827,7 +815,6 @@ func (s *Server) handleVectorSearchSimilar(ctx context.Context, payload []byte) 
 		EfSearch:    int(req.GetEfSearch()),
 		MinScore:    float32(req.GetMinScore()),
 		Consistency: vectorConsistencyFromWire(req.GetConsistency()),
-		ShardID:     req.GetShardId(),
 	})
 	if err != nil {
 		return nil, err
@@ -872,7 +859,6 @@ func (s *Server) handleVectorSearchByMetadata(ctx context.Context, payload []byt
 		Limit:       int(req.GetLimit()),
 		Offset:      int(req.GetOffset()),
 		Consistency: vectorConsistencyFromWire(req.GetConsistency()),
-		ShardID:     req.GetShardId(),
 	})
 	if err != nil {
 		return nil, err
@@ -921,7 +907,6 @@ func (s *Server) handleVectorHybridSearch(ctx context.Context, payload []byte) (
 		MetadataFilter: metadataFilter,
 		K:              int(req.GetK()),
 		Consistency:    vectorConsistencyFromWire(req.GetConsistency()),
-		ShardID:        req.GetShardId(),
 	})
 	if err != nil {
 		return nil, err
@@ -965,7 +950,6 @@ func (s *Server) handleVectorSearchByID(ctx context.Context, payload []byte) ([]
 		ID:          id,
 		K:           int(req.GetK()),
 		Consistency: vectorConsistencyFromWire(req.GetConsistency()),
-		ShardID:     req.GetShardId(),
 	})
 	if err != nil {
 		return nil, err
@@ -1005,7 +989,6 @@ func (s *Server) handleVectorRebuildIndex(ctx context.Context, payload []byte) (
 
 	resp, err := vectorSvc.RebuildIndex(ctx, &service.RebuildIndexRequest{
 		Namespace: req.GetNamespace(),
-		ShardID:   req.GetShardId(),
 	})
 	if err != nil {
 		return nil, err
@@ -1072,7 +1055,6 @@ func (s *Server) handleVectorGetIndexStats(ctx context.Context, payload []byte) 
 
 	stats, err := vectorSvc.GetIndexStats(ctx, &service.GetIndexStatsRequest{
 		Namespace: req.GetNamespace(),
-		ShardID:   req.GetShardId(),
 	})
 	if err != nil {
 		return nil, err
@@ -1115,7 +1097,6 @@ func (s *Server) handleVectorCompactNamespace(ctx context.Context, payload []byt
 
 	resp, err := vectorSvc.CompactNamespace(ctx, &service.CompactNamespaceRequest{
 		Namespace: req.GetNamespace(),
-		ShardID:   req.GetShardId(),
 	})
 	if err != nil {
 		return nil, err
@@ -1147,7 +1128,6 @@ func (s *Server) handleVectorGetCompactionProgress(ctx context.Context, payload 
 	progress, err := vectorSvc.GetCompactionProgress(ctx, &service.GetCompactionProgressRequest{
 		Namespace:   req.GetNamespace(),
 		OperationID: req.GetJobId(),
-		ShardID:     req.GetShardId(),
 	})
 	if err != nil {
 		return nil, err

@@ -17,6 +17,7 @@ package store
 import (
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/importstage"
+	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
@@ -31,7 +32,7 @@ const metaKeyLastApplied = "\x00__quicraft_last_applied__"
 // must not cover, because every replica holds its own value for it.
 //
 // Both state machines reserve the 0x00 prefix for their own records. All but
-// four of those are node-local. The four replicated tables are written only
+// five of those are node-local. The five replicated tables are written only
 // in the apply batch, so they travel in snapshots (and so in backups) and are
 // covered by the hash like any other applied record:
 //
@@ -50,10 +51,22 @@ const metaKeyLastApplied = "\x00__quicraft_last_applied__"
 //   - the import staging table (importstage.TablePrefix): a snapshot that
 //     dropped it would hand the recovering replica lease bindings for staged
 //     chunks it does not hold, so a chunked import resumed against it after a
-//     leader change would find the chunks staged before the snapshot missing.
+//     leader change would find the chunks staged before the snapshot missing;
+//   - the secondary-index catalog (index.CatalogPrefix): a snapshot that
+//     dropped it would hand the recovering replica index entries with no
+//     index definition, so every lookup on an index created before the
+//     snapshot would answer "index not found". Because the catalog is in
+//     the hash, a create writes its record only when it was proposed under
+//     the index-catalog cluster feature (featuregate.IndexCatalog,
+//     protocol.IndexCreateOptions.Catalog): a member that predates the
+//     catalog writes none, and a group whose members disagreed would
+//     diverge. An index created before the feature was active has no
+//     record and is not restored on a fresh engine until it is created
+//     again.
 func isNodeLocalKey(k []byte) bool {
 	return len(k) > 0 && k[0] == '\x00' &&
-		!lease.IsTableKey(k) && !compaction.IsTableKey(k) && !vlog.IsTableKey(k) && !importstage.IsTableKey(k)
+		!lease.IsTableKey(k) && !compaction.IsTableKey(k) && !vlog.IsTableKey(k) && !importstage.IsTableKey(k) &&
+		!index.IsCatalogKey(k)
 }
 
 // The internal key namespace is declared once, in pkg/service. This package

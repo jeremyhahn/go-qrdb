@@ -46,15 +46,14 @@ func writeObjstoreCredentialFile(t *testing.T, dir, name, value string, mode os.
 	return path
 }
 
-// writeObjstoreModeConfig writes a standalone configuration whose default
-// database is the objstore backend on the local provider; objstore is the
+// writeObjstoreModeConfig writes a standalone configuration whose node store
+// (storage.backend) is the objstore backend on the local provider; objstore is the
 // YAML appended under storage.objstore after its settings.
 func writeObjstoreModeConfig(t *testing.T, objstore string) string {
 	t.Helper()
 	dir := t.TempDir()
 	body := fmt.Sprintf("seal:\n  enabled: true\n  strategy: passphrase\n"+
-		"databases:\n  - name: \"default\"\n    backend: \"objstore\"\n"+
-		"storage:\n  objstore:\n    provider: local\n    settings:\n      path: %q\n%s",
+		"storage:\n  backend: \"objstore\"\n  objstore:\n    provider: local\n    settings:\n      path: %q\n%s",
 		filepath.Join(dir, "bucket"), objstore)
 	path := filepath.Join(dir, "qrdb.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {

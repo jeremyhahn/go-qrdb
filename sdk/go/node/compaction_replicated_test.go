@@ -27,10 +27,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
+	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -52,8 +54,8 @@ const compactionTestInterval = 20 * time.Millisecond
 // compactionFloor reports the compaction floor n's store holds for key: the
 // floor a read of key at revision 1 is refused with, or 0 when nothing has
 // been compacted.
-func compactionFloor(ctx context.Context, n *Node, key string) int64 {
-	_, err := n.Services().MVCC.GetAtRevision(ctx, key, 1)
+func compactionFloor(ctx context.Context, target compactionTarget, key string) int64 {
+	_, err := target.mvcc.GetAtRevision(ctx, key, 1)
 	var compacted *service.RevisionCompactedError
 	if errors.As(err, &compacted) {
 		return compacted.Compacted
@@ -61,9 +63,104 @@ func compactionFloor(ctx context.Context, n *Node, key string) int64 {
 	return 0
 }
 
+// compactionTarget is the store a compaction test watches: mvcc is the store
+// the scheduler compacts and samples, and put writes one key through the
+// surface that lands in that store.
+type compactionTarget struct {
+	mvcc service.MVCCKVServicer
+	put  func(ctx context.Context, key string, value []byte) error
+}
+
+// sharedTarget watches n's shared store, written through n's client: where a
+// clustered node keeps a named database, in the database's namespace.
+func sharedTarget(n *Node) compactionTarget {
+	return compactionTarget{
+		mvcc: n.Services().MVCC,
+		put: func(ctx context.Context, key string, value []byte) error {
+			return n.Client().KV().Put(ctx, key, value)
+		},
+	}
+}
+
+// materializedTarget watches the system database name that n's standalone
+// manager opened in its own store: the database's whole keyspace is its own
+// host, so its keys carry no namespace, and the scheduler compacts and
+// samples that host rather than the shared store.
+func materializedTarget(t *testing.T, ctx context.Context, n *Node, name string) compactionTarget {
+	t.Helper()
+	db, err := n.dbManager.Open(ctx, tenantid.System, name)
+	require.NoError(t, err)
+	ms, ok := db.Backend().(interface {
+		Host() service.Host
+		ShardID() uint64
+	})
+	require.Truef(t, ok, "database %s is not materialized in its own store", name)
+	mvcc := service.NewMVCCKVService(ms.Host(), ms.ShardID(), service.WithDedicatedKeyspace())
+	return compactionTarget{mvcc: mvcc, put: mvcc.Put}
+}
+
+// raftTarget is the store of a raft database's own group as replica n sees
+// it: the bundle the compaction scheduler runs the database's policy on,
+// gated on the group's leadership. Its keys carry no namespace. It waits
+// until n has started its replica of the group.
+func raftTarget(t *testing.T, ctx context.Context, n *Node, tenantID, name string) compactionTarget {
+	t.Helper()
+	require.NotNil(t, n.raftBackend, "the node runs no raft backend")
+	for {
+		svcs, err := n.raftBackend.Services(ctx, tenantID, name)
+		if err == nil && svcs != nil && svcs.MVCC != nil {
+			return compactionTarget{mvcc: svcs.MVCC, put: svcs.MVCC.Put}
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("no replica of raft database %s on this node (last error: %v): %v", name, err, ctx.Err())
+		case <-time.After(clusterPollInterval):
+		}
+	}
+}
+
+// awaitGroupLeader returns the index in nodes of the replica that leads the
+// raft database name's own group.
+func awaitGroupLeader(t *testing.T, ctx context.Context, nodes []*Node, tenantID, name string) int {
+	t.Helper()
+	targets := make([]compactionTarget, len(nodes))
+	for i, n := range nodes {
+		targets[i] = raftTarget(t, ctx, n, tenantID, name)
+	}
+	for {
+		for i, target := range targets {
+			if l, ok := target.mvcc.(service.ShardLeader); ok && l.LeadsShard() {
+				return i
+			}
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("no replica leads raft database %s: %v", name, ctx.Err())
+		case <-time.After(clusterPollInterval):
+		}
+	}
+}
+
+// putUntilCommittedMVCC writes key through target until a write commits: a
+// group's first leader can refuse a write before its term's first entry
+// applies. It returns the last error when ctx ends first.
+func putUntilCommittedMVCC(ctx context.Context, target compactionTarget, key string, value []byte) error {
+	for {
+		err := target.put(ctx, key, value)
+		if err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return errors.Join(ctx.Err(), err)
+		case <-time.After(clusterPollInterval):
+		}
+	}
+}
+
 // keepWriting puts a fresh value under key through n every few milliseconds,
 // so the store's revision keeps moving, until the returned stop is called.
-func keepWriting(t *testing.T, n *Node, key string) (stop func()) {
+func keepWriting(t *testing.T, target compactionTarget, key string) (stop func()) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
@@ -71,22 +168,28 @@ func keepWriting(t *testing.T, n *Node, key string) (stop func()) {
 	go func() {
 		defer wg.Done()
 		for i := 0; ctx.Err() == nil; i++ {
-			_ = n.Client().KV().Put(ctx, key, []byte(strconv.Itoa(i)))
+			_ = target.put(ctx, key, []byte(strconv.Itoa(i)))
 			select {
 			case <-ctx.Done():
 			case <-time.After(10 * time.Millisecond):
 			}
 		}
 	}()
-	return func() { cancel(); wg.Wait() }
+	var once sync.Once
+	stop = func() { once.Do(func() { cancel(); wg.Wait() }) }
+	// Registered after the nodes' own cleanups, so it runs before them
+	// (LIFO): a test that fails before it calls stop never leaves the
+	// writer running against a closed node.
+	t.Cleanup(stop)
+	return stop
 }
 
 // awaitFloor waits, for as long as ctx allows, for n's store to compact key's
 // history and returns the first floor it observes.
-func awaitFloor(t *testing.T, ctx context.Context, n *Node, key string) int64 {
+func awaitFloor(t *testing.T, ctx context.Context, target compactionTarget, key string) int64 {
 	t.Helper()
 	for {
-		if floor := compactionFloor(ctx, n, key); floor > 0 {
+		if floor := compactionFloor(ctx, target, key); floor > 0 {
 			return floor
 		}
 		select {
@@ -101,10 +204,10 @@ func awaitFloor(t *testing.T, ctx context.Context, n *Node, key string) int64 {
 // through n, and returns the revision it sampled. The scheduler stamps its
 // samples with the compaction clock, so a caller moves that clock to at and
 // this waits for the pass that records the sample the move made due.
-func awaitSample(t *testing.T, ctx context.Context, n *Node, db string, at time.Time) int64 {
+func awaitSample(t *testing.T, ctx context.Context, target compactionTarget, db string, at time.Time) int64 {
 	t.Helper()
-	store, ok := n.Services().MVCC.(service.CompactionStateStore)
-	require.True(t, ok, "the node's store keeps no compaction table")
+	store, ok := target.mvcc.(service.CompactionStateStore)
+	require.True(t, ok, "the watched store keeps no compaction table")
 	for {
 		states, err := store.CompactionStates(ctx)
 		for _, state := range states {
@@ -130,12 +233,12 @@ func awaitSample(t *testing.T, ctx context.Context, n *Node, db string, at time.
 // sample that makes due -- and returns the revision of the newest sample. No
 // sample is a whole period old, so nothing is compacted yet, and with clk
 // standing still no further sample falls due.
-func sampleMostOfAPeriod(t *testing.T, ctx context.Context, n *Node, db string, clk *clocktest.Fake, period time.Duration) int64 {
+func sampleMostOfAPeriod(t *testing.T, ctx context.Context, target compactionTarget, db string, clk *clocktest.Fake, period time.Duration) int64 {
 	t.Helper()
-	newest := awaitSample(t, ctx, n, db, clk.Now())
+	newest := awaitSample(t, ctx, target, db, clk.Now())
 	for range 5 {
 		clk.Advance(period / 8)
-		newest = awaitSample(t, ctx, n, db, clk.Now())
+		newest = awaitSample(t, ctx, target, db, clk.Now())
 	}
 	return newest
 }
@@ -172,7 +275,10 @@ func TestStandaloneNode_CompactionScheduleSurvivesRestart(t *testing.T) {
 	dataDir := t.TempDir()
 	clk := clocktest.NewAt(time.Now())
 	opts := []server.ServerOption{server.WithCompactionInterval(compactionTestInterval), server.WithCompactionClock(clk)}
-	key := tenant.ComposeNamespace(tenantid.System, "events") + "k"
+	// A standalone node opens a named database in its own store, so the
+	// test writes, samples and reads the floor there: its keys carry no
+	// namespace.
+	const key = "k"
 
 	first, err := NewStandaloneNode(ctx, standaloneRestartConfig(dataDir), opts)
 	require.NoError(t, err)
@@ -182,25 +288,37 @@ func TestStandaloneNode_CompactionScheduleSurvivesRestart(t *testing.T) {
 	period := 4 * time.Second
 	setPolicy(t, ctx, first, tenantid.System, "events", &compaction.Policy{Mode: compaction.Period, RetainPeriod: period.String()})
 
-	stop := keepWriting(t, first, key)
-	sampledByFirst := sampleMostOfAPeriod(t, ctx, first, "events", clk, period)
+	firstEvents := materializedTarget(t, ctx, first, "events")
+	stop := keepWriting(t, firstEvents, key)
+	sampledByFirst := sampleMostOfAPeriod(t, ctx, firstEvents, "events", clk, period)
 	stop()
-	require.Zero(t, compactionFloor(ctx, first, key), "compacted before a full period was observed")
+	require.Zero(t, compactionFloor(ctx, firstEvents, key), "compacted before a full period was observed")
 	require.NoError(t, first.Close())
 
 	second, err := NewStandaloneNode(ctx, standaloneRestartConfig(dataDir), opts)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = second.Close() })
-	stop = keepWriting(t, second, key)
+	secondEvents := materializedTarget(t, ctx, second, "events")
+	stop = keepWriting(t, secondEvents, key)
 	defer stop()
 
 	// The first node's newest sample is now a period old. A node that kept
 	// the samples compacts to it; one whose retention clock started over has
 	// no sample that old and compacts nothing.
 	clk.Advance(period)
-	floor := awaitFloor(t, ctx, second, key)
+	floor := awaitFloor(t, ctx, secondEvents, key)
 	require.Equalf(t, sampledByFirst, floor,
 		"the restarted node compacted to %d, not to the first node's newest sample %d", floor, sampledByFirst)
+}
+
+// raftDatabaseEntitlements lets a raft-isolated tenant own a raft database:
+// the raft isolation mode and a dedicated-raft home, on top of the volume
+// entitlements.
+func raftDatabaseEntitlements() *quota.Entitlements {
+	ent := volumeEntitlements()
+	ent.AllowedIsolationModes = append(ent.AllowedIsolationModes, quota.IsolationModeRaft)
+	ent.AllowDedicatedRaft = true
+	return ent
 }
 
 // TestClusteredNodes_CompactionContinuesAfterLeaderFailover: a policy set
@@ -215,30 +333,58 @@ func TestClusteredNodes_CompactionContinuesAfterLeaderFailover(t *testing.T) {
 	// The seal on (strategy none), as a deployed node runs: a node booted
 	// with the seal off builds no database catalog and serves no named
 	// database at all.
+	//
+	// Tenant isolation on, over a volume pool: a node serves a raft
+	// database's own group only through its raft backend, which isolation
+	// builds. The pool is needed: a raft-isolated tenant also reserves its
+	// volume on it.
 	sealed := func(cfg *qrdbconfig.Config) {
 		cfg.Seal.Enabled = true
 		cfg.Seal.Strategy = "none"
+		cfg.Storage.VolumePools = []qrdbconfig.VolumePoolConfig{{Name: "default", Path: t.TempDir()}}
 	}
 	clk := clocktest.NewAt(time.Now())
-	nodes, err := bootFormationClusterWith(t, ca, replicas, func(self uint64) string {
+	nodes, err := bootFormationClusterNodeOpts(t, ca, replicas, func(self uint64) string {
 		return peerIdentitySpecs(t, self, replicas)
-	}, sealed, server.WithCompactionInterval(compactionTestInterval), server.WithCompactionClock(clk))
+	}, sealed, nil, []NodeOption{WithTenantIsolation(), WithDefaultTenantEntitlements(raftDatabaseEntitlements())}, server.WithCompactionInterval(compactionTestInterval), server.WithCompactionClock(clk))
 	require.NoError(t, err)
 	ctx, cancel := context.WithTimeout(context.Background(), 4*clusterFormationBudget)
 	defer cancel()
 
-	leader := awaitAgreedLeader(t, nodes)
-	a := nodes[leader-1]
-	key := tenant.ComposeNamespace(tenantid.System, "events") + "k"
-	require.NoError(t, putUntilCommitted(ctx, a.Client().KV(), key, []byte("first")))
-	_, err = a.Services().Database.CreateForTenant(tenant.WithTenantID(ctx, tenantid.System),
-		database.DatabaseConfig{Name: "events", Backend: database.BackendPebble})
+	// "events" is a replicated raft database: its own group on all three
+	// nodes, its policy run by that group's leader alone. A is that leader.
+	// Its group takes a cluster-wide shard ID, which every node must agree
+	// to first.
+	// The tenant's barrier takes a per-node key.
+	awaitFeatureActive(t, nodes, featuregate.ClusterShardIDs)
+	awaitFeatureActive(t, nodes, featuregate.PerNodeBarrierKeys)
+	// A raft database's group runs under its tenant's own barrier, so it
+	// belongs to a raft-isolated tenant, whose dedicated-raft home holds its
+	// catalog, not to the system tenant.
+	creator := nodes[awaitAgreedLeader(t, nodes)-1]
+	// A raft tenant still reserves its volume on the default pool.
+	createDefaultPool(t, creator)
+	const owner = "tenant-events"
+	createRaftTenant(t, creator, owner, owner)
+	_, err = creator.Services().Database.CreateForTenant(tenant.WithTenantID(ctx, owner),
+		database.DatabaseConfig{
+			Name:     "events",
+			Backend:  database.BackendRaft,
+			Raft:     &database.DatabaseRaftConfig{ClusterMode: database.RaftDistributed},
+			Replicas: 3,
+		})
 	require.NoError(t, err)
+	leader := awaitGroupLeader(t, ctx, nodes, owner, "events")
+	a := nodes[leader]
+	// The database's own group holds only its keys: no namespace.
+	const key = "k"
+	aEvents := raftTarget(t, ctx, a, owner, "events")
+	require.NoError(t, putUntilCommittedMVCC(ctx, aEvents, key, []byte("first")))
 	period := 6 * time.Second
-	setPolicy(t, ctx, a, tenantid.System, "events", &compaction.Policy{Mode: compaction.Period, RetainPeriod: period.String()})
+	setPolicy(t, ctx, a, owner, "events", &compaction.Policy{Mode: compaction.Period, RetainPeriod: period.String()})
 
-	stop := keepWriting(t, a, key)
-	sampledByA := sampleMostOfAPeriod(t, ctx, a, "events", clk, period)
+	stop := keepWriting(t, aEvents, key)
+	sampledByA := sampleMostOfAPeriod(t, ctx, aEvents, "events", clk, period)
 	stop()
 	// A goes down; another node takes the shard. The compaction clock stands
 	// still meanwhile, so neither A's last passes nor the new leader's first
@@ -254,19 +400,20 @@ func TestClusteredNodes_CompactionContinuesAfterLeaderFailover(t *testing.T) {
 
 	var survivor *Node
 	for i, n := range nodes {
-		if uint64(i+1) != leader {
+		if i != leader {
 			survivor = n
 			break
 		}
 	}
-	stop = keepWriting(t, survivor, key)
+	survivorEvents := raftTarget(t, ctx, survivor, owner, "events")
+	stop = keepWriting(t, survivorEvents, key)
 	defer stop()
 
 	// A's newest sample is now a period old. A new leader that runs the
 	// policy from A's samples compacts to it; one that started the period
 	// over has no sample that old and compacts nothing.
 	clk.Advance(period)
-	floor := awaitFloor(t, ctx, survivor, key)
+	floor := awaitFloor(t, ctx, survivorEvents, key)
 	require.Equalf(t, sampledByA, floor,
 		"the new leader compacted to %d, not to the newest sample A's term recorded (%d): it did not continue from A's samples",
 		floor, sampledByA)

@@ -44,7 +44,6 @@ func TestDatabaseRoutes_SystemTenantGetsNotFoundForAnotherTenantsDatabase(t *tes
 		{http.MethodPatch, "/v1/databases/vault/etcd", `{"enabled":false}`},
 		{http.MethodPatch, "/v1/databases/vault/raft", `{"clusterMode":"local"}`},
 		{http.MethodPatch, "/v1/databases/vault/barrier", `{"enabled":false}`},
-		{http.MethodPatch, "/v1/databases/vault/connection", `{"transport":"quic","address":"db.example.com:7000"}`},
 		{http.MethodPost, "/v1/databases/vault/seal", ""},
 		{http.MethodPost, "/v1/databases/vault/unseal", `{"secret":"c2VjcmV0"}`},
 		{http.MethodGet, "/v1/databases/vault/barrier/status", ""},

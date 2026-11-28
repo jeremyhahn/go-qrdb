@@ -63,13 +63,6 @@
     "sharesRequired": 2,
     "sharesTotal": 3
   },
-  "connection": {
-    "transport": "grpc",
-    "address": "db.example.com:63000",
-    "caFile": "/etc/qrdb/ca.pem",
-    "certFile": "/etc/qrdb/client.pem",
-    "keyFile": "/etc/qrdb/client-key.pem"
-  },
   "sql": {
     "concurrency": "pessimistic"
   },
@@ -78,5 +71,11 @@
     "mode": "period",
     "retainRevisions": 500,
     "retainPeriod": "720h"
+  },
+  "binding": {
+    "kind": "local",
+    "nodes": ["n1"],
+    "encryption": "tenant",
+    "generation": 2
   }
 }

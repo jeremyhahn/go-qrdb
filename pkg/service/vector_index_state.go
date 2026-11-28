@@ -14,7 +14,11 @@
 
 package service
 
-import "strconv"
+import (
+	"strconv"
+
+	vectorindex "github.com/jeremyhahn/go-qrdb/pkg/vector"
+)
 
 // VectorIndexWarmingError reports that a namespace's in-memory ANN index is
 // not yet ready to answer a similarity search: still replaying its mutation
@@ -49,8 +53,60 @@ type VectorSearchQuery struct {
 	K         int
 }
 
+// VectorRebuildQuery is an engine.Lookup request that rebuilds Namespace's
+// in-memory ANN index on the answering node from the vectors in its store,
+// under the namespace record's own parameters: the index VectorSearchQuery
+// reads. The index is node-local derived state, so the rebuild changes no
+// replicated data. It answers nil once the rebuilt index serves searches; a
+// namespace with no record has its index dropped.
+type VectorRebuildQuery struct {
+	Namespace string
+}
+
 // VectorSearchHit is one ranked result of a VectorSearchQuery.
 type VectorSearchHit struct {
 	ID       uint64
 	Distance float32
+}
+
+// VectorNamespaceQuery asks the engine for one vector namespace's record.
+// The answer is a *VectorNamespaceAnswer, or an untyped nil when the
+// namespace does not exist.
+type VectorNamespaceQuery struct {
+	Namespace string
+}
+
+// VectorNamespaceListQuery asks the engine for every vector namespace. The
+// answer is a []VectorNamespaceAnswer in ascending name order.
+type VectorNamespaceListQuery struct{}
+
+// VectorGetQuery asks the engine for one vector. The answer is a
+// *vectorindex.VectorRecord, or an untyped nil when the namespace or the
+// vector does not exist.
+type VectorGetQuery struct {
+	Namespace string
+	ID        uint64
+}
+
+// VectorScanQuery asks the engine for the vectors of one namespace. The
+// answer is a []VectorScanItem in ascending ID order starting at FromID
+// (inclusive); Limit <= 0 returns every vector.
+type VectorScanQuery struct {
+	Namespace string
+	FromID    uint64
+	Limit     int
+}
+
+// VectorNamespaceAnswer is one namespace as the engine stores it: its
+// record and the number of vectors under it.
+type VectorNamespaceAnswer struct {
+	Namespace string
+	Record    vectorindex.NamespaceRecord
+	Count     uint64
+}
+
+// VectorScanItem is one vector of a VectorScanQuery answer.
+type VectorScanItem struct {
+	ID     uint64
+	Record vectorindex.VectorRecord
 }

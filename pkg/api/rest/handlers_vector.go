@@ -28,12 +28,12 @@ import (
 
 // vectorCreateNamespaceRequest is the JSON payload for POST /vector/namespace.
 type vectorCreateNamespaceRequest struct {
-	Namespace      string            `json:"namespace"`
-	Dimension      uint32            `json:"dimension"`
-	DistanceMetric string            `json:"distance_metric"`
-	IndexType      string            `json:"index_type"`
-	IndexConfig    map[string]string `json:"index_config,omitempty"`
-	ShardID        uint64            `json:"shard_id,omitempty"`
+	Namespace      string                 `json:"namespace"`
+	Dimension      uint32                 `json:"dimension"`
+	DistanceMetric string                 `json:"distance_metric"`
+	IndexType      string                 `json:"index_type"`
+	IndexConfig    map[string]string      `json:"index_config,omitempty"`
+	Metadata       map[string]interface{} `json:"metadata,omitempty"`
 }
 
 // vectorCreateNamespaceResponse is the JSON payload returned by
@@ -66,7 +66,6 @@ type vectorUpdateNamespaceResponse struct {
 // vectorDeleteNamespaceRequest is the JSON payload for DELETE /vector/namespace.
 type vectorDeleteNamespaceRequest struct {
 	Namespace string `json:"namespace"`
-	ShardID   uint64 `json:"shard_id,omitempty"`
 }
 
 // vectorDeleteNamespaceResponse is the JSON payload returned by
@@ -121,7 +120,6 @@ type vectorUpsertRequest struct {
 	ID        uint64                 `json:"id"`
 	Vector    []float32              `json:"vector"`
 	Metadata  map[string]interface{} `json:"metadata,omitempty"`
-	ShardID   uint64                 `json:"shard_id,omitempty"`
 }
 
 // vectorUpsertResponse is the JSON payload returned by POST /vector/upsert.
@@ -138,7 +136,6 @@ type vectorUpsertResponse struct {
 type vectorDeleteRequest struct {
 	Namespace string `json:"namespace"`
 	ID        uint64 `json:"id"`
-	ShardID   uint64 `json:"shard_id,omitempty"`
 }
 
 // vectorDeleteResponse is the JSON payload returned by POST /vector/delete.
@@ -173,7 +170,6 @@ type vectorDataJSON struct {
 type vectorBatchUpsertRequest struct {
 	Namespace string           `json:"namespace"`
 	Vectors   []vectorDataJSON `json:"vectors"`
-	ShardID   uint64           `json:"shard_id,omitempty"`
 }
 
 // vectorBatchUpsertResponse is the JSON payload returned by
@@ -190,7 +186,6 @@ type vectorBatchUpsertResponse struct {
 type vectorBatchDeleteRequest struct {
 	Namespace string   `json:"namespace"`
 	IDs       []uint64 `json:"ids"`
-	ShardID   uint64   `json:"shard_id,omitempty"`
 }
 
 // vectorBatchDeleteResponse is the JSON payload returned by
@@ -212,10 +207,11 @@ type vectorListResponse struct {
 
 // vectorUpdateMetadataRequest is the JSON payload for POST /vector/metadata.
 type vectorUpdateMetadataRequest struct {
-	Namespace string                 `json:"namespace"`
-	ID        uint64                 `json:"id"`
-	Metadata  map[string]interface{} `json:"metadata"`
-	ShardID   uint64                 `json:"shard_id,omitempty"`
+	Namespace     string                 `json:"namespace"`
+	ID            uint64                 `json:"id"`
+	Metadata      map[string]interface{} `json:"metadata"`
+	MergeMetadata bool                   `json:"merge_metadata,omitempty"`
+	DeleteKeys    []string               `json:"delete_keys,omitempty"`
 }
 
 // vectorUpdateMetadataResponse is the JSON payload returned by
@@ -244,13 +240,15 @@ type vectorSearchResultJSON struct {
 // vectorSearchSimilarRequest is the JSON payload for
 // POST /vector/search/similar.
 type vectorSearchSimilarRequest struct {
-	Namespace   string    `json:"namespace"`
-	QueryVector []float32 `json:"query_vector"`
-	K           int       `json:"k"`
-	EfSearch    int       `json:"ef_search,omitempty"`
-	MinScore    float32   `json:"min_score,omitempty"`
-	Consistency uint8     `json:"consistency,omitempty"`
-	ShardID     uint64    `json:"shard_id,omitempty"`
+	Namespace       string                 `json:"namespace"`
+	QueryVector     []float32              `json:"query_vector"`
+	K               int                    `json:"k"`
+	EfSearch        int                    `json:"ef_search,omitempty"`
+	MinScore        float32                `json:"min_score,omitempty"`
+	IncludeVectors  bool                   `json:"include_vectors,omitempty"`
+	IncludeMetadata bool                   `json:"include_metadata,omitempty"`
+	MetadataFilter  map[string]interface{} `json:"metadata_filter,omitempty"`
+	Consistency     uint8                  `json:"consistency,omitempty"`
 }
 
 // vectorSearchSimilarResponse is the JSON payload returned by
@@ -264,12 +262,14 @@ type vectorSearchSimilarResponse struct {
 // vectorSearchByMetadataRequest is the JSON payload for
 // POST /vector/search/metadata.
 type vectorSearchByMetadataRequest struct {
-	Namespace   string                 `json:"namespace"`
-	Filters     map[string]interface{} `json:"filters"`
-	Limit       int                    `json:"limit,omitempty"`
-	Offset      int                    `json:"offset,omitempty"`
-	Consistency uint8                  `json:"consistency,omitempty"`
-	ShardID     uint64                 `json:"shard_id,omitempty"`
+	Namespace       string                 `json:"namespace"`
+	Filters         map[string]interface{} `json:"filters"`
+	FilterOperator  string                 `json:"filter_operator,omitempty"`
+	Limit           int                    `json:"limit,omitempty"`
+	Offset          int                    `json:"offset,omitempty"`
+	IncludeVectors  bool                   `json:"include_vectors,omitempty"`
+	IncludeMetadata bool                   `json:"include_metadata,omitempty"`
+	Consistency     uint8                  `json:"consistency,omitempty"`
 }
 
 // vectorSearchByMetadataResponse is the JSON payload returned by
@@ -283,14 +283,17 @@ type vectorSearchByMetadataResponse struct {
 // vectorHybridSearchRequest is the JSON payload for
 // POST /vector/search/hybrid.
 type vectorHybridSearchRequest struct {
-	Namespace      string                 `json:"namespace"`
-	QueryVector    []float32              `json:"query_vector"`
-	K              int                    `json:"k"`
-	EfSearch       int                    `json:"ef_search,omitempty"`
-	MinScore       float32                `json:"min_score,omitempty"`
-	MetadataFilter map[string]interface{} `json:"metadata_filter"`
-	Consistency    uint8                  `json:"consistency,omitempty"`
-	ShardID        uint64                 `json:"shard_id,omitempty"`
+	Namespace          string                 `json:"namespace"`
+	QueryVector        []float32              `json:"query_vector"`
+	K                  int                    `json:"k"`
+	EfSearch           int                    `json:"ef_search,omitempty"`
+	MinScore           float32                `json:"min_score,omitempty"`
+	MetadataFilter     map[string]interface{} `json:"metadata_filter"`
+	FilterOperator     string                 `json:"filter_operator,omitempty"`
+	RerankingAlgorithm string                 `json:"reranking_algorithm,omitempty"`
+	IncludeVectors     bool                   `json:"include_vectors,omitempty"`
+	IncludeMetadata    bool                   `json:"include_metadata,omitempty"`
+	Consistency        uint8                  `json:"consistency,omitempty"`
 }
 
 // vectorHybridSearchResponse is the JSON payload returned by
@@ -305,11 +308,16 @@ type vectorHybridSearchResponse struct {
 
 // vectorSearchByIDRequest is the JSON payload for POST /vector/search/by-id.
 type vectorSearchByIDRequest struct {
-	Namespace   string `json:"namespace"`
-	ID          uint64 `json:"id"`
-	K           int    `json:"k"`
-	Consistency uint8  `json:"consistency,omitempty"`
-	ShardID     uint64 `json:"shard_id,omitempty"`
+	Namespace       string                 `json:"namespace"`
+	ID              uint64                 `json:"id"`
+	K               int                    `json:"k"`
+	EfSearch        int                    `json:"ef_search,omitempty"`
+	MinScore        float32                `json:"min_score,omitempty"`
+	IncludeVectors  bool                   `json:"include_vectors,omitempty"`
+	IncludeMetadata bool                   `json:"include_metadata,omitempty"`
+	MetadataFilter  map[string]interface{} `json:"metadata_filter,omitempty"`
+	ExcludeSelf     bool                   `json:"exclude_self,omitempty"`
+	Consistency     uint8                  `json:"consistency,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -319,8 +327,9 @@ type vectorSearchByIDRequest struct {
 // vectorRebuildIndexRequest is the JSON payload for
 // POST /vector/index/rebuild.
 type vectorRebuildIndexRequest struct {
-	Namespace string `json:"namespace"`
-	ShardID   uint64 `json:"shard_id,omitempty"`
+	Namespace   string            `json:"namespace"`
+	IndexConfig map[string]string `json:"index_config,omitempty"`
+	Async       bool              `json:"async,omitempty"`
 }
 
 // vectorRebuildIndexResponse is the JSON payload returned by
@@ -373,7 +382,8 @@ type vectorIndexStatsResponse struct {
 // vectorCompactRequest is the JSON payload for POST /vector/compact.
 type vectorCompactRequest struct {
 	Namespace string `json:"namespace"`
-	ShardID   uint64 `json:"shard_id,omitempty"`
+	Async     bool   `json:"async,omitempty"`
+	TimeoutMs int64  `json:"timeout_ms,omitempty"`
 }
 
 // vectorCompactResponse is the JSON payload returned by
@@ -404,6 +414,15 @@ type vectorCompactionProgressResponse struct {
 // Vector namespace handlers
 // ---------------------------------------------------------------------------
 
+// decodeVectorBody decodes a vector request body strictly: an unknown member
+// (such as the removed shard_id, OD-14 A) is refused rather than silently
+// ignored, the rule database create applies (OD-13).
+func decodeVectorBody(r *http.Request, v any) error {
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	return dec.Decode(v)
+}
+
 // handleVectorCreateNamespace handles POST /vector/namespace -- creates a
 // new vector namespace with the specified dimensionality, distance metric,
 // and index configuration.
@@ -418,7 +437,7 @@ func (s *Server) handleVectorCreateNamespace(w http.ResponseWriter, r *http.Requ
 	}
 
 	var req vectorCreateNamespaceRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeVectorBody(r, &req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
 		return
 	}
@@ -429,7 +448,7 @@ func (s *Server) handleVectorCreateNamespace(w http.ResponseWriter, r *http.Requ
 		DistanceMetric: req.DistanceMetric,
 		IndexType:      req.IndexType,
 		IndexConfig:    req.IndexConfig,
-		ShardID:        req.ShardID,
+		Metadata:       req.Metadata,
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -457,7 +476,7 @@ func (s *Server) handleVectorUpdateNamespace(w http.ResponseWriter, r *http.Requ
 	}
 
 	var req vectorUpdateNamespaceRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeVectorBody(r, &req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
 		return
 	}
@@ -494,14 +513,13 @@ func (s *Server) handleVectorDeleteNamespace(w http.ResponseWriter, r *http.Requ
 	}
 
 	var req vectorDeleteNamespaceRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeVectorBody(r, &req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
 		return
 	}
 
 	resp, err := vectorSvc.DeleteNamespace(ctx, &service.DeleteNamespaceRequest{
 		Namespace: req.Namespace,
-		ShardID:   req.ShardID,
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -516,9 +534,7 @@ func (s *Server) handleVectorDeleteNamespace(w http.ResponseWriter, r *http.Requ
 }
 
 // handleVectorListNamespaces handles GET /vector/namespaces -- returns all
-// vector namespace names.
-// Query parameters:
-//   - shard_id: target shard (optional)
+// vector namespace names. It takes no query parameters.
 func (s *Server) handleVectorListNamespaces(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	vectorSvc := s.vectorSvcFor(w, ctx)
@@ -529,21 +545,7 @@ func (s *Server) handleVectorListNamespaces(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	q := r.URL.Query()
-
-	var shardID uint64
-	if shardIDStr := q.Get("shard_id"); shardIDStr != "" {
-		var parseErr error
-		shardID, parseErr = strconv.ParseUint(shardIDStr, 10, 64)
-		if parseErr != nil {
-			writeErrorJSON(w, http.StatusBadRequest, &InvalidParameterError{Param: "shard_id", Err: parseErr})
-			return
-		}
-	}
-
-	resp, err := vectorSvc.ListNamespaces(ctx, &service.ListNamespacesRequest{
-		ShardID: shardID,
-	})
+	resp, err := vectorSvc.ListNamespaces(ctx, &service.ListNamespacesRequest{})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -561,7 +563,6 @@ func (s *Server) handleVectorListNamespaces(w http.ResponseWriter, r *http.Reque
 // type, and vector count.
 // Query parameters:
 //   - namespace: namespace name (required)
-//   - shard_id: target shard (optional)
 func (s *Server) handleVectorGetNamespaceInfo(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	vectorSvc := s.vectorSvcFor(w, ctx)
@@ -580,19 +581,8 @@ func (s *Server) handleVectorGetNamespaceInfo(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	var shardID uint64
-	if shardIDStr := q.Get("shard_id"); shardIDStr != "" {
-		var parseErr error
-		shardID, parseErr = strconv.ParseUint(shardIDStr, 10, 64)
-		if parseErr != nil {
-			writeErrorJSON(w, http.StatusBadRequest, &InvalidParameterError{Param: "shard_id", Err: parseErr})
-			return
-		}
-	}
-
 	info, err := vectorSvc.GetNamespaceInfo(ctx, &service.GetNamespaceInfoRequest{
 		Namespace: namespace,
-		ShardID:   shardID,
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -629,7 +619,7 @@ func (s *Server) handleVectorUpsert(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req vectorUpsertRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeVectorBody(r, &req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
 		return
 	}
@@ -639,7 +629,6 @@ func (s *Server) handleVectorUpsert(w http.ResponseWriter, r *http.Request) {
 		ID:        req.ID,
 		Vector:    req.Vector,
 		Metadata:  req.Metadata,
-		ShardID:   req.ShardID,
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -661,7 +650,6 @@ func (s *Server) handleVectorUpsert(w http.ResponseWriter, r *http.Request) {
 //   - namespace: namespace name (required)
 //   - id: vector identifier (required)
 //   - consistency: read consistency level (optional, default 0 = strong)
-//   - shard_id: target shard (optional)
 func (s *Server) handleVectorGet(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	vectorSvc := s.vectorSvcFor(w, ctx)
@@ -701,23 +689,12 @@ func (s *Server) handleVectorGet(w http.ResponseWriter, r *http.Request) {
 		consistency = service.ConsistencyLevel(val)
 	}
 
-	var shardID uint64
-	if shardIDStr := q.Get("shard_id"); shardIDStr != "" {
-		var sErr error
-		shardID, sErr = strconv.ParseUint(shardIDStr, 10, 64)
-		if sErr != nil {
-			writeErrorJSON(w, http.StatusBadRequest, &InvalidParameterError{Param: "shard_id", Err: sErr})
-			return
-		}
-	}
-
 	resp, err := vectorSvc.GetVector(ctx, &service.GetVectorRequest{
 		Namespace:       namespace,
 		ID:              id,
 		IncludeVector:   q.Get("include_vector") != "false",
 		IncludeMetadata: q.Get("include_metadata") != "false",
 		Consistency:     consistency,
-		ShardID:         shardID,
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -748,7 +725,7 @@ func (s *Server) handleVectorDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req vectorDeleteRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeVectorBody(r, &req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
 		return
 	}
@@ -756,7 +733,6 @@ func (s *Server) handleVectorDelete(w http.ResponseWriter, r *http.Request) {
 	resp, err := vectorSvc.DeleteVector(ctx, &service.DeleteVectorRequest{
 		Namespace: req.Namespace,
 		ID:        req.ID,
-		ShardID:   req.ShardID,
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -782,7 +758,7 @@ func (s *Server) handleVectorBatchUpsert(w http.ResponseWriter, r *http.Request)
 	}
 
 	var req vectorBatchUpsertRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeVectorBody(r, &req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
 		return
 	}
@@ -802,7 +778,6 @@ func (s *Server) handleVectorBatchUpsert(w http.ResponseWriter, r *http.Request)
 	resp, err := vectorSvc.BatchUpsert(ctx, &service.BatchUpsertRequest{
 		Namespace: req.Namespace,
 		Vectors:   vectors,
-		ShardID:   req.ShardID,
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -831,7 +806,7 @@ func (s *Server) handleVectorBatchDeleteVectors(w http.ResponseWriter, r *http.R
 	}
 
 	var req vectorBatchDeleteRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeVectorBody(r, &req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
 		return
 	}
@@ -839,7 +814,6 @@ func (s *Server) handleVectorBatchDeleteVectors(w http.ResponseWriter, r *http.R
 	resp, err := vectorSvc.BatchDeleteVectors(ctx, &service.BatchDeleteVectorsRequest{
 		Namespace: req.Namespace,
 		IDs:       req.IDs,
-		ShardID:   req.ShardID,
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -860,7 +834,6 @@ func (s *Server) handleVectorBatchDeleteVectors(w http.ResponseWriter, r *http.R
 //   - namespace: namespace name (required)
 //   - limit: maximum number of vectors to return (optional)
 //   - cursor: opaque pagination cursor (optional)
-//   - shard_id: target shard (optional)
 func (s *Server) handleVectorListVectors(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	vectorSvc := s.vectorSvcFor(w, ctx)
@@ -891,21 +864,10 @@ func (s *Server) handleVectorListVectors(w http.ResponseWriter, r *http.Request)
 
 	cursor := q.Get("cursor")
 
-	var shardID uint64
-	if shardIDStr := q.Get("shard_id"); shardIDStr != "" {
-		var parseErr error
-		shardID, parseErr = strconv.ParseUint(shardIDStr, 10, 64)
-		if parseErr != nil {
-			writeErrorJSON(w, http.StatusBadRequest, &InvalidParameterError{Param: "shard_id", Err: parseErr})
-			return
-		}
-	}
-
 	resp, err := vectorSvc.ListVectors(ctx, &service.ListVectorsRequest{
 		Namespace: namespace,
 		Limit:     limit,
 		Cursor:    cursor,
-		ShardID:   shardID,
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -933,16 +895,17 @@ func (s *Server) handleVectorUpdateMetadata(w http.ResponseWriter, r *http.Reque
 	}
 
 	var req vectorUpdateMetadataRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeVectorBody(r, &req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
 		return
 	}
 
 	resp, err := vectorSvc.UpdateMetadata(ctx, &service.UpdateVectorMetadataRequest{
-		Namespace: req.Namespace,
-		ID:        req.ID,
-		Metadata:  req.Metadata,
-		ShardID:   req.ShardID,
+		Namespace:     req.Namespace,
+		ID:            req.ID,
+		Metadata:      req.Metadata,
+		MergeMetadata: req.MergeMetadata,
+		DeleteKeys:    req.DeleteKeys,
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -974,19 +937,21 @@ func (s *Server) handleVectorSearchSimilar(w http.ResponseWriter, r *http.Reques
 	}
 
 	var req vectorSearchSimilarRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeVectorBody(r, &req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
 		return
 	}
 
 	resp, err := vectorSvc.SearchSimilar(ctx, &service.SearchSimilarRequest{
-		Namespace:   req.Namespace,
-		QueryVector: req.QueryVector,
-		K:           req.K,
-		EfSearch:    req.EfSearch,
-		MinScore:    req.MinScore,
-		Consistency: service.ConsistencyLevel(req.Consistency),
-		ShardID:     req.ShardID,
+		Namespace:       req.Namespace,
+		QueryVector:     req.QueryVector,
+		K:               req.K,
+		EfSearch:        req.EfSearch,
+		MinScore:        req.MinScore,
+		IncludeVectors:  req.IncludeVectors,
+		IncludeMetadata: req.IncludeMetadata,
+		MetadataFilter:  req.MetadataFilter,
+		Consistency:     service.ConsistencyLevel(req.Consistency),
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -1013,18 +978,20 @@ func (s *Server) handleVectorSearchByMetadata(w http.ResponseWriter, r *http.Req
 	}
 
 	var req vectorSearchByMetadataRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeVectorBody(r, &req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
 		return
 	}
 
 	resp, err := vectorSvc.SearchByMetadata(ctx, &service.SearchByMetadataRequest{
-		Namespace:   req.Namespace,
-		Filters:     req.Filters,
-		Limit:       req.Limit,
-		Offset:      req.Offset,
-		Consistency: service.ConsistencyLevel(req.Consistency),
-		ShardID:     req.ShardID,
+		Namespace:       req.Namespace,
+		Filters:         req.Filters,
+		FilterOperator:  req.FilterOperator,
+		Limit:           req.Limit,
+		Offset:          req.Offset,
+		IncludeVectors:  req.IncludeVectors,
+		IncludeMetadata: req.IncludeMetadata,
+		Consistency:     service.ConsistencyLevel(req.Consistency),
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -1052,20 +1019,23 @@ func (s *Server) handleVectorHybridSearch(w http.ResponseWriter, r *http.Request
 	}
 
 	var req vectorHybridSearchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeVectorBody(r, &req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
 		return
 	}
 
 	resp, err := vectorSvc.HybridSearch(ctx, &service.HybridSearchRequest{
-		Namespace:      req.Namespace,
-		QueryVector:    req.QueryVector,
-		K:              req.K,
-		EfSearch:       req.EfSearch,
-		MinScore:       req.MinScore,
-		MetadataFilter: req.MetadataFilter,
-		Consistency:    service.ConsistencyLevel(req.Consistency),
-		ShardID:        req.ShardID,
+		Namespace:          req.Namespace,
+		QueryVector:        req.QueryVector,
+		K:                  req.K,
+		EfSearch:           req.EfSearch,
+		MinScore:           req.MinScore,
+		MetadataFilter:     req.MetadataFilter,
+		FilterOperator:     req.FilterOperator,
+		RerankingAlgorithm: req.RerankingAlgorithm,
+		IncludeVectors:     req.IncludeVectors,
+		IncludeMetadata:    req.IncludeMetadata,
+		Consistency:        service.ConsistencyLevel(req.Consistency),
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -1095,17 +1065,22 @@ func (s *Server) handleVectorSearchByID(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var req vectorSearchByIDRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeVectorBody(r, &req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
 		return
 	}
 
 	resp, err := vectorSvc.SearchByID(ctx, &service.SearchByIDRequest{
-		Namespace:   req.Namespace,
-		ID:          req.ID,
-		K:           req.K,
-		Consistency: service.ConsistencyLevel(req.Consistency),
-		ShardID:     req.ShardID,
+		Namespace:       req.Namespace,
+		ID:              req.ID,
+		K:               req.K,
+		EfSearch:        req.EfSearch,
+		MinScore:        req.MinScore,
+		IncludeVectors:  req.IncludeVectors,
+		IncludeMetadata: req.IncludeMetadata,
+		MetadataFilter:  req.MetadataFilter,
+		ExcludeSelf:     req.ExcludeSelf,
+		Consistency:     service.ConsistencyLevel(req.Consistency),
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -1136,14 +1111,15 @@ func (s *Server) handleVectorRebuildIndex(w http.ResponseWriter, r *http.Request
 	}
 
 	var req vectorRebuildIndexRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeVectorBody(r, &req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
 		return
 	}
 
 	resp, err := vectorSvc.RebuildIndex(ctx, &service.RebuildIndexRequest{
-		Namespace: req.Namespace,
-		ShardID:   req.ShardID,
+		Namespace:   req.Namespace,
+		IndexConfig: req.IndexConfig,
+		Async:       req.Async,
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -1167,7 +1143,6 @@ func (s *Server) handleVectorRebuildIndex(w http.ResponseWriter, r *http.Request
 // Query parameters:
 //   - namespace: namespace name (required)
 //   - job_id: rebuild job identifier (required)
-//   - shard_id: target shard (optional)
 func (s *Server) handleVectorGetRebuildProgress(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	vectorSvc := s.vectorSvcFor(w, ctx)
@@ -1221,7 +1196,6 @@ func (s *Server) handleVectorGetRebuildProgress(w http.ResponseWriter, r *http.R
 // memory usage, and disk usage.
 // Query parameters:
 //   - namespace: namespace name (required)
-//   - shard_id: target shard (optional)
 func (s *Server) handleVectorGetIndexStats(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	vectorSvc := s.vectorSvcFor(w, ctx)
@@ -1240,19 +1214,8 @@ func (s *Server) handleVectorGetIndexStats(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	var shardID uint64
-	if shardIDStr := q.Get("shard_id"); shardIDStr != "" {
-		var parseErr error
-		shardID, parseErr = strconv.ParseUint(shardIDStr, 10, 64)
-		if parseErr != nil {
-			writeErrorJSON(w, http.StatusBadRequest, &InvalidParameterError{Param: "shard_id", Err: parseErr})
-			return
-		}
-	}
-
 	stats, err := vectorSvc.GetIndexStats(ctx, &service.GetIndexStatsRequest{
 		Namespace: namespace,
-		ShardID:   shardID,
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -1290,14 +1253,15 @@ func (s *Server) handleVectorCompactNamespace(w http.ResponseWriter, r *http.Req
 	}
 
 	var req vectorCompactRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeVectorBody(r, &req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
 		return
 	}
 
 	resp, err := vectorSvc.CompactNamespace(ctx, &service.CompactNamespaceRequest{
 		Namespace: req.Namespace,
-		ShardID:   req.ShardID,
+		Async:     req.Async,
+		TimeoutMs: req.TimeoutMs,
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -1318,7 +1282,6 @@ func (s *Server) handleVectorCompactNamespace(w http.ResponseWriter, r *http.Req
 // Query parameters:
 //   - namespace: namespace name (required)
 //   - operation_id: compaction operation identifier (required)
-//   - shard_id: target shard (optional)
 //
 // NOTE: this previously read a "job_id" query parameter -- a copy-paste
 // holdover from the sibling GetRebuildProgress handler's JobID field --
@@ -1355,20 +1318,9 @@ func (s *Server) handleVectorGetCompactionProgress(w http.ResponseWriter, r *htt
 		return
 	}
 
-	var shardID uint64
-	if shardIDStr := q.Get("shard_id"); shardIDStr != "" {
-		var parseErr error
-		shardID, parseErr = strconv.ParseUint(shardIDStr, 10, 64)
-		if parseErr != nil {
-			writeErrorJSON(w, http.StatusBadRequest, &InvalidParameterError{Param: "shard_id", Err: parseErr})
-			return
-		}
-	}
-
 	progress, err := vectorSvc.GetCompactionProgress(ctx, &service.GetCompactionProgressRequest{
 		Namespace:   namespace,
 		OperationID: jobID,
-		ShardID:     shardID,
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)

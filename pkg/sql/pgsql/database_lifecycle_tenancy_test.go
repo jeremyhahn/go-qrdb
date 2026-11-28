@@ -150,7 +150,8 @@ type pgLifecycleFixture struct {
 
 func newPGLifecycleFixture(t *testing.T, databaseQuota int64) *pgLifecycleFixture {
 	t.Helper()
-	mgr := databasetest.NewManager(slog.New(slog.NewTextHandler(io.Discard, nil)), t.TempDir())
+	mgr := databasetest.NewManager(slog.New(slog.NewTextHandler(io.Discard, nil)), t.TempDir(),
+		database.WithDefaults(database.Defaults{RunMode: database.RunModeStandalone}))
 	t.Cleanup(func() { _ = mgr.Close() })
 	return &pgLifecycleFixture{
 		mgr:    mgr,

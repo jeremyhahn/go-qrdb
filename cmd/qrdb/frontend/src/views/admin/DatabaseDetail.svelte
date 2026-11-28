@@ -447,7 +447,7 @@
     <DatabaseSettingsForms
       {client}
       database={existingDb}
-      sections={["sql", "compaction", "raft", "barrier", "connection"]}
+      sections={["sql", "compaction", "raft", "barrier"]}
       onUpdated={(db) => {
         existingDb = db;
         updateDatabase(db);

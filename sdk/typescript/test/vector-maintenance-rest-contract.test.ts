@@ -69,13 +69,13 @@ describe('vector index rebuild — REST wire', () => {
             success: true,
         });
 
-        const resp = await vectorOf(client).rebuildIndex({ namespace: 'docs', shardId: 3 });
+        const resp = await vectorOf(client).rebuildIndex({ namespace: 'docs' });
 
         expect(calls).toHaveLength(1);
         const url = new URL(calls[0].url);
         expect(url.pathname).toBe('/vector/index/rebuild');
         expect(calls[0].method).toBe('POST');
-        expect(calls[0].body).toEqual({ namespace: 'docs', shard_id: 3 });
+        expect(calls[0].body).toEqual({ namespace: 'docs' });
         expect(resp).toEqual({ jobId: 'rb-1', started: true, timestamp: 1700000000 });
     });
 
@@ -94,13 +94,13 @@ describe('vector index rebuild — REST wire', () => {
             completed_at: 0,
         });
 
-        const p = await vectorOf(client).getRebuildProgress({ namespace: 'docs', jobId: 'rb-1', shardId: 2 });
+        const p = await vectorOf(client).getRebuildProgress({ namespace: 'docs', jobId: 'rb-1' });
 
         const url = new URL(calls[0].url);
         expect(url.pathname).toBe('/vector/index/rebuild/progress');
         expect(url.searchParams.get('namespace')).toBe('docs');
         expect(url.searchParams.get('job_id')).toBe('rb-1');
-        expect(url.searchParams.get('shard_id')).toBe('2');
+        expect(url.searchParams.get('shard_id')).toBeNull();
         expect(url.searchParams.get('jobId')).toBeNull();
         expect(p).toEqual({
             jobId: 'rb-1',
@@ -174,13 +174,13 @@ describe('vector namespace compaction — REST wire', () => {
             success: true,
         });
 
-        const resp = await vectorOf(client).compactNamespace({ namespace: 'docs', shardId: 1 });
+        const resp = await vectorOf(client).compactNamespace({ namespace: 'docs' });
 
         expect(calls).toHaveLength(1);
         const url = new URL(calls[0].url);
         expect(url.pathname).toBe('/vector/compact');
         expect(calls[0].method).toBe('POST');
-        expect(calls[0].body).toEqual({ namespace: 'docs', shard_id: 1 });
+        expect(calls[0].body).toEqual({ namespace: 'docs' });
         expect(resp).toEqual({ jobId: 'cp-9', started: true });
     });
 
@@ -196,13 +196,13 @@ describe('vector namespace compaction — REST wire', () => {
             started_at: 1700000000,
         });
 
-        const p = await vectorOf(client).getCompactionProgress({ namespace: 'docs', jobId: 'cp-9', shardId: 4 });
+        const p = await vectorOf(client).getCompactionProgress({ namespace: 'docs', jobId: 'cp-9' });
 
         const url = new URL(calls[0].url);
         expect(url.pathname).toBe('/vector/compact/progress');
         expect(url.searchParams.get('namespace')).toBe('docs');
         expect(url.searchParams.get('operation_id')).toBe('cp-9');
-        expect(url.searchParams.get('shard_id')).toBe('4');
+        expect(url.searchParams.get('shard_id')).toBeNull();
         expect(url.searchParams.get('job_id')).toBeNull();
         expect(url.searchParams.get('jobId')).toBeNull();
         expect(p).toEqual({

@@ -299,7 +299,7 @@ type nodeMigrationProvider struct {
 // handled here; tenant scope is routed by the scoped router in Node.encMigrator
 // to TenantHostRegistry.MigrateEncryption before nodeMigrationProvider is
 // consulted, so the tenant branch below is defensive dead code.
-func (p *nodeMigrationProvider) StoreDirs(_ context.Context, scope service.BarrierScope) (service.MigrationStores, error) {
+func (p *nodeMigrationProvider) StoreDirs(ctx context.Context, scope service.BarrierScope) (service.MigrationStores, error) {
 	n := p.node
 	if scope.Kind != service.ScopeSystem {
 		return service.MigrationStores{}, &MigrationNotSupportedError{Reason: "tenant scope is handled by TenantHostRegistry via the scoped router; nodeMigrationProvider is system-only"}
@@ -336,7 +336,40 @@ func (p *nodeMigrationProvider) StoreDirs(_ context.Context, scope service.Barri
 	if n.sealRetirer != nil {
 		stores.RetireRecords = n.sealRetirer.Retire
 	}
+	pebbleRoots, fileRoots, err := p.databaseStoreDirs(ctx)
+	if err != nil {
+		return service.MigrationStores{}, err
+	}
+	stores.Pebble = append(stores.Pebble, pebbleRoots...)
+	stores.File = append(stores.File, fileRoots...)
 	return stores, nil
+}
+
+// databaseStoreDirs lists the store directories of every database the
+// node barrier encrypts in a store of its own (a system or prefix-tenant
+// database the binding factory materializes, an explicit data_dir
+// included), opened on this node or not: the swap re-encrypts them with
+// the base store, so each reopens under the new barrier. A database with
+// its own barrier, or an isolated tenant's, is encrypted by another
+// barrier and left alone. An objstore database cannot be encrypted at
+// rest, and a Pebble database whose write-ahead log lives under
+// storage.wal_dir would lose its WAL-only records: both refuse the
+// migration before anything is minted or quiesced.
+func (p *nodeMigrationProvider) databaseStoreDirs(ctx context.Context) (pebbleDirs, fileDirs []string, err error) {
+	n := p.node
+	walDir := ""
+	if n.retainedStandalone.cfg != nil {
+		walDir = n.retainedStandalone.cfg.Storage.WALDir
+	}
+	pebbleDirs, fileDirs, err = database.NodeEncryptedStoreDirs(ctx, n.dbManager, walDir)
+	if err != nil {
+		var unsupported *database.StoreMigrationUnsupportedError
+		if errors.As(err, &unsupported) {
+			return nil, nil, &MigrationNotSupportedError{Reason: unsupported.Error()}
+		}
+		return nil, nil, &MigrationNotSupportedError{Reason: "the database catalog cannot be listed: " + err.Error()}
+	}
+	return pebbleDirs, fileDirs, nil
 }
 
 // existingDirs returns those of candidates that are existing directories.

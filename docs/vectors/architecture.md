@@ -94,8 +94,7 @@ Production traffic uses the node-local service:
 - **Not replicated.** The service replicates only when given a Raft node, and no
   production path gives it one. The reserved vector shard and the two vector
   state machines in `pkg/statemachine` are never started. In a cluster, each
-  node's store holds only the writes that node served. The `shard_id` request
-  field selects nothing.
+  node's store holds only the writes that node served.
 - **Absent where tenants have their own store.** The per-tenant volume host, the
   dedicated-raft database bundles and the dedicated-store bundle carry no vector
   service; vector requests for those databases are refused as not implemented.
@@ -247,20 +246,23 @@ database). Each capability keeps exactly one home: the engine.
 
 ## Sharding
 
-Shipped: vector operations take an optional **shard ID** (`--shard-id`,
-`shard_id`). It selects nothing — see "Current state".
+Shipped: no vector request names a shard (OD-14 A); the request's database
+scope decides where the namespace lives.
 
 Target: a namespace belongs to a database and lives wherever that database's
 binding lives. Horizontal scale comes from databases on different Raft groups,
-not from a vector-specific shard. The `shard_id` field is removed (OD-14).
+not from a vector-specific shard.
 
 ## Trust boundaries
 
 - **Target: vector storage is tenant-safe and barrier-encrypted.** Namespaces
   are part of one database's store, and vector payloads pass through that
   database's binding encryptor — see [../barrier-seal/](../barrier-seal/). A
-  sealed barrier fails vector reads and writes closed. Shipped, this holds only
-  for the node's own barrier (see "Current state").
+  sealed barrier fails vector reads and writes closed. A materialized
+  database's vector service serves its cached in-memory index only after one
+  namespace read through the binding store, so a sealed barrier fails searches
+  closed (`*BarrierSealedError`, 503 / `UNAVAILABLE`) even on a warm index.
+  Shipped, this holds only for the node's own barrier (see "Current state").
 - Each of the twenty vector capabilities carries its own `vector:*` permission,
   including the read-only ones (`vector:get_index_stats`,
   `vector:namespace_list`), so index topology is not readable by anyone with

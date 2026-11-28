@@ -17,6 +17,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"time"
@@ -147,7 +148,12 @@ func newTenantHost(ctx context.Context, tenantID, dataRoot string, tb *seal.Tena
 	// tenant DEK.
 	lessor := lease.NewLessor()
 	hub := watch.NewHub(watchHubOpts...)
-	createFn := newDataPlaneCreateFunc(tb, lessor, hub)
+	createFn, err := newDataPlaneCreateFunc(tb, lessor, hub, database.DefaultRaftStateStorage)
+	if err != nil {
+		hub.Close()
+		_ = host.Close()
+		return nil, &TenantHostError{TenantID: tenantID, Op: "state-storage", Err: err}
+	}
 
 	members := map[uint64]string{1: hostCfg.RaftAddress}
 	if err := host.StartShard(members, false, createFn, shardCfg); err != nil {
@@ -179,7 +185,7 @@ func newTenantHost(ctx context.Context, tenantID, dataRoot string, tb *seal.Tena
 		lessor:   lessor,
 		cancel:   cancel,
 		logger:   logger,
-		services: buildDataPlaneServices(adapter, tenantHostShardID, hub, importSessionCfg, indexCfg, tsCfg),
+		services: buildDataPlaneServices(adapter, tenantHostShardID, tenantID, hub, importSessionCfg, indexCfg, tsCfg),
 	}
 
 	// Leader-side lease-expiry sweeper. The tenant host is a single-node
@@ -562,25 +568,49 @@ func pollShard(ctx context.Context, clock shardLeaderClock, what string, shardID
 // and watches are isolated from the system shard and from other tenants. It is
 // shared by the IsolationVolume per-tenant Host (tenant_host.go) and the
 // IsolationRaft dedicated shards on the shared host (raft_backend_factory.go).
-func newDataPlaneCreateFunc(tb *seal.TenantBarrier, lessor *lease.Lessor, hub *watch.Hub) sm.CreateFunc {
+func newDataPlaneCreateFunc(tb *seal.TenantBarrier, lessor *lease.Lessor, hub *watch.Hub, stateStorage database.BackendType) (sm.CreateFunc, error) {
+	var pebbleOpts []store.Option
+	switch stateStorage {
+	case database.BackendPebble, "":
+		// An empty value is the binding default (database.DefaultRaftStateStorage).
+	case database.BackendMemory:
+		pebbleOpts = append(pebbleOpts, store.WithMemFS())
+	default:
+		// The group's state machine is the Pebble-native MVCC store (leases,
+		// watches, time series); there is no file-backed one, so "file" (or any
+		// other value) is refused rather than silently opened on Pebble.
+		return nil, &UnsupportedRaftStateStorageError{StateStorage: stateStorage}
+	}
 	enc := atrest.New(tb.Barrier())
 	return store.NewMVCCCreateFuncWith(
-		[]store.Option{store.WithEncryptor(enc)},
+		append(pebbleOpts, store.WithEncryptor(enc)),
 		store.WithLessor(lessor),
 		// A registry of its own per state machine, so the many tenant and
 		// database groups on a node never share heads.
 		store.WithLogs(),
 		store.WithWatchHub(hub),
 		store.WithTimeSeriesEnabled(),
-	)
+	), nil
+}
+
+// UnsupportedRaftStateStorageError is returned when a Raft group's recorded
+// state storage names a store the data-plane state machine cannot open there:
+// it runs on Pebble (on disk, or in memory for "memory"), so "file" is refused
+// instead of being substituted with Pebble.
+type UnsupportedRaftStateStorageError struct {
+	StateStorage database.BackendType
+}
+
+func (e *UnsupportedRaftStateStorageError) Error() string {
+	return fmt.Sprintf("raft state_storage %q is not supported for a Raft group: use %q or %q",
+		string(e.StateStorage), database.BackendPebble, database.BackendMemory)
 }
 
 // buildDataPlaneServices binds the full data-plane service set to a single
 // shard on the given host and watch hub. It mirrors the core binding block of
 // lifecycle.BuildServices for the system shard and is shared by the per-tenant
-// volume Host and the dedicated per-database raft shards. Vector storage is
-// intentionally omitted: it requires a separate per-tenant Pebble vector store
-// rather than the Raft state machine, which is out of scope here.
+// volume Host and the dedicated per-database raft shards. The set carries no
+// vector service; a dedicated raft shard adds its own on first resolution.
 //
 // importSessionCfg bounds a chunked import session on this shard
 // (config.ImportSession, "import_session:" in YAML); the zero value
@@ -596,12 +626,14 @@ func newDataPlaneCreateFunc(tb *seal.TenantBarrier, lessor *lease.Lessor, hub *w
 // passes service.WithDedicatedKeyspace, because the shard is that one
 // database's whole keyspace; the volume Host, which every database of the
 // tenant shares, passes nothing, so it refuses the empty compaction prefix.
-func buildDataPlaneServices(host service.Host, shardID uint64, hub *watch.Hub, importSessionCfg qrdbconfig.ImportSessionConfig, indexCfg qrdbconfig.IndexConfig, tsCfg qrdbconfig.TimeSeriesConfig, mvccOpts ...service.MVCCKVServiceOption) *DatabaseServices {
+func buildDataPlaneServices(host service.Host, shardID uint64, tenantID string, hub *watch.Hub, importSessionCfg qrdbconfig.ImportSessionConfig, indexCfg qrdbconfig.IndexConfig, tsCfg qrdbconfig.TimeSeriesConfig, mvccOpts ...service.MVCCKVServiceOption) *DatabaseServices {
 	kv := service.NewKVService(host, shardID)
 	mvcc := service.NewMVCCKVService(host, shardID, mvccOpts...)
 	idx := service.NewIndexService(host, shardID, service.WithMaxIndexes(indexCfg.MaxIndexes))
 	txn := service.NewTransactionService(host, shardID)
-	return &DatabaseServices{
+	collection := service.NewCollectionServiceWithIndex(kv, idx).
+		WithSequenceService(service.NewSequenceService(mvcc, txn))
+	svcs := &DatabaseServices{
 		Name:    "",
 		ShardID: shardID,
 		KV:      kv,
@@ -628,9 +660,14 @@ func buildDataPlaneServices(host service.Host, shardID uint64, hub *watch.Hub, i
 		// keyspace) and is NOT what a prefix/volume tenant is served: there
 		// restServiceRegistry.applyComposite rebuilds it over the namespaced
 		// engines, because a struct copy would carry these raw ones through.
-		Collection: service.NewCollectionServiceWithIndex(kv, idx).
-			WithSequenceService(service.NewSequenceService(mvcc, txn)),
+		Collection: collection,
 	}
+	// Collection creates and drops journal their work in this store, owned
+	// by tenantID, so the collection sweeper finishes one a crash
+	// interrupted on every database raft group, materialized binding and
+	// tenant host alike.
+	svcs.Collection = collection.WithWorkJournal(collectionJournalFor(svcs, tenantID))
+	return svcs
 }
 
 // Close stops the tenant Host's lease sweeper, stops its shard, and closes the

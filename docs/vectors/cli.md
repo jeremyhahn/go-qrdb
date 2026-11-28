@@ -1,7 +1,7 @@
 # Vector Database — CLI
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-26
+> Scope: go-qrdb · Last verified: 2026-11-23
 > Conflicts with this document are defects. Fix them here first.
 >
 > "Target" notes describe the vector half of the multi-model database program
@@ -16,11 +16,11 @@ confirm with `qrdb admin capabilities`.
 
 All verbs accept the root persistent flags documented in
 [../key-value/cli.md](../key-value/cli.md#global-flags). Nearly every verb takes
-`--namespace` and an optional `--shard-id`.
+`--namespace`.
 
-**`--shard-id` selects nothing today**, and is removed from every verb in the
-target design (OD-14 A). The root `--database` flag decides which database —
-and therefore which storage — a namespace belongs to:
+**No verb takes `--shard-id`** (OD-14 A): the root `--database` flag decides
+which database — and therefore which storage and shard — a namespace belongs
+to:
 
 ```bash
 qrdb --database docs-db vector namespace create --namespace docs --dimension 768
@@ -36,7 +36,6 @@ qrdb --database docs-db vector namespace create --namespace docs --dimension 768
 | `--dimension` | uint32 | — | vector dimensionality |
 | `--distance-metric` | string | `cosine` | `cosine \| euclidean \| dot-product \| manhattan` |
 | `--index-type` | string | `hnsw` | `hnsw \| flat \| ivf-flat` |
-| `--shard-id` | uint64 | — | target shard |
 
 ```bash
 qrdb vector namespace create --namespace docs --dimension 768
@@ -71,8 +70,7 @@ index needs a rebuild.
 
 | Flag | Applies to |
 |---|---|
-| `--namespace` | `info`, `delete` |
-| `--shard-id` | all three |
+| `--namespace` | `info`, `delete` (`list` takes no flag) |
 
 ```bash
 qrdb vector namespace list --output json
@@ -90,7 +88,6 @@ qrdb vector namespace delete --namespace scratch
 | `--id` | string | vector ID (uint64, as a string) |
 | `--vector` | string | comma-separated float values |
 | `--metadata` | string | JSON metadata object |
-| `--shard-id` | uint64 | target shard |
 
 ```bash
 qrdb vector upsert --namespace docs --id 1 \
@@ -101,7 +98,7 @@ The vector's length must equal the namespace dimension.
 
 ### `qrdb vector get`
 
-Flags: `--namespace`, `--id`, `--shard-id`, `--consistency` (`default`,
+Flags: `--namespace`, `--id`, `--consistency` (`default`,
 `leader`, `any`).
 
 ```bash
@@ -110,11 +107,11 @@ qrdb vector get --namespace docs --id 1 --consistency leader
 
 ### `qrdb vector delete`
 
-Flags: `--namespace`, `--id`, `--shard-id`.
+Flags: `--namespace`, `--id`.
 
 ### `qrdb vector list`
 
-Flags: `--namespace`, `--shard-id`, `--limit`, `--cursor` (pagination cursor).
+Flags: `--namespace`, `--limit`, `--cursor` (pagination cursor).
 
 ```bash
 qrdb vector list --namespace docs --limit 100
@@ -123,11 +120,11 @@ qrdb vector list --namespace docs --limit 100 --cursor "$NEXT"
 
 ### `qrdb vector update-metadata`
 
-Flags: `--namespace`, `--id`, `--metadata` (JSON), `--shard-id`.
+Flags: `--namespace`, `--id`, `--metadata` (JSON).
 
 ### `qrdb vector batch-upsert`
 
-Flags: `--namespace`, `--file` (JSON path, `-` for stdin), `--shard-id`.
+Flags: `--namespace`, `--file` (JSON path, `-` for stdin).
 
 ```bash
 qrdb vector batch-upsert --namespace docs --file vectors.json
@@ -135,7 +132,7 @@ qrdb vector batch-upsert --namespace docs --file vectors.json
 
 ### `qrdb vector batch-delete`
 
-Flags: `--namespace`, `--ids` (comma-separated uint64), `--shard-id`.
+Flags: `--namespace`, `--ids` (comma-separated uint64).
 
 ```bash
 qrdb vector batch-delete --namespace docs --ids 1,2,3
@@ -153,7 +150,6 @@ qrdb vector batch-delete --namespace docs --ids 1,2,3
 | `--min-score` | float | minimum similarity threshold |
 | `--ef-search` | int | HNSW `ef` parameter (HNSW indexes only) |
 | `--consistency` | string | `default \| leader \| any` |
-| `--shard-id` | uint64 | target shard |
 
 ```bash
 qrdb vector search --namespace docs --vector 0.1,0.2,0.3 --k 10
@@ -163,7 +159,7 @@ qrdb vector search --namespace docs --vector 0.1,0.2,0.3 --k 10 \
 
 ### `qrdb vector search-by-id` — k-NN from an existing vector
 
-Flags: `--namespace`, `--id`, `--k`, `--consistency`, `--shard-id`.
+Flags: `--namespace`, `--id`, `--k`, `--consistency`.
 
 ```bash
 qrdb vector search-by-id --namespace docs --id 1 --k 5
@@ -174,7 +170,7 @@ Use this instead of fetching a vector and passing it back to `search`.
 ### `qrdb vector search-metadata` — metadata filters only
 
 Flags: `--namespace`, `--filters` (JSON filter object), `--limit`, `--offset`,
-`--consistency`, `--shard-id`.
+`--consistency`.
 
 ```bash
 qrdb vector search-metadata --namespace docs \
@@ -184,7 +180,7 @@ qrdb vector search-metadata --namespace docs \
 ### `qrdb vector search-hybrid` — similarity plus metadata
 
 Flags: `--namespace`, `--vector`, `--k`, `--filters`, `--min-score`,
-`--ef-search`, `--consistency`, `--shard-id`.
+`--ef-search`, `--consistency`.
 
 ```bash
 qrdb vector search-hybrid --namespace docs --vector 0.1,0.2,0.3 --k 10 \
@@ -202,7 +198,7 @@ JOB=$(qrdb vector rebuild-index --namespace docs --output json | jq -r .job_id)
 qrdb vector rebuild-progress --namespace docs --job-id "$JOB"
 ```
 
-`rebuild-index` flags: `--namespace`, `--shard-id`.
+`rebuild-index` flags: `--namespace`.
 `rebuild-progress` flags: `--namespace`, `--job-id`.
 
 ### `qrdb vector compact` / `compact-progress`
@@ -212,12 +208,12 @@ OP=$(qrdb vector compact --namespace docs --output json | jq -r .operation_id)
 qrdb vector compact-progress --namespace docs --operation-id "$OP"
 ```
 
-`compact` flags: `--namespace`, `--shard-id`.
-`compact-progress` flags: `--namespace`, `--operation-id`, `--shard-id`.
+`compact` flags: `--namespace`.
+`compact-progress` flags: `--namespace`, `--operation-id`.
 
 ### `qrdb vector index-stats`
 
-Flags: `--namespace`, `--shard-id`.
+Flags: `--namespace`.
 
 ```bash
 qrdb vector index-stats --namespace docs --output json

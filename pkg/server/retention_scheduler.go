@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // DefaultRetentionInterval is how often the retention scheduler sweeps
@@ -212,6 +213,13 @@ func (s *Server) retentionStores(ctx context.Context) []scheduledRetentionStore 
 	for _, svcs := range s.sharedStoreBundles() {
 		add("shared:"+svcs.Name, svcs.TimeSeries, svcs.MVCC, true)
 	}
+	// A database the Manager opened in its own store keeps its points on
+	// its own host; the shared bundles above never reach it. It is ungated,
+	// as in compactionStores: a materialized database lives on a standalone
+	// node, its only replica.
+	for _, m := range s.materializedStores(ctx) {
+		add(m.name, service.NewTimeSeriesService(m.store.Host(), m.store.ShardID()), nil, false)
+	}
 	if s.opts.tenantHosts != nil {
 		for tenantID, svcs := range s.opts.tenantHosts.startedServices() {
 			if svcs != nil {
@@ -227,6 +235,74 @@ func (s *Server) retentionStores(ctx context.Context) []scheduledRetentionStore 
 			}
 			add("raft "+tenant.ComposeNamespace(shard.TenantID, shard.Database), svcs.TimeSeries, svcs.MVCC, true)
 		}
+	}
+	return out
+}
+
+// namedMaterializedStore is one database the Manager serves from its own
+// store, with the name the schedulers log it under.
+type namedMaterializedStore struct {
+	name  string
+	store materializedStore
+}
+
+// materializedStores lists every database the Manager opened in a store of
+// its own (a materialized binding), for the background schedulers
+// (compaction, retention) that the shared bundles never reach.
+func (s *Server) materializedStores(ctx context.Context) []namedMaterializedStore {
+	if s.opts.dbManager == nil {
+		return nil
+	}
+	var out []namedMaterializedStore
+	for _, ref := range s.recordedDatabases(ctx) {
+		db, err := s.opts.dbManager.Open(ctx, ref.tenantID, ref.name)
+		if err != nil || db == nil {
+			continue
+		}
+		ms, ok := db.Backend().(materializedStore)
+		if !ok {
+			continue
+		}
+		out = append(out, namedMaterializedStore{name: "materialized " + tenantid.Normalize(ref.tenantID) + "/" + ref.name, store: ms})
+	}
+	return out
+}
+
+// recordedDatabase names one database the catalog records.
+type recordedDatabase struct {
+	tenantID string
+	name     string
+}
+
+// recordedDatabases lists every database the Manager's catalog records,
+// open on this node or not: an isolated-tenant or prefix database is
+// opened lazily, by its first request, so after a restart Manager.List
+// holds none of them, and background maintenance enumerating it would
+// never reach them. When the catalog cannot be listed, the open
+// databases are still maintained.
+func (s *Server) recordedDatabases(ctx context.Context) []recordedDatabase {
+	if s.opts.dbManager == nil {
+		return nil
+	}
+	seen := make(map[recordedDatabase]bool)
+	var out []recordedDatabase
+	add := func(tenantID, name string) {
+		ref := recordedDatabase{tenantID: tenantid.Normalize(tenantID), name: name}
+		if seen[ref] {
+			return
+		}
+		seen[ref] = true
+		out = append(out, recordedDatabase{tenantID: tenantID, name: name})
+	}
+	metas, err := s.opts.dbManager.ListRecords(ctx)
+	if err != nil && s.logger != nil {
+		s.logger.Warn("background maintenance cannot list the database catalog; only open databases are maintained", "err", err)
+	}
+	for i := range metas {
+		add(metas[i].TenantID, metas[i].Name)
+	}
+	for _, info := range s.opts.dbManager.List() {
+		add(info.TenantID, info.Name)
 	}
 	return out
 }

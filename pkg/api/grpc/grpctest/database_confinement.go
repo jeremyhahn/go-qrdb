@@ -74,10 +74,6 @@ func DatabaseConfinement(t *testing.T, start DatabaseStartFunc) {
 			_, err := c.DatabaseUpdateBarrier(ctx, &pb.DatabaseUpdateBarrierRequest{Name: "vault"})
 			return err
 		},
-		"update connection": func(ctx context.Context, c pb.QRDBServiceClient) error {
-			_, err := c.DatabaseUpdateConnection(ctx, &pb.DatabaseUpdateConnectionRequest{Name: "vault"})
-			return err
-		},
 		"seal": func(ctx context.Context, c pb.QRDBServiceClient) error {
 			_, err := c.DatabaseSeal(ctx, &pb.DatabaseSealRequest{Name: "vault"})
 			return err

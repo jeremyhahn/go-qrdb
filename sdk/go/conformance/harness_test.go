@@ -375,7 +375,7 @@ func (c cell) config(t *testing.T) *qrdbconfig.Config {
 
 	switch c.mode {
 	case standalone:
-		cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(c.backend)}}
+		cfg.Storage.Backend = string(c.backend)
 		cfg.Seal.Enabled = true
 		cfg.Seal.Strategy = "none"
 	case raft:

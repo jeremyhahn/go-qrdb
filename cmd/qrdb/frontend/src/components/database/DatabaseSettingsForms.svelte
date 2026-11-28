@@ -18,27 +18,26 @@
 <!--
   DatabaseSettingsForms renders the per-database settings forms: SQL
   concurrency (database.updateSQL), scheduled compaction
-  (database.updateCompaction), Raft consensus (database.updateRaft) and the
-  remote connection (database.updateConnection). Each form validates its
+  (database.updateCompaction) and Raft consensus (database.updateRaft).
+  Each form validates its
   input, saves through the SDK call of the same name, and shows an inline
   success or error state. The encryption barrier is shown read-only: the
   server fixes it at creation, and an M-of-N change is a quorum rekey.
   The `sections` prop picks which forms render: the admin detail view shows
-  all five, the user settings view only the database-scoped tuning.
+  all four, the user settings view only the database-scoped tuning.
 -->
 <script lang="ts">
   import type {
     Client,
     CompactionMode,
     DatabaseCompactionConfig,
-    DatabaseConnectionConfig,
     DatabaseInfo,
     DatabaseRaftConfig,
     SQLConcurrency,
   } from "@qrdb/sdk";
   import { showToast } from "../../stores/toast.svelte.ts";
 
-  export type SettingsSection = "sql" | "compaction" | "raft" | "barrier" | "connection";
+  export type SettingsSection = "sql" | "compaction" | "raft" | "barrier";
 
   let {
     client,
@@ -77,17 +76,6 @@
       total += Number(m[1]) * (UNIT_SECONDS[m[2] ?? ""] ?? 0);
     }
     return total;
-  }
-
-  /** An http: or https: URL with a non-empty host (the REST transport's address). */
-  function isHttpUrl(text: string): boolean {
-    let url: URL;
-    try {
-      url = new URL(text);
-    } catch {
-      return false;
-    }
-    return (url.protocol === "http:" || url.protocol === "https:") && url.hostname !== "";
   }
 
   /** A host:port (or [ipv6]:port) address with a port in 1..65535. */
@@ -166,15 +154,6 @@
   let barrierEnabled = $derived(database.barrier?.enabled ?? false);
   let barrierMode = $derived(database.barrier?.mode || "passphrase");
 
-  // Connection
-  let connTransport: string = $state("grpc");
-  let connAddress: string = $state("");
-  let connCaFile: string = $state("");
-  let connCertFile: string = $state("");
-  let connKeyFile: string = $state("");
-  let connSaving = $state(false);
-  let connOutcome: Outcome = $state(null);
-
   /** Copies a database's current settings into the form fields. */
   function loadForms(db: DatabaseInfo): void {
     sqlConcurrency = db.sql?.concurrency ?? "";
@@ -190,12 +169,7 @@
     discStaticPeers = discSecret = discMulticastGroup = discDnsDomain = discDnsService = "";
     discTokenEndpoint = discToken = "";
     discTokenClusterSize = null;
-    connTransport = db.connection?.transport || "grpc";
-    connAddress = db.connection?.address ?? "";
-    connCaFile = db.connection?.caFile ?? "";
-    connCertFile = db.connection?.certFile ?? "";
-    connKeyFile = db.connection?.keyFile ?? "";
-    sqlOutcome = compactionOutcome = raftOutcome = connOutcome = null;
+    sqlOutcome = compactionOutcome = raftOutcome = null;
   }
 
   // Plain (non-reactive) marker: reload the fields only when the database
@@ -319,20 +293,6 @@
     }
   }
 
-  let connError = $derived.by((): string => {
-    const addr = connAddress.trim();
-    if (addr === "") return "Address is required.";
-    if (connTransport === "rest") {
-      if (!isHttpUrl(addr)) return "Address must be an http:// or https:// URL.";
-    } else if (connTransport !== "unix" && !isHostPort(addr)) {
-      return "Address must be host:port.";
-    }
-    if ((connCertFile.trim() === "") !== (connKeyFile.trim() === "")) {
-      return "Client certificate and key files must be set together.";
-    }
-    return "";
-  });
-
   // ---------------------------------------------------------------------------
   // Save actions
   // ---------------------------------------------------------------------------
@@ -419,30 +379,6 @@
       showToast("error", msg);
     } finally {
       raftSaving = false;
-    }
-  }
-
-  async function saveConnection(): Promise<void> {
-    if (connError !== "") return;
-    connOutcome = null;
-    const connection: DatabaseConnectionConfig = {
-      transport: connTransport,
-      address: connAddress.trim(),
-      ...(connCaFile.trim() === "" ? {} : { caFile: connCaFile.trim() }),
-      ...(connCertFile.trim() === "" ? {} : { certFile: connCertFile.trim() }),
-      ...(connKeyFile.trim() === "" ? {} : { keyFile: connKeyFile.trim() }),
-    };
-    try {
-      connSaving = true;
-      onUpdated(await client.database.updateConnection(database.name, connection));
-      connOutcome = { kind: "success", message: "Connection configuration saved." };
-      showToast("success", "Connection configuration saved");
-    } catch (err: unknown) {
-      const msg = errorMessage(err, "Failed to update connection configuration");
-      connOutcome = { kind: "error", message: msg };
-      showToast("error", msg);
-    } finally {
-      connSaving = false;
     }
   }
 
@@ -671,45 +607,4 @@
       </p>
     </div>
   </section>
-{/if}
-
-{#if sections.includes("connection")}
-  <form class="card bg-base-200 shadow" data-testid="db-settings-connection" onsubmit={submit(saveConnection)}>
-    <div class="card-body gap-3">
-      <h3 class="card-title text-base">Remote Connection</h3>
-      <p class="text-base-content/70 text-sm">
-        The server this database connects to and the TLS files it presents.
-      </p>
-      <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
-        <label class="form-control">
-          <span class="label-text text-xs">Transport</span>
-          <select class="select select-bordered select-sm" aria-label="Transport" bind:value={connTransport} disabled={connSaving}>
-            <option value="grpc">gRPC</option>
-            <option value="rest">REST</option>
-            <option value="quic">QUIC</option>
-            <option value="unix">Unix socket</option>
-          </select>
-        </label>
-        <label class="form-control">
-          <span class="label-text text-xs">Address</span>
-          <input type="text" class="input input-bordered input-sm font-mono" aria-label="Address" placeholder={connTransport === "unix" ? "/run/qrdb/qrdb.sock" : connTransport === "rest" ? "https://db.example.com" : "db.example.com:9090"} bind:value={connAddress} disabled={connSaving} />
-        </label>
-        <label class="form-control">
-          <span class="label-text text-xs">CA file</span>
-          <input type="text" class="input input-bordered input-sm font-mono" aria-label="CA file" bind:value={connCaFile} disabled={connSaving} />
-        </label>
-        <label class="form-control">
-          <span class="label-text text-xs">Client certificate file</span>
-          <input type="text" class="input input-bordered input-sm font-mono" aria-label="Client certificate file" bind:value={connCertFile} disabled={connSaving} />
-        </label>
-        <label class="form-control">
-          <span class="label-text text-xs">Client key file</span>
-          <input type="text" class="input input-bordered input-sm font-mono" aria-label="Client key file" bind:value={connKeyFile} disabled={connSaving} />
-        </label>
-      </div>
-      {@render fieldError(connError)}
-      {@render saveButton(connSaving, connError !== "", "Save Connection")}
-      {@render outcome(connOutcome)}
-    </div>
-  </form>
 {/if}

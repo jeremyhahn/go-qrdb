@@ -127,7 +127,7 @@ func bootKeyBLoginCell(t *testing.T, tk transportKind) (*node.Node, *x509.CertPo
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.DataDir = t.TempDir()
 	cfg.Server.Host = "127.0.0.1"
-	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
+	cfg.Storage.Backend = string(database.BackendMemory)
 	cfg.Seal.Enabled = true
 	cfg.Seal.Strategy = "none"
 	// This cell is about the Key B dynamic trust pool, not

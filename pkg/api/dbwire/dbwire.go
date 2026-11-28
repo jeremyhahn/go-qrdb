@@ -64,20 +64,14 @@ func Info(info *database.DatabaseInfo) *transport.DatabaseInfo {
 			SharesTotal:    b.SharesTotal,
 		}
 	}
-	if c := info.Connection; c != nil {
-		out.Connection = &transport.DatabaseConnectionConfig{
-			Transport: c.Transport,
-			Address:   c.Address,
-			CAFile:    c.CAFile,
-			CertFile:  c.CertFile,
-			KeyFile:   c.KeyFile,
-		}
-	}
 	if s := info.SQL; s != nil {
 		out.SQL = &transport.DatabaseSQLConfig{Concurrency: string(s.Concurrency)}
 	}
 	out.Compaction = Compaction(info.Compaction)
 	out.CompactionUnavailable = info.CompactionUnavailable
+	if b := info.Binding; b != nil {
+		out.Binding = &transport.DatabaseBinding{Kind: string(b.Kind), Nodes: append([]string(nil), b.Nodes...), Encryption: b.Encryption, Generation: b.Generation}
+	}
 	return out
 }
 
@@ -184,20 +178,14 @@ func InfoProto(info *database.DatabaseInfo) *pb.DatabaseInfoResponse {
 			SharesTotal:    int32(b.SharesTotal),
 		}
 	}
-	if c := info.Connection; c != nil {
-		out.Connection = &pb.DatabaseConnectionConfig{
-			Transport:     c.Transport,
-			RemoteAddress: c.Address,
-			CaFile:        c.CAFile,
-			CertFile:      c.CertFile,
-			KeyFile:       c.KeyFile,
-		}
-	}
 	if s := info.SQL; s != nil {
 		out.Sql = &pb.DatabaseSQLConfig{Concurrency: string(s.Concurrency)}
 	}
 	out.Compaction = compactionpb.ToProto(info.Compaction)
 	out.CompactionUnavailable = info.CompactionUnavailable
+	if b := info.Binding; b != nil {
+		out.Binding = &pb.DatabaseBindingInfo{Kind: string(b.Kind), Nodes: append([]string(nil), b.Nodes...), Encryption: b.Encryption, Generation: b.Generation}
+	}
 	return out
 }
 

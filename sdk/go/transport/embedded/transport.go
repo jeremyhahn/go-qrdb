@@ -2432,7 +2432,6 @@ func (t *Transport) CreateNamespace(ctx context.Context, req *transport.CreateNa
 		IndexType:      req.IndexType,
 		IndexConfig:    req.IndexConfig,
 		Metadata:       req.Metadata,
-		ShardID:        req.ShardID,
 	}
 	resp, err := t.vectorSvc.CreateNamespace(ctx, svcReq)
 	if err != nil {
@@ -2491,7 +2490,6 @@ func (t *Transport) DeleteNamespace(ctx context.Context, req *transport.DeleteNa
 	}
 	resp, err := t.vectorSvc.DeleteNamespace(ctx, &service.DeleteNamespaceRequest{
 		Namespace: req.Namespace,
-		ShardID:   req.ShardID,
 	})
 	if err != nil {
 		return nil, translateError(err)
@@ -2517,10 +2515,9 @@ func (t *Transport) ListNamespaces(ctx context.Context, req *transport.ListNames
 		return nil, &NilServiceError{Service: "VectorServicer"}
 	}
 	resp, err := t.vectorSvc.ListNamespaces(ctx, &service.ListNamespacesRequest{
-		Prefix:  req.Prefix,
-		Limit:   req.Limit,
-		Offset:  req.Offset,
-		ShardID: req.ShardID,
+		Prefix: req.Prefix,
+		Limit:  req.Limit,
+		Offset: req.Offset,
 	})
 	if err != nil {
 		return nil, translateError(err)
@@ -2547,7 +2544,6 @@ func (t *Transport) GetNamespaceInfo(ctx context.Context, req *transport.GetName
 	}
 	resp, err := t.vectorSvc.GetNamespaceInfo(ctx, &service.GetNamespaceInfoRequest{
 		Namespace: req.Namespace,
-		ShardID:   req.ShardID,
 	})
 	if err != nil {
 		return nil, translateError(err)
@@ -2587,7 +2583,6 @@ func (t *Transport) UpsertVector(ctx context.Context, req *transport.UpsertVecto
 		ID:        req.ID,
 		Vector:    req.Vector,
 		Metadata:  req.Metadata,
-		ShardID:   req.ShardID,
 	})
 	if err != nil {
 		return nil, translateError(err)
@@ -2618,7 +2613,6 @@ func (t *Transport) GetVector(ctx context.Context, req *transport.GetVectorReque
 		ID:              req.ID,
 		IncludeVector:   req.IncludeVector,
 		IncludeMetadata: req.IncludeMetadata,
-		ShardID:         req.ShardID,
 		Consistency:     service.ConsistencyLevel(req.Consistency),
 	})
 	if err != nil {
@@ -2651,7 +2645,6 @@ func (t *Transport) DeleteVector(ctx context.Context, req *transport.DeleteVecto
 	resp, err := t.vectorSvc.DeleteVector(ctx, &service.DeleteVectorRequest{
 		Namespace: req.Namespace,
 		ID:        req.ID,
-		ShardID:   req.ShardID,
 	})
 	if err != nil {
 		return nil, translateError(err)
@@ -2679,7 +2672,6 @@ func (t *Transport) BatchUpsert(ctx context.Context, req *transport.BatchUpsertR
 	resp, err := t.vectorSvc.BatchUpsert(ctx, &service.BatchUpsertRequest{
 		Namespace: req.Namespace,
 		Vectors:   svcVectors,
-		ShardID:   req.ShardID,
 	})
 	if err != nil {
 		return nil, translateError(err)
@@ -2709,7 +2701,6 @@ func (t *Transport) BatchDeleteVectors(ctx context.Context, req *transport.Batch
 	resp, err := t.vectorSvc.BatchDeleteVectors(ctx, &service.BatchDeleteVectorsRequest{
 		Namespace: req.Namespace,
 		IDs:       req.IDs,
-		ShardID:   req.ShardID,
 	})
 	if err != nil {
 		return nil, translateError(err)
@@ -2742,7 +2733,6 @@ func (t *Transport) ListVectors(ctx context.Context, req *transport.ListVectorsR
 		IDPrefix:        req.IDPrefix,
 		IncludeVectors:  req.IncludeVectors,
 		IncludeMetadata: req.IncludeMetadata,
-		ShardID:         req.ShardID,
 		Consistency:     service.ConsistencyLevel(req.Consistency),
 	})
 	if err != nil {
@@ -2775,7 +2765,6 @@ func (t *Transport) UpdateMetadata(ctx context.Context, req *transport.UpdateVec
 		Metadata:      req.Metadata,
 		MergeMetadata: req.MergeMetadata,
 		DeleteKeys:    req.DeleteKeys,
-		ShardID:       req.ShardID,
 	})
 	if err != nil {
 		return nil, translateError(err)
@@ -2810,7 +2799,6 @@ func (t *Transport) SearchSimilar(ctx context.Context, req *transport.SearchSimi
 		IncludeVectors:  req.IncludeVectors,
 		IncludeMetadata: req.IncludeMetadata,
 		MetadataFilter:  req.MetadataFilter,
-		ShardID:         req.ShardID,
 		Consistency:     service.ConsistencyLevel(req.Consistency),
 	})
 	if err != nil {
@@ -2844,7 +2832,6 @@ func (t *Transport) SearchByMetadata(ctx context.Context, req *transport.SearchB
 		Offset:          req.Offset,
 		IncludeVectors:  req.IncludeVectors,
 		IncludeMetadata: req.IncludeMetadata,
-		ShardID:         req.ShardID,
 		Consistency:     service.ConsistencyLevel(req.Consistency),
 	})
 	if err != nil {
@@ -2882,7 +2869,6 @@ func (t *Transport) HybridSearch(ctx context.Context, req *transport.HybridSearc
 		RerankingAlgorithm: req.RerankingAlgorithm,
 		IncludeVectors:     req.IncludeVectors,
 		IncludeMetadata:    req.IncludeMetadata,
-		ShardID:            req.ShardID,
 		Consistency:        service.ConsistencyLevel(req.Consistency),
 	})
 	if err != nil {
@@ -2920,7 +2906,6 @@ func (t *Transport) SearchByID(ctx context.Context, req *transport.SearchByIDReq
 		IncludeMetadata: req.IncludeMetadata,
 		MetadataFilter:  req.MetadataFilter,
 		ExcludeSelf:     req.ExcludeSelf,
-		ShardID:         req.ShardID,
 		Consistency:     service.ConsistencyLevel(req.Consistency),
 	})
 	if err != nil {
@@ -2951,7 +2936,6 @@ func (t *Transport) RebuildIndex(ctx context.Context, req *transport.RebuildInde
 		Namespace:   req.Namespace,
 		IndexConfig: req.IndexConfig,
 		Async:       req.Async,
-		ShardID:     req.ShardID,
 	})
 	if err != nil {
 		return nil, translateError(err)
@@ -3018,7 +3002,6 @@ func (t *Transport) GetIndexStats(ctx context.Context, req *transport.GetIndexSt
 	}
 	resp, err := t.vectorSvc.GetIndexStats(ctx, &service.GetIndexStatsRequest{
 		Namespace: req.Namespace,
-		ShardID:   req.ShardID,
 	})
 	if err != nil {
 		return nil, translateError(err)
@@ -3053,7 +3036,6 @@ func (t *Transport) CompactNamespace(ctx context.Context, req *transport.Compact
 		Namespace: req.Namespace,
 		Async:     req.Async,
 		TimeoutMs: req.TimeoutMs,
-		ShardID:   req.ShardID,
 	})
 	if err != nil {
 		return nil, translateError(err)
@@ -3083,7 +3065,6 @@ func (t *Transport) GetCompactionProgress(ctx context.Context, req *transport.Ge
 	resp, err := t.vectorSvc.GetCompactionProgress(ctx, &service.GetCompactionProgressRequest{
 		Namespace:   req.Namespace,
 		OperationID: req.OperationID,
-		ShardID:     req.ShardID,
 	})
 	if err != nil {
 		return nil, translateError(err)

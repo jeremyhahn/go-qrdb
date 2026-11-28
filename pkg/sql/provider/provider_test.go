@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -147,47 +148,19 @@ func TestDatabase_GetTableInsensitive_CaseInsensitive(t *testing.T) {
 }
 
 func TestDatabase_GetTableInsensitive_Datapoints(t *testing.T) {
-	db := &Database{name: "qrdb", kvSvc: &mockKVService{}}
-	ctx := newTestContext()
-
-	tbl, found, err := db.GetTableInsensitive(ctx, "datapoints")
-	require.NoError(t, err)
-	assert.True(t, found)
-	assert.Equal(t, "datapoints", tbl.Name())
-	assert.IsType(t, &DatapointsTable{}, tbl)
+	assertEngineTable(t, "qrdb_ts_datapoints", "timeSeries", &DatapointsTable{})
 }
 
 func TestDatabase_GetTableInsensitive_Metrics(t *testing.T) {
-	db := &Database{name: "qrdb", kvSvc: &mockKVService{}}
-	ctx := newTestContext()
-
-	tbl, found, err := db.GetTableInsensitive(ctx, "metrics")
-	require.NoError(t, err)
-	assert.True(t, found)
-	assert.Equal(t, "metrics", tbl.Name())
-	assert.IsType(t, &MetricsTable{}, tbl)
+	assertEngineTable(t, "qrdb_ts_metrics", "timeSeries", &MetricsTable{})
 }
 
 func TestDatabase_GetTableInsensitive_Namespaces(t *testing.T) {
-	db := &Database{name: "qrdb", kvSvc: &mockKVService{}}
-	ctx := newTestContext()
-
-	tbl, found, err := db.GetTableInsensitive(ctx, "namespaces")
-	require.NoError(t, err)
-	assert.True(t, found)
-	assert.Equal(t, "namespaces", tbl.Name())
-	assert.IsType(t, &NamespacesTable{}, tbl)
+	assertEngineTable(t, "qrdb_vector_namespaces", "vector", &NamespacesTable{})
 }
 
 func TestDatabase_GetTableInsensitive_Vectors(t *testing.T) {
-	db := &Database{name: "qrdb", kvSvc: &mockKVService{}}
-	ctx := newTestContext()
-
-	tbl, found, err := db.GetTableInsensitive(ctx, "vectors")
-	require.NoError(t, err)
-	assert.True(t, found)
-	assert.Equal(t, "vectors", tbl.Name())
-	assert.IsType(t, &VectorsTable{}, tbl)
+	assertEngineTable(t, "qrdb_vector_vectors", "vector", &VectorsTable{})
 }
 
 func TestDatabase_GetTableInsensitive_CaseInsensitive_AllTables(t *testing.T) {
@@ -197,21 +170,26 @@ func TestDatabase_GetTableInsensitive_CaseInsensitive_AllTables(t *testing.T) {
 	tests := []struct {
 		input    string
 		expected string
+		feature  string
 	}{
-		{"DATAPOINTS", "datapoints"},
-		{"Datapoints", "datapoints"},
-		{"METRICS", "metrics"},
-		{"Metrics", "metrics"},
-		{"NAMESPACES", "namespaces"},
-		{"Namespaces", "namespaces"},
-		{"VECTORS", "vectors"},
-		{"Vectors", "vectors"},
+		{"QRDB_TS_DATAPOINTS", "qrdb_ts_datapoints", "timeSeries"},
+		{"Qrdb_Ts_Datapoints", "qrdb_ts_datapoints", "timeSeries"},
+		{"QRDB_TS_METRICS", "qrdb_ts_metrics", "timeSeries"},
+		{"Qrdb_Ts_Metrics", "qrdb_ts_metrics", "timeSeries"},
+		{"QRDB_VECTOR_NAMESPACES", "qrdb_vector_namespaces", "vector"},
+		{"Qrdb_Vector_Namespaces", "qrdb_vector_namespaces", "vector"},
+		{"QRDB_VECTOR_VECTORS", "qrdb_vector_vectors", "vector"},
+		{"Qrdb_Vector_Vectors", "qrdb_vector_vectors", "vector"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.input, func(t *testing.T) {
 			tbl, found, err := db.GetTableInsensitive(ctx, tc.input)
 			require.NoError(t, err)
-			assert.True(t, found)
+			if !capabilities.Has(tc.feature) {
+				assert.False(t, found, "engine %s is not compiled in", tc.feature)
+				return
+			}
+			require.True(t, found)
 			assert.Equal(t, tc.expected, tbl.Name())
 		})
 	}
@@ -266,7 +244,7 @@ func TestDatabase_GetTableNames(t *testing.T) {
 
 	names, err := db.GetTableNames(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"datapoints", "kv", "metrics", "namespaces", "vectors"}, names)
+	assert.Equal(t, expectedBuiltinTableNames(), names)
 }
 
 // ---------------------------------------------------------------------------
@@ -373,10 +351,15 @@ func TestProvider_WithPrescopedKV_UsesBareKeys(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // newTestManager creates a database.Manager with a temp directory for testing.
-func newTestManager(t *testing.T) *database.Manager {
+func newTestManager(t *testing.T, opts ...database.ManagerOption) *database.Manager {
 	t.Helper()
 	dir := t.TempDir()
-	return databasetest.NewManager(nil, dir)
+	if len(opts) == 0 {
+		// A node always hands the provider a manager with its run mode set,
+		// so a statement that names no backend gets the run mode's default.
+		opts = []database.ManagerOption{database.WithDefaults(database.Defaults{RunMode: database.RunModeStandalone})}
+	}
+	return databasetest.NewManager(nil, dir, opts...)
 }
 
 func TestNewManagerProvider(t *testing.T) {
@@ -828,15 +811,14 @@ func TestDatabase_GetTableNames_LegacyAllTables(t *testing.T) {
 
 	names, err := db.GetTableNames(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, allTableNames, names)
-	assert.Len(t, names, 5)
+	assert.Equal(t, expectedBuiltinTableNames(), names)
 }
 
 func TestDatabase_GetTableInsensitive_Legacy_AllTablesAccessible(t *testing.T) {
 	db := &Database{name: "legacy", kvSvc: &mockKVService{}}
 	ctx := newTestContext()
 
-	for _, name := range allTableNames {
+	for _, name := range expectedBuiltinTableNames() {
 		tbl, found, err := db.GetTableInsensitive(ctx, name)
 		require.NoError(t, err, "table: %s", name)
 		assert.True(t, found, "table: %s", name)
@@ -1076,7 +1058,7 @@ func TestManagerProvider_AllDatabases_ProtocolMySQL_EmptyWhenNoneMatch(t *testin
 
 func TestDatabase_hasTable_Legacy_AllAllowed(t *testing.T) {
 	db := &Database{name: "legacy", kvSvc: &mockKVService{}}
-	for _, name := range allTableNames {
+	for _, name := range expectedBuiltinTableNames() {
 		assert.True(t, db.hasTable(name), "table: %s", name)
 	}
 }

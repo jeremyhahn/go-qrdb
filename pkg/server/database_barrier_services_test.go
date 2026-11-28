@@ -20,7 +20,9 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
+	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
 // newBarrierServicesTestDatabase builds a *database.Database backed by an
@@ -81,5 +83,138 @@ func TestBuildDedicatedStoreServices_AllowsWriteBeforeTheFence(t *testing.T) {
 	}
 	if string(got) != "v" {
 		t.Errorf("Get() = %q, want %q", got, "v")
+	}
+}
+
+// closeRecordingVector is a bundle's vector service that records its Close.
+type closeRecordingVector struct {
+	service.VectorServicer
+	closed bool
+}
+
+func (v *closeRecordingVector) Close() error {
+	v.closed = true
+	return nil
+}
+
+func newEvictTestDatabase(t *testing.T, tenantID, name string) *database.Database {
+	t.Helper()
+	store := memory.NewStorage()
+	t.Cleanup(func() { _ = store.Close() })
+	return database.NewDatabase(
+		database.DatabaseConfig{TenantID: tenantID, Name: name, Backend: database.BackendMemory},
+		database.NewStandaloneBackend(store),
+		t.TempDir(),
+	)
+}
+
+// TestMaterializedServiceCache_DropEvictsTheEntry proves a dropped
+// database's bundle leaves the cache and its vector service (the HNSW
+// indexes) is closed, while another tenant's same-named entry stays.
+func TestMaterializedServiceCache_DropEvictsTheEntry(t *testing.T) {
+	c := newMaterializedServiceCache()
+	db := newEvictTestDatabase(t, "acme", "orders")
+	other := newEvictTestDatabase(t, "globex", "orders")
+	vec := &closeRecordingVector{}
+	otherVec := &closeRecordingVector{}
+	c.getOrBuild(db, func() *DatabaseServices { return &DatabaseServices{Name: "orders", Vector: vec} })
+	c.getOrBuild(other, func() *DatabaseServices { return &DatabaseServices{Name: "orders", Vector: otherVec} })
+
+	c.evict("acme", "orders")
+
+	c.mu.RLock()
+	_, kept := c.entries["acme\x00orders"]
+	_, otherKept := c.entries["globex\x00orders"]
+	c.mu.RUnlock()
+	if kept {
+		t.Error("the dropped database's entry is still cached")
+	}
+	if !vec.closed {
+		t.Error("the dropped database's vector service was not closed")
+	}
+	if !otherKept || otherVec.closed {
+		t.Errorf("another tenant's entry: kept %v, closed %v; want kept, open", otherKept, otherVec.closed)
+	}
+}
+
+// bindingVectorBackend is a materialized backend whose vector service is
+// the binding's own.
+type bindingVectorBackend struct {
+	*database.StandaloneBackend
+	vector service.VectorServicer
+}
+
+func (b *bindingVectorBackend) Host() service.Host             { return nil }
+func (b *bindingVectorBackend) ShardID() uint64                { return 0 }
+func (b *bindingVectorBackend) WatchHub() *watch.Hub           { return nil }
+func (b *bindingVectorBackend) Binding() *database.Binding     { return nil }
+func (b *bindingVectorBackend) Vector() service.VectorServicer { return b.vector }
+
+// TestMaterializedServiceCache_DropFenceKeepsTheBindingVectorOpen pins that
+// the fence of a drop evicts a materialized database's bundle without
+// closing the binding's own vector service: a drop that then fails leaves
+// the service usable, and the binding closes it when the database closes.
+func TestMaterializedServiceCache_DropFenceKeepsTheBindingVectorOpen(t *testing.T) {
+	store := memory.NewStorage()
+	t.Cleanup(func() { _ = store.Close() })
+	vec := &closeRecordingVector{}
+	db := database.NewDatabase(
+		database.DatabaseConfig{TenantID: "acme", Name: "orders", Backend: database.BackendMemory},
+		&bindingVectorBackend{StandaloneBackend: database.NewStandaloneBackend(store), vector: vec},
+		t.TempDir(),
+	)
+	c := newMaterializedServiceCache()
+	c.getOrBuild(db, func() *DatabaseServices { return &DatabaseServices{Name: "orders", Vector: vec} })
+
+	resolver := &storeResolver{evictBundles: c.evict}
+	if _, _, err := resolver.FenceTarget(context.Background(), "acme", "orders", ""); err != nil {
+		t.Fatalf("FenceTarget: %v", err)
+	}
+
+	c.mu.RLock()
+	_, kept := c.entries["acme\x00orders"]
+	c.mu.RUnlock()
+	if kept {
+		t.Error("the fenced database's entry is still cached")
+	}
+	if vec.closed {
+		t.Fatal("the fence closed the binding's own vector service before the drop committed")
+	}
+	rebuilt := c.getOrBuild(db, func() *DatabaseServices {
+		return &DatabaseServices{Name: "orders", Vector: db.Backend().(materializedStore).Vector()}
+	})
+	if rebuilt.Vector != service.VectorServicer(vec) {
+		t.Error("the bundle rebuilt after a failed drop does not serve the binding's vector service")
+	}
+}
+
+// TestDedicatedStoreServiceCache_DropEvictsTheEntry proves a dropped
+// database's dedicated-store bundle leaves the cache and is closed.
+func TestDedicatedStoreServiceCache_DropEvictsTheEntry(t *testing.T) {
+	c := newDedicatedStoreServiceCache()
+	db := newEvictTestDatabase(t, "acme", "orders")
+	c.getOrBuild(db)
+	vec := &closeRecordingVector{}
+	c.mu.Lock()
+	c.entries["orders"].svcs.Vector = vec
+	c.mu.Unlock()
+
+	c.evict("globex", "orders")
+	c.mu.RLock()
+	_, kept := c.entries["orders"]
+	c.mu.RUnlock()
+	if !kept || vec.closed {
+		t.Fatalf("another tenant's drop evicted the entry: kept %v, closed %v", kept, vec.closed)
+	}
+
+	c.evict("acme", "orders")
+	c.mu.RLock()
+	_, kept = c.entries["orders"]
+	c.mu.RUnlock()
+	if kept {
+		t.Error("the dropped database's entry is still cached")
+	}
+	if !vec.closed {
+		t.Error("the dropped database's vector service was not closed")
 	}
 }

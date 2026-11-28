@@ -46,11 +46,25 @@ func (m *Manager) LocalNode() string {
 // ownerFor returns the node a database created here from cfg is recorded as
 // held by: this one, for a database that is not raft-placed. A raft-placed
 // database -- backend raft, or any backend with a Raft config, whose shard
-// stores in it -- has none, since its placement names its replicas; neither
-// has a provisioned one, which every node creates and holds for itself.
-func (m *Manager) ownerFor(cfg DatabaseConfig, provisioned bool) string {
-	if provisioned || cfg.Backend == BackendRaft || cfg.Raft != nil {
+// stores in it -- has none, since its placement names its replicas. A
+// provisioned database is no exception: the catalog is shared, so the first
+// node to provision it records itself as the owner and every other node
+// provisioning the same name finds that record held elsewhere
+// (*placement.NotAReplicaError), rather than each node holding its own
+// diverging copy.
+func (m *Manager) ownerFor(cfg DatabaseConfig) string {
+	if cfg.Backend == BackendRaft || cfg.Raft != nil {
 		return ""
+	}
+	// A database the node's binding factory does not materialize in a store
+	// of its own (the system database, a tenant home, a database of a
+	// tenant the factory leaves to the fallback store) is served from the
+	// replicated fallback store, which every node holds: pinning it to the
+	// creating node would refuse it on every other replica.
+	if resolver, ok := m.factory.(RecordBindingResolver); ok {
+		if b, err := resolver.RecordBinding(cfg); err == nil && b == nil {
+			return ""
+		}
 	}
 	return m.LocalNode()
 }
@@ -92,7 +106,6 @@ func remoteInfo(meta DatabaseMeta) DatabaseInfo {
 		DedicatedWAL: meta.DedicatedWAL,
 		Raft:         meta.Raft,
 		Barrier:      meta.Barrier,
-		Connection:   meta.Connection,
 		SQL:          meta.SQL,
 		OwnerNode:    meta.OwnerNode,
 	}

@@ -381,7 +381,9 @@ func TestManager_UpdateEtcdForTenant(t *testing.T) {
 	defer func() { _ = mgr.Close() }()
 
 	ctx := tenantContext("tenant-a")
+	// etcd needs a replicated log: only a raft-backend database may enable it.
 	cfg := validMemoryConfig("etcd-tenant-db")
+	cfg.Backend = BackendRaft
 	if _, err := mgr.CreateForTenant(ctx, cfg); err != nil {
 		t.Fatalf("CreateForTenant() error = %v", err)
 	}
@@ -418,7 +420,7 @@ func TestManager_UpdateRaftForTenant(t *testing.T) {
 	defer func() { _ = mgr.Close() }()
 
 	ctx := tenantContext("tenant-a")
-	cfg := validMemoryConfig("raft-tenant-db")
+	cfg := DatabaseConfig{Name: "raft-tenant-db", Backend: BackendRaft}
 	if _, err := mgr.CreateForTenant(ctx, cfg); err != nil {
 		t.Fatalf("CreateForTenant() error = %v", err)
 	}
@@ -489,44 +491,6 @@ func TestManager_UpdateBarrierForTenant_CrossTenantDenied(t *testing.T) {
 	err := mgr.UpdateBarrierForTenant(ctxB, "barrier-cross-db", &DatabaseBarrierConfig{Enabled: true})
 	if err == nil {
 		t.Fatal("UpdateBarrierForTenant() cross-tenant = nil, want error")
-	}
-	var accessErr *NotFoundError
-	if !errors.As(err, &accessErr) {
-		t.Fatalf("error type = %T, want *NotFoundError (another tenant's database is answered as missing)", err)
-	}
-}
-
-func TestManager_UpdateConnectionForTenant(t *testing.T) {
-	mgr := newTestManager(t)
-	defer func() { _ = mgr.Close() }()
-
-	ctx := tenantContext("tenant-a")
-	cfg := validMemoryConfig("conn-tenant-db")
-	if _, err := mgr.CreateForTenant(ctx, cfg); err != nil {
-		t.Fatalf("CreateForTenant() error = %v", err)
-	}
-
-	conn := &DatabaseConnectionConfig{Transport: "grpc", Address: "127.0.0.1:9090"}
-	if err := mgr.UpdateConnectionForTenant(ctx, "conn-tenant-db", conn); err != nil {
-		t.Fatalf("UpdateConnectionForTenant() error = %v", err)
-	}
-}
-
-func TestManager_UpdateConnectionForTenant_CrossTenantDenied(t *testing.T) {
-	mgr := newTestManager(t)
-	defer func() { _ = mgr.Close() }()
-
-	ctxA := tenantContext("tenant-a")
-	cfg := validMemoryConfig("conn-cross-db")
-	if _, err := mgr.CreateForTenant(ctxA, cfg); err != nil {
-		t.Fatalf("CreateForTenant() error = %v", err)
-	}
-
-	ctxB := tenantContext("tenant-b")
-	conn := &DatabaseConnectionConfig{Transport: "grpc", Address: "127.0.0.1:9090"}
-	err := mgr.UpdateConnectionForTenant(ctxB, "conn-cross-db", conn)
-	if err == nil {
-		t.Fatal("UpdateConnectionForTenant() cross-tenant = nil, want error")
 	}
 	var accessErr *NotFoundError
 	if !errors.As(err, &accessErr) {
@@ -664,36 +628,6 @@ func TestManager_UpdateBarrierForTenant_NoTenant(t *testing.T) {
 	var notFound *NotFoundError
 	if !errors.As(err, &notFound) {
 		t.Fatalf("UpdateBarrierForTenant() with no tenant = %T %v, want *NotFoundError", err, err)
-	}
-}
-
-func TestManager_UpdateConnectionForTenant_NotFound(t *testing.T) {
-	mgr := newTestManager(t)
-	defer func() { _ = mgr.Close() }()
-
-	ctx := tenantContext("tenant-a")
-	conn := &DatabaseConnectionConfig{Transport: "grpc", Address: "127.0.0.1:9090"}
-	err := mgr.UpdateConnectionForTenant(ctx, "nonexistent-db", conn)
-	if err == nil {
-		t.Fatal("UpdateConnectionForTenant() for nonexistent db = nil, want error")
-	}
-	var notFoundErr *NotFoundError
-	if !errors.As(err, &notFoundErr) {
-		t.Fatalf("error type = %T, want *NotFoundError", err)
-	}
-}
-
-// TestManager_UpdateConnectionForTenant_NoTenant: a context with no tenant is the system tenant, held to
-// the ownership rule rather than refused; it owns no database named any-db,
-// so the name is answered as missing.
-func TestManager_UpdateConnectionForTenant_NoTenant(t *testing.T) {
-	mgr := newTestManager(t)
-	defer func() { _ = mgr.Close() }()
-
-	err := mgr.UpdateConnectionForTenant(context.Background(), "any-db", nil)
-	var notFound *NotFoundError
-	if !errors.As(err, &notFound) {
-		t.Fatalf("UpdateConnectionForTenant() with no tenant = %T %v, want *NotFoundError", err, err)
 	}
 }
 

@@ -765,26 +765,25 @@ func dropSystemEntries(entries map[string][][]byte) map[string][][]byte {
 }
 
 func BackfillIndex(scanner func() ([]*service.KeyValue, error), idx index.Index, fieldName string, scope []byte) {
-	backfillEach(scanner, fieldName, scope, idx.Put)
+	backfill(scanner, fieldName, scope, idx.Put)
 }
 
-// BackfillIndexInBatch is BackfillIndex with every entry queued into the
-// apply batch through PutBatch instead of written straight to storage, so a
-// rebuild cleared through the same batch commits atomically with the entries
-// applied before it.
-func BackfillIndexInBatch(batch storage.Batch, scanner func() ([]*service.KeyValue, error), idx interface {
-	PutBatch(storage.Batch, []byte, []byte) error
-}, fieldName string, scope []byte) {
-	backfillEach(scanner, fieldName, scope, func(key, val []byte) error {
+// BackfillIndexBatch is BackfillIndex writing the entries into batch rather
+// than committing them itself: the index-create apply backfills in the batch
+// that writes the index's catalog record, so a batch that fails to commit
+// leaves neither the record nor any entry behind.
+func BackfillIndexBatch(scanner func() ([]*service.KeyValue, error), idx index.BatchableIndex, batch storage.Batch, fieldName string, scope []byte) {
+	backfill(scanner, fieldName, scope, func(key, val []byte) error {
 		return idx.PutBatch(batch, key, val)
 	})
 }
 
-// backfillEach runs the scan and hands every in-scope key whose JSON value
-// carries fieldName to put, logging (never returning) scan and entry
-// failures: an index-create apply must not fail, which would stall
-// consensus, but a silently-incomplete backfill is an operability hazard.
-func backfillEach(scanner func() ([]*service.KeyValue, error), fieldName string, scope []byte, put func(key, val []byte) error) {
+// backfill is the loop BackfillIndex and BackfillIndexBatch share: it runs
+// the scan and hands every in-scope key whose JSON value carries fieldName
+// to put, logging (never returning) scan and entry failures: an
+// index-create apply must not fail, which would stall consensus, but a
+// silently-incomplete backfill is an operability hazard.
+func backfill(scanner func() ([]*service.KeyValue, error), fieldName string, scope []byte, put func(key, val []byte) error) {
 	kvs, err := scanner()
 	if err != nil {
 		slog.Warn("engine: index backfill scan failed; index created without backfill",

@@ -193,9 +193,6 @@ func toolVectorCreateNamespace() mcp.Tool {
 		mcp.WithString("index_config",
 			mcp.Description(`Optional JSON object of algorithm-specific index parameters. Example: {"m":"16","ef_construction":"200"}.`),
 		),
-		mcp.WithNumber("shard_id",
-			mcp.Description("The target shard for the namespace."),
-		),
 	)
 }
 
@@ -249,15 +246,12 @@ func handleVectorCreateNamespace(svc service.VectorServicer) mcpserver.ToolHandl
 			}
 		}
 
-		shardID := mcp.ParseUInt64(req, "shard_id", 0)
-
 		resp, err := svc.CreateNamespace(ctx, &service.CreateNamespaceRequest{
 			Namespace:      namespace,
 			Dimension:      dimension,
 			DistanceMetric: distMetric,
 			IndexType:      idxType,
 			IndexConfig:    indexConfig,
-			ShardID:        shardID,
 		})
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_vector_create_namespace", Err: err}
@@ -345,9 +339,6 @@ func toolVectorDeleteNamespace() mcp.Tool {
 			mcp.Required(),
 			mcp.Description("The name of the namespace to delete."),
 		),
-		mcp.WithNumber("shard_id",
-			mcp.Description("The target shard for the namespace."),
-		),
 	)
 }
 
@@ -364,11 +355,8 @@ func handleVectorDeleteNamespace(svc service.VectorServicer) mcpserver.ToolHandl
 			return mcp.NewToolResultError("namespace is required"), nil
 		}
 
-		shardID := mcp.ParseUInt64(req, "shard_id", 0)
-
 		resp, err := svc.DeleteNamespace(ctx, &service.DeleteNamespaceRequest{
 			Namespace: namespace,
-			ShardID:   shardID,
 		})
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_vector_delete_namespace", Err: err}
@@ -387,9 +375,6 @@ func handleVectorDeleteNamespace(svc service.VectorServicer) mcpserver.ToolHandl
 func toolVectorListNamespaces() mcp.Tool {
 	return mcp.NewTool("qrdb_vector_list_namespaces",
 		mcp.WithDescription("Return all vector namespace names."),
-		mcp.WithNumber("shard_id",
-			mcp.Description("The target shard to list namespaces from."),
-		),
 	)
 }
 
@@ -401,11 +386,7 @@ func handleVectorListNamespaces(svc service.VectorServicer) mcpserver.ToolHandle
 		if rerr != nil {
 			return nil, rerr
 		}
-		shardID := mcp.ParseUInt64(req, "shard_id", 0)
-
-		resp, err := svc.ListNamespaces(ctx, &service.ListNamespacesRequest{
-			ShardID: shardID,
-		})
+		resp, err := svc.ListNamespaces(ctx, &service.ListNamespacesRequest{})
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_vector_list_namespaces", Err: err}
 		}
@@ -427,9 +408,6 @@ func toolVectorGetNamespaceInfo() mcp.Tool {
 			mcp.Required(),
 			mcp.Description("The name of the namespace to inspect."),
 		),
-		mcp.WithNumber("shard_id",
-			mcp.Description("The target shard for the namespace."),
-		),
 	)
 }
 
@@ -446,11 +424,8 @@ func handleVectorGetNamespaceInfo(svc service.VectorServicer) mcpserver.ToolHand
 			return mcp.NewToolResultError("namespace is required"), nil
 		}
 
-		shardID := mcp.ParseUInt64(req, "shard_id", 0)
-
 		resp, err := svc.GetNamespaceInfo(ctx, &service.GetNamespaceInfoRequest{
 			Namespace: namespace,
-			ShardID:   shardID,
 		})
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_vector_get_namespace_info", Err: err}
@@ -488,9 +463,6 @@ func toolVectorUpsert() mcp.Tool {
 		mcp.WithString("metadata",
 			mcp.Description(`Optional JSON object of key-value metadata to attach. Example: {"category":"image","label":"cat"}.`),
 		),
-		mcp.WithNumber("shard_id",
-			mcp.Description("The target shard."),
-		),
 	)
 }
 
@@ -524,14 +496,11 @@ func handleVectorUpsert(svc service.VectorServicer) mcpserver.ToolHandlerFunc {
 			return mcp.NewToolResultError("invalid metadata JSON: " + err.Error()), nil
 		}
 
-		shardID := mcp.ParseUInt64(req, "shard_id", 0)
-
 		resp, upsertErr := svc.UpsertVector(ctx, &service.UpsertVectorRequest{
 			Namespace: namespace,
 			ID:        id,
 			Vector:    vector,
 			Metadata:  metadata,
-			ShardID:   shardID,
 		})
 		if upsertErr != nil {
 			return nil, &ToolError{Tool: "qrdb_vector_upsert", Err: upsertErr}
@@ -561,9 +530,6 @@ func toolVectorGet() mcp.Tool {
 		mcp.WithString("consistency",
 			mcp.Description("Read consistency level: strong, linearizable, or eventual. Defaults to strong."),
 		),
-		mcp.WithNumber("shard_id",
-			mcp.Description("The target shard."),
-		),
 	)
 }
 
@@ -589,15 +555,12 @@ func handleVectorGet(svc service.VectorServicer) mcpserver.ToolHandlerFunc {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 
-		shardID := mcp.ParseUInt64(req, "shard_id", 0)
-
 		resp, getErr := svc.GetVector(ctx, &service.GetVectorRequest{
 			Namespace:       namespace,
 			ID:              id,
 			IncludeVector:   true,
 			IncludeMetadata: true,
 			Consistency:     consistency,
-			ShardID:         shardID,
 		})
 		if getErr != nil {
 			return nil, &ToolError{Tool: "qrdb_vector_get", Err: getErr}
@@ -624,9 +587,6 @@ func toolVectorDelete() mcp.Tool {
 			mcp.Required(),
 			mcp.Description("The vector identifier to delete (uint64)."),
 		),
-		mcp.WithNumber("shard_id",
-			mcp.Description("The target shard."),
-		),
 	)
 }
 
@@ -647,12 +607,9 @@ func handleVectorDelete(svc service.VectorServicer) mcpserver.ToolHandlerFunc {
 			return mcp.NewToolResultError("id is required and must be greater than 0"), nil
 		}
 
-		shardID := mcp.ParseUInt64(req, "shard_id", 0)
-
 		resp, err := svc.DeleteVector(ctx, &service.DeleteVectorRequest{
 			Namespace: namespace,
 			ID:        id,
-			ShardID:   shardID,
 		})
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_vector_delete", Err: err}
@@ -690,9 +647,6 @@ func toolVectorBatchUpsert() mcp.Tool {
 		mcp.WithString("vectors",
 			mcp.Required(),
 			mcp.Description(`JSON array of vector objects. Each element: {"id":123,"vector":[<floats>],"metadata":{"key":"value"}}.`),
-		),
-		mcp.WithNumber("shard_id",
-			mcp.Description("The target shard."),
 		),
 	)
 }
@@ -733,12 +687,9 @@ func handleVectorBatchUpsert(svc service.VectorServicer) mcpserver.ToolHandlerFu
 			}
 		}
 
-		shardID := mcp.ParseUInt64(req, "shard_id", 0)
-
 		resp, err := svc.BatchUpsert(ctx, &service.BatchUpsertRequest{
 			Namespace: namespace,
 			Vectors:   vectors,
-			ShardID:   shardID,
 		})
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_vector_batch_upsert", Err: err}
@@ -764,9 +715,6 @@ func toolVectorBatchDelete() mcp.Tool {
 		mcp.WithString("ids",
 			mcp.Required(),
 			mcp.Description(`JSON array of vector identifiers (uint64) to delete. Example: [1,2,3].`),
-		),
-		mcp.WithNumber("shard_id",
-			mcp.Description("The target shard."),
 		),
 	)
 }
@@ -798,12 +746,9 @@ func handleVectorBatchDelete(svc service.VectorServicer) mcpserver.ToolHandlerFu
 			return mcp.NewToolResultError("ids must not be empty"), nil
 		}
 
-		shardID := mcp.ParseUInt64(req, "shard_id", 0)
-
 		resp, err := svc.BatchDeleteVectors(ctx, &service.BatchDeleteVectorsRequest{
 			Namespace: namespace,
 			IDs:       ids,
-			ShardID:   shardID,
 		})
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_vector_batch_delete", Err: err}
@@ -836,9 +781,6 @@ func toolVectorList() mcp.Tool {
 		mcp.WithString("cursor",
 			mcp.Description("Opaque token for cursor-based pagination from a previous response."),
 		),
-		mcp.WithNumber("shard_id",
-			mcp.Description("The target shard."),
-		),
 	)
 }
 
@@ -855,13 +797,10 @@ func handleVectorList(svc service.VectorServicer) mcpserver.ToolHandlerFunc {
 			return mcp.NewToolResultError("namespace is required"), nil
 		}
 
-		shardID := mcp.ParseUInt64(req, "shard_id", 0)
-
 		resp, err := svc.ListVectors(ctx, &service.ListVectorsRequest{
 			Namespace: namespace,
 			Limit:     mcp.ParseInt(req, "limit", 0),
 			Cursor:    mcp.ParseString(req, "cursor", ""),
-			ShardID:   shardID,
 		})
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_vector_list", Err: err}
@@ -892,9 +831,6 @@ func toolVectorUpdateMetadata() mcp.Tool {
 			mcp.Required(),
 			mcp.Description(`JSON object of new key-value metadata to set. Example: {"category":"updated","score":0.95}.`),
 		),
-		mcp.WithNumber("shard_id",
-			mcp.Description("The target shard."),
-		),
 	)
 }
 
@@ -923,13 +859,10 @@ func handleVectorUpdateMetadata(svc service.VectorServicer) mcpserver.ToolHandle
 			return mcp.NewToolResultError("metadata is required"), nil
 		}
 
-		shardID := mcp.ParseUInt64(req, "shard_id", 0)
-
 		resp, updateErr := svc.UpdateMetadata(ctx, &service.UpdateVectorMetadataRequest{
 			Namespace: namespace,
 			ID:        id,
 			Metadata:  metadata,
-			ShardID:   shardID,
 		})
 		if updateErr != nil {
 			return nil, &ToolError{Tool: "qrdb_vector_update_metadata", Err: updateErr}
@@ -973,9 +906,6 @@ func toolVectorSearchSimilar() mcp.Tool {
 		mcp.WithString("consistency",
 			mcp.Description("Read consistency level: strong, linearizable, or eventual. Defaults to strong."),
 		),
-		mcp.WithNumber("shard_id",
-			mcp.Description("The target shard."),
-		),
 	)
 }
 
@@ -1010,8 +940,6 @@ func handleVectorSearchSimilar(svc service.VectorServicer) mcpserver.ToolHandler
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 
-		shardID := mcp.ParseUInt64(req, "shard_id", 0)
-
 		resp, searchErr := svc.SearchSimilar(ctx, &service.SearchSimilarRequest{
 			Namespace:   namespace,
 			QueryVector: vector,
@@ -1019,7 +947,6 @@ func handleVectorSearchSimilar(svc service.VectorServicer) mcpserver.ToolHandler
 			EfSearch:    mcp.ParseInt(req, "ef_search", 0),
 			MinScore:    mcp.ParseFloat32(req, "min_score", 0),
 			Consistency: consistency,
-			ShardID:     shardID,
 		})
 		if searchErr != nil {
 			return nil, &ToolError{Tool: "qrdb_vector_search_similar", Err: searchErr}
@@ -1055,9 +982,6 @@ func toolVectorSearchByMetadata() mcp.Tool {
 		mcp.WithString("consistency",
 			mcp.Description("Read consistency level: strong, linearizable, or eventual. Defaults to strong."),
 		),
-		mcp.WithNumber("shard_id",
-			mcp.Description("The target shard."),
-		),
 	)
 }
 
@@ -1089,15 +1013,12 @@ func handleVectorSearchByMetadata(svc service.VectorServicer) mcpserver.ToolHand
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 
-		shardID := mcp.ParseUInt64(req, "shard_id", 0)
-
 		resp, searchErr := svc.SearchByMetadata(ctx, &service.SearchByMetadataRequest{
 			Namespace:   namespace,
 			Filters:     filters,
 			Limit:       mcp.ParseInt(req, "limit", 0),
 			Offset:      mcp.ParseInt(req, "offset", 0),
 			Consistency: consistency,
-			ShardID:     shardID,
 		})
 		if searchErr != nil {
 			return nil, &ToolError{Tool: "qrdb_vector_search_by_metadata", Err: searchErr}
@@ -1147,9 +1068,6 @@ func toolVectorHybridSearch() mcp.Tool {
 		mcp.WithString("consistency",
 			mcp.Description("Read consistency level: strong, linearizable, or eventual. Defaults to strong."),
 		),
-		mcp.WithNumber("shard_id",
-			mcp.Description("The target shard."),
-		),
 	)
 }
 
@@ -1194,8 +1112,6 @@ func handleVectorHybridSearch(svc service.VectorServicer) mcpserver.ToolHandlerF
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 
-		shardID := mcp.ParseUInt64(req, "shard_id", 0)
-
 		resp, searchErr := svc.HybridSearch(ctx, &service.HybridSearchRequest{
 			Namespace:          namespace,
 			QueryVector:        vector,
@@ -1206,7 +1122,6 @@ func handleVectorHybridSearch(svc service.VectorServicer) mcpserver.ToolHandlerF
 			FilterOperator:     mcp.ParseString(req, "filter_operator", ""),
 			RerankingAlgorithm: mcp.ParseString(req, "reranking_algorithm", ""),
 			Consistency:        consistency,
-			ShardID:            shardID,
 		})
 		if searchErr != nil {
 			return nil, &ToolError{Tool: "qrdb_vector_hybrid_search", Err: searchErr}
@@ -1240,9 +1155,6 @@ func toolVectorSearchByID() mcp.Tool {
 		mcp.WithString("consistency",
 			mcp.Description("Read consistency level: strong, linearizable, or eventual. Defaults to strong."),
 		),
-		mcp.WithNumber("shard_id",
-			mcp.Description("The target shard."),
-		),
 	)
 }
 
@@ -1273,14 +1185,11 @@ func handleVectorSearchByID(svc service.VectorServicer) mcpserver.ToolHandlerFun
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 
-		shardID := mcp.ParseUInt64(req, "shard_id", 0)
-
 		resp, searchErr := svc.SearchByID(ctx, &service.SearchByIDRequest{
 			Namespace:   namespace,
 			ID:          id,
 			K:           k,
 			Consistency: consistency,
-			ShardID:     shardID,
 		})
 		if searchErr != nil {
 			return nil, &ToolError{Tool: "qrdb_vector_search_by_id", Err: searchErr}
@@ -1307,9 +1216,6 @@ func toolVectorRebuildIndex() mcp.Tool {
 			mcp.Required(),
 			mcp.Description("The target namespace."),
 		),
-		mcp.WithNumber("shard_id",
-			mcp.Description("The target shard."),
-		),
 	)
 }
 
@@ -1326,11 +1232,8 @@ func handleVectorRebuildIndex(svc service.VectorServicer) mcpserver.ToolHandlerF
 			return mcp.NewToolResultError("namespace is required"), nil
 		}
 
-		shardID := mcp.ParseUInt64(req, "shard_id", 0)
-
 		resp, err := svc.RebuildIndex(ctx, &service.RebuildIndexRequest{
 			Namespace: namespace,
-			ShardID:   shardID,
 		})
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_vector_rebuild_index", Err: err}
@@ -1403,9 +1306,6 @@ func toolVectorGetIndexStats() mcp.Tool {
 			mcp.Required(),
 			mcp.Description("The target namespace."),
 		),
-		mcp.WithNumber("shard_id",
-			mcp.Description("The target shard."),
-		),
 	)
 }
 
@@ -1422,11 +1322,8 @@ func handleVectorGetIndexStats(svc service.VectorServicer) mcpserver.ToolHandler
 			return mcp.NewToolResultError("namespace is required"), nil
 		}
 
-		shardID := mcp.ParseUInt64(req, "shard_id", 0)
-
 		resp, err := svc.GetIndexStats(ctx, &service.GetIndexStatsRequest{
 			Namespace: namespace,
-			ShardID:   shardID,
 		})
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_vector_get_index_stats", Err: err}
@@ -1453,9 +1350,6 @@ func toolVectorCompactNamespace() mcp.Tool {
 			mcp.Required(),
 			mcp.Description("The target namespace."),
 		),
-		mcp.WithNumber("shard_id",
-			mcp.Description("The target shard."),
-		),
 	)
 }
 
@@ -1472,11 +1366,8 @@ func handleVectorCompactNamespace(svc service.VectorServicer) mcpserver.ToolHand
 			return mcp.NewToolResultError("namespace is required"), nil
 		}
 
-		shardID := mcp.ParseUInt64(req, "shard_id", 0)
-
 		resp, err := svc.CompactNamespace(ctx, &service.CompactNamespaceRequest{
 			Namespace: namespace,
-			ShardID:   shardID,
 		})
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_vector_compact_namespace", Err: err}
@@ -1504,9 +1395,6 @@ func toolVectorGetCompactionProgress() mcp.Tool {
 			mcp.Required(),
 			mcp.Description("The compaction operation identifier."),
 		),
-		mcp.WithNumber("shard_id",
-			mcp.Description("The target shard."),
-		),
 	)
 }
 
@@ -1527,12 +1415,9 @@ func handleVectorGetCompactionProgress(svc service.VectorServicer) mcpserver.Too
 			return mcp.NewToolResultError("operation_id is required"), nil
 		}
 
-		shardID := mcp.ParseUInt64(req, "shard_id", 0)
-
 		progress, err := svc.GetCompactionProgress(ctx, &service.GetCompactionProgressRequest{
 			Namespace:   namespace,
 			OperationID: operationID,
-			ShardID:     shardID,
 		})
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_vector_get_compaction_progress", Err: err}

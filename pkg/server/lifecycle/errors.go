@@ -357,6 +357,95 @@ type LocalStorageError struct {
 	Err     error
 }
 
+// BindingTenantUnavailableError is returned by the lookup
+// TenantServiceBindingLookup builds while the tenant service is not yet
+// available. The binding factory fails closed on it: a tenant whose
+// isolation cannot be read is never treated as prefix, so a barrier
+// tenant's database can never land in a node-encrypted binding store.
+type BindingTenantUnavailableError struct {
+	TenantID string
+}
+
+// Error returns a human-readable description of the missing tenant service.
+func (e *BindingTenantUnavailableError) Error() string {
+	return "lifecycle: binding tenant " + strconv.Quote(e.TenantID) + ": tenant service not available"
+}
+
+// BindingBarrierUnavailableError is returned by the lookup
+// TenantBarrierEncryptorLookup builds while the barrier registry is not yet
+// available. The binding factory fails closed on it: a barrier tenant's
+// database is never written through the node encryptor instead.
+type BindingBarrierUnavailableError struct {
+	TenantID string
+}
+
+// Error returns a human-readable description of the missing barrier registry.
+func (e *BindingBarrierUnavailableError) Error() string {
+	return "lifecycle: binding tenant " + strconv.Quote(e.TenantID) + ": barrier registry not available"
+}
+
+// BindingBarrierSealedError is returned by the lookup
+// TenantBarrierEncryptorLookup builds when the tenant's own barrier is
+// sealed: a barrier tenant's database cannot be opened until the tenant
+// barrier is unsealed.
+type BindingBarrierSealedError struct {
+	TenantID string
+}
+
+// Error returns a human-readable description of the sealed tenant barrier.
+func (e *BindingBarrierSealedError) Error() string {
+	return "lifecycle: binding tenant " + strconv.Quote(e.TenantID) + ": tenant barrier sealed"
+}
+
+// BindingOpenError reports that a database's materialized local binding
+// could not be opened: its tenant could not be looked up, or its store or
+// engine failed to open under the binding root. It is never answered by
+// falling back to the node's shared store.
+type BindingOpenError struct {
+	TenantID string
+	Database string
+	Backend  database.BackendType
+	Err      error
+}
+
+func (e *BindingOpenError) Error() string {
+	return "lifecycle: open binding " + e.TenantID + "/" + e.Database + " (" + string(e.Backend) + "): " + errText(e.Err)
+}
+
+func (e *BindingOpenError) Unwrap() error { return e.Err }
+
+// errText renders a possibly-nil wrapped error.
+// RemoteObjstoreBindingUnsupportedError reports that an objstore database
+// would be materialized on a remote object-store provider. Its own store
+// would share the node's provider settings, so every such database of every
+// tenant would share one unprefixed keyspace and journal; the binding is
+// refused instead.
+type RemoteObjstoreBindingUnsupportedError struct {
+	TenantID string
+	Database string
+	Provider string
+}
+
+func (e *RemoteObjstoreBindingUnsupportedError) Error() string {
+	return "lifecycle: binding " + e.TenantID + "/" + e.Database + ": objstore provider " + e.Provider + " cannot hold a materialized database (only the local provider can)"
+}
+
+// IsolationPolicyUnavailableError reports that a materialized database's
+// vector service was asked for the cluster isolation policy before the
+// tenant service that keeps it exists; the create fails closed.
+type IsolationPolicyUnavailableError struct{}
+
+func (e *IsolationPolicyUnavailableError) Error() string {
+	return "lifecycle: cluster isolation policy unavailable: the tenant service is not built yet"
+}
+
+func errText(err error) string {
+	if err == nil {
+		return "<nil>"
+	}
+	return err.Error()
+}
+
 // Error returns a human-readable description.
 func (e *LocalStorageError) Error() string {
 	return "lifecycle: local " + string(e.Backend) + " storage: " + e.Err.Error()

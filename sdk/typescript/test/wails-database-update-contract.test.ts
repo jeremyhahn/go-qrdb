@@ -13,11 +13,11 @@
 // limitations under the License.
 
 /**
- * Wire contract for WailsClient.database.updateRaft, updateBarrier and
- * updateConnection: each reaches its DatabaseBinding method with the Go
- * request envelope the binding decodes, {raft: {...}}, {barrier: {...}} and
- * {connection: {...}} (transport.UpdateDatabase{Raft,Barrier,Connection}Request),
- * never the bare configuration.
+ * Wire contract for WailsClient.database.updateRaft and updateBarrier: each
+ * reaches its DatabaseBinding method with the Go request envelope the
+ * binding decodes, {raft: {...}} and {barrier: {...}}
+ * (transport.UpdateDatabase{Raft,Barrier}Request), never the bare
+ * configuration.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -65,16 +65,6 @@ describe('WailsClient database settings updates', () => {
 
         expect(spy).toHaveBeenCalledTimes(1);
         expect(spy).toHaveBeenCalledWith('shop', { barrier });
-    });
-
-    it('wraps the connection config in the UpdateDatabaseConnectionRequest envelope', async () => {
-        const spy = installBinding('UpdateConnection');
-        const connection = { transport: 'grpc', address: 'db.example.com:63000' };
-
-        await new WailsClient().database.updateConnection('shop', connection);
-
-        expect(spy).toHaveBeenCalledTimes(1);
-        expect(spy).toHaveBeenCalledWith('shop', { connection });
     });
 
     it('propagates a refusal from the binding', async () => {

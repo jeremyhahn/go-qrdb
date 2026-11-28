@@ -22,6 +22,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -1004,5 +1006,26 @@ func TestPrintCompactionProgress_YAMLFormat(t *testing.T) {
 	out := buf.String()
 	if len(out) == 0 {
 		t.Error("expected non-empty YAML output")
+	}
+}
+
+// TestVectorCmd_NoShardIDFlag walks the vector command tree and asserts no
+// command defines --shard-id: the database's binding decides the vector
+// shard, never a client flag (OD-14 A).
+func TestVectorCmd_NoShardIDFlag(t *testing.T) {
+	var walk func(cmd *cobra.Command)
+	visited := 0
+	walk = func(cmd *cobra.Command) {
+		visited++
+		if cmd.Flags().Lookup("shard-id") != nil || cmd.PersistentFlags().Lookup("shard-id") != nil {
+			t.Errorf("%q defines --shard-id", cmd.CommandPath())
+		}
+		for _, sub := range cmd.Commands() {
+			walk(sub)
+		}
+	}
+	walk(newVectorCmd())
+	if visited < 20 {
+		t.Fatalf("walked %d vector commands, want the whole tree (>= 20)", visited)
 	}
 }

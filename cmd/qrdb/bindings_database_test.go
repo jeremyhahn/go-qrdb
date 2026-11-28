@@ -41,7 +41,6 @@ type bindingDatabaseService struct {
 	updateProtocolFn func(name string, proto database.ProtocolConfig) (*database.DatabaseInfo, error)
 	updateRaftFn     func(name string, cfg *database.DatabaseRaftConfig) (*database.DatabaseInfo, error)
 	updateBarrierFn  func(name string, cfg *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error)
-	updateConnFn     func(name string, cfg *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error)
 	updateEtcdFn     func(name string, cfg *database.EtcdConfig) (*database.DatabaseInfo, error)
 	scaleFn          func(name string, targetReplicas int) (*database.DatabaseInfo, error)
 }
@@ -89,13 +88,6 @@ func (m *bindingDatabaseService) UpdateRaft(name string, cfg *database.DatabaseR
 func (m *bindingDatabaseService) UpdateBarrier(name string, cfg *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
 	if m.updateBarrierFn != nil {
 		return m.updateBarrierFn(name, cfg)
-	}
-	return &database.DatabaseInfo{Name: name}, nil
-}
-
-func (m *bindingDatabaseService) UpdateConnection(name string, cfg *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	if m.updateConnFn != nil {
-		return m.updateConnFn(name, cfg)
 	}
 	return &database.DatabaseInfo{Name: name}, nil
 }
@@ -158,10 +150,6 @@ func (m *bindingDatabaseService) UpdateRaftForTenant(_ context.Context, name str
 
 func (m *bindingDatabaseService) UpdateBarrierForTenant(_ context.Context, name string, cfg *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
 	return m.UpdateBarrier(name, cfg)
-}
-
-func (m *bindingDatabaseService) UpdateConnectionForTenant(_ context.Context, name string, cfg *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	return m.UpdateConnection(name, cfg)
 }
 
 func (m *bindingDatabaseService) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
@@ -736,48 +724,4 @@ func TestDatabaseBinding_UpdateEtcd_SetsName(t *testing.T) {
 	if req.Name != "etcddb" {
 		t.Errorf("expected req.Name=%q, got %q", "etcddb", req.Name)
 	}
-}
-
-// ---------------------------------------------------------------------------
-// UpdateConnection tests
-// ---------------------------------------------------------------------------
-
-func TestDatabaseBinding_UpdateConnection_NotConnected(t *testing.T) {
-	conn := NewConnectionBinding(testLogger(t))
-	b := NewDatabaseBinding(testLogger(t), conn)
-
-	_, err := b.UpdateConnection("db", &transport.UpdateDatabaseConnectionRequest{})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	var nce *NotConnectedError
-	if !errors.As(err, &nce) {
-		t.Fatalf("expected *NotConnectedError, got %T: %v", err, err)
-	}
-}
-
-func TestDatabaseBinding_UpdateConnection_SetsName(t *testing.T) {
-	dbSvc := &bindingDatabaseService{}
-	conn := newDatabaseTestConn(t, dbSvc)
-	b := NewDatabaseBinding(testLogger(t), conn)
-
-	req := &transport.UpdateDatabaseConnectionRequest{}
-	if _, err := b.UpdateConnection("conndb", req); err != nil {
-		t.Fatalf("UpdateConnection(): %v", err)
-	}
-	if req.Name != "conndb" {
-		t.Errorf("expected req.Name=%q, got %q", "conndb", req.Name)
-	}
-}
-
-func TestDatabaseBinding_UpdateConnection_Success(t *testing.T) {
-	dbSvc := &bindingDatabaseService{}
-	conn := newDatabaseTestConn(t, dbSvc)
-	b := NewDatabaseBinding(testLogger(t), conn)
-
-	info, err := b.UpdateConnection("db", &transport.UpdateDatabaseConnectionRequest{})
-	if err != nil {
-		t.Fatalf("UpdateConnection() unexpected error: %v", err)
-	}
-	_ = info
 }

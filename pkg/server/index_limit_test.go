@@ -40,7 +40,7 @@ func newIndexLimitServices(t *testing.T, indexCfg qrdbconfig.IndexConfig) *Datab
 	t.Cleanup(func() { _ = host.Close() })
 	hub := watch.NewHub()
 	t.Cleanup(hub.Close)
-	return buildDataPlaneServices(host, 1, hub, qrdbconfig.ImportSessionConfig{}, indexCfg, qrdbconfig.TimeSeriesConfig{})
+	return buildDataPlaneServices(host, 1, "tenant-a", hub, qrdbconfig.ImportSessionConfig{}, indexCfg, qrdbconfig.TimeSeriesConfig{})
 }
 
 // createIndexes creates n indexes named idx-0..idx-(n-1) and returns the first

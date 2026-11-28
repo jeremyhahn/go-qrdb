@@ -75,7 +75,7 @@ func newAuthEnforcedRESTNode(t *testing.T, nodeOpts ...NodeOption) (n *Node, ca 
 
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.DataDir = t.TempDir()
-	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
+	cfg.Storage.Backend = string(database.BackendMemory)
 	cfg.Protocols.REST = true
 	cfg.Protocols.GRPC = false
 	cfg.Protocols.QUIC = false
@@ -193,7 +193,7 @@ func TestEmbeddedNode_RESTAuthMiddleware_Disabled(t *testing.T) {
 
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.DataDir = t.TempDir()
-	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
+	cfg.Storage.Backend = string(database.BackendMemory)
 	cfg.Protocols.REST = true
 	cfg.Protocols.GRPC = false
 	cfg.Protocols.QUIC = false
@@ -227,7 +227,7 @@ func TestEmbeddedNode_RESTAuthMiddleware_Disabled(t *testing.T) {
 func TestEmbeddedNode_EmbeddedAuthMiddleware_WiredWheneverAuthIsEnabled(t *testing.T) {
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.DataDir = t.TempDir()
-	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
+	cfg.Storage.Backend = string(database.BackendMemory)
 	cfg.Protocols.REST = false
 	cfg.Protocols.GRPC = false
 	cfg.Protocols.QUIC = false

@@ -17,6 +17,7 @@ package database
 import (
 	"context"
 	"errors"
+	"path/filepath"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -105,6 +106,48 @@ func (m *Manager) RecordedIncarnation(ctx context.Context, tenantID, name string
 		return "", false, err
 	}
 	return meta.Incarnation, true, nil
+}
+
+// RecordedDataDir returns the explicit data_dir the catalog records for the
+// (tenantID, name) database, or ok=false when no record exists or the
+// record names none (the database lives at its default directory). A
+// placed Raft group starts at this directory, so a catalog that cannot be
+// read is an error, never "no record": answering a read failure with the
+// default path starts the group's state somewhere the record does not name.
+func (m *Manager) RecordedDataDir(ctx context.Context, tenantID, name string) (dataDir string, ok bool, err error) {
+	// The tenant home is never a catalog database, and an isolated tenant's
+	// catalog is stored in its home: reading it here, while the home group
+	// starts, resolved the home again and recursed until the stack overflowed.
+	if name == TenantHomeName {
+		return "", false, nil
+	}
+	cat, err := m.catalog("resolve data_dir")
+	if err != nil {
+		return "", false, err
+	}
+	meta, err := cat.Get(ctx, tenantID, name)
+	var notFound *NotFoundError
+	if errors.As(err, &notFound) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	if meta.DataDir == "" {
+		return "", false, nil
+	}
+	return meta.DataDir, true, nil
+}
+
+// CheckDataDirUnderTenantRoot returns *DataDirOutsideTenantRootError unless
+// dataDir lies strictly under tenantRoot (docs/databases/architecture.md:
+// an explicit data_dir of a database with a tenant root must lie strictly
+// under it), the rule ResolveBinding applies at create.
+func CheckDataDirUnderTenantRoot(name, dataDir, tenantRoot string) error {
+	if !beneathRoot(filepath.Clean(tenantRoot), filepath.Clean(dataDir)) {
+		return &DataDirOutsideTenantRootError{Name: name, DataDir: dataDir, TenantRoot: tenantRoot}
+	}
+	return nil
 }
 
 // revalidate reconciles db, the entry this node holds open for key, with

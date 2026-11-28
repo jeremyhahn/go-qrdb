@@ -88,6 +88,25 @@ type fakeRaftInfoSource struct {
 	incarnations   map[raftShardKey]string
 	dropped        map[raftShardKey]bool
 	incarnationErr error
+	// stateStorages, when set for a key, is the state storage the database
+	// records for its group.
+	stateStorages map[raftShardKey]database.BackendType
+	// dataDirs, when set for a key, is the explicit data_dir the catalog
+	// records for it; dataDirErr, when set, is the catalog read failing.
+	dataDirs   map[raftShardKey]string
+	dataDirErr error
+}
+
+func (s *fakeRaftInfoSource) recordedDataDir(_ context.Context, tenantID, db string) (string, bool, error) {
+	if s.dataDirErr != nil {
+		return "", false, s.dataDirErr
+	}
+	dir, ok := s.dataDirs[raftShardKey{tenantID: tenantID, database: db}]
+	return dir, ok && dir != "", nil
+}
+
+func (s *fakeRaftInfoSource) stateStorage(tenantID, db string) (database.BackendType, error) {
+	return s.stateStorages[raftShardKey{tenantID: tenantID, database: db}], nil
 }
 
 func newFakeRaftInfoSource() *fakeRaftInfoSource {
@@ -127,8 +146,8 @@ func (s *fakeRaftInfoSource) placementInfo(tenantID, db string) (*placement.Plac
 	return p, ok, nil
 }
 
-func (s *fakeRaftInfoSource) dedicatedWAL(tenantID, db string) bool {
-	return s.dedicated[raftShardKey{tenantID: tenantID, database: db}]
+func (s *fakeRaftInfoSource) dedicatedWAL(tenantID, db string) (bool, error) {
+	return s.dedicated[raftShardKey{tenantID: tenantID, database: db}], nil
 }
 
 func (s *fakeRaftInfoSource) recordedIncarnation(_ context.Context, tenantID, db string) (string, bool, error) {
@@ -869,6 +888,23 @@ func TestRaftBackendError_Error(t *testing.T) {
 	}
 }
 
+// TestRaftBackendFactory_WithVector_NoAdapterServesTheShardsServices proves a
+// factory with no raft host wired (a test double, as IsShardJoining treats it)
+// serves the shard's own services: a nil *HostAdapter never reaches the
+// vector service's service.Host, where its first read panicked.
+func TestRaftBackendFactory_WithVector_NoAdapterServesTheShardsServices(t *testing.T) {
+	svcs := &DatabaseServices{Name: "orders"}
+	rs := &raftShard{tenantID: "acme", database: "orders", shardID: 7, services: svcs}
+	f := &RaftBackendFactory{}
+
+	if got := f.withVector(rs); got != svcs {
+		t.Fatalf("withVector() = %p, want the shard's own services %p", got, svcs)
+	}
+	if rs.vector != nil || rs.vectorBundle != nil {
+		t.Fatalf("withVector() with no adapter left a vector service: vector=%v bundle=%v", rs.vector, rs.vectorBundle)
+	}
+}
+
 // TestManagerRaftInfoSource_Ownership exercises the database.Manager-backed
 // info source: ownership enforcement, non-raft rejection, and unknown databases.
 func TestManagerRaftInfoSource_Ownership(t *testing.T) {
@@ -1366,6 +1402,109 @@ func TestRaftBackendFactory_DedicatedWAL_NoMuxRefusesToStart(t *testing.T) {
 	}
 }
 
+// isolationByTenant returns a TenantIsolationLookup that serves the given map.
+func isolationByTenant(m map[string]tenant.IsolationType) TenantIsolationLookup {
+	return func(_ context.Context, id string) (tenant.IsolationType, error) {
+		iso, ok := m[id]
+		if !ok {
+			return "", errors.New("tenant not found: " + id)
+		}
+		return iso, nil
+	}
+}
+
+func TestRaftBackendFactory_VolumeTenantGroupLogUnderTenantRoot(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("volume tenant gets a dedicated WAL without opting in", func(t *testing.T) {
+		host, mux := newSharedTestHostWithMux(t)
+		reg := newVolumePooledRegistry(t)
+		src := newFakeRaftInfoSource()
+		f := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg, src, volTestLogger(),
+			WithMultiplexLogDB(mux),
+			WithTenantIsolation(isolationByTenant(map[string]tenant.IsolationType{
+				"vt": tenant.IsolationVolume, "bt": tenant.IsolationBarrier, "pt": tenant.IsolationPrefix,
+			})))
+		t.Cleanup(func() { _ = f.CloseAll() })
+
+		dataRoot, tb := registerVolumeTenant(t, reg, "vt")
+		const shardID = uint64(2200)
+		src.add("vt", "app", shardID, dataRoot)
+		if _, err := f.Services(ctx, "vt", "app"); err != nil {
+			t.Fatalf("Services(vt): %v", err)
+		}
+		if !mux.IsDedicated(shardID) {
+			t.Fatalf("volume tenant shard %d must run on a dedicated WAL", shardID)
+		}
+		if mux.BarrierForShard(shardID) != tb.Barrier().EpochBarrier() {
+			t.Fatalf("volume tenant shard %d must seal its WAL with the tenant barrier", shardID)
+		}
+		walDir := filepath.Join(dataRoot, "databases", "app", "wal")
+		if fi, err := os.Stat(walDir); err != nil || !fi.IsDir() {
+			t.Fatalf("dedicated WAL dir %q must exist under the tenant root: %v", walDir, err)
+		}
+
+		bRoot, _ := registerVolumeTenant(t, reg, "bt")
+		const bShard = uint64(2201)
+		src.add("bt", "app", bShard, bRoot)
+		if _, err := f.Services(ctx, "bt", "app"); err != nil {
+			t.Fatalf("Services(bt): %v", err)
+		}
+		if mux.IsDedicated(bShard) {
+			t.Fatalf("barrier tenant shard %d must stay on the shared WAL", bShard)
+		}
+
+		const pShard = uint64(2202)
+		src.add("pt", "app", pShard, t.TempDir())
+		if _, err := f.Services(ctx, "pt", "app"); err != nil {
+			t.Fatalf("Services(pt): %v", err)
+		}
+		if mux.IsDedicated(pShard) {
+			t.Fatalf("prefix tenant shard %d must stay on the shared WAL", pShard)
+		}
+	})
+
+	t.Run("volume tenant without a multiplex refuses to start", func(t *testing.T) {
+		host, _ := newSharedTestHost(t)
+		reg := newVolumePooledRegistry(t)
+		src := newFakeRaftInfoSource()
+		f := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg, src, volTestLogger(),
+			WithTenantIsolation(isolationByTenant(map[string]tenant.IsolationType{"vn": tenant.IsolationVolume})))
+		t.Cleanup(func() { _ = f.CloseAll() })
+
+		dataRoot, _ := registerVolumeTenant(t, reg, "vn")
+		const shardID = uint64(2210)
+		src.add("vn", "app", shardID, dataRoot)
+		_, err := f.Services(ctx, "vn", "app")
+		var unavailable *database.TenantWALUnavailableError
+		if !errors.As(err, &unavailable) || unavailable.TenantID != "vn" {
+			t.Fatalf("Services = %v; want a TenantWALUnavailableError for vn", err)
+		}
+		if n := len(f.ListStarted()); n != 0 {
+			t.Fatalf("%d shards started; the volume tenant must not fall back to the shared WAL", n)
+		}
+	})
+
+	t.Run("isolation lookup error fails the start", func(t *testing.T) {
+		host, mux := newSharedTestHostWithMux(t)
+		reg := newVolumePooledRegistry(t)
+		src := newFakeRaftInfoSource()
+		f := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg, src, volTestLogger(),
+			WithMultiplexLogDB(mux), WithTenantIsolation(isolationByTenant(nil)))
+		t.Cleanup(func() { _ = f.CloseAll() })
+
+		dataRoot, _ := registerVolumeTenant(t, reg, "ve")
+		const shardID = uint64(2220)
+		src.add("ve", "app", shardID, dataRoot)
+		if _, err := f.Services(ctx, "ve", "app"); err == nil {
+			t.Fatalf("Services succeeded; an isolation lookup error must fail the start")
+		}
+		if n := len(f.ListStarted()); n != 0 {
+			t.Fatalf("%d shards started after an isolation lookup error", n)
+		}
+	})
+}
+
 // TestRaftBackendFactory_DedicatedWAL_NotOptedIn proves that with a multiplex
 // wired, a database that did NOT opt in keeps using the shared WAL: the shard is
 // not registered as dedicated and no per-shard WAL directory is created. This is
@@ -1530,5 +1669,28 @@ func TestRaftBackendFactory_ShardsAnswerTheFeatureGate(t *testing.T) {
 	ungated := NewRaftBackendFactory(host, 1, addr, nil, &fakeRaftInfoSource{}, nil)
 	if !ungated.adapter.FeatureEnabled(900, featuregate.GuardedWrites) {
 		t.Fatal("a transportless host needs no gate")
+	}
+}
+
+func TestRaftBackendFactory_GroupBarrierReady(t *testing.T) {
+	ctx := context.Background()
+	host, mux := newSharedTestHostWithMux(t)
+	reg := newVolumePooledRegistry(t)
+	f := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg, newFakeRaftInfoSource(), volTestLogger(),
+		WithMultiplexLogDB(mux),
+		WithTenantIsolation(isolationByTenant(map[string]tenant.IsolationType{
+			"pt": tenant.IsolationPrefix, "bt": tenant.IsolationBarrier,
+		})))
+	t.Cleanup(func() { _ = f.CloseAll() })
+
+	if ready, err := f.GroupBarrierReady(ctx, "pt"); err != nil || !ready {
+		t.Fatalf("prefix tenant: ready=%v err=%v, want ready under the node barrier", ready, err)
+	}
+	if ready, err := f.GroupBarrierReady(ctx, "bt"); !errors.Is(err, seal.ErrTenantNotFound) || ready {
+		t.Fatalf("barrier tenant without its barrier: ready=%v err=%v, want ErrTenantNotFound", ready, err)
+	}
+	registerVolumeTenant(t, reg, "bt")
+	if ready, err := f.GroupBarrierReady(ctx, "bt"); err != nil || !ready {
+		t.Fatalf("barrier tenant with its barrier: ready=%v err=%v, want ready", ready, err)
 	}
 }

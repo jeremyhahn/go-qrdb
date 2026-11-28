@@ -103,8 +103,18 @@ func stripTruncateIdentityClause(query string) (stripped string, restart bool, m
 	return m[1] + m[3], strings.EqualFold(m[2], "RESTART"), true
 }
 
+// showTablesRe matches SHOW TABLES and SHOW FULL TABLES (any case, any
+// whitespace, with an optional FROM/IN <db>, LIKE/WHERE filter and trailing
+// semicolon). These list the database's tables and run on the engine, like
+// on the MySQL wire; they are not PostgreSQL session parameter reads, so
+// isNoopStatement does not swallow them under the "SHOW " no-op prefix.
+var showTablesRe = regexp.MustCompile(`(?is)^\s*SHOW\s+(FULL\s+)?TABLES\b`)
+
 // noopPrefixes are SQL statement prefixes that are handled as no-ops because
-// they are PG session configuration commands.
+// they are PG session configuration commands. "SHOW " covers the session
+// parameter reads drivers send (SHOW search_path, SHOW server_version, ...);
+// SHOW TABLES and SHOW FULL TABLES are excepted (showTablesRe) and reach the
+// engine.
 var noopPrefixes = []string{
 	"SET ",
 	"SHOW ",
@@ -603,7 +613,10 @@ func statementReturnsRows(translated string, preparsed sqlparser.Statement) bool
 		return strings.HasPrefix(strings.ToUpper(strings.TrimSpace(translated)), "SELECT")
 	}
 	switch stmt.(type) {
-	case sqlparser.SelectStatement, *sqlparser.Explain:
+	case sqlparser.SelectStatement, *sqlparser.Explain, *sqlparser.Show:
+		// SHOW (SHOW TABLES, the only SHOW that reaches the engine on this
+		// wire) returns rows: Describe must declare its columns, or the
+		// extended protocol refuses the rows it sends.
 		return true
 	}
 	return false
@@ -1194,13 +1207,20 @@ func valArgOrdinal(expr sqlparser.Expr) (int, bool) {
 }
 
 // isNoopStatement returns true if the given upper-cased SQL statement
-// should be handled as a no-op.
+// should be handled as a no-op. SHOW TABLES and SHOW FULL TABLES are not
+// no-ops: they reach the engine and list the database's tables.
 func (h *ParseHandler) isNoopStatement(upper string) bool {
 	// Check exact matches first (BEGIN, COMMIT, etc.).
 	// Strip trailing semicolons for matching.
 	cleaned := strings.TrimRight(upper, "; ")
 	if noopStatements[cleaned] {
 		return true
+	}
+
+	// SHOW TABLES / SHOW FULL TABLES list tables on the engine; only the
+	// session parameter SHOW statements are no-ops.
+	if showTablesRe.MatchString(upper) {
+		return false
 	}
 
 	// Check prefix matches (SET, SHOW, RESET, etc.).
@@ -1530,6 +1550,9 @@ func buildCompleteTag(query string, rowCount int) string {
 		return fmt.Sprintf("UPDATE %d", rowCount)
 	case strings.HasPrefix(upper, "DELETE"):
 		return fmt.Sprintf("DELETE %d", rowCount)
+	case strings.HasPrefix(upper, "SHOW"):
+		// PostgreSQL answers SHOW with the bare "SHOW" command tag.
+		return "SHOW"
 	default:
 		return "OK"
 	}

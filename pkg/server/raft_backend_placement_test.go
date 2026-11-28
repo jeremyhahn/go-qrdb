@@ -27,6 +27,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // memKV is an in-memory placement.KV for factory placement-source tests.
@@ -319,6 +321,99 @@ func TestPlacementInfoSource_EmptyDataRootResolvesLocally(t *testing.T) {
 	}
 }
 
+// TestPlacementInfoSource_RecordedExplicitDataDir pins that a placed group
+// starts at the explicit data_dir its catalog record names (under this
+// node's tenant root), that one outside the tenant root is refused, and
+// that a catalog read failure fails the lookup instead of answering the
+// default directory.
+func TestPlacementInfoSource_RecordedExplicitDataDir(t *testing.T) {
+	store := newPlacementStore(t)
+	if err := store.Put(context.Background(), &placement.Placement{
+		TenantID: "rt", Database: "orders", ShardID: 7001, RF: 1, LeaderReplicaID: 1,
+		Replicas: []placement.Replica{{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1"}},
+	}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	newSrc := func(fallback *fakeRaftInfoSource) *placementRaftInfoSource {
+		return &placementRaftInfoSource{store: store, localNodeID: "local:1", fallback: fallback,
+			timeout: placementResolveTimeout, localRootResolver: poolRootResolver}
+	}
+	key := raftShardKey{tenantID: "rt", database: "orders"}
+
+	fallback := newFakeRaftInfoSource()
+	fallback.dataDirs = map[raftShardKey]string{key: "/pool/rt/custom"}
+	shardID, dataDir, _, ok, err := newSrc(fallback).databaseAndPlacementInfo("rt", "orders")
+	if err != nil || !ok || shardID != 7001 {
+		t.Fatalf("databaseAndPlacementInfo = (%d, %q, ok %v, %v); want (7001, /pool/rt/custom, true, nil)", shardID, dataDir, ok, err)
+	}
+	if dataDir != "/pool/rt/custom" {
+		t.Fatalf("dataDir = %q, want the recorded explicit /pool/rt/custom", dataDir)
+	}
+
+	fallback.dataDirs[key] = "/elsewhere/custom"
+	_, dataDir, _, ok, err = newSrc(fallback).databaseAndPlacementInfo("rt", "orders")
+	var outside *database.DataDirOutsideTenantRootError
+	if !errors.As(err, &outside) || ok {
+		t.Fatalf("data_dir outside the tenant root: (%q, ok %v, %v); want *DataDirOutsideTenantRootError", dataDir, ok, err)
+	}
+
+	readErr := errors.New("catalog unavailable")
+	failing := newFakeRaftInfoSource()
+	failing.dataDirErr = readErr
+	_, dataDir, _, ok, err = newSrc(failing).databaseAndPlacementInfo("rt", "orders")
+	if !errors.Is(err, readErr) || ok || dataDir != "" {
+		t.Fatalf("failing catalog read: (%q, ok %v, %v); want the read error, no directory", dataDir, ok, err)
+	}
+}
+
+// TestPlacementInfoSource_ExplicitDataDirFollowsIsolation pins the group-start
+// half of the create rule (database.ResolveBinding): an explicit data_dir of a
+// prefix or barrier tenant, which has no data root of its own, is honored
+// wherever the operator put it; one of a volume or raft tenant must lie under
+// the tenant root.
+func TestPlacementInfoSource_ExplicitDataDirFollowsIsolation(t *testing.T) {
+	isolations := map[string]tenant.IsolationType{
+		"pfx": tenant.IsolationPrefix, "bar": tenant.IsolationBarrier,
+		"vol": tenant.IsolationVolume, "rt": tenant.IsolationRaft,
+	}
+	lookup := func(_ context.Context, id string) (tenant.IsolationType, error) { return isolations[id], nil }
+	nodeDir := t.TempDir()
+	resolver := IsolationRootResolver(lookup, nodeDir, poolRootResolver)
+	store := newPlacementStore(t)
+	fallback := newFakeRaftInfoSource()
+	fallback.dataDirs = map[raftShardKey]string{}
+	const outside = "/srv/operator/orders"
+	for i, id := range []string{"pfx", "bar", "vol", "rt"} {
+		if err := store.Put(context.Background(), &placement.Placement{
+			TenantID: id, Database: "orders", ShardID: uint64(7100 + i), RF: 1, LeaderReplicaID: 1,
+			Replicas: []placement.Replica{{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1"}},
+		}); err != nil {
+			t.Fatalf("Put %s: %v", id, err)
+		}
+		fallback.dataDirs[raftShardKey{tenantID: id, database: "orders"}] = outside
+	}
+	f := &RaftBackendFactory{dbInfo: fallback}
+	WithTenantIsolation(lookup)(f)
+	WithPlacementInfoSource(store, "local:1", resolver)(f)
+	src, ok := f.dbInfo.(*placementRaftInfoSource)
+	if !ok {
+		t.Fatalf("dbInfo = %T, want *placementRaftInfoSource", f.dbInfo)
+	}
+	for _, id := range []string{"pfx", "bar"} {
+		_, dataDir, _, ok, err := src.databaseAndPlacementInfo(id, "orders")
+		if err != nil || !ok || dataDir != outside {
+			t.Fatalf("%s tenant: (%q, ok %v, %v); want the explicit %s honored", id, dataDir, ok, err, outside)
+		}
+	}
+	for _, id := range []string{"vol", "rt"} {
+		_, dataDir, _, ok, err := src.databaseAndPlacementInfo(id, "orders")
+		var outsideErr *database.DataDirOutsideTenantRootError
+		if !errors.As(err, &outsideErr) || ok {
+			t.Fatalf("%s tenant: (%q, ok %v, %v); want *DataDirOutsideTenantRootError", id, dataDir, ok, err)
+		}
+	}
+}
+
 // TestPlacementInfoSource_EmptyDataRootNoResolverFallsBack verifies that when
 // DataRoot is empty and no resolver is wired, databaseInfo falls back to the
 // meta source rather than returning an empty path.
@@ -543,18 +638,130 @@ func TestPlacementInfoSource_DedicatedWAL(t *testing.T) {
 	fallback := newFakeRaftInfoSource()
 	src := &placementRaftInfoSource{store: store, localNodeID: "local:1", fallback: fallback,
 		timeout: placementResolveTimeout, localRootResolver: poolRootResolver}
-	if !src.dedicatedWAL("rt", "orders") {
+	dedicated := func(db string) bool {
+		t.Helper()
+		got, err := src.dedicatedWAL("rt", db)
+		if err != nil {
+			t.Fatalf("dedicatedWAL(%s): %v", db, err)
+		}
+		return got
+	}
+	if !dedicated("orders") {
 		t.Errorf("dedicatedWAL from placement = false, want true")
 	}
 
 	// No placement entry → fall back to meta source.
 	fallback.add("rt", "meta-only", 9, "/meta/root")
 	fallback.setDedicated("rt", "meta-only")
-	if !src.dedicatedWAL("rt", "meta-only") {
+	if !dedicated("meta-only") {
 		t.Errorf("dedicatedWAL fallback to meta = false, want true")
 	}
-	if src.dedicatedWAL("rt", "absent") {
+	if dedicated("absent") {
 		t.Errorf("dedicatedWAL for unknown db = true, want false")
+	}
+}
+
+// flakyKV answers reads from the wrapped memKV until failing is set, then
+// fails every Get: the transient fault a second placement read can hit
+// after the start path's first read succeeded.
+type flakyKV struct {
+	*memKV
+	failing bool
+	// failAfter, when > 0, sets failing once that many Gets have been
+	// answered, so a start path's later reads fail after its first.
+	failAfter int
+	gets      int
+}
+
+func (k *flakyKV) Get(ctx context.Context, key string) ([]byte, error) {
+	k.gets++
+	if k.failAfter > 0 && k.gets > k.failAfter {
+		k.failing = true
+	}
+	if k.failing {
+		return nil, errFlakyPlacementRead
+	}
+	return k.memKV.Get(ctx, key)
+}
+
+// newFlakyPlacementStore returns a placement store over a flakyKV.
+func newFlakyPlacementStore(t *testing.T) (*placement.Store, *flakyKV) {
+	t.Helper()
+	kv := &flakyKV{memKV: newMemKV()}
+	store, err := placement.NewStore(kv)
+	if err != nil {
+		t.Fatalf("placement.NewStore: %v", err)
+	}
+	return store, kv
+}
+
+var errFlakyPlacementRead = errors.New("placement read failed")
+
+// TestPlacementInfoSource_StateStorageReadErrorIsAnError pins that a
+// placement read failure is returned by stateStorage and dedicatedWAL,
+// never answered from the catalog.
+func TestPlacementInfoSource_StateStorageReadErrorIsAnError(t *testing.T) {
+	store, kv := newFlakyPlacementStore(t)
+	if err := store.Put(context.Background(), &placement.Placement{
+		TenantID: "rt", Database: "orders", ShardID: 7778, RF: 1, LeaderReplicaID: 1,
+		Replicas:     []placement.Replica{{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1"}},
+		StateStorage: placement.Backend(database.BackendMemory),
+	}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	fallback := newFakeRaftInfoSource()
+	fallback.stateStorages = map[raftShardKey]database.BackendType{{tenantID: "rt", database: "orders"}: database.BackendPebble}
+	src := &placementRaftInfoSource{store: store, localNodeID: "local:1", fallback: fallback,
+		timeout: placementResolveTimeout, localRootResolver: poolRootResolver}
+	if got, err := src.stateStorage("rt", "orders"); err != nil || got != database.BackendMemory {
+		t.Fatalf("stateStorage first read = (%q, %v), want the placement's memory", got, err)
+	}
+	kv.failing = true
+	if got, err := src.stateStorage("rt", "orders"); !errors.Is(err, errFlakyPlacementRead) {
+		t.Fatalf("stateStorage on a failing read = (%q, %v), want the read error", got, err)
+	}
+	if got, err := src.dedicatedWAL("rt", "orders"); !errors.Is(err, errFlakyPlacementRead) {
+		t.Fatalf("dedicatedWAL on a failing read = (%v, %v), want the read error", got, err)
+	}
+}
+
+// TestRaftBackendFactory_PlanStartTakesStateStorageFromThePlacementRead: a
+// placed group's start plan takes its state storage from the one placement
+// read the start path made. A later placement read that fails must not send
+// the start to the local catalog's store instead.
+func TestRaftBackendFactory_PlanStartTakesStateStorageFromThePlacementRead(t *testing.T) {
+	host, _ := newSharedTestHost(t)
+	reg := newVolumePooledRegistry(t)
+	ctx := context.Background()
+	registerVolumeTenant(t, reg, "ps")
+
+	store, kv := newFlakyPlacementStore(t)
+	if err := store.Put(ctx, &placement.Placement{
+		TenantID: "ps", Database: "db", ShardID: 7790, RF: 1, LeaderReplicaID: sharedHostReplicaID,
+		Replicas: []placement.Replica{
+			{ReplicaID: sharedHostReplicaID, NodeID: sharedHostRaftAddr, RaftAddr: sharedHostRaftAddr},
+		},
+		StateStorage: placement.Backend(database.BackendMemory),
+	}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	fallback := newFakeRaftInfoSource()
+	fallback.stateStorages = map[raftShardKey]database.BackendType{
+		{tenantID: "ps", database: "db"}: database.BackendPebble,
+	}
+	f := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg,
+		fallback, volTestLogger(),
+		WithPlacementInfoSource(store, sharedHostRaftAddr, reg.LocalTenantDataRoot))
+	t.Cleanup(func() { _ = f.CloseAll() })
+
+	// The first placement read answers; every later one fails.
+	kv.failAfter = kv.gets + 1
+	plan, err := f.planStart(ctx, "ps", "db", true, false)
+	if err != nil {
+		t.Fatalf("planStart: %v", err)
+	}
+	if plan.stateStorage != database.BackendMemory {
+		t.Fatalf("plan state storage = %q, want the placed %q", plan.stateStorage, database.BackendMemory)
 	}
 }
 
@@ -793,6 +1000,41 @@ func TestDatabaseFenceApply_PassThroughViewCarriesTheGuard(t *testing.T) {
 	}
 	if wrapped.guard.IsZero() {
 		t.Fatal("the pass-through view carries no guard: its writes would not be refused once the shard is fenced")
+	}
+}
+
+// TestDatabaseFenceApply_PassThroughViewAttachesTheShardsLeases proves a
+// dedicated-raft database's pass-through MVCC view attaches its own shard's
+// leases: the shard is the database's keyspace, so the view carries
+// shardLeaseOwnership (the shard's engine refuses a lease it does not hold),
+// and the Lease service is left exactly as svcs carried it. Without it every
+// PutWithLease on an etcd raft database was refused "lease not found".
+func TestDatabaseFenceApply_PassThroughViewAttachesTheShardsLeases(t *testing.T) {
+	fence, err := newDatabaseFence("rt", "orders", "", nil)
+	if err != nil {
+		t.Fatalf("newDatabaseFence: %v", err)
+	}
+	lease := &stubLeaseService{}
+	svcs := &DatabaseServices{MVCC: &stubMVCCService{}, Lease: lease}
+
+	fenced := fence.apply(svcs, "", false)
+
+	if fenced.Lease != service.LeaseServicer(lease) {
+		t.Fatalf("fenced.Lease = %T, want the shard's own lease service", fenced.Lease)
+	}
+	mvcc, ok := fenced.MVCC.(*namespacedMVCCService)
+	if !ok {
+		t.Fatalf("fenced.MVCC = %T, want *namespacedMVCCService", fenced.MVCC)
+	}
+	if err := mvcc.requireOwnedLease(context.Background(), 7); err != nil {
+		t.Fatalf("requireOwnedLease(7) on a dedicated shard = %v, want nil", err)
+	}
+
+	// Without a lease service there is still nothing to attach.
+	bare := fence.apply(&DatabaseServices{MVCC: &stubMVCCService{}}, "", false)
+	var notFound *service.LeaseNotFoundError
+	if err := bare.MVCC.(*namespacedMVCCService).requireOwnedLease(context.Background(), 7); !errors.As(err, &notFound) {
+		t.Fatalf("requireOwnedLease(7) with no lease service = %v, want *service.LeaseNotFoundError", err)
 	}
 }
 

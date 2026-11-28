@@ -211,24 +211,6 @@ func (b *DatabaseBinding) UpdateEtcd(name string, req *transport.UpdateDatabaseE
 	return info, nil
 }
 
-// UpdateConnection updates the connection configuration for a database.
-func (b *DatabaseBinding) UpdateConnection(name string, req *transport.UpdateDatabaseConnectionRequest) (*transport.DatabaseInfo, error) {
-	b.logger.Debug("UpdateConnection called", "name", name)
-	cl, err := b.conn.loadClient()
-	if err != nil {
-		b.logger.Error("UpdateConnection failed", "error", err)
-		return nil, err
-	}
-	req.Name = name
-	info, err := cl.Database().UpdateDatabaseConnection(context.Background(), *req)
-	if err != nil {
-		b.logger.Error("UpdateConnection failed", "name", name, "error", err)
-		return nil, err
-	}
-	b.logger.Debug("UpdateConnection completed", "name", name)
-	return info, nil
-}
-
 // UpdateCompaction sets a database's scheduled-compaction policy.
 func (b *DatabaseBinding) UpdateCompaction(name string, req *transport.UpdateDatabaseCompactionRequest) (*transport.DatabaseInfo, error) {
 	b.logger.Debug("UpdateCompaction called", "name", name)

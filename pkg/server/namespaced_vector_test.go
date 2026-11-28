@@ -145,3 +145,189 @@ func TestNewNamespacedVectorService_NoLockerIsFine(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, resp.Success)
 }
+
+// guardRecordingVectorServicer records, per method, whether the context it
+// was called with carried a write guard.
+type guardRecordingVectorServicer struct {
+	service.VectorServicer
+	guarded map[string]bool
+}
+
+func (r *guardRecordingVectorServicer) note(ctx context.Context, method string) {
+	r.guarded[method] = !service.WriteGuardFrom(ctx).IsZero()
+}
+
+func (r *guardRecordingVectorServicer) CreateNamespace(ctx context.Context, _ *service.CreateNamespaceRequest) (*service.CreateNamespaceResponse, error) {
+	r.note(ctx, "CreateNamespace")
+	return &service.CreateNamespaceResponse{}, nil
+}
+
+func (r *guardRecordingVectorServicer) UpdateNamespace(ctx context.Context, _ *service.UpdateNamespaceRequest) (*service.UpdateNamespaceResponse, error) {
+	r.note(ctx, "UpdateNamespace")
+	return &service.UpdateNamespaceResponse{}, nil
+}
+
+func (r *guardRecordingVectorServicer) DeleteNamespace(ctx context.Context, _ *service.DeleteNamespaceRequest) (*service.DeleteNamespaceResponse, error) {
+	r.note(ctx, "DeleteNamespace")
+	return &service.DeleteNamespaceResponse{}, nil
+}
+
+func (r *guardRecordingVectorServicer) ListNamespaces(ctx context.Context, _ *service.ListNamespacesRequest) (*service.ListNamespacesResponse, error) {
+	r.note(ctx, "ListNamespaces")
+	return &service.ListNamespacesResponse{}, nil
+}
+
+func (r *guardRecordingVectorServicer) GetNamespaceInfo(ctx context.Context, _ *service.GetNamespaceInfoRequest) (*service.GetNamespaceInfoResponse, error) {
+	r.note(ctx, "GetNamespaceInfo")
+	return &service.GetNamespaceInfoResponse{}, nil
+}
+
+func (r *guardRecordingVectorServicer) UpsertVector(ctx context.Context, _ *service.UpsertVectorRequest) (*service.UpsertVectorResponse, error) {
+	r.note(ctx, "UpsertVector")
+	return &service.UpsertVectorResponse{}, nil
+}
+
+func (r *guardRecordingVectorServicer) GetVector(ctx context.Context, _ *service.GetVectorRequest) (*service.GetVectorResponse, error) {
+	r.note(ctx, "GetVector")
+	return &service.GetVectorResponse{}, nil
+}
+
+func (r *guardRecordingVectorServicer) DeleteVector(ctx context.Context, _ *service.DeleteVectorRequest) (*service.DeleteVectorResponse, error) {
+	r.note(ctx, "DeleteVector")
+	return &service.DeleteVectorResponse{}, nil
+}
+
+func (r *guardRecordingVectorServicer) BatchUpsert(ctx context.Context, _ *service.BatchUpsertRequest) (*service.BatchUpsertResponse, error) {
+	r.note(ctx, "BatchUpsert")
+	return &service.BatchUpsertResponse{}, nil
+}
+
+func (r *guardRecordingVectorServicer) BatchDeleteVectors(ctx context.Context, _ *service.BatchDeleteVectorsRequest) (*service.BatchDeleteVectorsResponse, error) {
+	r.note(ctx, "BatchDeleteVectors")
+	return &service.BatchDeleteVectorsResponse{}, nil
+}
+
+func (r *guardRecordingVectorServicer) ListVectors(ctx context.Context, _ *service.ListVectorsRequest) (*service.ListVectorsResponse, error) {
+	r.note(ctx, "ListVectors")
+	return &service.ListVectorsResponse{}, nil
+}
+
+func (r *guardRecordingVectorServicer) UpdateMetadata(ctx context.Context, _ *service.UpdateVectorMetadataRequest) (*service.UpdateVectorMetadataResponse, error) {
+	r.note(ctx, "UpdateMetadata")
+	return &service.UpdateVectorMetadataResponse{}, nil
+}
+
+func (r *guardRecordingVectorServicer) SearchSimilar(ctx context.Context, _ *service.SearchSimilarRequest) (*service.SearchSimilarResponse, error) {
+	r.note(ctx, "SearchSimilar")
+	return &service.SearchSimilarResponse{}, nil
+}
+
+func (r *guardRecordingVectorServicer) SearchByMetadata(ctx context.Context, _ *service.SearchByMetadataRequest) (*service.SearchByMetadataResponse, error) {
+	r.note(ctx, "SearchByMetadata")
+	return &service.SearchByMetadataResponse{}, nil
+}
+
+func (r *guardRecordingVectorServicer) HybridSearch(ctx context.Context, _ *service.HybridSearchRequest) (*service.HybridSearchResponse, error) {
+	r.note(ctx, "HybridSearch")
+	return &service.HybridSearchResponse{}, nil
+}
+
+func (r *guardRecordingVectorServicer) SearchByID(ctx context.Context, _ *service.SearchByIDRequest) (*service.SearchByIDResponse, error) {
+	r.note(ctx, "SearchByID")
+	return &service.SearchByIDResponse{}, nil
+}
+
+func (r *guardRecordingVectorServicer) RebuildIndex(ctx context.Context, _ *service.RebuildIndexRequest) (*service.RebuildIndexResponse, error) {
+	r.note(ctx, "RebuildIndex")
+	return &service.RebuildIndexResponse{}, nil
+}
+
+func (r *guardRecordingVectorServicer) GetRebuildProgress(ctx context.Context, _ *service.GetRebuildProgressRequest) (*service.GetRebuildProgressResponse, error) {
+	r.note(ctx, "GetRebuildProgress")
+	return &service.GetRebuildProgressResponse{}, nil
+}
+
+func (r *guardRecordingVectorServicer) GetIndexStats(ctx context.Context, _ *service.GetIndexStatsRequest) (*service.GetIndexStatsResponse, error) {
+	r.note(ctx, "GetIndexStats")
+	return &service.GetIndexStatsResponse{}, nil
+}
+
+func (r *guardRecordingVectorServicer) CompactNamespace(ctx context.Context, _ *service.CompactNamespaceRequest) (*service.CompactNamespaceResponse, error) {
+	r.note(ctx, "CompactNamespace")
+	return &service.CompactNamespaceResponse{}, nil
+}
+
+func (r *guardRecordingVectorServicer) GetCompactionProgress(ctx context.Context, _ *service.GetCompactionProgressRequest) (*service.GetCompactionProgressResponse, error) {
+	r.note(ctx, "GetCompactionProgress")
+	return &service.GetCompactionProgressResponse{}, nil
+}
+
+// TestNamespacedVectorService_WritesCarryTheDropGuard pins that every write
+// the vector view delegates carries the database's write guard on its
+// context -- so a write the inner servicer proposes through Raft (a
+// materialized database's) is refused at apply time once Drop fences the
+// database -- and that no read does.
+func TestNamespacedVectorService_WritesCarryTheDropGuard(t *testing.T) {
+	guard, err := service.DropFenceGuard("acme", "orders", "")
+	require.NoError(t, err)
+	require.False(t, guard.IsZero())
+
+	inner := &guardRecordingVectorServicer{guarded: map[string]bool{}}
+	view := newNamespacedVectorService(inner, "acme/orders/")
+	view.dbGuard = dbGuard{guard: guard}
+
+	ctx := context.Background()
+	calls := []func() error{
+		func() error { _, e := view.CreateNamespace(ctx, &service.CreateNamespaceRequest{}); return e },
+		func() error { _, e := view.UpdateNamespace(ctx, &service.UpdateNamespaceRequest{}); return e },
+		func() error { _, e := view.DeleteNamespace(ctx, &service.DeleteNamespaceRequest{}); return e },
+		func() error { _, e := view.ListNamespaces(ctx, &service.ListNamespacesRequest{}); return e },
+		func() error { _, e := view.GetNamespaceInfo(ctx, &service.GetNamespaceInfoRequest{}); return e },
+		func() error { _, e := view.UpsertVector(ctx, &service.UpsertVectorRequest{}); return e },
+		func() error { _, e := view.GetVector(ctx, &service.GetVectorRequest{}); return e },
+		func() error { _, e := view.DeleteVector(ctx, &service.DeleteVectorRequest{}); return e },
+		func() error { _, e := view.BatchUpsert(ctx, &service.BatchUpsertRequest{}); return e },
+		func() error { _, e := view.BatchDeleteVectors(ctx, &service.BatchDeleteVectorsRequest{}); return e },
+		func() error { _, e := view.ListVectors(ctx, &service.ListVectorsRequest{}); return e },
+		func() error { _, e := view.UpdateMetadata(ctx, &service.UpdateVectorMetadataRequest{}); return e },
+		func() error { _, e := view.SearchSimilar(ctx, &service.SearchSimilarRequest{}); return e },
+		func() error { _, e := view.SearchByMetadata(ctx, &service.SearchByMetadataRequest{}); return e },
+		func() error { _, e := view.HybridSearch(ctx, &service.HybridSearchRequest{}); return e },
+		func() error { _, e := view.SearchByID(ctx, &service.SearchByIDRequest{}); return e },
+		func() error { _, e := view.RebuildIndex(ctx, &service.RebuildIndexRequest{}); return e },
+		func() error { _, e := view.GetRebuildProgress(ctx, &service.GetRebuildProgressRequest{}); return e },
+		func() error { _, e := view.GetIndexStats(ctx, &service.GetIndexStatsRequest{}); return e },
+		func() error { _, e := view.CompactNamespace(ctx, &service.CompactNamespaceRequest{}); return e },
+		func() error {
+			_, e := view.GetCompactionProgress(ctx, &service.GetCompactionProgressRequest{})
+			return e
+		},
+	}
+	for _, call := range calls {
+		require.NoError(t, call())
+	}
+
+	assert.Equal(t, map[string]bool{
+		"CreateNamespace":       true,
+		"UpdateNamespace":       true,
+		"DeleteNamespace":       true,
+		"UpsertVector":          true,
+		"DeleteVector":          true,
+		"BatchUpsert":           true,
+		"BatchDeleteVectors":    true,
+		"UpdateMetadata":        true,
+		"RebuildIndex":          true,
+		"CompactNamespace":      true,
+		"ListNamespaces":        false,
+		"GetNamespaceInfo":      false,
+		"GetVector":             false,
+		"ListVectors":           false,
+		"SearchSimilar":         false,
+		"SearchByMetadata":      false,
+		"HybridSearch":          false,
+		"SearchByID":            false,
+		"GetRebuildProgress":    false,
+		"GetIndexStats":         false,
+		"GetCompactionProgress": false,
+	}, inner.guarded)
+}

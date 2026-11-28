@@ -62,6 +62,13 @@ func (e *Encryptor) Enabled() bool {
 	return e != nil && e.barrier != nil
 }
 
+// Encrypts reports whether data written through this Encryptor is
+// actually encrypted: a barrier is present and its active seal strategy
+// is not seal.StrategyNone (whose barrier writes plaintext).
+func (e *Encryptor) Encrypts() bool {
+	return e.Enabled() && e.barrier.ActiveStrategy() != seal.StrategyNone
+}
+
 // FS returns the encrypting filesys.FS over the base FS. When the Encryptor
 // is disabled (nil receiver or nil barrier), the base FS is returned so
 // callers that need a concrete filesys.FS always get a usable value.

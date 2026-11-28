@@ -138,6 +138,56 @@ func TestCertReloader_SeparateDirectories(t *testing.T) {
 	require.NotNil(t, r.cert.Load(), "initial certificate must be loaded")
 }
 
+// unwatchableDir returns a directory whose files open by path but which
+// inotify refuses to watch: it is searchable, not readable.
+func unwatchableDir(t *testing.T) string {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("root watches a directory it cannot read")
+	}
+	return t.TempDir()
+}
+
+// revokeRead takes the read bits off dir, so its files still open by path
+// but the directory itself cannot be watched, and restores the mode dir had
+// when the test ends so the temp-dir cleanup can remove it.
+func revokeRead(t *testing.T, dir string) {
+	t.Helper()
+	info, err := os.Stat(dir)
+	require.NoError(t, err)
+	orig := info.Mode().Perm()
+	t.Cleanup(func() { _ = os.Chmod(dir, orig) })
+	require.NoError(t, os.Chmod(dir, orig&^0o444))
+}
+
+func TestCertReloader_RefusesAnUnwatchableCertDir(t *testing.T) {
+	certPEM, keyPEM := testCertPair(t)
+	certDir := unwatchableDir(t)
+	certPath, keyPath := writeCertFiles(t, certDir, certPEM, keyPEM)
+	revokeRead(t, certDir)
+
+	_, err := NewCertReloader(certPath, keyPath, testLogger())
+	var reloadErr *CertReloadError
+	require.ErrorAs(t, err, &reloadErr)
+	assert.Equal(t, certDir, reloadErr.Path)
+}
+
+func TestCertReloader_RefusesAnUnwatchableKeyDir(t *testing.T) {
+	certPEM, keyPEM := testCertPair(t)
+	certDir := t.TempDir()
+	keyDir := unwatchableDir(t)
+	certPath := filepath.Join(certDir, "tls.crt")
+	keyPath := filepath.Join(keyDir, "tls.key")
+	require.NoError(t, os.WriteFile(certPath, certPEM, 0o600))
+	require.NoError(t, os.WriteFile(keyPath, keyPEM, 0o600))
+	revokeRead(t, keyDir)
+
+	_, err := NewCertReloader(certPath, keyPath, testLogger())
+	var reloadErr *CertReloadError
+	require.ErrorAs(t, err, &reloadErr)
+	assert.Equal(t, keyDir, reloadErr.Path)
+}
+
 func TestCertReloader_InitialLoad_InvalidCert(t *testing.T) {
 	dir := t.TempDir()
 

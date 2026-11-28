@@ -549,6 +549,15 @@ var databaseRules = []rule{
 	as(&database.InvalidNameError{}, InvalidArgument),
 	as(&database.ReservedNameError{}, InvalidArgument),
 	as(&database.InvalidBackendError{}, InvalidArgument),
+	// ResolveBinding's refusals of a caller's backend choice (#923): a bad
+	// request, never an internal fault. A raft backend this node does not
+	// run is a precondition of the node, not of the request.
+	as(&database.EtcdRequiresRaftBackendError{}, InvalidArgument),
+	as(&database.RaftOptionsRequireRaftBackendError{}, InvalidArgument),
+	as(&database.BarrierRequiresPersistentBackendError{}, InvalidArgument),
+	as(&database.DataDirOutsideTenantRootError{}, InvalidArgument),
+	as(&database.BackendIsolationConflictError{}, InvalidArgument),
+	as(&database.RaftBackendUnavailableError{}, FailedPrecondition),
 	// A per-database barrier requested where it would not wrap the store the
 	// database is served from. The caller cannot change a database's backend
 	// or data_dir, so this is the configuration refusing the feature, as
@@ -560,7 +569,6 @@ var databaseRules = []rule{
 	// A database configuration that fails validation is the caller's error,
 	// not the server's: each of these used to reach REST as a 500.
 	as(&database.InvalidModeError{Mode: "x"}, InvalidArgument),
-	as(&database.ConnectionRequiredError{}, InvalidArgument),
 	as(&database.InvalidRaftClusterModeError{Mode: "x"}, InvalidArgument),
 	as(&database.InvalidRaftStateStorageError{StateStorage: "x"}, InvalidArgument),
 	as(&database.InvalidDiscoveryMethodError{Method: "x"}, InvalidArgument),

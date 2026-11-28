@@ -143,15 +143,6 @@ describe('database.create refuses options REST cannot serve', () => {
         expect(calls).toHaveLength(0);
     });
 
-    it('a connection is refused and nothing is sent', async () => {
-        const client = await connectedClient();
-        const calls = installMockFetch({});
-        await expect(client.database.create({
-            name: 'r2', backend: 'memory', connection: { transport: 'rest', address: 'https://b.example' },
-        })).rejects.toBeInstanceOf(UnsupportedOptionError);
-        expect(calls).toHaveLength(0);
-    });
-
     it('mode embedded sends the wire body without a mode field', async () => {
         const client = await connectedClient();
         const calls = installMockFetch({ name: 'e1' });
@@ -615,8 +606,8 @@ describe('database compaction policy', () => {
 });
 
 // ---------------------------------------------------------------------------
-// updateRaft, updateBarrier and updateConnection PATCH the /v1 routes the
-// server registers (/v1/databases/{name}/raft|barrier|connection) with the
+// updateRaft and updateBarrier PATCH the /v1 routes the
+// server registers (/v1/databases/{name}/raft|barrier) with the
 // bare configuration as the body, the shape the REST handlers decode.
 // ---------------------------------------------------------------------------
 
@@ -653,18 +644,6 @@ describe('database settings updates', () => {
         expect(new URL(calls[0].url).pathname).toBe('/v1/databases/my%20db/barrier');
         expect(calls[0].method).toBe('PATCH');
         expect(calls[0].body).toEqual({ enabled: true, mode: 'shamir', sharesRequired: 2, sharesTotal: 3 });
-    });
-
-    it('sends PATCH /v1/databases/{name}/connection with the connection config', async () => {
-        const client = await connectedClient();
-        const calls = installMockFetch({ name: 'shop', backend: 'pebble', status: 'open' });
-
-        await client.database.updateConnection('shop', { transport: 'grpc', address: 'db.example.com:63000' });
-
-        expect(calls).toHaveLength(1);
-        expect(new URL(calls[0].url).pathname).toBe('/v1/databases/shop/connection');
-        expect(calls[0].method).toBe('PATCH');
-        expect(calls[0].body).toEqual({ transport: 'grpc', address: 'db.example.com:63000' });
     });
 });
 

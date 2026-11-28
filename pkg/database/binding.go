@@ -101,10 +101,11 @@ var nameVisibleBackends = map[BackendType]struct{}{
 }
 
 // raftStateStorages are the stores a raft binding's state machine may run
-// over (OD-8, ruled A).
+// over (OD-8, ruled A). The data-plane state machine is the Pebble-native
+// MVCC store and no file-backed one exists, so `file` is refused at create
+// and update rather than when the group starts.
 var raftStateStorages = map[BackendType]struct{}{
 	BackendPebble: {},
-	BackendFile:   {},
 	BackendMemory: {},
 }
 
@@ -179,6 +180,10 @@ type RaftBinding struct {
 	// StateStorage is the store the group's state machine runs the engine
 	// over: pebble, file or memory.
 	StateStorage BackendType
+	// Nodes are the Raft addresses of the group's replicas, read from the
+	// database's placement entry. ResolveBinding leaves it empty; a
+	// describer that reads the placement table fills it.
+	Nodes []string
 }
 
 // Binding is the resolved, concrete placement of one (tenant, database): the
@@ -205,6 +210,29 @@ type Binding struct {
 	DatabaseBarrier bool
 	// Raft is set for a raft binding only.
 	Raft *RaftBinding
+}
+
+// Describe returns the read-only block database info reports for the
+// binding. owner is the node recorded as holding the database
+// (DatabaseMeta.OwnerNode), empty when any node opens it: a standalone
+// record then names no node, and a raft binding names its replicas only
+// once raft bindings are described. A nil binding describes nothing.
+func (b *Binding) Describe(owner string, generation uint64) *DatabaseBinding {
+	if b == nil {
+		return nil
+	}
+	out := &DatabaseBinding{Kind: b.Kind, Encryption: string(b.Encryptor), Generation: generation}
+	if b.DatabaseBarrier {
+		out.Encryption += "+database"
+	}
+	switch {
+	case b.Kind == BindingRaft && b.Raft != nil && len(b.Raft.Nodes) > 0:
+		// Every replica of the database's group serves it.
+		out.Nodes = append([]string(nil), b.Raft.Nodes...)
+	case owner != "":
+		out.Nodes = []string{owner}
+	}
+	return out
 }
 
 // TenantBarrierBound reports whether sealing the owning tenant's barrier

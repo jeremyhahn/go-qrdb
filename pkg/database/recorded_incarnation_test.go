@@ -17,6 +17,7 @@ package database
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -69,5 +70,64 @@ func TestManager_RecordedIncarnation_RequiresACatalog(t *testing.T) {
 	var required *CatalogRequiredError
 	if !errors.As(err, &required) || ok {
 		t.Fatalf("RecordedIncarnation() with no catalog = (ok %v, %v), want *CatalogRequiredError", ok, err)
+	}
+}
+
+// TestManager_RecordedDataDir_FollowsTheCatalog pins that RecordedDataDir
+// answers a record's explicit data_dir, ok=false for a record without one
+// and for no record, and the catalog-required error with no catalog.
+func TestManager_RecordedDataDir_FollowsTheCatalog(t *testing.T) {
+	mgr := newCatalogManager(nil, t.TempDir())
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	explicit := filepath.Join(t.TempDir(), "custom")
+	if _, err := mgr.CreateForTenant(ctx, DatabaseConfig{Name: "billing", Backend: BackendPebble, DataDir: explicit}); err != nil {
+		t.Fatalf("CreateForTenant: %v", err)
+	}
+	if _, err := mgr.CreateForTenant(ctx, DatabaseConfig{Name: "plain", Backend: BackendMemory}); err != nil {
+		t.Fatalf("CreateForTenant plain: %v", err)
+	}
+	if got, ok, err := mgr.RecordedDataDir(ctx, "acme", "billing"); err != nil || !ok || got != explicit {
+		t.Fatalf("RecordedDataDir(billing) = (%q, %v, %v), want (%q, true, nil)", got, ok, err, explicit)
+	}
+	if got, ok, err := mgr.RecordedDataDir(ctx, "acme", "plain"); err != nil || ok || got != "" {
+		t.Fatalf("RecordedDataDir(plain) = (%q, %v, %v), want (\"\", false, nil)", got, ok, err)
+	}
+	if got, ok, err := mgr.RecordedDataDir(ctx, "acme", "absent"); err != nil || ok || got != "" {
+		t.Fatalf("RecordedDataDir(absent) = (%q, %v, %v), want (\"\", false, nil)", got, ok, err)
+	}
+	var required *CatalogRequiredError
+	if _, ok, err := NewManager(nil, t.TempDir()).RecordedDataDir(ctx, "acme", "billing"); ok || !errors.As(err, &required) {
+		t.Fatalf("RecordedDataDir() with no catalog = (ok %v, %v), want *CatalogRequiredError", ok, err)
+	}
+}
+
+// A tenant's home group is never a catalog database, and the catalog of an
+// isolated tenant lives in that home: reading the catalog to start the home
+// resolved the home again, which started it again, until the stack
+// overflowed. The home's data_dir is never looked up, so no catalog is read
+// for it -- not even one that is missing.
+func TestManager_RecordedDataDir_NeverReadsTheCatalogForTheTenantHome(t *testing.T) {
+	got, ok, err := NewManager(nil, t.TempDir()).RecordedDataDir(context.Background(), "acme", TenantHomeName)
+	if err != nil || ok || got != "" {
+		t.Fatalf("RecordedDataDir(home) = (%q, %v, %v), want (\"\", false, nil)", got, ok, err)
+	}
+}
+
+// TestCheckDataDirUnderTenantRoot pins the strictly-under rule.
+func TestCheckDataDirUnderTenantRoot(t *testing.T) {
+	for dir, want := range map[string]bool{
+		"/pool/rt/custom":     true,
+		"/pool/rt/a/b":        true,
+		"/pool/rt":            false,
+		"/pool/rt/../other":   false,
+		"/pool/other/custom":  false,
+		"pool/rt/custom":      false,
+		"/pool/rt-sibling/db": false,
+	} {
+		err := CheckDataDirUnderTenantRoot("db", dir, "/pool/rt")
+		var outside *DataDirOutsideTenantRootError
+		if want != (err == nil) || (err != nil && !errors.As(err, &outside)) {
+			t.Errorf("CheckDataDirUnderTenantRoot(%q) = %v, want accepted %v", dir, err, want)
+		}
 	}
 }

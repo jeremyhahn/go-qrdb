@@ -245,17 +245,3 @@ func (t *Transport) UpdateDatabaseCompaction(ctx context.Context, req transport.
 	}
 	return &info, nil
 }
-
-// UpdateDatabaseConnection updates the remote connection configuration for a
-// database. Maps to PATCH /v1/databases/{name}/connection.
-func (t *Transport) UpdateDatabaseConnection(ctx context.Context, req transport.UpdateDatabaseConnectionRequest) (*transport.DatabaseInfo, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-
-	var info transport.DatabaseInfo
-	if err := t.patchJSONDecode(ctx, "UpdateDatabaseConnection", "/v1/databases/"+url.PathEscape(req.Name)+"/connection", req.Connection, &info); err != nil {
-		return nil, err
-	}
-	return &info, nil
-}

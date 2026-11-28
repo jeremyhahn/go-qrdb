@@ -197,9 +197,6 @@ text.
 - **Search targets exactly one namespace.** There is no cross-namespace search.
 - **`ef_search` applies to HNSW only** and trades recall against latency; it is
   ignored by `flat` and has no meaning for it.
-- **Shard ID selects nothing** (measured). Namespaces live in one node-local
-  store; see [architecture.md](architecture.md) "Current state". Removed in the
-  target design (OD-14).
 - **Vector payloads are encrypted at rest under the node's encryptor** and
   partitioned by a `<tenant>/<db>/` name prefix. A sealed node barrier fails
   vector operations closed; a sealed tenant or database barrier does not
@@ -354,8 +351,8 @@ section still describes work not yet wired to anything a caller can reach.
   is untouched and still serves production traffic. This phase also owns: the
   per-database storage-binding precondition noted under "Keys in the
   database's store"; count/byte totals and quota enforcement; the
-  database-drop key-reclaim forward hazard (acceptance test 11); and OD-14
-  shard_id removal across transports.
+  database-drop key-reclaim forward hazard (acceptance test 11). (The OD-14
+  removal of the request shard field is done on every transport.)
 - **Phase 5 — backup/restore coverage: not started.**
 
 Both shipped phases are additive and dormant: nothing proposes the new

@@ -36,6 +36,23 @@ type BackendFactory interface {
 	Close() error
 }
 
+// DataRootOwner is implemented by a Backend that owns a store directory
+// outside the Manager's own per-database directory, such as a materialized
+// local binding's root. Drop removes that directory after closing the
+// backend; an empty DataRoot (a memory store) owns nothing on disk.
+type DataRootOwner interface {
+	DataRoot() string
+}
+
+// ExternalDirOwner is implemented by a Backend whose store also writes in
+// directories outside its DataRoot (a Pebble binding's write-ahead log under
+// the node's storage.wal_dir). The paths are the backend's own, never shared
+// with another database; Drop removes them once the backend is closed, so a
+// recreate never replays the dropped store's files.
+type ExternalDirOwner interface {
+	ExternalDirs() []string
+}
+
 // EmbeddedBackendFactory creates standalone backends backed by local storage
 // engines (memory, file, pebble).
 type EmbeddedBackendFactory struct{}

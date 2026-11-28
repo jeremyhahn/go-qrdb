@@ -254,7 +254,7 @@ func startSealtestStandaloneNode(t *testing.T) (*permNode, *sealtestHold) {
 	// once the held write does.
 	cfgPath := filepath.Join(t.TempDir(), "seal-config.yaml")
 	cfg := "seal:\n  enabled: true\n  strategy: passphrase\n  drain_timeout: 10m\n" +
-		"databases:\n  - name: \"default\"\n    backend: \"pebble\"\n"
+		"storage:\n  backend: \"pebble\"\n"
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
 		t.Fatalf("seal config: %v", err)
 	}

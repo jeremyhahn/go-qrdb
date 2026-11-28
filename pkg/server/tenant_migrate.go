@@ -98,6 +98,15 @@ func (r *TenantHostRegistry) MigrateEncryption(ctx context.Context, tenantID str
 	hostRoot := filepath.Join(dataRoot, "databases")
 	walDir := filepath.Join(hostRoot, "wal")
 	smDir := filepath.Join(hostRoot, "nodehost", "snapshots", fmt.Sprintf("shard-%d", shard.ShardKV))
+	// The tenant's materialized databases keep stores of their own under the
+	// tenant barrier (lifecycle.LocalBindingFactory): they are re-encrypted
+	// and swapped with the Host's. A store the migration cannot move refuses
+	// it here, before anything is staged or stopped.
+	databases := r.databases.Load()
+	dbPebble, dbFile, err := database.TenantEncryptedStoreDirs(ctx, databases, tenantID)
+	if err != nil {
+		return &TenantHostError{TenantID: tenantID, Op: "migrate-list-databases", Err: err}
+	}
 
 	// Mint the keyed target over the tenant barrier's exact backend + config.
 	var target *seal.StorageBarrier
@@ -135,6 +144,8 @@ func (r *TenantHostRegistry) MigrateEncryption(ctx context.Context, tenantID str
 	// ride the smDir swap; the shards' are staged in the shared host tree and
 	// recorded as the copy stages them.
 	j.StoreDirs = append([]string{smDir, walDir}, shards.StoreDirs()...)
+	j.StoreDirs = append(j.StoreDirs, dbPebble...)
+	j.StoreDirs = append(j.StoreDirs, dbFile...)
 	// A standalone tenant's home store (tenant.LocalHomes) keeps its IAM
 	// records, CA material and DEK keyring in the barrier's own backend, under
 	// the HomeName keyspace, beside the root key and this journal: no store
@@ -188,6 +199,14 @@ func (r *TenantHostRegistry) MigrateEncryption(ctx context.Context, tenantID str
 	if cerr := r.Close(tenantID); cerr != nil {
 		err = &TenantHostError{TenantID: tenantID, Op: "migrate-quiesce", Err: cerr}
 		return err
+	}
+	// Close the tenant's databases, releasing their store locks; each opens
+	// again on its next access, under the barrier then installed.
+	if databases != nil {
+		if cerr := databases.CloseTenant(tenantID); cerr != nil {
+			err = &TenantHostError{TenantID: tenantID, Op: "migrate-quiesce-databases", Err: cerr}
+			return err
+		}
 	}
 
 	// Closing the Host sealed the quicraft barrier underlying `source`: the Host
@@ -247,6 +266,22 @@ func (r *TenantHostRegistry) MigrateEncryption(ctx context.Context, tenantID str
 		err = &TenantHostError{TenantID: tenantID, Op: "migrate-recode-shards", Err: cerr}
 		return err
 	}
+	for _, dir := range dbPebble {
+		keyed := dir + database.KeyedDirSuffix
+		_ = os.RemoveAll(keyed)
+		if _, cerr := recode(ctx, dir, srcEnc, keyed, dstEnc); cerr != nil {
+			err = &TenantHostError{TenantID: tenantID, Op: "migrate-recode-databases", Err: cerr}
+			return err
+		}
+	}
+	for _, dir := range dbFile {
+		keyed := dir + database.KeyedDirSuffix
+		_ = os.RemoveAll(keyed)
+		if _, cerr := database.ReencryptFileStore(ctx, dir, srcEnc, keyed, dstEnc); cerr != nil {
+			err = &TenantHostError{TenantID: tenantID, Op: "migrate-recode-databases", Err: cerr}
+			return err
+		}
+	}
 	for _, rec := range j.StagedRecords {
 		if _, cerr := source.StageMigratedRecords(ctx, target, rec); cerr != nil {
 			err = &TenantHostError{TenantID: tenantID, Op: "migrate-recode-records", Err: cerr}
@@ -269,6 +304,18 @@ func (r *TenantHostRegistry) MigrateEncryption(ctx context.Context, tenantID str
 	if verr := shards.Verify(ctx, source, target); verr != nil {
 		err = &TenantHostError{TenantID: tenantID, Op: "migrate-verify-shards", Err: verr}
 		return err
+	}
+	for _, dir := range dbPebble {
+		if verr := database.VerifyReencryptedStore(ctx, dir, srcEnc, dir+database.KeyedDirSuffix, dstEnc); verr != nil {
+			err = &TenantHostError{TenantID: tenantID, Op: "migrate-verify-databases", Err: verr}
+			return err
+		}
+	}
+	for _, dir := range dbFile {
+		if verr := database.VerifyReencryptedFileStore(ctx, dir, srcEnc, dir+database.KeyedDirSuffix, dstEnc); verr != nil {
+			err = &TenantHostError{TenantID: tenantID, Op: "migrate-verify-databases", Err: verr}
+			return err
+		}
 	}
 	for _, rec := range j.StagedRecords {
 		if verr := source.VerifyMigratedRecords(ctx, target, rec); verr != nil {

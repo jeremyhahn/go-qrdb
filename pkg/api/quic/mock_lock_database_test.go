@@ -84,16 +84,15 @@ func (m *mockLockSvc) List(ctx context.Context, prefix string) ([]*lock.Lock, er
 
 // TestCollectionInfoToProto_Fields is unique (not in handlers_collection_database_test.go).
 type mockDbSvc struct {
-	createFn           func(cfg database.DatabaseConfig) (*database.DatabaseInfo, error)
-	getFn              func(name string) (*database.DatabaseInfo, error)
-	listFn             func() ([]database.DatabaseInfo, error)
-	dropFn             func(name string) error
-	updateProtocolFn   func(name string, protocol database.ProtocolConfig) (*database.DatabaseInfo, error)
-	updateEtcdFn       func(name string, etcd *database.EtcdConfig) (*database.DatabaseInfo, error)
-	updateRaftFn       func(name string, raft *database.DatabaseRaftConfig) (*database.DatabaseInfo, error)
-	updateBarrierFn    func(name string, barrier *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error)
-	updateConnectionFn func(name string, conn *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error)
-	scaleFn            func(name string, targetReplicas int) (*database.DatabaseInfo, error)
+	createFn         func(cfg database.DatabaseConfig) (*database.DatabaseInfo, error)
+	getFn            func(name string) (*database.DatabaseInfo, error)
+	listFn           func() ([]database.DatabaseInfo, error)
+	dropFn           func(name string) error
+	updateProtocolFn func(name string, protocol database.ProtocolConfig) (*database.DatabaseInfo, error)
+	updateEtcdFn     func(name string, etcd *database.EtcdConfig) (*database.DatabaseInfo, error)
+	updateRaftFn     func(name string, raft *database.DatabaseRaftConfig) (*database.DatabaseInfo, error)
+	updateBarrierFn  func(name string, barrier *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error)
+	scaleFn          func(name string, targetReplicas int) (*database.DatabaseInfo, error)
 }
 
 var _ service.DatabaseServicer = (*mockDbSvc)(nil)
@@ -146,12 +145,6 @@ func (m *mockDbSvc) UpdateBarrier(name string, barrier *database.DatabaseBarrier
 	}
 	return &database.DatabaseInfo{Name: name}, nil
 }
-func (m *mockDbSvc) UpdateConnection(name string, conn *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	if m.updateConnectionFn != nil {
-		return m.updateConnectionFn(name, conn)
-	}
-	return &database.DatabaseInfo{Name: name}, nil
-}
 func (m *mockDbSvc) SealDatabase(_ context.Context, _ string) error                       { return nil }
 func (m *mockDbSvc) UnsealDatabase(_ context.Context, _ string, _ seal.Credentials) error { return nil }
 
@@ -190,10 +183,6 @@ func (m *mockDbSvc) UpdateRaftForTenant(_ context.Context, name string, _ *datab
 func (m *mockDbSvc) UpdateBarrierForTenant(_ context.Context, name string, _ *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
 	return &database.DatabaseInfo{Name: name}, nil
 }
-func (m *mockDbSvc) UpdateConnectionForTenant(_ context.Context, name string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	return &database.DatabaseInfo{Name: name}, nil
-}
-
 func (m *mockDbSvc) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
 	return &database.DatabaseInfo{Name: name, SQL: sqlCfg}, nil
 }

@@ -25,7 +25,6 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 | Update barrier | `PATCH /v1/databases/{name}/barrier` | `DatabaseUpdateBarrier` | `db.UpdateBarrier` | `qrdb_database_update_barrier` | `UpdateDatabaseBarrier` | `databases:update` |
 | Update SQL settings | `PATCH /v1/databases/{name}/sql` | `DatabaseUpdateSQL` | `db.UpdateSQL` | `qrdb_database_update_sql` | `UpdateDatabaseSQL` | `databases:update` |
 | Update compaction policy | `PATCH /v1/databases/{name}/compaction` | `DatabaseUpdateCompaction` | `db.UpdateCompaction` | `qrdb_database_update_compaction` | `UpdateDatabaseCompaction` | `mvcc:compact` (`ScopeSelfStrict`) |
-| Update connection | `PATCH /v1/databases/{name}/connection` | `DatabaseUpdateConnection` | `db.UpdateConnection` | `qrdb_database_update_connection` | `UpdateDatabaseConnection` | `databases:update` |
 | Scale | `PATCH /v1/databases/{name}/scale` | `DatabaseScale` | `db.Scale` | `qrdb_database_scale` | `ScaleDatabase` | `databases:scale` |
 | Seal | `POST /v1/databases/{name}/seal` | `DatabaseSeal` | `db.Seal` | `qrdb_database_seal` | `SealDatabase` | `databases:seal` |
 | Unseal | `POST /v1/databases/{name}/unseal` | `DatabaseUnseal` | `db.Unseal` | `qrdb_database_unseal` | `UnsealDatabase` | `databases:unseal` |
@@ -98,8 +97,7 @@ Shipped:
   "protocol": { "mysql": false, "postgresql": true,
                 "etcd": { "enabled": false, "listenAddr": ":2379" } },
   "barrier": { "enabled": true, "mode": "passphrase",
-               "secret": "correct horse battery" },
-  "connection": { "transport": "tcp", "address": "db2.example.com:63003" } }
+               "secret": "correct horse battery" } }
 ```
 
 Response — `DatabaseInfo`, which adds `tenantId`, `status`, `shardId`,
@@ -193,24 +191,33 @@ database's state-machine store (OD-8).
                "sharesRequired": 3, "sharesTotal": 5 } }
 ```
 
-`DatabaseInfo` gains a read-only `binding` block reporting what the resolver
-decided:
+`database info` and `database list` carry a read-only `binding` block on every
+transport, reporting what the resolver decided:
 
 ```json
-{ "name": "billing", "tenantId": "acme", "backend": "raft", "status": "open",
-  "shardId": 4107, "replicas": 3,
-  "binding": { "kind": "raft", "nodes": ["node-1", "node-2", "node-3"],
-               "encryption": "tenant+database", "generation": 1 } }
+{ "name": "orders", "tenantId": "acme", "backend": "file", "status": "open",
+  "binding": { "kind": "local", "nodes": ["node-1"],
+               "encryption": "tenant+database", "generation": 3 } }
 ```
 
-`kind` is `local` or `raft`; `nodes` is the owning node of a local binding or
-the replica nodes of a raft one; `encryption` is `node`, `tenant` or
-`tenant+database`; `generation` increments each time the name is created, so a
-dropped-and-recreated database is distinguishable from its predecessor.
+`kind` is `local` or `raft`; `nodes` names the owning node when the catalog
+records one (absent otherwise); `encryption` is the scope whose key encrypts
+the store at rest, `node` or `tenant`, with `+database` appended when the
+database has its own barrier. `generation` numbers this create of the name: a
+database dropped and created again under the same name reports a higher
+generation than the one it replaced, so a client can tell them apart.
+Generations rise but may skip values (a create that fails still uses one up).
+The block is absent when the server cannot resolve the binding. gRPC carries it
+as `DatabaseBindingInfo binding = 19` on `DatabaseInfoResponse` (`generation` is
+its field 4); the CLI table output prints it under `Binding:`.
 
-`DatabaseInfoResponse` gains a `DatabaseBindingInfo binding` message field.
-The `connection` block and the update-connection capability are removed on
-every transport (OD-9).
+Target: a raft binding lists its replica nodes.
+Remote mode is removed (OD-9 A): there is no update-connection verb on any
+transport, no `connection` field on a create request or in `DatabaseInfo`, and
+no gRPC `DatabaseUpdateConnection` RPC; `DatabaseInfoResponse` reserves field
+11 and the name `connection`. A create or a config entry carrying `mode:
+remote` or a `connection` block is refused (invalid mode / unknown field;
+REST refuses a `connection` field as an unknown field).
 
 ### Updates, scale and unseal
 
@@ -313,9 +320,6 @@ barrier is on the database's data path: a non-raft database with its own
 `dataDir`, which only the system tenant can set (`BarrierOffDataPathError`,
 `SharedStoreBarrierUnsupportedError` otherwise). A non-system tenant therefore
 cannot create a barrier-backed database of either kind.
-
-`DatabaseConnectionConfig` fields: `transport` (`tcp|quic`), `address`,
-`caFile`, `certFile`, `keyFile`.
 
 ## Capability matrix — database barrier share holders
 

@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
@@ -51,7 +52,7 @@ func TestHandleDatabase_RequestsCarryNoShardID(t *testing.T) {
 	ctx := context.Background()
 
 	create, _ := json.Marshal(map[string]any{
-		"name": "picked", "backend": "memory",
+		"name": "picked", "backend": "raft",
 		"raft": map[string]any{"clusterMode": "local", "replicaId": 1, "localNodeCount": 1},
 	})
 	resp, err := srv.handleDatabaseCreate(ctx, create)
@@ -97,5 +98,25 @@ func TestHandleDatabase_CreateRefusesACallerSuppliedShardID(t *testing.T) {
 	})
 	if _, err := srv.handleDatabaseCreate(ctx, create); err == nil {
 		t.Fatal("expected an error for the caller-supplied shardId, got nil")
+	}
+}
+
+// TestHandleDatabase_CreateRefusesAConnectionBlock asserts remote mode's
+// `connection` block is gone from the QUIC create request (OD-9 A): the
+// strict decode refuses it as an unknown field.
+func TestHandleDatabase_CreateRefusesAConnectionBlock(t *testing.T) {
+	srv := newShardIDQUICServer(t)
+	ctx := context.Background()
+
+	create, _ := json.Marshal(map[string]any{
+		"name": "remote", "backend": "memory",
+		"connection": map[string]any{"transport": "tcp", "address": "127.0.0.1:63003"},
+	})
+	_, err := srv.handleDatabaseCreate(ctx, create)
+	if err == nil {
+		t.Fatal("expected an unknown-field error for the connection block, got nil")
+	}
+	if !strings.Contains(err.Error(), `unknown field "connection"`) {
+		t.Fatalf("err = %v, want unknown field \"connection\"", err)
 	}
 }

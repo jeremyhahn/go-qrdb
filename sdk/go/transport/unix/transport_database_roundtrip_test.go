@@ -45,7 +45,6 @@ type mockDatabaseSvc struct {
 	updateEtcd      func(name string, e *database.EtcdConfig) (*database.DatabaseInfo, error)
 	updateRaft      func(name string, r *database.DatabaseRaftConfig) (*database.DatabaseInfo, error)
 	updateBarrier   func(name string, b *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error)
-	updateConn      func(name string, c *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error)
 	sealDBFn        func(ctx context.Context, name string) error
 	unsealDBFn      func(ctx context.Context, name string, creds seal.Credentials) error
 	barrierStatusFn func(name string) (*seal.BarrierStatus, error)
@@ -119,13 +118,6 @@ func (m *mockDatabaseSvc) UpdateBarrier(name string, b *database.DatabaseBarrier
 	return &database.DatabaseInfo{Name: name, Barrier: b}, nil
 }
 
-func (m *mockDatabaseSvc) UpdateConnection(name string, c *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	if m.updateConn != nil {
-		return m.updateConn(name, c)
-	}
-	return &database.DatabaseInfo{Name: name, Connection: c}, nil
-}
-
 func (m *mockDatabaseSvc) SealDatabase(ctx context.Context, name string) error {
 	if m.sealDBFn != nil {
 		return m.sealDBFn(ctx, name)
@@ -190,10 +182,6 @@ func (m *mockDatabaseSvc) UpdateRaftForTenant(_ context.Context, name string, r 
 
 func (m *mockDatabaseSvc) UpdateBarrierForTenant(_ context.Context, name string, b *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
 	return m.UpdateBarrier(name, b)
-}
-
-func (m *mockDatabaseSvc) UpdateConnectionForTenant(_ context.Context, name string, c *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	return m.UpdateConnection(name, c)
 }
 
 func (m *mockDatabaseSvc) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
@@ -380,26 +368,6 @@ func TestUnixRT_UpdateDatabaseBarrier_MetadataFields(t *testing.T) {
 	if resp.Barrier == nil || resp.Barrier.Mode != "passphrase" ||
 		resp.Barrier.SharesRequired != 2 || resp.Barrier.SharesTotal != 3 {
 		t.Errorf("response Barrier = %+v, want Mode=passphrase SharesRequired=2 SharesTotal=3", resp.Barrier)
-	}
-}
-
-func TestUnixRT_UpdateDatabaseConnection(t *testing.T) {
-	svc := &mockDatabaseSvc{}
-	tr, cleanup := startAuthServer(t, unixserver.WithDatabaseService(svc))
-	defer cleanup()
-
-	resp, err := tr.UpdateDatabaseConnection(context.Background(), transport.UpdateDatabaseConnectionRequest{
-		Name: "db1",
-		Connection: &transport.DatabaseConnectionConfig{
-			Transport: "tcp",
-			Address:   "10.0.0.1:5000",
-		},
-	})
-	if err != nil {
-		t.Fatalf("UpdateDatabaseConnection: %v", err)
-	}
-	if resp.Connection == nil || resp.Connection.Address != "10.0.0.1:5000" {
-		t.Errorf("got %+v, want address=10.0.0.1:5000", resp.Connection)
 	}
 }
 

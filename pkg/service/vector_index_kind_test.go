@@ -150,11 +150,11 @@ func createIndexedNamespace(t *testing.T, svc VectorService, name, indexType str
 	t.Helper()
 	ctx := context.Background()
 	_, err := svc.CreateNamespace(ctx, &CreateNamespaceRequest{
-		Namespace: name, Dimension: 2, IndexType: indexType, IndexConfig: config, ShardID: 1,
+		Namespace: name, Dimension: 2, IndexType: indexType, IndexConfig: config,
 	})
 	require.NoError(t, err)
 	for i, vec := range vectors {
-		_, err = svc.UpsertVector(ctx, &UpsertVectorRequest{Namespace: name, ID: uint64(i + 1), Vector: vec, ShardID: 1})
+		_, err = svc.UpsertVector(ctx, &UpsertVectorRequest{Namespace: name, ID: uint64(i + 1), Vector: vec})
 		require.NoError(t, err)
 	}
 }
@@ -165,7 +165,7 @@ func TestVecSearchSimilar_UntrainedIVFRefused(t *testing.T) {
 	createIndexedNamespace(t, svc, "ns", "IVF", nil, []float32{1, 1})
 
 	resp, err := svc.SearchSimilar(context.Background(), &SearchSimilarRequest{
-		Namespace: "ns", QueryVector: []float32{1, 1}, K: 1, ShardID: 1,
+		Namespace: "ns", QueryVector: []float32{1, 1}, K: 1,
 	})
 	assert.Nil(t, resp)
 	untrained := requireErrorAs[*VectorIndexUntrainedError](t, err)

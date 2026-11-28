@@ -272,6 +272,15 @@ const (
 	// would silently reinterpret every replayed log entry as case-insensitive
 	// (go-qrdb#34).
 	IndexFlagCaseInsensitive byte = 1 << 3
+
+	// IndexFlagCatalog marks a create proposed under the index-catalog
+	// cluster feature (featuregate.IndexCatalog): the apply path records the
+	// definition in the index catalog only for such a create. The catalog
+	// record is replicated state (it is in replica hashes and snapshots), so
+	// a replica that predates the catalog -- which writes none -- would
+	// diverge from one that wrote it; the proposer sets the flag only once
+	// every member of the group supports the feature.
+	IndexFlagCatalog byte = 1 << 4
 )
 
 // headerSize is 1 byte for the op code.
@@ -728,6 +737,14 @@ type IndexCreateOptions struct {
 	// each see the count before the other's create applies (go-qrdb#1088).
 	MaxIndexes uint32
 
+	// Catalog records the definition in the index catalog when the create
+	// applies (IndexFlagCatalog). The proposer sets it only under the
+	// index-catalog cluster feature, so every replica of a group writes the
+	// same catalog records; a create without it writes none, and an engine
+	// opened over storage that outlived it restores no such index until it
+	// is created again under the feature.
+	Catalog bool
+
 	// Rescope makes a same-owner re-create whose composed key scope differs
 	// rebuild the index at the new scope. Without it the existing index is
 	// kept, as every command written before the flag meant. The proposer
@@ -751,11 +768,22 @@ type IndexDropOptions struct {
 
 	// Owner is the owner the caller claims. Read only when CheckOwner is set.
 	Owner string
+
+	// Catalog marks a drop proposed under the index-catalog cluster feature
+	// (featuregate.IndexCatalog): the apply path clears the index's entries
+	// in the apply batch, reading through it. A drop without it clears the
+	// committed entries only, as a member that predates the catalog does, so
+	// a group whose members disagree on the feature never diverges.
+	Catalog bool
 }
 
 // indexDropFlagCheckOwner marks an owner-checked drop in the drop command's
 // flag byte.
 const indexDropFlagCheckOwner byte = 0x01
+
+// indexDropFlagCatalog marks a drop proposed under the index-catalog feature
+// (IndexDropOptions.Catalog) in the drop command's flag byte.
+const indexDropFlagCatalog byte = 0x02
 
 // Flags renders the options as the command's flag byte.
 func (o IndexCreateOptions) Flags() byte {
@@ -772,6 +800,9 @@ func (o IndexCreateOptions) Flags() byte {
 	if o.CaseInsensitive {
 		flags |= IndexFlagCaseInsensitive
 	}
+	if o.Catalog {
+		flags |= IndexFlagCatalog
+	}
 	return flags
 }
 
@@ -782,6 +813,7 @@ func indexCreateOptionsFromFlags(flags byte) IndexCreateOptions {
 		Sparse:          flags&IndexFlagSparse != 0,
 		Numeric:         flags&IndexFlagNumeric != 0,
 		CaseInsensitive: flags&IndexFlagCaseInsensitive != 0,
+		Catalog:         flags&IndexFlagCatalog != 0,
 	}
 }
 
@@ -884,8 +916,15 @@ func EncodeIndexDrop(name string) ([]byte, error) {
 // opts encodes exactly what EncodeIndexDrop does, so an unconditional drop
 // keeps the shape every existing log entry has.
 func EncodeIndexDropOpts(name string, opts IndexDropOptions) ([]byte, error) {
-	if !opts.CheckOwner {
+	if !opts.CheckOwner && !opts.Catalog {
 		return EncodeIndexDrop(name)
+	}
+	var flags byte
+	if opts.CheckOwner {
+		flags |= indexDropFlagCheckOwner
+	}
+	if opts.Catalog {
+		flags |= indexDropFlagCatalog
 	}
 	nameBytes := []byte(name)
 	ownerBytes := []byte(opts.Owner)
@@ -905,7 +944,7 @@ func EncodeIndexDropOpts(name string, opts IndexDropOptions) ([]byte, error) {
 	off += 2
 	copy(buf[off:], nameBytes)
 	off += len(nameBytes)
-	buf[off] = indexDropFlagCheckOwner
+	buf[off] = flags
 	off++
 	if err := putUint16Len(buf[off:], len(ownerBytes), "index owner"); err != nil {
 		return nil, err
@@ -1722,6 +1761,7 @@ func DecodeIndexDropOpts(payload []byte) (string, IndexDropOptions, error) {
 	return name, IndexDropOptions{
 		CheckOwner: flags&indexDropFlagCheckOwner != 0,
 		Owner:      string(payload[off : off+ownerLen]),
+		Catalog:    flags&indexDropFlagCatalog != 0,
 	}, nil
 }
 

@@ -86,7 +86,7 @@ func startNode(t *testing.T) *node.Node {
 	t.Helper()
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.DataDir = t.TempDir()
-	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
+	cfg.Storage.Backend = string(database.BackendMemory)
 	// The smoke proves the soak's path end to end, not authorization.
 	cfg.Auth.Enabled = qrdbconfig.BoolPtr(false)
 	cfg.Protocols.REST = false

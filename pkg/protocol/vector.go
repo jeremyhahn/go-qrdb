@@ -16,7 +16,9 @@ package protocol
 
 import (
 	"encoding/binary"
+	"maps"
 	"math"
+	"slices"
 	"sort"
 )
 
@@ -70,8 +72,10 @@ const (
 	// [metaCount:2 LE]([keyLen:2 LE][key][valLen:2 LE][val])*.
 	OpVectorUpdateMetadata byte = 76
 
-	// OpVectorIndexReconfigure records new index parameters and advances the
-	// namespace's training generation; each replica rebuilds its own index
+	// OpVectorIndexReconfigure sets the index type, merges its parameters
+	// into the namespace's stored ones (a patch: unnamed keys keep their
+	// committed value) and advances the namespace's training generation;
+	// each replica rebuilds its own index
 	// locally from the result. Payload: [nameLen:2 LE][name][indexType:1]
 	// [paramCount:2 LE]([keyLen:2 LE][key][valLen:2 LE][val])*.
 	OpVectorIndexReconfigure byte = 77
@@ -109,6 +113,11 @@ type VectorUpdateMetadataParams struct {
 	ID                uint64
 	TimestampUnixNano int64
 	Metadata          map[string]string
+	// Merge, when set, merges Metadata into the stored metadata at apply
+	// time and then removes DeleteKeys; when clear, Metadata replaces the
+	// stored metadata and DeleteKeys must be empty.
+	Merge      bool
+	DeleteKeys []string
 }
 
 // VectorIndexReconfigureParams is the decoded payload of
@@ -690,6 +699,9 @@ func DecodeVectorBatchDelete(payload []byte) (name string, ids []uint64, err err
 
 // EncodeVectorUpdateMetadata creates a binary OpVectorUpdateMetadata command.
 func EncodeVectorUpdateMetadata(p VectorUpdateMetadataParams) ([]byte, error) {
+	if !p.Merge && len(p.DeleteKeys) > 0 {
+		return nil, &InvalidCommandError{Reason: "vector update metadata: delete keys need merge"}
+	}
 	nameSize, err := vectorNameSize(p.Name)
 	if err != nil {
 		return nil, err
@@ -698,7 +710,12 @@ func EncodeVectorUpdateMetadata(p VectorUpdateMetadataParams) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	size, err := addSizes(headerSize, nameSize, 8, 8, metaSize)
+	deletes := deleteKeySet(p.DeleteKeys)
+	deleteSize, err := ParamBlockSize(deletes)
+	if err != nil {
+		return nil, err
+	}
+	size, err := addSizes(headerSize, nameSize, 8, 8, 1, metaSize, deleteSize)
 	if err != nil {
 		return nil, err
 	}
@@ -714,10 +731,30 @@ func EncodeVectorUpdateMetadata(p VectorUpdateMetadataParams) ([]byte, error) {
 	off += 8
 	binary.LittleEndian.PutUint64(buf[off:], uint64(p.TimestampUnixNano))
 	off += 8
-	if _, err = WriteParamBlock(buf, off, p.Metadata); err != nil {
+	if p.Merge {
+		buf[off] = 1
+	}
+	off++
+	if off, err = WriteParamBlock(buf, off, p.Metadata); err != nil {
+		return nil, err
+	}
+	if _, err = WriteParamBlock(buf, off, deletes); err != nil {
 		return nil, err
 	}
 	return buf, nil
+}
+
+// deleteKeySet carries a delete-key list in a param block: each key maps to
+// the empty string, and duplicates collapse.
+func deleteKeySet(keys []string) map[string]string {
+	if len(keys) == 0 {
+		return nil
+	}
+	set := make(map[string]string, len(keys))
+	for _, k := range keys {
+		set[k] = ""
+	}
+	return set
 }
 
 // DecodeVectorUpdateMetadata decodes an OpVectorUpdateMetadata payload.
@@ -727,18 +764,38 @@ func DecodeVectorUpdateMetadata(payload []byte) (VectorUpdateMetadataParams, err
 	if err != nil {
 		return VectorUpdateMetadataParams{}, err
 	}
-	if off+16 > len(payload) {
-		return VectorUpdateMetadataParams{}, &InvalidCommandError{Reason: reason + ": truncated id/timestamp"}
+	if off+17 > len(payload) {
+		return VectorUpdateMetadataParams{}, &InvalidCommandError{Reason: reason + ": truncated id/timestamp/flags"}
 	}
 	id := binary.LittleEndian.Uint64(payload[off:])
 	off += 8
 	timestamp := int64(binary.LittleEndian.Uint64(payload[off:]))
 	off += 8
-	metadata, _, err := ReadParamBlock(payload, off, reason)
+	flags := payload[off]
+	off++
+	if flags > 1 {
+		return VectorUpdateMetadataParams{}, &InvalidCommandError{Reason: reason + ": unknown flags"}
+	}
+	metadata, off, err := ReadParamBlock(payload, off, reason)
 	if err != nil {
 		return VectorUpdateMetadataParams{}, err
 	}
-	return VectorUpdateMetadataParams{Name: name, ID: id, TimestampUnixNano: timestamp, Metadata: metadata}, nil
+	deletes, _, err := ReadParamBlock(payload, off, reason)
+	if err != nil {
+		return VectorUpdateMetadataParams{}, err
+	}
+	merge := flags == 1
+	if !merge && len(deletes) > 0 {
+		return VectorUpdateMetadataParams{}, &InvalidCommandError{Reason: reason + ": delete keys need merge"}
+	}
+	var deleteKeys []string
+	if len(deletes) > 0 {
+		deleteKeys = slices.Sorted(maps.Keys(deletes))
+	}
+	return VectorUpdateMetadataParams{
+		Name: name, ID: id, TimestampUnixNano: timestamp, Metadata: metadata,
+		Merge: merge, DeleteKeys: deleteKeys,
+	}, nil
 }
 
 // EncodeVectorIndexReconfigure creates a binary OpVectorIndexReconfigure

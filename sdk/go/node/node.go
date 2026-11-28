@@ -1844,7 +1844,12 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 
 	localHost := backend.NewLocalBackend(smAdapter)
 
-	dbManager := n.newStandaloneDatabaseManager(pending.dataDir, pending.cfg)
+	dbManager, err := n.newStandaloneDatabaseManager(pending.dataDir, pending.cfg, encryptor, smAdapter)
+	if err != nil {
+		_ = n.stg.Close()
+		n.stg = nil
+		return err
+	}
 
 	// The effective capability profile of THIS node: NewStandaloneNode is
 	// the raft-free composition by construction, so the profile is computed
@@ -2035,11 +2040,42 @@ func (n *Node) startLeaseExpiryStandalone(lr *lease.Lessor, leaseSvc service.Lea
 // database it records, and to the server, so a named database resolves
 // through the server's registry, is confined to its owning tenant, and is
 // refused while sealed. The manager carries the node's database_defaults
-// (standaloneDatabaseDefaults), as the daemon's does.
-func (n *Node) newStandaloneDatabaseManager(dataDir string, cfg *qrdbconfig.Config) *database.Manager {
-	dbManager := database.NewManager(n.logger, dataDir, database.WithDefaults(standaloneDatabaseDefaults(cfg)))
+// (standaloneDatabaseDefaults), as the daemon's does, and the daemon's binding
+// factory (lifecycle.NewNodeBindingFactory): a database is materialized in its
+// own store under its binding root, sealed under enc, with its tenant and
+// tenant barrier resolved live from the services built after the manager.
+func (n *Node) newStandaloneDatabaseManager(dataDir string, cfg *qrdbconfig.Config, enc *atrest.Encryptor, shared backend.SMAdapter) (*database.Manager, error) {
+	defaults := standaloneDatabaseDefaults(cfg)
+	dbManager := database.NewManager(n.logger, dataDir, database.WithDefaults(defaults))
+	if err := n.installBindingFactory(dbManager, dataDir, defaults, enc, cfg.Storage, false); err != nil {
+		_ = dbManager.Close()
+		return nil, err
+	}
 	n.dbManager = dbManager
-	return dbManager
+	return dbManager, nil
+}
+
+// installBindingFactory installs the daemon's binding factory
+// (lifecycle.NewNodeBindingFactory) on dbManager, on a standalone and a
+// raft-mode node alike: a memory, file, pebble or objstore database is
+// materialized in its own store under its binding root, sealed under enc, with
+// its tenant and tenant barrier resolved live from the services built after
+// the manager. On a raft-mode node (raftMode) a backend: raft database stays
+// on the Manager's raft path.
+func (n *Node) installBindingFactory(dbManager *database.Manager, dataDir string, defaults database.Defaults,
+	enc *atrest.Encryptor, storageCfg qrdbconfig.StorageConfig, raftMode bool) error {
+	bf := lifecycle.NewNodeBindingFactory(dataDir, defaults, enc, storageCfg,
+		func() tenant.TenantServicer {
+			if svcNode := n.svcNode.Load(); svcNode != nil {
+				return svcNode.Tenant
+			}
+			return nil
+		},
+		n.barrierRegistry.Load, n.watchHubOpts...)
+	if raftMode {
+		bf = bf.WithRaftMode()
+	}
+	return dbManager.SetBackendFactory(bf)
 }
 
 // closeDatabaseManager closes the node's database catalog, if open.
@@ -2464,8 +2500,15 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	// with BuildTenantInfra (reattachRaftTenants walks manager.List()). The
 	// node owns the manager's lifetime; lifecycle does NOT add a closer for an
 	// externally-supplied manager.
+	clusteredDefaults := clusteredDatabaseDefaults(pending.cfg)
 	dbManager := database.NewManager(n.logger, pending.cfg.Raft.DataDir,
-		database.WithDefaults(clusteredDatabaseDefaults(pending.cfg)))
+		database.WithDefaults(clusteredDefaults))
+	if err := n.installBindingFactory(dbManager, pending.cfg.Raft.DataDir, clusteredDefaults, encryptor,
+		pending.cfg.Storage, true); err != nil {
+		_ = host.Close()
+		_ = dbManager.Close()
+		return &HostCreateError{Err: err}
+	}
 	n.dbManager = dbManager
 
 	gate, err := raftbackend.NewFeatureGate(host, pending.cfg.Raft.ReplicaID, shard.ShardKV)
@@ -3200,9 +3243,10 @@ func closePreboundOnError(errp *error, serverOpts []server.ServerOption) {
 
 // NewStandaloneNode builds a fully initialised standalone QRDB node backed
 // by a LocalBackend (engine-direct, no Raft state machine). The storage
-// backend is selected from cfg.Raft.DataDir and cfg.Databases; a memory
-// backend is used when DataDir is empty or the first database is configured
-// as BackendMemory.
+// backend is selected from cfg.Storage.Backend (pebble when empty; see
+// resolveBackend): storage.backend "memory" opts into an ephemeral store,
+// and every other backend requires cfg.Raft.DataDir. A cfg.Databases
+// entry's backend records that database only and never picks the node store.
 //
 // Seal lifecycle (when cfg.Seal.Enabled is true):
 //  1. The seal subsystem (barrier, credential service, barrier registry) is
@@ -3374,7 +3418,11 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 
 	localHost := backend.NewLocalBackend(smAdapter)
 
-	dbManager := n.newStandaloneDatabaseManager(dataDir, cfg)
+	dbManager, err := n.newStandaloneDatabaseManager(dataDir, cfg, nil, smAdapter)
+	if err != nil {
+		_ = n.stg.Close()
+		return nil, err
+	}
 
 	// Per-instance effective capability profile: standalone semantics by
 	// construction (see completeStandaloneBoot for the rationale).
@@ -3652,8 +3700,15 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 	// authorization wrappers (embedded and network) resolve the node's
 	// database_defaults against the same manager. The node owns its
 	// lifetime; lifecycle adds no closer for a supplied manager.
+	clusteredDefaults := clusteredDatabaseDefaults(cfg)
 	dbManager := database.NewManager(n.logger, dataDir,
-		database.WithDefaults(clusteredDatabaseDefaults(cfg)))
+		database.WithDefaults(clusteredDefaults))
+	if err := n.installBindingFactory(dbManager, dataDir, clusteredDefaults, nil,
+		cfg.Storage, true); err != nil {
+		_ = host.Close()
+		_ = dbManager.Close()
+		return nil, err
+	}
 	n.dbManager = dbManager
 
 	infra, err := withCryptoInfra(lifecycle.Infra{
@@ -4684,7 +4739,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 
 	// Build multi-protocol server.
 	serverCfg := buildNodeServerConfig(cfg)
-	allOpts := buildServerOpts(svcNode, ceremonySvc, n.dbManager, callerOpts, standalone)
+	allOpts := buildServerOpts(svcNode, cfg, ceremonySvc, n.dbManager, callerOpts, standalone)
 	fwdOpt, fwdErr := n.replicaForwardingOption(cfg, standalone, placementChangesOf(svcNode), featureClient)
 	if fwdErr != nil {
 		_ = client.Close()
@@ -5176,7 +5231,7 @@ func principalRoles(u *user.User) []string {
 // Without them no named database resolved on the node's server, so a
 // database-scoped client was refused outright and RAG, which is bound to the
 // registry, refused every call.
-func buildServerOpts(svcNode *lifecycle.Node, ceremonySvc service.CeremonyServicer, dbManager *database.Manager, callerOpts []server.ServerOption, standalone bool) []server.ServerOption {
+func buildServerOpts(svcNode *lifecycle.Node, cfg *qrdbconfig.Config, ceremonySvc service.CeremonyServicer, dbManager *database.Manager, callerOpts []server.ServerOption, standalone bool) []server.ServerOption {
 	var shardID uint64
 	if !standalone {
 		shardID = shard.ShardKV
@@ -5314,6 +5369,14 @@ func buildServerOpts(svcNode *lifecycle.Node, ceremonySvc service.CeremonyServic
 	if dbManager != nil {
 		opts = append(opts, server.WithDatabaseManager(dbManager))
 	}
+	// A materialized database (one the Manager opened in its own store) gets
+	// its import-session, index and time-series services built with this
+	// node's configured limits, as cmd/qrdbd wires them; without this they
+	// fell back to package defaults, so index.max_indexes and the other
+	// service limits held on the system database alone.
+	if cfg != nil {
+		opts = append(opts, server.WithBindingServiceConfig(cfg.ImportSession, cfg.Index, cfg.TimeSeries))
+	}
 	// The cluster-wide, per-tenant-opt-in replicated audit chain, served on every
 	// network transport as it is on the embedded one and on qrdbd. Without it a
 	// replicated audit query and the replicated chain verification were
@@ -5360,16 +5423,14 @@ func resolveBackend(cfg *qrdbconfig.Config) (database.BackendType, string, error
 	dataDir := cfg.Raft.DataDir
 
 	bt := database.BackendPebble
-	if len(cfg.Databases) > 0 {
-		if explicit := database.BackendType(cfg.Databases[0].Backend); explicit != "" {
-			bt = explicit
-		}
+	if explicit := database.BackendType(cfg.Storage.Backend); explicit != "" {
+		bt = explicit
 	}
 
 	if bt != database.BackendMemory && dataDir == "" {
 		return "", "", &ConfigError{
 			Field:   "raft.data_dir",
-			Message: `data directory is required for persistent storage; set databases[0].backend="memory" to opt into an ephemeral in-memory store`,
+			Message: `data directory is required for persistent storage; set storage.backend="memory" to opt into an ephemeral in-memory store`,
 		}
 	}
 	return bt, dataDir, nil

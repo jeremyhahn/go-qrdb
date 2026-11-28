@@ -328,10 +328,7 @@
     resetDatabaseWizard();
     const profile = connManagerStore.profiles.find((p) => p.id === profileId);
     if (profile?.type === 'external' || !isDesktop()) {
-      dbWizardStore.mode = 'remote';
       dbWizardStore.raftConfig = null;
-    } else {
-      dbWizardStore.mode = 'embedded';
     }
     dbWizardStore.serverMode = isMultiNodeServer() ? 'raft' : 'standalone';
   });

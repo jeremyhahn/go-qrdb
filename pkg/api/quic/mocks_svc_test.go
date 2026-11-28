@@ -298,27 +298,25 @@ func (m *mockCollectionService) ListDocuments(ctx context.Context, req *service.
 // ---------------------------------------------------------------------------
 
 type mockDatabaseService struct {
-	createFn                    func(cfg database.DatabaseConfig) (*database.DatabaseInfo, error)
-	getFn                       func(name string) (*database.DatabaseInfo, error)
-	listFn                      func() ([]database.DatabaseInfo, error)
-	dropFn                      func(name string) error
-	updateProtocolFn            func(name string, protocol database.ProtocolConfig) (*database.DatabaseInfo, error)
-	updateEtcdFn                func(name string, etcd *database.EtcdConfig) (*database.DatabaseInfo, error)
-	updateRaftFn                func(name string, raft *database.DatabaseRaftConfig) (*database.DatabaseInfo, error)
-	updateBarrierFn             func(name string, barrier *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error)
-	updateConnectionFn          func(name string, conn *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error)
-	sealDatabaseFn              func(ctx context.Context, name string) error
-	unsealDatabaseFn            func(ctx context.Context, name string, creds seal.Credentials) error
-	databaseBarrierStatusFn     func(name string) (*seal.BarrierStatus, error)
-	createForTenantFn           func(ctx context.Context, cfg database.DatabaseConfig) (*database.DatabaseInfo, error)
-	getForTenantFn              func(ctx context.Context, name string) (*database.DatabaseInfo, error)
-	listForTenantFn             func(ctx context.Context) ([]database.DatabaseInfo, error)
-	dropForTenantFn             func(ctx context.Context, name string) error
-	updateProtocolForTenantFn   func(ctx context.Context, name string, protocol database.ProtocolConfig) (*database.DatabaseInfo, error)
-	updateEtcdForTenantFn       func(ctx context.Context, name string, etcd *database.EtcdConfig) (*database.DatabaseInfo, error)
-	updateRaftForTenantFn       func(ctx context.Context, name string, raft *database.DatabaseRaftConfig) (*database.DatabaseInfo, error)
-	updateBarrierForTenantFn    func(ctx context.Context, name string, barrier *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error)
-	updateConnectionForTenantFn func(ctx context.Context, name string, conn *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error)
+	createFn                  func(cfg database.DatabaseConfig) (*database.DatabaseInfo, error)
+	getFn                     func(name string) (*database.DatabaseInfo, error)
+	listFn                    func() ([]database.DatabaseInfo, error)
+	dropFn                    func(name string) error
+	updateProtocolFn          func(name string, protocol database.ProtocolConfig) (*database.DatabaseInfo, error)
+	updateEtcdFn              func(name string, etcd *database.EtcdConfig) (*database.DatabaseInfo, error)
+	updateRaftFn              func(name string, raft *database.DatabaseRaftConfig) (*database.DatabaseInfo, error)
+	updateBarrierFn           func(name string, barrier *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error)
+	sealDatabaseFn            func(ctx context.Context, name string) error
+	unsealDatabaseFn          func(ctx context.Context, name string, creds seal.Credentials) error
+	databaseBarrierStatusFn   func(name string) (*seal.BarrierStatus, error)
+	createForTenantFn         func(ctx context.Context, cfg database.DatabaseConfig) (*database.DatabaseInfo, error)
+	getForTenantFn            func(ctx context.Context, name string) (*database.DatabaseInfo, error)
+	listForTenantFn           func(ctx context.Context) ([]database.DatabaseInfo, error)
+	dropForTenantFn           func(ctx context.Context, name string) error
+	updateProtocolForTenantFn func(ctx context.Context, name string, protocol database.ProtocolConfig) (*database.DatabaseInfo, error)
+	updateEtcdForTenantFn     func(ctx context.Context, name string, etcd *database.EtcdConfig) (*database.DatabaseInfo, error)
+	updateRaftForTenantFn     func(ctx context.Context, name string, raft *database.DatabaseRaftConfig) (*database.DatabaseInfo, error)
+	updateBarrierForTenantFn  func(ctx context.Context, name string, barrier *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error)
 }
 
 func (m *mockDatabaseService) Create(cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
@@ -373,13 +371,6 @@ func (m *mockDatabaseService) UpdateRaft(name string, raft *database.DatabaseRaf
 func (m *mockDatabaseService) UpdateBarrier(name string, barrier *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
 	if m.updateBarrierFn != nil {
 		return m.updateBarrierFn(name, barrier)
-	}
-	return &database.DatabaseInfo{Name: name}, nil
-}
-
-func (m *mockDatabaseService) UpdateConnection(name string, conn *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	if m.updateConnectionFn != nil {
-		return m.updateConnectionFn(name, conn)
 	}
 	return &database.DatabaseInfo{Name: name}, nil
 }
@@ -472,13 +463,6 @@ func (m *mockDatabaseService) UpdateBarrierForTenant(ctx context.Context, name s
 		return m.updateBarrierForTenantFn(ctx, name, barrier)
 	}
 	return m.UpdateBarrier(name, barrier)
-}
-
-func (m *mockDatabaseService) UpdateConnectionForTenant(ctx context.Context, name string, conn *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	if m.updateConnectionForTenantFn != nil {
-		return m.updateConnectionForTenantFn(ctx, name, conn)
-	}
-	return m.UpdateConnection(name, conn)
 }
 
 func (m *mockDatabaseService) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {

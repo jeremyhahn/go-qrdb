@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -267,7 +268,6 @@ func (s *collectionSweeper) settleWork(ctx context.Context, t collectionSweepTar
 // A journal entry whose tenant no longer exists, and that is older than the
 // staleness threshold, is removed: the tenant's data went with it.
 func (s *Server) collectionSweepTargets(ctx context.Context) ([]collectionSweepTarget, error) {
-	isolation := map[string]tenant.IsolationType{tenantid.System: tenant.IsolationPrefix}
 	var known map[string]bool
 	if s.opts.tenantSvc != nil {
 		infos, err := s.opts.tenantSvc.ListTenants(ctx)
@@ -276,7 +276,6 @@ func (s *Server) collectionSweepTargets(ctx context.Context) ([]collectionSweepT
 		}
 		known = map[string]bool{tenantid.System: true}
 		for i := range infos {
-			isolation[infos[i].ID] = infos[i].EffectiveIsolationType()
 			known[infos[i].ID] = true
 		}
 	}
@@ -304,26 +303,67 @@ func (s *Server) collectionSweepTargets(ctx context.Context) ([]collectionSweepT
 		}
 	}
 	if s.opts.raftBackend != nil {
+		// Every database raft group this node leads, whatever its tenant's
+		// isolation: a prefix tenant's dedicated-raft database is its own
+		// group as much as a raft-isolated tenant's. Its own store holds
+		// the work journal its collection creates and drops record
+		// (buildDataPlaneServices), so that journal is scanned too.
 		for _, shard := range s.opts.raftBackend.ListStarted() {
-			if isolation[shard.TenantID] == tenant.IsolationRaft && s.opts.raftBackend.LeadsShard(shard.TenantID, shard.Database) {
-				out = append(out, collectionSweepTarget{Tenant: shard.TenantID, Database: shard.Database})
+			if shard.shard == nil || !s.opts.raftBackend.LeadsShard(shard.TenantID, shard.Database) {
+				continue
 			}
+			if svcs := shard.shard.services; svcs != nil && svcs.KV != nil {
+				targets, err := s.journaledTargets(ctx, svcs.KV, known)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, targets...)
+			}
+			out = append(out, collectionSweepTarget{Tenant: shard.TenantID, Database: shard.Database})
 		}
 	}
 	if s.opts.dbManager != nil {
-		for _, info := range s.opts.dbManager.List() {
-			dbase, err := s.opts.dbManager.GetOwned(info.Name, info.TenantID)
+		// Every recorded database, not only the open ones: a lazily
+		// opened isolated-tenant or prefix database is opened here so its
+		// collection work is swept after a restart without a request.
+		for _, ref := range s.recordedDatabases(ctx) {
+			info := ref
+			if _, err := s.opts.dbManager.Open(ctx, info.tenantID, info.name); err != nil {
+				continue
+			}
+			dbase, err := s.opts.dbManager.GetOwned(info.name, info.tenantID)
 			if err != nil {
+				continue
+			}
+			owner := info.tenantID
+			if owner == "" {
+				owner = tenantid.System
+			}
+			// A database the Manager opened in its own store journals its
+			// collection work there: scan that journal, and sweep the
+			// database itself for CREATING/DROPPING collections.
+			if ms, ok := dbase.Backend().(materializedStore); ok {
+				targets, err := s.journaledTargets(ctx, service.NewKVService(ms.Host(), ms.ShardID()), known)
+				if _, sealed := errors.AsType[*database.SealedError](err); sealed {
+					// A sealed database's journal cannot be read until it
+					// is unsealed; the other databases still recover, and
+					// this one is swept by the first pass after the unseal.
+					s.logger.Debug("collection sweeper: skipping sealed database",
+						slog.String("tenant_id", owner), slog.String("database", info.name),
+						slog.Any("error", err))
+					continue
+				}
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, targets...)
+				out = append(out, collectionSweepTarget{Tenant: owner, Database: info.name})
 				continue
 			}
 			if cfg := dbase.Config(); !servesFromNodeLocalStore(&cfg) {
 				continue
 			}
-			owner := info.TenantID
-			if owner == "" {
-				owner = tenantid.System
-			}
-			out = append(out, collectionSweepTarget{Tenant: owner, Database: info.Name})
+			out = append(out, collectionSweepTarget{Tenant: owner, Database: info.name})
 		}
 	}
 	return out, nil

@@ -17,20 +17,38 @@ package node
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	qrdbbackend "github.com/jeremyhahn/go-qrdb/pkg/backend"
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/shard"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // createDatabase creates a kv database on the node through its client.
 func createDatabase(ctx context.Context, t *testing.T, n *Node, name string) {
 	t.Helper()
+	createDatabaseOn(ctx, t, n, name, database.BackendMemory)
+}
+
+// createDatabaseOn creates the database name on backend. A database is
+// materialized in its own store, so only a persistent backend keeps its data
+// across a restart: a memory database is, by its contract, non-persistent.
+func createDatabaseOn(ctx context.Context, t *testing.T, n *Node, name string, backend database.BackendType) {
+	t.Helper()
 	_, err := n.Client().Database().CreateDatabase(ctx, transport.CreateDatabaseRequest{
-		Name: name, Backend: string(database.BackendMemory),
+		Name: name, Backend: string(backend),
 	})
 	require.NoError(t, err)
 }
@@ -65,6 +83,25 @@ func TestStandaloneNode_NamedDatabasesResolve(t *testing.T) {
 	unknown, err := n.Client().DatabaseScoped("nosuchdb")
 	require.NoError(t, err, "scoping resolves per call; the refusal comes at the call")
 	require.Error(t, unknown.KV().Put(ctx, "k", []byte("v")), "an unknown database accepted a write")
+}
+
+// A named database lives in its own store, and its services are built with
+// the node's configured limits: index.max_indexes holds there as it does on
+// the node's default database, rather than the package default (unlimited).
+func TestStandaloneNode_MaterializedDatabaseKeepsTheIndexLimit(t *testing.T) {
+	ctx := context.Background()
+	cfg := newTenantIsolationConfig(t)
+	cfg.Index.MaxIndexes = 1
+	n, err := NewStandaloneNode(ctx, cfg, nil, WithTenantIsolation())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = n.Close() })
+	createDatabase(ctx, t, n, "ledger")
+
+	ledger, err := n.Client().DatabaseScoped("ledger")
+	require.NoError(t, err)
+	require.NoError(t, ledger.Index().IndexCreate(ctx, "by_a", "a", transport.IndexConfig{}))
+	require.Error(t, ledger.Index().IndexCreate(ctx, "by_b", "b", transport.IndexConfig{}),
+		"a materialized database accepted an index past index.max_indexes")
 }
 
 // The embedded leg of the sealed-database refusal the network transports are
@@ -104,7 +141,7 @@ func TestStandaloneNode_DatabasesSurviveRestart(t *testing.T) {
 	cfg := newTenantIsolationConfig(t)
 	n, err := NewStandaloneNode(ctx, cfg, nil)
 	require.NoError(t, err)
-	createDatabase(ctx, t, n, "ledger")
+	createDatabaseOn(ctx, t, n, "ledger", database.BackendPebble)
 	scoped, err := n.Client().DatabaseScoped("ledger")
 	require.NoError(t, err)
 	require.NoError(t, scoped.KV().Put(ctx, "k", []byte("v")))
@@ -118,4 +155,80 @@ func TestStandaloneNode_DatabasesSurviveRestart(t *testing.T) {
 	got, err := scoped.KV().Get(ctx, "k")
 	require.NoError(t, err, "the database did not survive the restart")
 	require.Equal(t, "v", string(got))
+}
+
+// TestStandaloneNode_DatabaseLivesUnderItsBindingRoot pins that the standalone
+// node opens a database through the shared binding factory: a pebble database
+// of a prefix tenant is materialized in its own store under its binding root
+// (<data_dir>/tenants/<tenant>/databases/<name>), and the catalog reopens that
+// store on the next boot, so what was written is read back.
+func TestStandaloneNode_DatabaseLivesUnderItsBindingRoot(t *testing.T) {
+	ctx := context.Background()
+	cfg := newTenantIsolationConfig(t)
+	n, err := NewStandaloneNode(ctx, cfg, nil)
+	require.NoError(t, err)
+	createDatabaseOn(ctx, t, n, "orders", database.BackendPebble)
+	scoped, err := n.Client().DatabaseScoped("orders")
+	require.NoError(t, err)
+	require.NoError(t, scoped.KV().Put(ctx, "order/1", []byte("open")))
+	require.NoError(t, n.Close())
+
+	root := filepath.Join(cfg.Raft.DataDir, "tenants", tenantid.System, "databases", "orders")
+	info, err := os.Stat(root)
+	require.NoError(t, err, "the database has no store under its binding root")
+	require.True(t, info.IsDir())
+
+	n, err = NewStandaloneNode(ctx, cfg, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = n.Close() })
+	scoped, err = n.Client().DatabaseScoped("orders")
+	require.NoError(t, err)
+	got, err := scoped.KV().Get(ctx, "order/1")
+	require.NoError(t, err, "the materialized database was not reopened from its binding root")
+	require.Equal(t, "open", string(got))
+}
+
+// seedSharedStore writes key under the system tenant's legacy database
+// namespace straight into a stopped standalone node's shared store, opened
+// with the constructors NewStandaloneNode uses for it (createNodeStorage
+// and createNodeEngine with the pebble backend at raft.data_dir and no
+// encryptor, as a node with seal disabled opens it). It stands
+// in for data written before the database had a store of its own.
+func seedSharedStore(ctx context.Context, t *testing.T, cfg *qrdbconfig.Config, db, key, value string) {
+	t.Helper()
+	stg, pdb, err := lifecycle.NewLocalStorage(database.BackendPebble, cfg.Raft.DataDir, nil, cfg.Storage)
+	require.NoError(t, err)
+	eng, err := lifecycle.NewLocalEngine(database.BackendPebble, stg, pdb, watch.NewHub(), lease.NewLessor())
+	if err != nil {
+		_ = stg.Close()
+		require.NoError(t, err)
+	}
+	host := qrdbbackend.NewLocalBackend(eng)
+	full := tenant.ComposeNamespace(string(tenantid.System), db) + key
+	putErr := service.NewKVService(host, shard.ShardKV).Put(ctx, full, []byte(value))
+	_ = host.Close()
+	require.NoError(t, stg.Close())
+	require.NoError(t, putErr)
+}
+
+// TestStandaloneNode_MemoryDatabaseIgnoresSharedKeys proves a memory database opens its own empty store whatever the shared store holds under its prefix.
+func TestStandaloneNode_MemoryDatabaseIgnoresSharedKeys(t *testing.T) {
+	ctx := context.Background()
+	cfg := newTenantIsolationConfig(t)
+	// Seal off so the test can seed the shared store offline.
+	cfg.Seal.Enabled = false
+	n, err := NewStandaloneNode(ctx, cfg, nil)
+	require.NoError(t, err)
+	require.NoError(t, n.Close())
+
+	seedSharedStore(ctx, t, cfg, "app", "k", "shared-v")
+
+	n, err = NewStandaloneNode(ctx, cfg, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = n.Close() })
+	createDatabaseOn(ctx, t, n, "app", database.BackendMemory)
+	app, err := n.Client().DatabaseScoped("app")
+	require.NoError(t, err)
+	_, err = app.KV().Get(ctx, "k")
+	require.Error(t, err, "a memory database served the shared store's keys")
 }

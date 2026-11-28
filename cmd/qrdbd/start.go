@@ -1568,8 +1568,8 @@ func runStart(f *startFlags) (err error) {
 	if f.mode == capabilities.ModeStandalone {
 		dbDefaults.RunMode = database.RunModeStandalone
 	}
-	dbManager := database.NewManager(slog.Default(), f.dataDir, database.WithDefaults(dbDefaults))
-	defer func() { _ = dbManager.Close() }()
+	// The database manager itself is built per boot iteration
+	// (newBootDatabaseManager, below).
 
 	// Use default database configs when no YAML config was provided.
 	if len(f.databases) == 0 {
@@ -1657,6 +1657,18 @@ func runStart(f *startFlags) (err error) {
 			// down. It is a child of sigCtx, so process shutdown still cancels it.
 			bootCtx, bootCancel := context.WithCancel(sigCtx)
 			defer bootCancel()
+
+			// One database manager per boot iteration: this iteration's
+			// binding factory (sealed under this iteration's encryptor) is
+			// installed before its catalog opens any database, and the
+			// databases the iteration opened close with it, so an
+			// in-process encryption migration's next iteration reopens them
+			// through the new factory instead of meeting them still open.
+			dbManager := newBootDatabaseManager(f.dataDir, dbDefaults)
+			// Once: a system encryption migration closes the manager early
+			// to release its databases' store locks.
+			closeDBManager := sync.OnceValue(dbManager.Close)
+			defer func() { _ = closeDBManager() }()
 
 			// Build the seal subsystem BEFORE the state machine factory and
 			// before host construction. The data-plane Pebble instance is opened
@@ -1826,6 +1838,11 @@ func runStart(f *startFlags) (err error) {
 			// (lifecycle.NewLocalStorage/NewLocalEngine -> backend.LocalBackend)
 			// shared with sdk/go/node.NewStandaloneNode. host stays nil in
 			// standalone and every raft-only stage below is guarded on it.
+			// bindingTenants is the tenant service the standalone binding
+			// factory reads isolation from; it is set once BuildServices
+			// has built it, and the factory fails closed until then.
+			var bindingTenants tenant.TenantServicer
+			var bindingBarriers *seal.BarrierRegistry
 			standalone := f.mode == capabilities.ModeStandalone
 			var host *quicraft.Host
 			var svcHost service.AdminHost
@@ -1844,11 +1861,13 @@ func runStart(f *startFlags) (err error) {
 			// already correct there.
 			localBackend := database.BackendPebble
 			if standalone {
-				if len(f.databases) > 0 && f.databases[0].Backend != "" {
-					localBackend = database.BackendType(f.databases[0].Backend)
-				}
-				if localBackend == database.BackendRaft {
-					return &StandaloneRaftBackendError{}
+				// The standalone node store follows storage.backend
+				// (pebble when empty), never a databases entry: an
+				// entry's backend records that database only.
+				// qrdbconfig.Load's Validate already refuses any
+				// storage.backend outside pebble/memory/file/objstore.
+				if f.storageConfig.Backend != "" {
+					localBackend = database.BackendType(f.storageConfig.Backend)
 				}
 				stg, pdb, lerr := lifecycle.NewLocalStorage(localBackend, f.dataDir, enc, f.storageConfig)
 				if lerr != nil {
@@ -1860,6 +1879,14 @@ func runStart(f *startFlags) (err error) {
 					return lerr
 				}
 				local := backend.NewLocalBackend(eng)
+				if _, err := installBindingFactory(dbManager, f.dataDir, dbDefaults, enc, f.storageConfig,
+					func() tenant.TenantServicer { return bindingTenants },
+					func() *seal.BarrierRegistry { return bindingBarriers }, false,
+					watchHubOpts...); err != nil {
+					_ = local.Close()
+					_ = stg.Close()
+					return err
+				}
 				svcHost = local
 				rnode = local
 				nodeCloser = localDataPlaneCloser{local: local, storage: stg}
@@ -1877,6 +1904,17 @@ func runStart(f *startFlags) (err error) {
 					return gerr
 				}
 				featureGate = gate
+				// The owner node materializes a local-kind database the
+				// way a standalone node does (OD-2: other nodes forward
+				// to it); the legacy shared route is probed on this
+				// replica's system shard.
+				if _, err := installBindingFactory(dbManager, f.dataDir, dbDefaults, enc, f.storageConfig,
+					func() tenant.TenantServicer { return bindingTenants },
+					func() *seal.BarrierRegistry { return bindingBarriers }, true,
+					watchHubOpts...); err != nil {
+					_ = shutdownNode(host)
+					return err
+				}
 				svcHost = newHostAdapter(host, raftbackend.WithFeatureGate(featureGate))
 				rnode = host
 				nodeCloser = host
@@ -1920,6 +1958,8 @@ func runStart(f *startFlags) (err error) {
 				sealBarrier = sealSub.SealBarrier
 				credCoreSvc = sealSub.CredCoreSvc
 				barrierRegistry = sealSub.BarrierRegistry
+				// The binding factory's tenant-barrier lookup is late-bound like bindingTenants.
+				bindingBarriers = barrierRegistry
 				pinBackend = sealSub.PINBackend
 			}
 			// nodeSeal is the node barrier as the background proposers see it
@@ -2021,9 +2061,9 @@ func runStart(f *startFlags) (err error) {
 				return err
 			}
 			// The at-rest report reads the seal posture and the standalone
-			// backend (databases[0]), which the server config does not carry.
+			// store's storage.backend, which the server config does not carry.
 			capCfg.Seal = f.sealConfig
-			capCfg.Databases = f.databases
+			capCfg.Storage = f.storageConfig
 			profile := capCfg.EffectiveCapabilities()
 			if !standalone {
 				// A raft node serves what its state machine serves: the
@@ -2127,6 +2167,9 @@ func runStart(f *startFlags) (err error) {
 				_ = shutdownNode(nodeCloser)
 				return err
 			}
+			// The binding factory's tenant lookup is late-bound: the
+			// first database opens (provisionDatabases) run after this.
+			bindingTenants = svcNode.Tenant
 			// FIPS-140 always tightens the cluster-wide isolation-policy
 			// floor to strict (pkg/tenant/isolation_policy.go); an operator
 			// may also raise it explicitly via the isolation-policy verb.
@@ -2220,25 +2263,22 @@ func runStart(f *startFlags) (err error) {
 				}
 			}
 
-			// Provision the configured databases now that BuildServices has
-			// attached the keyspace reclaimer (see provisionDatabases). It is
-			// idempotent, so the in-process migration recycle that re-runs
-			// this body finds every database already present.
-			if err := provisionDatabases(bootCtx, f, dbManager, rnode); err != nil {
+			// Wait for the system shard's leader, which the feature gate's
+			// activation read and every provisioning write need.
+			if err := server.AwaitShardLeader(bootCtx, rnode, leaderWaitBudget(f), shard.ShardKV); err != nil {
 				_ = shutdownNode(nodeCloser)
-				// A shutdown signal during the leader wait is a clean
-				// shutdown, as it is during the auth bootstrap below.
 				if sigCtx.Err() != nil {
-					slog.Info("database provisioning canceled by shutdown signal")
+					slog.Info("leader wait canceled by shutdown signal")
 					return nil
 				}
-				return err
+				return &DatabaseProvisionError{Step: "wait for leader", Err: err}
 			}
 
 			// Refuse to run under a cluster that has activated a feature this
 			// binary lacks, then advertise this binary's features and start
-			// the gate. Provisioning above has already waited for the system
-			// shard's leader, which the activation read needs.
+			// the gate. It starts before provisioning: a provisioned raft
+			// database claims its own group's shard ID, and the claim waits
+			// for cluster-shard-ids, which only the started gate activates.
 			//
 			// gateCloser withdraws the advertisement. Every shutdown path closes
 			// it explicitly while the host is still up (see withdrawFeatures):
@@ -2257,6 +2297,27 @@ func runStart(f *startFlags) (err error) {
 					return err
 				}
 				defer func() { _ = gateCloser.Close() }()
+			}
+
+			// Provision the configured databases now that BuildServices has
+			// attached the keyspace reclaimer and the gate has started (see
+			// provisionDatabases). It is idempotent, so the in-process
+			// migration recycle that re-runs this body finds every database
+			// already present.
+			// The database service places a provisioned raft database as an
+			// API create does; a service without a placement table
+			// (standalone) places nothing.
+			placer, _ := svcNode.Database.(databasePlacer)
+			if err := provisionDatabases(bootCtx, f, dbManager, placer, rnode); err != nil {
+				_ = gateCloser.Close()
+				_ = shutdownNode(nodeCloser)
+				// A shutdown signal during the leader wait is a clean
+				// shutdown, as it is during the auth bootstrap below.
+				if sigCtx.Err() != nil {
+					slog.Info("database provisioning canceled by shutdown signal")
+					return nil
+				}
+				return err
 			}
 
 			// Unpack the services that the rest of this function references by name.
@@ -2841,6 +2902,7 @@ func runStart(f *startFlags) (err error) {
 				server.WithCollectionService(collectionSvc),
 				server.WithDatabaseService(dbSvc),
 				server.WithDatabaseManager(dbManager),
+				server.WithBindingServiceConfig(f.importSessionConfig, f.indexConfig, f.timeSeriesConfig),
 				// The seam that routes a volume-isolated tenant's DROP
 				// DATABASE reclamation to its dedicated per-tenant Host
 				// rather than the system store (go-qrdb#412). The reclaim
@@ -3379,7 +3441,8 @@ func runStart(f *startFlags) (err error) {
 				// Noise port, and memberAnchorAdv's deferred Stop only runs when
 				// runStart itself returns, so release the port here.
 				memberAnchorAdv.Stop()
-				reboot, mErr := handleSystemMigration(req, f, srv, svcNode, host, raftBackendReg, tenantHostReg, memberRecord, bootCancel, sealSub)
+				reboot, mErr := handleSystemMigration(req, f, srv, svcNode, host, raftBackendReg, tenantHostReg, memberRecord, bootCancel, sealSub,
+					migrationDatabases{manager: dbManager, close: closeDBManager})
 				// handleSystemMigration stopped svcNode to release its store locks
 				// for re-encryption; nil it so the deferred Stop above is skipped.
 				svcNode = nil

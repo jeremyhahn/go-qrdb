@@ -62,8 +62,10 @@ node-level settings decide instead.
 
 | Path | What serves the data plane | Engines served | Honours the database's `backend`? |
 |---|---|---|---|
-| Prefix or barrier tenant, no per-database barrier | the shared system shard, under a `<tenant>/<db>/` key prefix | all except vector (vector goes to the node-local store below) | **no** — the node's `--sm` / `raft.sm_type` in raft mode, or the node's single local store in standalone mode |
+| Prefix or barrier tenant, or the system tenant (other than its `system` database), on a **standalone** node, database with no per-database barrier, not raft | the database's own store under its binding root `<data-dir>/tenants/<tenant>/databases/<name>`, or the explicit data directory when one is set (system tenant only), served from its own host (`lifecycle.LocalBindingFactory`); a prefix tenant's and the system tenant's store is written through the node encryptor, a barrier tenant's through its own tenant barrier (sealing that barrier fails the data closed on every engine; vector is not yet in the binding) | all except vector | **yes** — memory, file, pebble and objstore (objstore on the local provider only, at `<root>/objstore`) |
+| Prefix or barrier tenant, no per-database barrier (every other case above and below) | the shared system shard, under a `<tenant>/<db>/` key prefix | all except vector (vector goes to the node-local store below) | **no** — the node's `--sm` / `raft.sm_type` in raft mode, or the node's single local store in standalone mode |
 | Prefix or barrier tenant, database with its own barrier and an explicit data directory | the database's own store, opened by `database.Manager` | **KV and collections only**; MVCC, batch, transactions, leases, watches, indexes, time series and vector are absent, so the SQL surface and sequences are too | partly — memory, file and pebble are opened; nothing else is |
+| `backend: raft` database of a prefix, barrier or volume tenant (OD-1 A) | its own Raft group: a prefix tenant's under the node barrier, a barrier tenant's under the tenant barrier, both at `{data-dir}/tenants/<tenant>/databases/<name>/shard-N`; a volume tenant's under its tenant root; keys at the root of the group's store | all except vector | **yes** |
 | Volume tenant | one Raft shard on a per-tenant host, shared by all of the tenant's databases under the `<tenant>/<db>/` prefix | all except vector | **no** |
 | Raft tenant | a dedicated Raft group per database on the system host | all except vector | forced to `raft` |
 
@@ -80,24 +82,72 @@ Supporting facts:
   opened.
 - `backend: objstore` is accepted by validation and **refused by
   `openStorage`** with `database.InvalidBackendError`.
-- `backend: raft` on a **prefix or barrier** tenant is metered as a Raft group
-  and gets a replicated placement record, yet `resolve` routes on the tenant's
-  isolation mode, so the database's data is served from the shared system shard.
-  A per-database barrier on such a database would therefore not be on its
-  data path, so creation refuses one with `database.BarrierOffDataPathError`
+- `backend: raft` on a **prefix, barrier or volume** tenant runs its own Raft
+  group (OD-1 A): it gets a replicated placement record, `resolve` and the
+  store resolver's drop fence route it to that group by one rule
+  (`ServesOwnGroup`), and `database info` names the group's replica nodes.
+  A drop deletes the placement; every replica's `TenantShardReconciler`
+  closes the group and purges its shard directory, and its catch-up pass
+  purges a placed shard whose entry is gone (a missed delete event). A raft
+  database whose keys already sit under its prefix in the shared store (a
+  legacy shared-shard database) keeps the shared route until relocation
+  (3b.8). Per-database barriers are not yet layered on the group (3b.5), so
+  creation refuses one with `database.BarrierOffDataPathError`
   (as it does for every database of a volume- or raft-isolated tenant). An
   existing barrier-enabled record of such a database opens sealed, and the
   service registry refuses every engine of a sealed database with
-  `service.BarrierSealedError`, so it fails closed rather than serving the
-  shared shard.
+  `service.BarrierSealedError`, so it fails closed rather than serving its
+  data.
+- On a **standalone or raft-mode** node a database of a prefix or barrier
+  tenant, or of the system tenant other than its `system` database (not a
+  tenant home, not raft, no per-database barrier), is materialized at open by
+  `lifecycle.LocalBindingFactory`, which both `cmd/qrdbd` start paths and
+  `sdk/go/node` install on `database.Manager` the same way: its own store under
+  `<data-dir>/tenants/<tenant>/databases/<name>`, or in the database's
+  explicit data directory when one is set (only the system tenant can set
+  one), on the database's own backend. A prefix tenant's and the system
+  tenant's store is written through the node encryptor; a barrier tenant's
+  through the tenant's own barrier, never the node encryptor, so sealing that
+  barrier fails the database's data closed on every engine (vector is not yet
+  in the binding): an open store refuses writes, the store cannot be reopened
+  while the barrier is sealed or the barrier registry is not yet available,
+  and no engine's plaintext is on disk. `resolve`,
+  the collection work journal and the compaction scheduler all serve it from
+  its own host, never from the shared store, and `DROP DATABASE` removes the
+  binding root (the explicit data directory included). The factory reads the
+  tenant's isolation from the tenant service and refuses the open while that
+  service is unavailable, so a barrier tenant's database never lands in a
+  node-encrypted store; the system tenant is prefix-isolated by construction
+  and is never looked up. The system tenant's `system` database stays on the
+  control-plane store. On a raft-mode node a `backend: raft` database keeps
+  the Manager's raft path, and the database's owner node (OD-2) opens the
+  local store while other nodes forward to it; a `backend: memory` database
+  whose data predates its own store keeps the shared route, probed on the
+  system shard's local replica. Volume and raft tenants and per-database
+  barriers are unchanged; data written to the shared store before bindings
+  existed is not relocated, and an explicit data directory written before
+  this release is not converted. An objstore database on the local provider
+  lives under its binding root, at `<root>/objstore` (its journal beside it),
+  with the node's provider and credentials; `storage.objstore`'s path places
+  the node's own store only. An objstore database on a remote provider still
+  opens the node's configured location (not yet per database), and objstore
+  values are not yet encrypted at rest under any encryptor, a barrier
+  tenant's included.
 - `restServiceRegistry.resolve` (`pkg/server/rest_registry.go`) routes every
   other database to the shared default service set under the composite
   `<tenant>/<db>/` prefix, regardless of the database's recorded backend.
 - In standalone mode the whole node's data plane is one local store whose
-  backend is taken from **`databases[0].backend`** in the configuration file —
-  the first database's setting is applied to every database on the node
-  (`cmd/qrdbd` start path, `sdk/go/node.resolveBackend`).
-- SQL `CREATE DATABASE` hardcodes `backend: pebble` (`pkg/sql/provider`), and the daemon's `--sql-database` auto-provisioning derives the backend from `--sm`.
+  backend is taken from **`storage.backend`** (pebble when empty; `cmd/qrdbd`
+  start path, `sdk/go/node.resolveBackend`). A `databases[]` entry's
+  `backend`, `databases[0].backend` included, records that database's backend
+  only and never picks the node store.
+- SQL `CREATE DATABASE` (`pkg/sql/provider`) and the daemon's `--sql-database`
+  auto-provisioning name no backend: both create through the node's
+  `database_defaults`, recording its backend, else the run mode's default
+  (`raft` in raft mode, `pebble` in standalone mode). `--sm` picks no
+  database's backend. The defaults are applied once at create and recorded,
+  so a later change of `database_defaults` or `--sm` changes no existing
+  database.
 - **Vector** is one node-local Pebble store at `{DataDir}/vector`, shared by
   every tenant and every database on the node, encrypted under the system
   encryptor, and isolated only by a key prefix on the namespace name
@@ -120,9 +170,11 @@ Supporting facts:
   engine (`pkg/engine/kv_engine.go`) is not composed by any production
   composition root. The objstore batch is atomic (all-or-nothing after
   recovery, via a commit journal), matching the file backend.
-- **Remote-mode databases** (`mode: remote` with a `connection`) are validated
-  and persisted, and the factory never constructs the remote proxy: such a
-  database is opened on a local store like any other.
+- There are no remote-mode databases (OD-9 A): the only database mode is
+  `embedded`, a create or a config entry carrying `mode: remote` or a
+  `connection` block is refused, and no transport has an update-connection
+  verb. A stored record that still says `mode: remote` fails to open with the
+  invalid-mode error; its `connection` block is ignored on decode.
 - The etcd protocol serves a database of any backend on a raft-mode node;
   nothing on the data path checks the backend (the target design adds that
   check, "Combinations that are refused").
@@ -304,7 +356,12 @@ database, a drop is:
    (`service.DropFenceGuard`), so a write proposed before the fence and applied after it is refused on every
    replica, from the same log. The guard applies to every engine's writes,
    vector and time series included, and to local bindings exactly as to raft
-   ones, because both apply through the same engine. The fence is behind the
+   ones, because both apply through the same engine. A materialized
+   database's vector writes are `OpVector*` proposals through its own host
+   (`service.WithVectorApplyHost`), so they carry the guard in the same
+   command and a vector write delayed across the drop is refused at apply
+   time; only the shared node vector store, whose writes are not proposals,
+   keeps a check before the write (`dropFence`). The fence is behind the
    cluster feature gate: a drop in a group whose members do not all
    support it is refused with a typed error, never run unfenced.
 2. **Destroy the store** — stop and purge the Raft group on every replica, or
@@ -454,7 +511,12 @@ The fence has two halves, and they answer different questions:
   race: a write applied before the fence landed before it and is removed by
   the reclamation that follows; a write applied after it is refused and its
   caller receives `database.DroppingError`. There is no check-then-write
-  window, because there is no separate check. A barrier tenant's database
+  window, because there is no separate check. This holds for a materialized
+  database's vector writes too: they are `OpVector*` proposals through the
+  database's own host and carry the guard like any other write. The one
+  exception is the shared node vector store, whose vector writes are not
+  proposals: the namespaced vector service checks the fence before each
+  write (`dropFence`) there. A barrier tenant's database
   keeps its data marker on the system store and gets a second, log-only
   marker in its home group, where its verifiable logs live
   (`StoreResolver.LogFenceTarget`): it is marked live on create,
@@ -1853,8 +1915,9 @@ provider also places data outside the tenant's data root.
 **OD-8 — State machine of a database's Raft group.**
 - A: one canonical database state machine — the MVCC engine over
   `storage.Storage` — for every database group, with its state storage chosen
-  per database (`raft.state_storage: pebble | file | memory`, defaulted from
-  the node). The node's `sm_type` applies to the control-plane group only.
+  per database (`raft.state_storage: pebble | memory`, defaulted from
+  the node; `file` is refused at create and update, since no file-backed
+  data-plane state machine exists). The node's `sm_type` applies to the control-plane group only.
 - B: a per-database `sm_type`, which requires every state-machine family to
   implement every engine, vector and time series included.
 - **Chosen: A.**
@@ -1867,6 +1930,9 @@ persisted, and never constructed; the data goes to a local store.
 - C: keep a KV-only proxy and refuse other engines — contradicts rule 1.
 - **Chosen: A.** A database that proxies to another node is a client
   configuration, which the SDK already provides.
+- **Done** (row 923, rw923s slices 19-20): the clients, the CLI, every server
+  transport and the gRPC surface no longer carry remote mode; a create or
+  config naming it is refused.
 
 **OD-10 — Relocating existing shared-shard data.** Databases whose data is in
 the shared system shard (or a volume tenant's shared shard) move to their own
@@ -1882,6 +1948,7 @@ bindings.
 - C: refuse; the new version does not open pre-binding data, and operators
   export with the previous version and import into the new one.
 - **Chosen: A.**
+- **Superseded: C.** Alpha releases carry no backward compatibility: the new version does not open pre-binding data and there is no relocation path.
 
 **OD-11 — Migrating the node-local vector stores.** In a multi-node cluster each node's vector store
 holds only the writes that node served, so the stores disagree.

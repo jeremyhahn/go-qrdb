@@ -25,7 +25,9 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
@@ -217,5 +219,118 @@ func TestJournaledCollectionService_NotServed(t *testing.T) {
 	}
 	if _, err := reg.journaledCollectionService("bad/tenant", "appdb"); err == nil {
 		t.Fatal("tenant resolution still applies")
+	}
+}
+
+// A database the Manager opened in its own store is journaled against its
+// own host: a collection the journaled service creates is in that store and
+// never in the shared one.
+func TestJournaledCollectionService_MaterializedDatabaseUsesItsOwnHost(t *testing.T) {
+	const tenantID, name = "acme", "orders"
+	ctx := context.Background()
+	factory := &fakeMaterializingFactory{}
+	dbMgr := databasetest.NewManager(nil, t.TempDir(), database.WithBackendFactory(factory))
+	t.Cleanup(func() { _ = dbMgr.Close() })
+	if _, err := dbMgr.Create(database.DatabaseConfig{TenantID: tenantID, Name: name, Backend: database.BackendMemory}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	shared := newFilledRegistry()
+	reg := NewRESTServiceRegistry(shared, nil, tenantid.System, WithRegistryDatabaseManager(dbMgr)).(*restServiceRegistry)
+
+	coll, err := reg.journaledCollectionService(tenantID, name)
+	if err != nil {
+		t.Fatalf("journaledCollectionService: %v", err)
+	}
+	if _, err := coll.CreateCollection(ctx, &service.CreateCollectionRequest{Database: name, Name: "events"}); err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+
+	fake := factory.last(t)
+	own := service.NewCollectionService(service.NewKVService(fake.Host(), fake.ShardID()))
+	listed, err := own.ListCollections(ctx, &service.ListCollectionsRequest{Database: name})
+	if err != nil || len(listed.Collections) != 1 || listed.Collections[0].Name != "events" {
+		t.Fatalf("own host collections = %+v, %v; want events", listed, err)
+	}
+	if sharedColl := shared.Default().Collection; sharedColl != nil {
+		if got, err := sharedColl.ListCollections(ctx, &service.ListCollectionsRequest{Database: name}); err == nil && len(got.Collections) > 0 {
+			t.Fatalf("shared store holds collections %+v", got.Collections)
+		}
+	}
+}
+
+// TestCollectionSweeper_FinishesAnInterruptedCreateInAMaterializedDatabase
+// proves a collection create a crash left CREATING in a database the
+// Manager opened in its own store is swept to a final state by one pass,
+// and its work entry in that store is settled.
+func TestCollectionSweeper_FinishesAnInterruptedCreateInAMaterializedDatabase(t *testing.T) {
+	const tenantID, name = "acme", "orders"
+	ctx := tenant.WithTenantID(context.Background(), tenantID)
+	factory := &fakeMaterializingFactory{}
+	dbMgr := databasetest.NewManager(nil, t.TempDir(), database.WithBackendFactory(factory))
+	t.Cleanup(func() { _ = dbMgr.Close() })
+	if _, err := dbMgr.Create(database.DatabaseConfig{TenantID: tenantID, Name: name, Backend: database.BackendMemory}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	srv := New(testConfig(t, false, false), newMockKVService(), &mockAdminService{},
+		WithDatabaseServiceRegistry(newFilledRegistry()), WithDatabaseManager(dbMgr))
+	registry := srv.buildServiceRegistry()
+	coll, err := registry.CollectionService(tenantID, name)
+	if err != nil {
+		t.Fatalf("CollectionService: %v", err)
+	}
+	if _, err := coll.CreateCollection(ctx, &service.CreateCollectionRequest{Database: name, Name: "events"}); err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+
+	// The crash: the catalog record is left CREATING, an hour old, and its
+	// work entry is still journaled in the database's own store.
+	fake := factory.last(t)
+	own := service.NewKVService(fake.Host(), fake.ShardID())
+	key := "__sys:collections/" + name + "/events"
+	raw, err := own.Get(ctx, key)
+	if err != nil || raw == nil {
+		t.Fatalf("own store catalog record = %q, %v", raw, err)
+	}
+	var info service.CollectionInfo
+	if err := json.Unmarshal(raw, &info); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	info.State = service.CollectionStateCreating
+	info.StateSince = time.Now().Add(-time.Hour)
+	data, err := json.Marshal(&info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := own.Put(ctx, key, data); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := (&collectionWorkJournal{kv: own, tenant: tenantID}).Record(ctx, name, "events"); err != nil {
+		t.Fatalf("journal Record: %v", err)
+	}
+
+	sweeper := &collectionSweeper{
+		registry:   registry,
+		targets:    srv.collectionSweepTargets,
+		staleAfter: time.Minute,
+		logger:     slog.Default(),
+	}
+	if got := sweeper.sweepOnce(ctx); got < 1 {
+		t.Fatalf("sweepOnce finished %d collections, want the interrupted create", got)
+	}
+	got, err := coll.GetCollectionInfo(ctx, name, "events")
+	var notFound *service.CollectionNotFoundError
+	switch {
+	case errors.As(err, &notFound):
+	case err != nil:
+		t.Fatalf("GetCollectionInfo: %v", err)
+	case got.State != service.CollectionStateActive:
+		t.Fatalf("collection state after the sweep = %q, want a final state", got.State)
+	}
+	work, err := scanCollectionWork(ctx, own)
+	if err != nil {
+		t.Fatalf("scanCollectionWork: %v", err)
+	}
+	if len(work) != 0 {
+		t.Fatalf("work entries survive the sweep: %+v", work)
 	}
 }

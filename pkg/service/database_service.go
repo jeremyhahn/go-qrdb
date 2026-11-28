@@ -82,9 +82,6 @@ type DatabaseServicer interface {
 	// UpdateBarrier updates the encryption barrier configuration for a database.
 	UpdateBarrier(name string, barrier *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error)
 
-	// UpdateConnection updates the remote connection configuration for a database.
-	UpdateConnection(name string, conn *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error)
-
 	// UpdateSQL updates a database's SQL settings -- its sql.concurrency.
 	UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error)
 
@@ -127,9 +124,6 @@ type DatabaseServicer interface {
 
 	// UpdateBarrierForTenant updates barrier config with tenant enforcement.
 	UpdateBarrierForTenant(ctx context.Context, name string, barrier *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error)
-
-	// UpdateConnectionForTenant updates connection config with tenant enforcement.
-	UpdateConnectionForTenant(ctx context.Context, name string, conn *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error)
 
 	// UpdateSQLForTenant updates SQL settings with tenant enforcement.
 	UpdateSQLForTenant(ctx context.Context, name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error)
@@ -1411,20 +1405,6 @@ func (s *DatabaseService) UpdateBarrier(name string, barrier *database.DatabaseB
 	return &info, nil
 }
 
-// UpdateConnection updates the remote connection configuration for the named
-// database and returns the updated runtime information.
-func (s *DatabaseService) UpdateConnection(name string, conn *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	if err := s.manager.UpdateConnection(name, conn); err != nil {
-		return nil, err
-	}
-	db, err := s.manager.Get(name)
-	if err != nil {
-		return nil, err
-	}
-	info := db.Info()
-	return &info, nil
-}
-
 // UpdateSQL updates the SQL settings of the named database -- its
 // sql.concurrency, see docs/row-locking/ -- and returns the updated runtime
 // information.
@@ -1676,14 +1656,18 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 	if err := RefuseEtcdNotCompiled(cfg.Protocol.Etcd); err != nil {
 		return nil, err
 	}
-	if tenantid.IsSystem(tenant.FromContext(ctx)) {
-		// The system tenant creates its own databases. A tenant named in
-		// the request is discarded, as a tenant caller's is: no caller
-		// creates a database in another tenant.
-		cfg.TenantID = ""
-		return s.createWithCredentials(ctx, cfg, creds)
-	}
 	tenantID := tenant.FromContext(ctx)
+	// The system tenant takes this same path, so its databases get the
+	// tenant root, the topology defaulting, the replication-factor clamp and
+	// a replicated placement on their replicas. Only the plan gates are
+	// skipped for it: it has no tenant record, no entitlements and no
+	// quotas, so neither is consulted nor metered. A tenant named in the
+	// request is discarded: no caller creates a database in another tenant.
+	system := tenantid.IsSystem(tenantID)
+	if system {
+		tenantID = tenantid.System
+		cfg.TenantID = tenantid.System
+	}
 
 	// A caller-supplied DataDir is never trusted for a tenant-scoped create:
 	// it is only ever set below, computed server-side from the tenant's own
@@ -1695,8 +1679,11 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 	// otherwise be pointed at another database's directory, a reserved
 	// system path, or anywhere outside the intended storage tree;
 	// database.Manager.validateDataDir provides defense-in-depth on top of
-	// this for every caller, including the system-tenant path above.
-	cfg.DataDir = ""
+	// this for every caller. The system tenant, the platform operator, keeps
+	// a DataDir it names (a barrier-enabled database needs its own store).
+	if !system {
+		cfg.DataDir = ""
+	}
 
 	// IsolationVolume tenants store every database on their dedicated DataRoot
 	// ({DataRoot}/databases/{db}) and run a per-tenant Raft Host. IsolationRaft
@@ -1709,12 +1696,14 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 	// tenantBarrierAutoUnseal is captured here so the key distribution below
 	// can skip a platform-custody tenant, whose every node self-initializes
 	// under its own key, without a second GetTenant call.
-	var tenantBarrierAutoUnseal bool
+	// The system tenant has no tenant barrier: its replicas run under each
+	// node's own host-wide barrier, so it ships no key, as platform custody.
+	tenantBarrierAutoUnseal := system
 	// dedicatedRaft records that an IsolationRaft tenant forced the raft
 	// backend, so an unnamed cluster mode falls back to local after the
 	// node's database_defaults are resolved.
 	var dedicatedRaft bool
-	if s.tenantInfo != nil {
+	if s.tenantInfo != nil && !system {
 		info, err := s.tenantInfo.GetTenant(ctx, tenantID)
 		if err != nil {
 			return nil, err
@@ -1798,7 +1787,7 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 	// tenant's plan permits the requested isolation tier / dedicated feature.
 	// Raft-backed databases are a dedicated tier requiring both the "raft"
 	// isolation-mode entitlement and the dedicated_raft feature.
-	if s.entitlementChecker != nil && cfg.Backend == database.BackendRaft {
+	if s.entitlementChecker != nil && !system && cfg.Backend == database.BackendRaft {
 		if err := s.entitlementChecker.CheckIsolation(ctx, tenantID, quota.IsolationModeRaft); err != nil {
 			return nil, err
 		}
@@ -1847,7 +1836,7 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 	if cfg.DedicatedWAL {
 		if cfg.Backend != database.BackendRaft {
 			cfg.DedicatedWAL = false
-		} else {
+		} else if !system {
 			if s.entitlementChecker != nil {
 				if err := s.entitlementChecker.CheckFeature(ctx, tenantID, quota.FeatureDedicatedWAL); err != nil {
 					return nil, err
@@ -1863,7 +1852,7 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 
 	// Numeric quota plane: database count, plus raft-group count, per-group
 	// replication-factor cap, and aggregate replica budget for raft databases.
-	if s.quotaChecker != nil {
+	if s.quotaChecker != nil && !system {
 		if err := s.quotaChecker.Check(ctx, tenantID, quota.ResourceDatabases); err != nil {
 			return nil, err
 		}
@@ -1912,7 +1901,7 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 		}
 	}
 
-	if cfg.Backend == database.BackendRaft && s.quotaUsage != nil {
+	if cfg.Backend == database.BackendRaft && s.quotaUsage != nil && !system {
 		if _, err := s.quotaUsage.IncrementQuotaUsage(ctx, tenantID, quota.ResourceRaftGroups, 1); err != nil {
 			return nil, err
 		}
@@ -1932,7 +1921,14 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 		}
 	}
 
-	db, err := s.manager.CreateForTenantWithCredentials(ctx, cfg, creds)
+	// The manager's tenant create refuses the system tenant, so its database
+	// goes through the plain create carrying the system tenant's ID: it is
+	// stored under the tenant root and keyed as its placement is.
+	createDB := s.manager.CreateForTenantWithCredentials
+	if system {
+		createDB = s.manager.CreateWithCredentials
+	}
+	db, err := createDB(ctx, cfg, creds)
 	if err != nil {
 		releaseReservations()
 		return nil, err
@@ -2089,6 +2085,20 @@ func (s *DatabaseService) validateRaftTopology(name string, requested, resolved 
 // caller can pass it directly to the key distributor without a round-trip
 // Store.Get call.
 func (s *DatabaseService) persistPlacement(ctx context.Context, tenantID string, info *database.DatabaseInfo) (*placement.Placement, error) {
+	plan, err := s.placementPlan(ctx, tenantID, info)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.placementStore.Put(ctx, plan); err != nil {
+		return nil, err
+	}
+	s.logPlacement(tenantID, info.Name, plan)
+	return plan, nil
+}
+
+// placementPlan computes the replica placement of a dedicated-raft database
+// from the current cluster topology, the plan every create path persists.
+func (s *DatabaseService) placementPlan(ctx context.Context, tenantID string, info *database.DatabaseInfo) (*placement.Placement, error) {
 	rf := info.Replicas
 	if rf < 1 {
 		rf = 1
@@ -2109,16 +2119,67 @@ func (s *DatabaseService) persistPlacement(ctx context.Context, tenantID string,
 	// replicated placement table so followers materialized by the reconciler
 	// route this shard's Raft log to a tenant-barrier-encrypted dedicated WAL.
 	plan.DedicatedWAL = info.DedicatedWAL
-	if err := s.placementStore.Put(ctx, plan); err != nil {
-		return nil, err
+	// Carry the recorded state-machine store the same way, so a replica
+	// placed on a node that never opened the database starts on it.
+	if info.Raft != nil {
+		plan.StateStorage = placement.Backend(info.Raft.StateStorage)
 	}
+	return plan, nil
+}
+
+func (s *DatabaseService) logPlacement(tenantID, name string, plan *placement.Placement) {
 	s.logger.Info("persisted dedicated raft placement",
 		slog.String("tenant", tenantID),
-		slog.String("database", info.Name),
+		slog.String("database", name),
 		slog.Uint64("shard_id", plan.ShardID),
 		slog.Int("rf", plan.RF),
 		slog.Uint64("leader_replica_id", plan.LeaderReplicaID))
-	return plan, nil
+}
+
+// PlaceProvisioned gives a system database the node's configuration
+// provisioned at boot (database.Manager.Provision, which writes no placement)
+// the replicated placement an API create gives it: a dedicated-raft database
+// the boot recorded is placed on the cluster's nodes, its replicas invited,
+// exactly as createForTenantWithCredentials does. It is idempotent, as boot
+// provisioning is: every node provisions the same file, so the first to claim
+// the entry (placement.Store.ClaimPlacement) places the database and every
+// other node, and every later boot, finds it placed. A database that is not
+// backend: raft, or a node with no placement table (standalone), has nothing
+// to place.
+func (s *DatabaseService) PlaceProvisioned(ctx context.Context, db *database.Database) error {
+	if s.placementStore == nil || s.placementScheduler == nil || db == nil {
+		return nil
+	}
+	info := db.Info()
+	if info.Backend != database.BackendRaft {
+		return nil
+	}
+	name := info.Name
+	tenantID := tenantid.Normalize(info.TenantID)
+	if _, err := s.placementStore.Get(ctx, tenantID, name); err == nil {
+		return nil
+	} else if !errors.Is(err, placement.ErrPlacementNotFound) {
+		return err
+	}
+	// The API create clamps the replication factor to the live cluster
+	// before it records the database; the boot recorded the node's default,
+	// so the plan clamps it here instead.
+	if size := s.placementScheduler.ClusterSize(); size >= 1 && info.Replicas > size {
+		info.Replicas = size
+	}
+	plan, err := s.placementPlan(ctx, tenantID, &info)
+	if err != nil {
+		return err
+	}
+	claimed, _, err := s.placementStore.ClaimPlacement(ctx, plan)
+	if err != nil || !claimed {
+		return err
+	}
+	s.logPlacement(tenantID, name, plan)
+	// The system tenant has no tenant barrier, so it ships no key (as in
+	// createForTenantWithCredentials).
+	s.inviteReplicas(ctx, tenantID, name, plan, true)
+	return nil
 }
 
 // GetForTenant returns runtime information about a database after verifying
@@ -2235,9 +2296,10 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 	tenantID := tenant.FromContext(ctx)
 	if tenantid.IsSystem(tenantID) {
 		// Bookkeeping, not ownership: ownedDatabase holds the system tenant to
-		// the one ownership rule like every tenant, but a system database was
-		// never metered against a quota nor given a placement entry
-		// (CreateForTenant serves tenants), so there is nothing to release.
+		// the one ownership rule like every tenant. A system database is
+		// never metered against a quota, so Drop releases only what it
+		// holds: its catalog record, its store and, for a raft database,
+		// its placement entry (the record carries the system tenant's ID).
 		if _, err := s.ownedDatabase(ctx, name); err != nil {
 			return err
 		}
@@ -2374,15 +2436,6 @@ func (s *DatabaseService) UpdateRaftForTenant(ctx context.Context, name string, 
 // database with tenant enforcement and returns the updated runtime information.
 func (s *DatabaseService) UpdateBarrierForTenant(ctx context.Context, name string, barrier *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
 	if err := s.manager.UpdateBarrierForTenant(ctx, name, barrier); err != nil {
-		return nil, err
-	}
-	return s.GetForTenant(ctx, name)
-}
-
-// UpdateConnectionForTenant updates the remote connection configuration for the named
-// database with tenant enforcement and returns the updated runtime information.
-func (s *DatabaseService) UpdateConnectionForTenant(ctx context.Context, name string, conn *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	if err := s.manager.UpdateConnectionForTenant(ctx, name, conn); err != nil {
 		return nil, err
 	}
 	return s.GetForTenant(ctx, name)

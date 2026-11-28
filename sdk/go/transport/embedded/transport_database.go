@@ -56,10 +56,9 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 			MySQL:      req.Protocol.MySQL,
 			PostgreSQL: req.Protocol.PostgreSQL,
 		},
-		Raft:       fromTransportRaftConfig(req.Raft),
-		Barrier:    fromTransportBarrierConfig(req.Barrier),
-		Connection: fromTransportConnectionConfig(req.Connection),
-		SQL:        fromTransportSQLConfig(req.SQL),
+		Raft:    fromTransportRaftConfig(req.Raft),
+		Barrier: fromTransportBarrierConfig(req.Barrier),
+		SQL:     fromTransportSQLConfig(req.SQL),
 	}
 	if req.Protocol.Etcd != nil {
 		cfg.Protocol.Etcd = &database.EtcdConfig{
@@ -261,26 +260,6 @@ func (t *Transport) UpdateDatabaseBarrier(ctx context.Context, req transport.Upd
 	return dbwire.Info(info), nil
 }
 
-// UpdateDatabaseConnection updates the remote connection configuration for
-// a database by delegating to the injected DatabaseServicer.
-func (t *Transport) UpdateDatabaseConnection(ctx context.Context, req transport.UpdateDatabaseConnectionRequest) (*transport.DatabaseInfo, error) {
-	ctx, err := t.admit(ctx, "UpdateDatabaseConnection")
-	if err != nil {
-		return nil, err
-	}
-	if err := t.authorize(ctx, "UpdateDatabaseConnection"); err != nil {
-		return nil, err
-	}
-	if t.dbSvc == nil {
-		return nil, &NilServiceError{Service: "DatabaseServicer"}
-	}
-	info, err := t.dbSvc.UpdateConnectionForTenant(ctx, req.Name, fromTransportConnectionConfig(req.Connection))
-	if err != nil {
-		return nil, err
-	}
-	return dbwire.Info(info), nil
-}
-
 // UpdateDatabaseSQL updates a database's SQL settings by delegating to the
 // injected DatabaseServicer.
 func (t *Transport) UpdateDatabaseSQL(ctx context.Context, req transport.UpdateDatabaseSQLRequest) (*transport.DatabaseInfo, error) {
@@ -407,19 +386,5 @@ func fromTransportBarrierConfig(bc *transport.DatabaseBarrierConfig) *database.D
 		Mode:           bc.Mode,
 		SharesRequired: bc.SharesRequired,
 		SharesTotal:    bc.SharesTotal,
-	}
-}
-
-// fromTransportConnectionConfig converts transport connection config to domain type.
-func fromTransportConnectionConfig(cc *transport.DatabaseConnectionConfig) *database.DatabaseConnectionConfig {
-	if cc == nil {
-		return nil
-	}
-	return &database.DatabaseConnectionConfig{
-		Transport: cc.Transport,
-		Address:   cc.Address,
-		CAFile:    cc.CAFile,
-		CertFile:  cc.CertFile,
-		KeyFile:   cc.KeyFile,
 	}
 }

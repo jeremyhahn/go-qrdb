@@ -59,7 +59,7 @@ func newIssuerVerifierNode(t *testing.T, ca operatorCA) *Node {
 	cfg.Raft.ReplicaID = 1
 	cfg.Raft.RaftAddress = raftAddr
 	cfg.Raft.ListenAddress = raftAddr
-	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
+	cfg.Storage.Backend = string(database.BackendMemory)
 	cfg.Seal.Enabled = true
 	cfg.Seal.Strategy = "none"
 	cfg.Protocols.REST, cfg.Protocols.GRPC, cfg.Protocols.QUIC, cfg.Protocols.Unix, cfg.Protocols.MCP = false, false, false, false, false

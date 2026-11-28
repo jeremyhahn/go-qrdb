@@ -124,6 +124,7 @@ The cluster engine and database system for every project in the stack: embedded,
 - **maintenance** — the standing maintenance row: dependency updates and CI configuration, worked on `row/1708-maintenance` (owner ruling 1234); it never gates a release — [#1708](../../issues/1708) — in progress
 - **seal-store-transports** — seal store data and management verbs are embedded-only and every remote transport refuses them; seal and unseal stay on every transport; permissions on all six transports (owner ruling 1234) — [#1647](../../issues/1647), PR [#1687](../../pulls/1687), [docs/barrier-seal/](docs/barrier-seal/) — in progress
 - **credentials** — named credentials, versioned rotation; scheduled rotation policies, their transport and CLI verbs, whole-store moves; consumer go-quicbaas — [#1201](../../issues/1201), [#1185](../../issues/1185), [docs/credentials/](docs/credentials/) — in progress
+- **multi-model-databases** — a database as a multi-model container over one storage choice — [#923](../../issues/923), [docs/databases/](docs/databases/) — in progress
 
 ## Next
 
@@ -139,7 +140,6 @@ The cluster engine and database system for every project in the stack: embedded,
 
 ## Future
 
-- **multi-model-databases** — a database as a multi-model container over one storage choice — [docs/databases/](docs/databases/) — open
 - **object-storage-lsm** — the object-storage LSM segment layout — [docs/storage-engines/](docs/storage-engines/) — blocked: pending decision
 - **volume-pool-tenant-moves** — tenant moves between volume pools, in phase 2 — [docs/volume-pools/](docs/volume-pools/) — open
 - **sqlite-vfs** — go-qrdb as a SQLite backend through a VFS — [docs/sqlite-vfs/](docs/sqlite-vfs/) — open

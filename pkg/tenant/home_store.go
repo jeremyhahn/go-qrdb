@@ -131,6 +131,39 @@ func (r *defaultStoreResolver) InHome(ctx context.Context, tenantID string) (boo
 	return routed, nil
 }
 
+// tenantLister is the part of a TenantServicer TenantIDs reads.
+type tenantLister interface {
+	ListTenants(ctx context.Context) ([]TenantInfo, error)
+}
+
+// TenantIDs returns the id of every registered tenant, so the database
+// catalog can reach the records in every isolated tenant's home store
+// (database.CatalogTenantLister). A resolver over a tenant service that
+// cannot list tenants returns *TenantListUnsupportedError.
+func (r *defaultStoreResolver) TenantIDs(ctx context.Context) ([]string, error) {
+	lister, ok := r.tenants.(tenantLister)
+	if !ok {
+		return nil, &TenantListUnsupportedError{}
+	}
+	infos, err := lister.ListTenants(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(infos))
+	for _, info := range infos {
+		ids = append(ids, info.ID)
+	}
+	return ids, nil
+}
+
+// TenantListUnsupportedError is returned by TenantIDs when the resolver's
+// tenant service cannot list tenants.
+type TenantListUnsupportedError struct{}
+
+func (e *TenantListUnsupportedError) Error() string {
+	return "tenant: the store resolver's tenant service cannot list tenants"
+}
+
 // resolveHome returns an isolated tenant's home store, failing closed with
 // ErrTenantSealed when its barrier is sealed or absent here, and with a
 // *TenantHomeUnavailableError -- which matches ErrTenantSealed, so it flows

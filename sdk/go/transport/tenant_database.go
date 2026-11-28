@@ -132,14 +132,6 @@ func (t *TenantDatabaseClient) UpdateDatabaseBarrier(ctx context.Context, req Up
 	return t.inner.UpdateDatabaseBarrier(ctx, req)
 }
 
-// UpdateDatabaseConnection updates connection config for a tenant-owned database.
-func (t *TenantDatabaseClient) UpdateDatabaseConnection(ctx context.Context, req UpdateDatabaseConnectionRequest) (*DatabaseInfo, error) {
-	if err := t.verifyOwnership(ctx, req.Name); err != nil {
-		return nil, err
-	}
-	return t.inner.UpdateDatabaseConnection(ctx, req)
-}
-
 // UpdateDatabaseSQL updates SQL settings for a tenant-owned database.
 func (t *TenantDatabaseClient) UpdateDatabaseSQL(ctx context.Context, req UpdateDatabaseSQLRequest) (*DatabaseInfo, error) {
 	if err := t.verifyOwnership(ctx, req.Name); err != nil {

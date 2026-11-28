@@ -212,15 +212,6 @@ type updateDatabaseBarrierRequest struct {
 	SharesTotal    int    `json:"sharesTotal,omitempty"`
 }
 
-// updateDatabaseConnectionRequest is the JSON payload for PATCH /v1/databases/{name}/connection.
-type updateDatabaseConnectionRequest struct {
-	Transport string `json:"transport"`
-	Address   string `json:"address"`
-	CAFile    string `json:"caFile,omitempty"`
-	CertFile  string `json:"certFile,omitempty"`
-	KeyFile   string `json:"keyFile,omitempty"`
-}
-
 // listDatabasesResponse is the JSON payload returned by GET /v1/databases/list.
 type listDatabasesResponse struct {
 	Databases []transport.DatabaseInfo `json:"databases"`
@@ -328,7 +319,7 @@ func (s *Server) handleListDatabases(w http.ResponseWriter, r *http.Request) {
 // handleDatabaseByName routes GET /v1/databases/{name},
 // DELETE /v1/databases/{name}, PATCH /v1/databases/{name}/protocol,
 // PATCH /v1/databases/{name}/etcd, PATCH /v1/databases/{name}/raft,
-// PATCH /v1/databases/{name}/barrier, PATCH /v1/databases/{name}/connection,
+// PATCH /v1/databases/{name}/barrier,
 // PATCH /v1/databases/{name}/sql, and PATCH /v1/databases/{name}/scale to the
 // appropriate handler
 // using the database name extracted from the URL path.
@@ -372,10 +363,6 @@ func (s *Server) handleDatabaseByName(w http.ResponseWriter, r *http.Request) {
 	}
 	if subPath == "scale" && r.Method == http.MethodPatch {
 		s.handleScaleDatabase(w, r, name)
-		return
-	}
-	if subPath == "connection" && r.Method == http.MethodPatch {
-		s.handleUpdateDatabaseConnection(w, r, name)
 		return
 	}
 	if subPath == "sql" && r.Method == http.MethodPatch {
@@ -570,32 +557,6 @@ func (s *Server) handleUpdateDatabaseBarrier(w http.ResponseWriter, r *http.Requ
 	}
 
 	info, err := s.databaseSvc.UpdateBarrierForTenant(r.Context(), name, cfg)
-	if err != nil {
-		writeErrorJSON(w, mapHTTPError(err), err)
-		return
-	}
-
-	writeJSON(w, dbwire.Info(info))
-}
-
-// handleUpdateDatabaseConnection handles PATCH /v1/databases/{name}/connection --
-// updates the remote connection configuration for a database.
-func (s *Server) handleUpdateDatabaseConnection(w http.ResponseWriter, r *http.Request, name string) {
-	var req updateDatabaseConnectionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
-		return
-	}
-
-	cfg := &database.DatabaseConnectionConfig{
-		Transport: req.Transport,
-		Address:   req.Address,
-		CAFile:    req.CAFile,
-		CertFile:  req.CertFile,
-		KeyFile:   req.KeyFile,
-	}
-
-	info, err := s.databaseSvc.UpdateConnectionForTenant(r.Context(), name, cfg)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return

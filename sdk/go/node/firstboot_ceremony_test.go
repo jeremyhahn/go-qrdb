@@ -148,7 +148,7 @@ func TestNode_FirstBootWithCeremony_BoundAdminLogsInUnderRequired(t *testing.T) 
 
 	nodeCfg := qrdbconfig.DefaultConfig()
 	nodeCfg.Raft.DataDir = t.TempDir()
-	nodeCfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
+	nodeCfg.Storage.Backend = string(database.BackendMemory)
 	nodeCfg.Protocols.REST = true
 	nodeCfg.Protocols.GRPC = false
 	nodeCfg.Protocols.QUIC = false
@@ -239,7 +239,7 @@ func TestNode_FirstBootWithCeremony_FreshUnboundNodeEntersAwaitingWithoutRestart
 
 	nodeCfg := qrdbconfig.DefaultConfig()
 	nodeCfg.Raft.DataDir = t.TempDir()
-	nodeCfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
+	nodeCfg.Storage.Backend = string(database.BackendMemory)
 	nodeCfg.Protocols.REST = true
 	nodeCfg.Protocols.GRPC = false
 	nodeCfg.Protocols.QUIC = false

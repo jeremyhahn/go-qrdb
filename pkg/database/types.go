@@ -88,15 +88,11 @@ type DatabaseMode string
 const (
 	// ModeEmbedded runs storage in-process using a local backend.
 	ModeEmbedded DatabaseMode = "embedded"
-
-	// ModeRemote proxies operations to a remote qrdb server.
-	ModeRemote DatabaseMode = "remote"
 )
 
 // validModes is the set of recognized database modes, used for O(1) lookup.
 var validModes = map[DatabaseMode]struct{}{
 	ModeEmbedded: {},
-	ModeRemote:   {},
 }
 
 // Valid reports whether the database mode is recognized.
@@ -358,23 +354,6 @@ func (b *DatabaseBarrierConfig) Validate() error {
 	return nil
 }
 
-// DatabaseConnectionConfig holds connection settings for a remote database.
-type DatabaseConnectionConfig struct {
-	Transport string `yaml:"transport" json:"transport"` // "unix", "grpc", "rest", "quic"
-	Address   string `yaml:"address"   json:"address"`
-	CAFile    string `yaml:"caFile"    json:"caFile,omitempty"`
-	CertFile  string `yaml:"certFile"  json:"certFile,omitempty"`
-	KeyFile   string `yaml:"keyFile"   json:"keyFile,omitempty"`
-}
-
-// Validate checks that connection config has required fields.
-func (c *DatabaseConnectionConfig) Validate() error {
-	if strings.TrimSpace(c.Transport) == "" || strings.TrimSpace(c.Address) == "" {
-		return &ConnectionRequiredError{}
-	}
-	return nil
-}
-
 // ---------------------------------------------------------------------------
 // Status types
 // ---------------------------------------------------------------------------
@@ -520,11 +499,10 @@ type DatabaseConfig struct {
 	// that error rather than falling back to the shared WAL. For any other
 	// backend the service clears the flag, so it is neither persisted nor
 	// metered.
-	DedicatedWAL bool                      `yaml:"dedicated_wal,omitempty" json:"dedicated_wal,omitempty"`
-	Raft         *DatabaseRaftConfig       `yaml:"raft"                    json:"raft,omitempty"`
-	Barrier      *DatabaseBarrierConfig    `yaml:"barrier"                 json:"barrier,omitempty"`
-	Connection   *DatabaseConnectionConfig `yaml:"connection"              json:"connection,omitempty"`
-	SQL          *SQLConfig                `yaml:"sql"                     json:"sql,omitempty"`
+	DedicatedWAL bool                   `yaml:"dedicated_wal,omitempty" json:"dedicated_wal,omitempty"`
+	Raft         *DatabaseRaftConfig    `yaml:"raft"                    json:"raft,omitempty"`
+	Barrier      *DatabaseBarrierConfig `yaml:"barrier"                 json:"barrier,omitempty"`
+	SQL          *SQLConfig             `yaml:"sql"                     json:"sql,omitempty"`
 }
 
 // Directory names a volume-isolated tenant's own Raft host keeps under
@@ -575,7 +553,6 @@ func IsTenantHome(name string) bool {
 // It returns a typed error when any field is missing or invalid.
 //
 // Empty Mode defaults to ModeEmbedded for backward compatibility.
-// Remote mode requires a non-nil Connection config.
 // Embedded mode requires a valid Backend.
 func (c *DatabaseConfig) Validate() error {
 	if c.Name == "" || !namePattern.MatchString(c.Name) {
@@ -593,14 +570,7 @@ func (c *DatabaseConfig) Validate() error {
 		return &InvalidModeError{Mode: string(c.Mode)}
 	}
 
-	if c.Mode == ModeRemote {
-		if c.Connection == nil {
-			return &ConnectionRequiredError{}
-		}
-		if err := c.Connection.Validate(); err != nil {
-			return err
-		}
-	} else if !c.Backend.Valid() {
+	if !c.Backend.Valid() {
 		// Embedded mode requires a valid backend.
 		return &InvalidBackendError{Backend: string(c.Backend)}
 	}
@@ -688,19 +658,18 @@ func (c *DatabaseConfig) BarrierOnDataPath() bool {
 
 // DatabaseMeta is a database's record in the Catalog.
 type DatabaseMeta struct {
-	TenantID     string                    `json:"tenant_id,omitempty"`
-	Name         string                    `json:"name"`
-	Backend      BackendType               `json:"backend"`
-	Protocol     ProtocolConfig            `json:"protocol,omitempty"`
-	DataDir      string                    `json:"data_dir,omitempty"`
-	Mode         DatabaseMode              `json:"mode,omitempty"`
-	StorageCodec string                    `json:"storage_codec,omitempty"`
-	Replicas     int                       `json:"replicas,omitempty"`
-	DedicatedWAL bool                      `json:"dedicated_wal,omitempty"`
-	Raft         *DatabaseRaftConfig       `json:"raft,omitempty"`
-	Barrier      *DatabaseBarrierConfig    `json:"barrier,omitempty"`
-	Connection   *DatabaseConnectionConfig `json:"connection,omitempty"`
-	SQL          *SQLConfig                `json:"sql,omitempty"`
+	TenantID     string                 `json:"tenant_id,omitempty"`
+	Name         string                 `json:"name"`
+	Backend      BackendType            `json:"backend"`
+	Protocol     ProtocolConfig         `json:"protocol,omitempty"`
+	DataDir      string                 `json:"data_dir,omitempty"`
+	Mode         DatabaseMode           `json:"mode,omitempty"`
+	StorageCodec string                 `json:"storage_codec,omitempty"`
+	Replicas     int                    `json:"replicas,omitempty"`
+	DedicatedWAL bool                   `json:"dedicated_wal,omitempty"`
+	Raft         *DatabaseRaftConfig    `json:"raft,omitempty"`
+	Barrier      *DatabaseBarrierConfig `json:"barrier,omitempty"`
+	SQL          *SQLConfig             `json:"sql,omitempty"`
 
 	// Dropping is true from the moment Manager.Drop fences this database
 	// (step 0, before it reclaims the keyspace) until the drop finishes and
@@ -727,6 +696,13 @@ type DatabaseMeta struct {
 	// existed, which reopens the database with an empty one.
 	Incarnation string `json:"incarnation,omitempty"`
 
+	// Generation is the number the catalog gave this create of the
+	// tenant's name: one higher than any earlier create of the name, kept
+	// by a per-name counter that a drop leaves (KVCatalog.Create). Zero in
+	// a record written before generations existed. Generations are
+	// monotonic, not dense.
+	Generation uint64 `json:"generation,omitempty"`
+
 	// OwnerNode is the node that holds a database whose backend is not raft:
 	// the identity (Manager.SetLocalNode) of the node that created it. Only
 	// that node opens the database's store; every other node forwards the
@@ -743,22 +719,21 @@ type DatabaseMeta struct {
 
 // DatabaseInfo provides runtime information about a database instance.
 type DatabaseInfo struct {
-	TenantID     string                    `json:"tenant_id,omitempty"`
-	Name         string                    `json:"name"`
-	Backend      BackendType               `json:"backend"`
-	Status       StatusType                `json:"status"`
-	Protocol     ProtocolConfig            `json:"protocol,omitempty"`
-	DataDir      string                    `json:"data_dir,omitempty"`
-	ShardID      uint64                    `json:"shard_id,omitempty"` // only raft mode
-	Mode         DatabaseMode              `json:"mode,omitempty"`
-	StorageCodec string                    `json:"storage_codec,omitempty"`
-	Replicas     int                       `json:"replicas,omitempty"`      // only raft mode
-	DedicatedWAL bool                      `json:"dedicated_wal,omitempty"` // only raft mode
-	Raft         *DatabaseRaftConfig       `json:"raft,omitempty"`
-	Barrier      *DatabaseBarrierConfig    `json:"barrier,omitempty"`
-	Connection   *DatabaseConnectionConfig `json:"connection,omitempty"`
-	SQL          *SQLConfig                `json:"sql,omitempty"`
-	Compaction   *compaction.Policy        `json:"compaction,omitempty"`
+	TenantID     string                 `json:"tenant_id,omitempty"`
+	Name         string                 `json:"name"`
+	Backend      BackendType            `json:"backend"`
+	Status       StatusType             `json:"status"`
+	Protocol     ProtocolConfig         `json:"protocol,omitempty"`
+	DataDir      string                 `json:"data_dir,omitempty"`
+	ShardID      uint64                 `json:"shard_id,omitempty"` // only raft mode
+	Mode         DatabaseMode           `json:"mode,omitempty"`
+	StorageCodec string                 `json:"storage_codec,omitempty"`
+	Replicas     int                    `json:"replicas,omitempty"`      // only raft mode
+	DedicatedWAL bool                   `json:"dedicated_wal,omitempty"` // only raft mode
+	Raft         *DatabaseRaftConfig    `json:"raft,omitempty"`
+	Barrier      *DatabaseBarrierConfig `json:"barrier,omitempty"`
+	SQL          *SQLConfig             `json:"sql,omitempty"`
+	Compaction   *compaction.Policy     `json:"compaction,omitempty"`
 	// CompactionUnavailable reports that the database's store could not be
 	// read for its scheduled-compaction policy, so Compaction is unknown --
 	// not off. The rest of the information stands.
@@ -766,4 +741,27 @@ type DatabaseInfo struct {
 	// OwnerNode is the node that holds the database (DatabaseMeta.OwnerNode); empty
 	// when any node opens it.
 	OwnerNode string `json:"owner_node,omitempty"`
+	// Binding is the read-only block reporting what ResolveBinding decided
+	// for the database: where its writes are applied and whose key encrypts
+	// its store. It is absent where the node has no binding factory that
+	// describes bindings (raft mode until raft bindings).
+	Binding *DatabaseBinding `json:"binding,omitempty"`
+}
+
+// DatabaseBinding is the read-only binding block of DatabaseInfo.
+type DatabaseBinding struct {
+	// Kind is the kind of host that applies the database's writes.
+	Kind BindingKind `json:"kind"`
+	// Nodes are the nodes that hold the database: the owner node when one
+	// is recorded, none when any node opens it.
+	Nodes []string `json:"nodes,omitempty"`
+	// Encryption names whose key encrypts the store at rest: "node",
+	// "tenant", or "tenant+database" when the database has its own barrier
+	// over the tenant's.
+	Encryption string `json:"encryption"`
+	// Generation numbers the create of this database's name: every create
+	// of the tenant's name records one higher than any earlier create of
+	// it, so a name dropped and created again reports a higher generation
+	// (DatabaseMeta.Generation).
+	Generation uint64 `json:"generation"`
 }

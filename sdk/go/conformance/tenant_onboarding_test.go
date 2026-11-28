@@ -94,7 +94,7 @@ func bootOnboardingCell(t *testing.T, tk transportKind, opts ...func(*qrdbconfig
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.DataDir = t.TempDir()
 	cfg.Server.Host = "127.0.0.1"
-	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
+	cfg.Storage.Backend = string(database.BackendMemory)
 	cfg.Seal.Enabled = true
 	cfg.Seal.Strategy = "none"
 	cfg.Auth.MTLSBindingPolicy = "required"

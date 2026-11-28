@@ -87,10 +87,6 @@ func (m *fnDatabaseService) UpdateBarrier(_ string, _ *database.DatabaseBarrierC
 	return nil, nil
 }
 
-func (m *fnDatabaseService) UpdateConnection(_ string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	return nil, nil
-}
-
 func (m *fnDatabaseService) SealDatabase(_ context.Context, _ string) error {
 	return nil
 }
@@ -149,10 +145,6 @@ func (m *fnDatabaseService) UpdateRaftForTenant(_ context.Context, name string, 
 
 func (m *fnDatabaseService) UpdateBarrierForTenant(_ context.Context, name string, cfg *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
 	return m.UpdateBarrier(name, cfg)
-}
-
-func (m *fnDatabaseService) UpdateConnectionForTenant(_ context.Context, name string, cfg *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	return m.UpdateConnection(name, cfg)
 }
 
 func (m *fnDatabaseService) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
@@ -846,7 +838,6 @@ func TestDatabaseCmd_SubcommandCount(t *testing.T) {
 		"update-raft":         false,
 		"scale":               false,
 		"update-barrier":      false,
-		"update-connection":   false,
 		"update-compaction":   false,
 		"seal":                false,
 		"unseal":              false,
@@ -876,6 +867,23 @@ func TestDatabaseCmd_SubcommandCount(t *testing.T) {
 	for name, found := range wantNames {
 		if !found {
 			t.Errorf("missing subcommand: %s", name)
+		}
+	}
+}
+
+// TestDatabaseCmd_NoUpdateConnection asserts the database command tree
+// offers no remote mode: no update-connection subcommand, and no remote
+// connection flag on any database subcommand (OD-9 A).
+func TestDatabaseCmd_NoUpdateConnection(t *testing.T) {
+	cmd := newDatabaseCmd()
+	for _, sub := range cmd.Commands() {
+		if sub.Name() == "update-connection" {
+			t.Fatal("database command still has update-connection")
+		}
+		for _, flag := range []string{"conn-transport", "address", "conn-ca-file", "conn-cert-file", "conn-key-file", "connection", "remote"} {
+			if sub.Flags().Lookup(flag) != nil {
+				t.Errorf("database %s still defines --%s", sub.Name(), flag)
+			}
 		}
 	}
 }

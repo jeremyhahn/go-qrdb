@@ -101,25 +101,6 @@ func TestMCP_Auth_GetUserByCertThumbprint_WithUser(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// UpdateDatabaseConnection optional paths (81.0%)
-// ---------------------------------------------------------------------------
-
-func TestMCP_Database_UpdateDatabaseConnection_AllParams(t *testing.T) {
-	tr, cleanup := connectDatabaseBarrierInProcess(t, newMockDatabaseSvc())
-	defer cleanup()
-
-	req := transport.UpdateDatabaseConnectionRequest{
-		Name: "mydb",
-		Connection: &transport.DatabaseConnectionConfig{
-			Transport: "tcp",
-			Address:   "127.0.0.1:5432",
-		},
-	}
-	_, err := tr.UpdateDatabaseConnection(context.Background(), req)
-	_ = err
-}
-
-// ---------------------------------------------------------------------------
 // CredentialRetrieve JSON decode path (83.3%)
 // The mock returns nil,nil which makes the tool return "null" or empty.
 // The JSON decode error fires on that empty text.

@@ -119,7 +119,7 @@ func TestCeremonySignCSRCmd_WithValidCSRFile(t *testing.T) {
 }
 
 // ===========================================================================
-// database.go — update-etcd, update-raft, update-barrier, update-connection
+// database.go — update-etcd, update-raft, update-barrier
 // (50-57%)
 // Use fnDatabaseService with non-nil return functions to avoid nil-pointer
 // panics in printDatabaseInfo.
@@ -157,13 +157,6 @@ func TestDatabaseUpdateRaftCmd_Success(t *testing.T) {
 func TestDatabaseUpdateBarrierCmd_Enabled(t *testing.T) {
 	root := newTestRootCmd(newMockKVService(), newMockAdminService())
 	_, _ = executeCommand(root, "database", "update-barrier", "mydb", "--enabled")
-}
-
-func TestDatabaseUpdateConnectionCmd_Success(t *testing.T) {
-	root := newTestRootCmd(newMockKVService(), newMockAdminService())
-	_, _ = executeCommand(root, "database", "update-connection", "mydb",
-		"--address", "localhost:5000",
-	)
 }
 
 // ===========================================================================

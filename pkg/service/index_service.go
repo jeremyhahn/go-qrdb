@@ -93,6 +93,9 @@ func (s *IndexService) CreateIndex(ctx context.Context, name, fieldName string, 
 		// set the create applies over, so two creates proposed through
 		// different nodes cannot both take the last slot (go-qrdb#1088).
 		MaxIndexes: gatedCommandCap(s.host, s.shardID, s.maxIndexes),
+		// The definition goes into the replicated index catalog only once
+		// every member of the group writes it (featuregate.IndexCatalog).
+		Catalog: s.catalogEnabled(),
 		// A re-create with a different key scope rebuilds the index only
 		// once every replica can apply it the same way.
 		Rescope: indexRescope(s.host, s.shardID),
@@ -101,6 +104,18 @@ func (s *IndexService) CreateIndex(ctx context.Context, name, fieldName string, 
 		return &EncodeRequestError{Err: err}
 	}
 	return s.proposeIndexCommand(ctx, config.Owner, cmd)
+}
+
+// catalogEnabled reports whether a create proposed now records its
+// definition in the index catalog: on a host that gates no features (a
+// standalone node, the only replica) always, on a gated group only once
+// featuregate.IndexCatalog is active on the shard, so no replica writes a
+// catalog record another replica would not.
+func (s *IndexService) catalogEnabled() bool {
+	if gated, ok := s.host.(FeatureGatedHost); ok && !gated.FeatureEnabled(s.shardID, featuregate.IndexCatalog) {
+		return false
+	}
+	return true
 }
 
 // indexRescope reports whether an index create is proposed with the rescope
@@ -119,7 +134,10 @@ func indexRescope(host Host, shardID uint64) bool {
 // teardown (DROP DATABASE, tenant deletion) issues: those remove everything in
 // their scope, and ownership is not theirs to consult.
 func (s *IndexService) DropIndex(ctx context.Context, name string) error {
-	cmd, err := protocol.EncodeIndexDrop(name)
+	// The drop clears the index's entries in the apply batch only once every
+	// member of the group does (featuregate.IndexCatalog); before that it
+	// clears them as a member that predates the catalog does.
+	cmd, err := protocol.EncodeIndexDropOpts(name, protocol.IndexDropOptions{Catalog: s.catalogEnabled()})
 	if err != nil {
 		return &EncodeRequestError{Err: err}
 	}
@@ -131,7 +149,7 @@ func (s *IndexService) DropIndex(ctx context.Context, name string) error {
 // same step as the removal, so no create can land between a check and the
 // drop (go-qrdb#426).
 func (s *IndexService) DropOwnedIndex(ctx context.Context, name, owner string) error {
-	cmd, err := protocol.EncodeIndexDropOpts(name, protocol.IndexDropOptions{CheckOwner: true, Owner: owner})
+	cmd, err := protocol.EncodeIndexDropOpts(name, protocol.IndexDropOptions{CheckOwner: true, Owner: owner, Catalog: s.catalogEnabled()})
 	if err != nil {
 		return &EncodeRequestError{Err: err}
 	}

@@ -689,15 +689,6 @@ func (e *InvalidModeError) Error() string {
 	return "database: invalid database mode: " + strconv.Quote(e.Mode)
 }
 
-// ConnectionRequiredError is returned when a remote-mode database is missing
-// its connection configuration.
-type ConnectionRequiredError struct{}
-
-// Error returns a human-readable description of the missing connection config.
-func (e *ConnectionRequiredError) Error() string {
-	return "database: connection configuration is required for remote mode"
-}
-
 // InvalidRaftClusterModeError is returned when an unrecognized Raft cluster
 // mode is specified.
 type InvalidRaftClusterModeError struct {
@@ -1146,6 +1137,22 @@ type InvalidRaftStateStorageError struct {
 
 // Error returns a human-readable description of the refused state storage.
 func (e *InvalidRaftStateStorageError) Error() string {
-	return "database: raft state storage " + strconv.Quote(string(e.StateStorage)) + " of database " +
-		strconv.Quote(e.Name) + " is not one of pebble, file, memory"
+	of := ""
+	if e.Name != "" {
+		of = " of database " + strconv.Quote(e.Name)
+	}
+	return "database: raft state storage " + strconv.Quote(string(e.StateStorage)) + of +
+		" is not one of pebble, memory"
+}
+
+// BackendFactoryInUseError is returned by Manager.SetBackendFactory while
+// the Manager holds open databases: the factory may change only before any
+// database is opened through it.
+type BackendFactoryInUseError struct {
+	Open int
+}
+
+// Error returns a human-readable description of the refused factory change.
+func (e *BackendFactoryInUseError) Error() string {
+	return "database: backend factory cannot change with " + strconv.Itoa(e.Open) + " databases open"
 }

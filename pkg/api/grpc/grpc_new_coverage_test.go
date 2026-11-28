@@ -832,21 +832,6 @@ func TestGRPC_DatabaseUpdateBarrier_Error(t *testing.T) {
 	}
 }
 
-func TestGRPC_DatabaseUpdateConnection_Error(t *testing.T) {
-	dbSvc := newMockDatabaseService()
-	dbSvc.updateErr = errors.New("update connection error")
-	client, cleanup := startTestServerWithAll(t, newMockKVService(), newMockAdminService(),
-		WithDatabaseService(dbSvc))
-	defer cleanup()
-
-	_, err := client.DatabaseUpdateConnection(context.Background(), &pb.DatabaseUpdateConnectionRequest{
-		Name: "mydb",
-	})
-	if err == nil {
-		t.Fatal("expected error from DatabaseUpdateConnection")
-	}
-}
-
 // ReconcileBuiltInRoles satisfies role.RoleServicer; this double never drifts.
 func (m *mockRoleServiceForGRPC) ReconcileBuiltInRoles(_ context.Context, tenantID string) (*role.ReconcileReport, error) {
 	return &role.ReconcileReport{TenantID: tenantID}, nil

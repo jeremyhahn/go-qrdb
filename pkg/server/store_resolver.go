@@ -46,8 +46,64 @@ type storeResolver struct {
 	hosts        tenantServicesSource
 	raft         raftFenceSource
 	barrier      homeFenceSource
+	databases    ownedDatabaseSource
 	tenantSvc    tenant.TenantServicer
 	systemTenant string
+	// evictBundles drops (tenantID, db)'s cached service bundles from
+	// every transport's registry once its drop fence target is resolved.
+	evictBundles func(tenantID, db string)
+}
+
+// ownedDatabaseSource is the catalog FenceTarget asks for a database the
+// Manager has open (database.Manager.GetOwnedIgnoringFence: the drop
+// asks after its local fence is set), to find one materialized in its own
+// store.
+type ownedDatabaseSource interface {
+	GetOwnedIgnoringFence(name, tenantID string) (*database.Database, error)
+}
+
+// materializedFenceTarget answers FenceTarget for a database the Manager
+// opened in its own store (a materializedStore backend): its drop fence lives
+// in that store, where its writes and its scheduled compactions are guarded.
+// The store is the incarnation -- a drop removes its binding root and a
+// create under the name opens a new one -- so it is a per-database target,
+// as a dedicated-raft database's shard is: the marker is absent while the
+// database is live. A database open under another incarnation is refused with
+// *database.DropSupersededError. ok is false for any other database, and for
+// one not open yet: a create marks its incarnation live before the Manager
+// holds it, in the store a per-database drop tombstones (claimReclaimStore).
+//
+// The lookup fails closed: only *database.NotFoundError (no record) and
+// *database.AlreadyExistsError (a create still holds the name's claim, so
+// Open lost to it) mean "not materialized". Any other lookup error
+// -- a catalog read that failed, a store that did not answer -- is returned
+// with ok true, so the drop fails instead of falling through to the shared
+// store and tombstoning a marker the database never reads while its own
+// marker stays live.
+func (r *storeResolver) materializedFenceTarget(tenantID, db, incarnation string) (service.FenceStore, bool, error) {
+	if r.databases == nil || db == "" {
+		return service.FenceStore{}, false, nil
+	}
+	dbase, err := r.databases.GetOwnedIgnoringFence(db, tenantID)
+	var notFound *database.NotFoundError
+	var creating *database.AlreadyExistsError
+	if errors.As(err, &notFound) || errors.As(err, &creating) {
+		return service.FenceStore{}, false, nil
+	}
+	if err != nil {
+		return service.FenceStore{}, true, err
+	}
+	if dbase == nil {
+		return service.FenceStore{}, false, nil
+	}
+	ms, ok := dbase.Backend().(materializedStore)
+	if !ok {
+		return service.FenceStore{}, false, nil
+	}
+	if incarnation != "" && dbase.Incarnation() != incarnation {
+		return service.FenceStore{}, true, &database.DropSupersededError{Name: db, TenantID: tenantID}
+	}
+	return service.FenceStore{KV: service.NewKVService(ms.Host(), ms.ShardID()), PerDatabase: true}, true, nil
 }
 
 // raftFenceSource is the one method the resolver needs from
@@ -64,6 +120,15 @@ type raftFenceSource interface {
 // machine evaluates their drop fence (OpGuarded).
 type homeFenceSource interface {
 	Services(ctx context.Context, tenantID, db string) (*DatabaseServices, error)
+}
+
+// raftGroupSource is the raft fence source that also serves non-raft
+// tenants' raft databases from their own groups (*RaftBackendFactory).
+type raftGroupSource interface {
+	// HostsDatabase reports whether a non-raft tenant's database runs its own Raft group.
+	// A placement that names only other nodes, or cannot be read, is an
+	// error (*placement.NotAReplicaError), never "not a group".
+	HostsDatabase(tenantID, db string) (bool, error)
 }
 
 // Compile-time check: the production source is the factory.
@@ -154,7 +219,35 @@ func (r *storeResolver) ReclaimTarget(ctx context.Context, tenantID string) (ser
 // incarnation's: it is refused with *database.DropSupersededError (see
 // RaftBackendFactory.FenceServices).
 func (r *storeResolver) FenceTarget(ctx context.Context, tenantID, db, incarnation string) (service.FenceStore, bool, error) {
-	if r.tenantSvc == nil || tenantID == "" || tenantID == r.systemTenant {
+	store, ok, err := r.fenceTarget(ctx, tenantID, db, incarnation)
+	if err == nil && r.evictBundles != nil {
+		// The drop fences the database here: from now on no request may
+		// be served from a bundle cached over its store, so every cache
+		// drops and closes its entry (a recreate builds a fresh one).
+		r.evictBundles(tenantID, db)
+	}
+	return store, ok, err
+}
+
+// fenceTarget is FenceTarget without the bundle eviction.
+func (r *storeResolver) fenceTarget(ctx context.Context, tenantID, db, incarnation string) (service.FenceStore, bool, error) {
+	if store, ok, err := r.materializedFenceTarget(tenantID, db, incarnation); ok {
+		return store, true, err
+	}
+	if tenantID != "" && tenantID == r.systemTenant {
+		// A system database with its own Raft group is fenced in that group.
+		if groups, ok := r.raft.(raftGroupSource); ok && groups != nil {
+			hosted, err := groups.HostsDatabase(tenantID, db)
+			if err != nil {
+				return service.FenceStore{}, true, err
+			}
+			if hosted {
+				return r.raftFenceTarget(ctx, tenantID, db, incarnation, tenant.IsolationPrefix)
+			}
+		}
+		return service.FenceStore{}, false, nil
+	}
+	if r.tenantSvc == nil || tenantID == "" {
 		return service.FenceStore{}, false, nil
 	}
 	info, err := r.tenantSvc.GetTenant(ctx, tenantID)
@@ -168,6 +261,19 @@ func (r *storeResolver) FenceTarget(ctx context.Context, tenantID, db, incarnati
 		return service.FenceStore{}, false, nil
 	}
 	isolation := info.EffectiveIsolationType()
+	group := isolation == tenant.IsolationRaft
+	if groups, ok := r.raft.(raftGroupSource); ok && !group && groups != nil {
+		// OD-1 A: a prefix, barrier or volume tenant's backend: raft database
+		// runs its own group, so its fence goes there -- the same rule the
+		// request path applies (restServiceRegistry.isRaftGroupDatabase).
+		group, err = groups.HostsDatabase(tenantID, db)
+		if err != nil {
+			return service.FenceStore{}, true, err
+		}
+	}
+	if group {
+		return r.raftFenceTarget(ctx, tenantID, db, incarnation, isolation)
+	}
 	switch isolation {
 	case tenant.IsolationVolume:
 		if isNilTenantServices(r.hosts) {
@@ -178,18 +284,6 @@ func (r *storeResolver) FenceTarget(ctx context.Context, tenantID, db, incarnati
 			return service.FenceStore{}, true, err
 		}
 		return service.FenceStore{KV: svcs.KV}, true, nil
-	case tenant.IsolationRaft:
-		if r.raft == nil {
-			return service.FenceStore{}, true, &rest.IsolationBackendUnavailableError{TenantID: tenantID, Isolation: string(isolation)}
-		}
-		svcs, err := r.raft.FenceServices(ctx, tenantID, db, incarnation)
-		if errors.Is(err, ErrRaftDatabaseUnknown) {
-			return service.FenceStore{PerDatabase: true}, true, nil
-		}
-		if err != nil {
-			return service.FenceStore{}, true, err
-		}
-		return service.FenceStore{KV: svcs.KV, PerDatabase: true}, true, nil
 	default:
 		// Prefix and barrier isolation: a barrier tenant's database data
 		// is served from the system store (restServiceRegistry.resolveShared)
@@ -230,6 +324,22 @@ func (r *storeResolver) LogFenceTarget(ctx context.Context, tenantID, db, incarn
 		return service.FenceStore{}, true, err
 	}
 	return service.FenceStore{KV: svcs.KV}, true, nil
+}
+
+// raftFenceTarget is the fence store of a database that runs its own Raft
+// group: the group's own store, fenced per database.
+func (r *storeResolver) raftFenceTarget(ctx context.Context, tenantID, db, incarnation string, isolation tenant.IsolationType) (service.FenceStore, bool, error) {
+	if r.raft == nil {
+		return service.FenceStore{}, true, &rest.IsolationBackendUnavailableError{TenantID: tenantID, Isolation: string(isolation)}
+	}
+	svcs, err := r.raft.FenceServices(ctx, tenantID, db, incarnation)
+	if errors.Is(err, ErrRaftDatabaseUnknown) {
+		return service.FenceStore{PerDatabase: true}, true, nil
+	}
+	if err != nil {
+		return service.FenceStore{}, true, err
+	}
+	return service.FenceStore{KV: svcs.KV, PerDatabase: true}, true, nil
 }
 
 // isNilTenantServices reports whether the source is absent, including the

@@ -43,11 +43,12 @@ const gatedDatabase = "gated"
 
 // writeGatedDatabaseConfig writes a qrdbd configuration that provisions
 // gatedDatabase beside the default database.
-func writeGatedDatabaseConfig(t *testing.T) string {
+func writeGatedDatabaseConfig(t *testing.T, peerAdminURLs map[string]string) string {
 	t.Helper()
 	cfg := "databases:\n" +
 		"  - name: system\n    backend: pebble\n" +
-		"  - name: " + gatedDatabase + "\n    backend: pebble\n"
+		"  - name: " + gatedDatabase + "\n    backend: pebble\n" +
+		peerAdminURLsYAML(peerAdminURLs)
 	path := filepath.Join(t.TempDir(), "qrdbd.yaml")
 	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -83,7 +84,11 @@ func kvRequest(t *testing.T, client *http.Client, method string, port int, db, k
 func TestCluster_FeatureGateActivatesGuardedWrites(t *testing.T) {
 	for _, sm := range []string{"pebble", "mvcc"} {
 		t.Run(sm, func(t *testing.T) {
-			adminPorts, _, ca, logs := startThreeNodeClusterLogged(t, sm, "--config", writeGatedDatabaseConfig(t))
+			nodes, ca, _, _, logs := startGatedClusterAllTransports(t, sm)
+			adminPorts := make([]int, len(nodes))
+			for i, n := range nodes {
+				adminPorts[i] = n.admin
+			}
 			client := mtlsHTTPClient(t, ca, 10*time.Second)
 
 			deadline := time.Now().Add(60 * time.Second)
@@ -338,14 +343,25 @@ func startGatedClusterAllTransports(t *testing.T, smType string) ([]gatedCluster
 	logs := make([]*nodeLog, 3)
 	bin := buildBinary(t)
 	ca := generateTestCA(t)
-	cfgPath := writeGatedDatabaseConfig(t)
 	ports := allocatePorts(t, 3)
 	adminPorts := allocateTCPPorts(t, 3)
 	grpcPorts := allocateTCPPorts(t, 3)
 	mcpPorts := allocateTCPPorts(t, 3)
 	quicPorts := allocatePorts(t, 3)
 	peersFlag := buildPeersFlag(ports)
-	nodeTLS, memberIDs := ca.clusterNodeTLS(t, len(ports))
+	// In raft mode the node that first provisions the configured gated
+	// database holds it and the others forward to it as the caller, so
+	// every node carries a SPIFFE node identity to sign the on-behalf
+	// assertion with, and names every peer's admin URL (one host,
+	// distinct admin ports).
+	raftAddrs := make([]string, 3)
+	peerAdminURLs := make(map[string]string, 3)
+	for i, port := range ports {
+		raftAddrs[i] = fmt.Sprintf("127.0.0.1:%d", port)
+		peerAdminURLs[raftAddrs[i]] = fmt.Sprintf("https://127.0.0.1:%d", adminPorts[i])
+	}
+	cfgPath := writeGatedDatabaseConfig(t, peerAdminURLs)
+	nodeTLS, memberIDs := ca.clusterNodeSPIFFETLS(t, raftAddrs, clusterTestTrustDomain)
 	dataDirs := make([]string, 3)
 	nodes := make([]gatedClusterNode, 3)
 

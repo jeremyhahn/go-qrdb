@@ -31,7 +31,6 @@ type DatabaseClient interface {
 	UpdateDatabaseRaft(ctx context.Context, req UpdateDatabaseRaftRequest) (*DatabaseInfo, error)
 	UpdateDatabaseBarrier(ctx context.Context, req UpdateDatabaseBarrierRequest) (*DatabaseInfo, error)
 	ScaleDatabase(ctx context.Context, req ScaleDatabaseRequest) (*DatabaseInfo, error)
-	UpdateDatabaseConnection(ctx context.Context, req UpdateDatabaseConnectionRequest) (*DatabaseInfo, error)
 	UpdateDatabaseSQL(ctx context.Context, req UpdateDatabaseSQLRequest) (*DatabaseInfo, error)
 	UpdateDatabaseCompaction(ctx context.Context, req UpdateDatabaseCompactionRequest) (*DatabaseInfo, error)
 	SealDatabase(ctx context.Context, name string) error
@@ -77,28 +76,76 @@ policy from the store: `Compaction` is then unknown, not off. `Name` is
 `json:"-"` on the update and scale requests: it travels in the path, not the
 body.
 
-### Types (target)
+### Binding block
 
-`DatabaseInfo` gains `Binding *DatabaseBinding` (`json:"binding,omitempty"`),
+`DatabaseInfo` carries `Binding *DatabaseBinding` (`json:"binding,omitempty"`),
 read-only: it reports what the resolver decided, so an operator can see where a
-database's data lives without reading the server's configuration.
-`DatabaseRaftConfig` gains `StateStorage string`
-(`json:"stateStorage,omitempty"`: `pebble | file | memory`) and carries no shard
-ID, which the cluster issues. `UpdateDatabaseConnection`,
-`UpdateDatabaseConnectionRequest`, `DatabaseConnectionConfig`, the `Connection`
-field and remote mode are removed.
+database's data lives without reading the server's configuration. The manager
+asks its backend factory through the optional `BindingDescriber` interface
+(`DescribeBinding(cfg DatabaseConfig) (*Binding, error)`); the server's
+`LocalBindingFactory` answers with the same `ResolveBinding` the open path uses,
+and `Binding.Describe(owner)` turns the result into the block. A factory that
+does not implement the interface, or a resolve error (logged at debug), leaves
+the block absent. Raft-mode nodes install the same factory, so the block is
+present in raft mode too: `local` for a memory, file, pebble or objstore
+database, and `raft` for a `backend: raft` database. For a `raft` binding,
+`nodes` lists the replica nodes of the database's own group, read from the
+replicated placement table when info is served (`PlacementReplicaNodes`);
+for a `local` binding it is the owner node. The block reaches `database info` and `database list` on every
+transport: gRPC `DatabaseBindingInfo` (field 19 of `DatabaseInfoResponse`),
+REST, MCP, QUIC, the Unix socket, both SDKs and the CLI table output.
 
 ```go
 // DatabaseBinding is the resolved placement of the database's storage.
 type DatabaseBinding struct {
-	Kind       string   `json:"kind"`            // local | raft
-	Nodes      []string `json:"nodes,omitempty"` // owning node (local) or replica nodes (raft)
-	Encryption string   `json:"encryption"`      // node | tenant | tenant+database
-	Generation uint64   `json:"generation"`      // increments on every create of this name
+	Kind       BindingKind `json:"kind"`            // local | raft
+	Nodes      []string    `json:"nodes,omitempty"` // local: the owning node; raft: the group's replica nodes
+	Encryption string      `json:"encryption"`      // node | tenant | node+database | tenant+database
+	Generation uint64      `json:"generation"`      // this create of the name; higher than any earlier one
 }
 ```
 
+The generation comes from a per-name counter the catalog keeps beside the
+record, under `__sys:dbgeneration/<tenant>/<name>` (8 bytes, big-endian) in the
+same store as the record, so an isolated tenant's counter lives in its home
+store. `KVCatalog.Create` advances the counter (`PutIfAbsent` for the first
+create, `CompareAndSwap` after, retrying a lost swap) before it writes the
+record, and stores the number as `DatabaseMeta.Generation`. A drop removes the
+record but never the counter, so a recreated name always gets a higher
+generation than the database it replaces. Generations rise but are not dense:
+a create that fails, or finds the name taken, has still advanced the counter.
+The manager reads the record back after a successful create to learn the
+number; if that read fails, the open handle on this node reports 0 until it is
+reopened, while the record and every other node report the stored value.
+
+### Types (target)
+
+`DatabaseRaftConfig` gains `StateStorage string`
+(`json:"stateStorage,omitempty"`: `pebble | file | memory`) and carries no shard
+ID, which the cluster issues. `UpdateDatabaseConnection`,
+`UpdateDatabaseConnectionRequest`, `DatabaseConnectionConfig`, the `Connection`
+field and remote mode are removed (shipped: the server and the clients on every
+transport have none of them; gRPC `DatabaseInfoResponse` field 11 is reserved).
+
 ### Server-side binding
+
+A `backend: raft` database runs its own Raft group whatever its tenant's
+isolation (OD-1 A). `RaftBackendFactory` takes the tenant's isolation
+(`WithTenantIsolation`): a prefix tenant's group runs under the node barrier
+with no dedicated WAL, a barrier tenant's under the tenant barrier, and
+`IsolationRootResolver` places both under
+`{DataDir}/tenants/<tenant>/databases/<db>`; a volume tenant's group sits
+under its tenant root. `restServiceRegistry.resolve` and the store
+resolver's drop fence (`storeResolver.FenceTarget`) route by one rule,
+`RaftBackendFactory.ServesOwnGroup`: a raft tenant's database always, any
+other tenant's raft database unless its keys already sit under its prefix
+in the shared store (`LegacySharedProbe`), in which case it keeps the shared
+route until 3b.8. A drop deletes the placement entry; each replica's
+`TenantShardReconciler` handles the delete with `CloseAndPurge`, which
+removes the shard directory inside the node's volume pool or its node group
+root (`WithNodeGroupRoot`), and `ReconcileOnce` purges a started shard that
+was placed (`StartedShard.Placed`) once its entry is gone, the catch-up for
+a missed event. A catalog-managed shard, never placed, is not purged.
 
 `pkg/database/binding.go`:
 
@@ -177,7 +224,14 @@ func ResolveBinding(cfg *DatabaseConfig, t BindingTenant, node BindingNode) (*Bi
 `service.Host` (`backend.LocalBackend` for `BindingLocal`, the Raft shard for
 `BindingRaft`), a watch hub and a lease driver, then calls the **one** bundle
 builder, `buildDataPlaneServices` extended with the vector service, over that
-host. The bundle is cached per `(tenant, database, generation)`.
+host. The bundle is cached per `(tenant, database, generation)`; the drop's
+fence (`storeResolver.FenceTarget`) evicts the database from every transport's
+bundle caches and closes the evicted bundle's vector service. The legacy
+shared-store probe (`lifecycle.LookupKeyspaceProbe`) reports a database as
+holding legacy data when any MVCC key under its namespace or any raw `ts:`,
+`idx:metric:` or `retention:` key of its namespace exists, and a read fault is
+its error, never "empty"; a barrier tenant's memory binding refuses every read
+and write once the tenant barrier seals.
 `buildDedicatedStoreServices`, `service.NewNamedBackendKVService`'s data-plane
 use, the in-memory placeholder in `openStorage` and the node-local vector store
 in `pkg/server/lifecycle` are deleted, not kept beside the new path.
@@ -891,9 +945,11 @@ Invariants:
   batch.** No engine writes to its store outside the batch: time-series points,
   metric and tag indexes, secondary index entries, vector records and vector
   metadata indexes are all batch writes, committed atomically with the entry
-  that produced them, on every backend. Time-series points, metric and tag
-  indexes and secondary index entries already are; vector records and vector
-  metadata indexes are not.
+  that produced them, on every backend. A non-shared database's vectors live
+  in its binding store: its vector service has no storage of its own and
+  proposes every write as an `OpVector*` command through the binding's apply
+  host, reading back through the engine's vector lookups. There is no
+  per-database `<root>/vector` store.
 - **New Raft commands are cluster-feature-gated.** The drop fence, the vector
   commands and the retention command are proposed only when the cluster feature
   gate reports every member of the group supports them; otherwise the
@@ -1075,10 +1131,11 @@ How a claim works:
 | Target: barrier on `backend: memory` | `database.BarrierRequiresPersistentBackendError` | **yes** |
 | Target: etcd on a non-raft backend | `database.EtcdRequiresRaftBackendError` | **yes** |
 | Target: `data_dir` outside a volume/raft tenant's root | `database.DataDirOutsideTenantRootError` | **yes** |
-| Target: `file`/`objstore` for a volume/raft tenant, as backend or raft state storage | `database.BackendIsolationConflictError` | **yes** |
+| Target: `data_dir` equal to, inside or above a node store (control-plane engine stores, the node objstore root and its `.journal` sibling, `storage.wal_dir`, each resolved as storage opens it: relative paths against the working directory) | `database.DataDirReservedPathError` | **yes** |
+| Target: `file`/`objstore` for a volume/raft tenant as backend | `database.BackendIsolationConflictError` | **yes** |
 | Target: a tenant isolation mode the binding table does not know | `database.InvalidTenantIsolationError` | **yes** |
 | Target: the store's directory cannot be placed (volume/raft tenant without a data root on this node, node without a data directory) | `database.BindingRootUnresolvedError` | **yes** |
-| Target: a raft state storage other than `pebble`, `file`, `memory` | `database.InvalidRaftStateStorageError` | **yes** |
+| Target: a raft state storage other than `pebble`, `memory` (`file` included: no file-backed data-plane state machine exists), at create and update | `database.InvalidRaftStateStorageError` | **yes** |
 | Target: the owning node of a local-binding database is unreachable | a typed error naming the owner; 503 / `UNAVAILABLE` | **yes** |
 | Target: a binding cannot be materialized (store will not open, shard will not start) | a typed error wrapping the cause; 503 / `UNAVAILABLE` | **yes** |
 | A range delete or time-series retention command in a group where `featuregate.RangeDelete` or `featuregate.TimeSeriesRetention` is not active cluster-wide | `*feature.NotActiveError`; nothing is proposed | **yes** |
@@ -1390,8 +1447,9 @@ Each requirement lands with the tests named here.
   `database.Defaults` (in `BindingNode`) fills only a field the record left
   empty: the backend from the node default, else `raft` in raft mode and
   `pebble` standalone; for a raft binding the replicas (else 1), cluster mode
-  and state storage (else `pebble`). The refusal of `file` covers a raft
-  group's state storage as well as the backend. An explicit `data_dir` of a
+  and state storage (else `pebble`). A raft group's state storage is
+  `pebble` or `memory`; `file` is refused for every tenant
+  (`InvalidRaftStateStorageError`), before the isolation check. An explicit `data_dir` of a
   volume/raft tenant lies strictly beneath the tenant root, which itself holds
   the tenant's other state. `TestResolveBinding_IsolationByBackend` covers every
   isolation mode × backend cell, asserting the binding or the typed refusal.
@@ -1430,11 +1488,7 @@ Each requirement lands with the tests named here.
   where its binding says and nowhere else, and the control-plane store holds
   none of them; SQL `CREATE DATABASE` produces the default backend; changing
   `--sm` changes no database's backend.
-- **Relocation.** Data written before bindings -- KV, SQL tables with sequences
-  and generation-scoped keys, collections, secondary indexes, time series with
-  tags and retention -- reads back identically after relocation; the source
-  keyspace is empty by exact-key probe; a write during relocation is refused
-  retryably and succeeds after; a crash injected at each step recovers.
+- **Pre-binding data.** Data written before bindings is not read: every database opens its own binding, whatever its old shared route or data_dir holds.
 - **Vector import.** A node-local fixture imports into the right databases with
   IDs and metadata preserved; each conflict policy behaves as specified; an
   unattributable namespace is reported and skipped.
@@ -1450,7 +1504,7 @@ CLI and the SDK types. A row that is not on all six is a parity defect.
 | Database info / list | read-only `binding` block added | no |
 | Update connection | removed, with remote mode | yes |
 | Update raft | `state_storage` is creation-time; refused on update | no |
-| Vector, every request that carries `shard_id` | `shard_id` removed | yes |
+| Vector, every request | the request shard field removed (proto fields reserved); done | yes |
 | Vector, every capability | served for every database on every backend, including volume and raft tenants | no |
 | MVCC, transactions, leases, watches, locks | served for every database on every node mode | no |
 | Capabilities report | MVCC, transaction, lease, watch, lock not raft-mode gated | no |

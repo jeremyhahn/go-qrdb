@@ -52,7 +52,7 @@ func preboundNodeConfig(t *testing.T) *qrdbconfig.Config {
 	t.Helper()
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.DataDir = t.TempDir()
-	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
+	cfg.Storage.Backend = string(database.BackendMemory)
 	cfg.Seal.Enabled = false
 	cfg.Server.Host = "127.0.0.1"
 	cfg.Protocols.REST = true

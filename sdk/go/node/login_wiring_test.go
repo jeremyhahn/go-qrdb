@@ -71,7 +71,7 @@ func newMemoryNodeWithUser(t *testing.T, nodeOpts ...NodeOption) *Node {
 	// In-memory primary storage; vector storage still requires a disk directory
 	// so use t.TempDir() to keep all artifacts inside the test sandbox.
 	cfg.Raft.DataDir = t.TempDir()
-	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
+	cfg.Storage.Backend = string(database.BackendMemory)
 	cfg.Protocols.REST = false
 	cfg.Protocols.GRPC = false
 	cfg.Protocols.QUIC = false

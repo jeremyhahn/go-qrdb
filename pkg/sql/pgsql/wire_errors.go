@@ -95,6 +95,14 @@ func sqlStateForLevel(err error) (codes.Code, bool) {
 		// cannot read until it is dropped and re-created: PostgreSQL's
 		// class for an object not in the state the operation requires.
 		return codes.ObjectNotInPrerequisiteState, true
+	case errors.As(err, &mysqlErr) && (mysqlErr.Num == provider.ErrCodeReservedTableName || mysqlErr.Num == provider.ErrCodeReservedDatabaseName):
+		// A reserved qrdb_ engine table name or a reserved schema name
+		// (mysql, pg_catalog): PostgreSQL's own code for a reserved name.
+		// This wire never calls sql.CastSQLError, so go-mysql-server's own
+		// ErrWrongDBName arrives here as an error kind, not a
+		// *mysql.SQLError: a *mysql.SQLError carrying 1102 or 1103 is only
+		// the provider's reserved name refusal.
+		return codes.ReservedName, true
 	case errors.As(err, &mysqlErr) && rowLockNotAvailable[mysqlErr.Num]:
 		// A row-lock wait that timed out, or a NOWAIT that found the row
 		// held: PostgreSQL reports both as lock_not_available.

@@ -19,6 +19,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -30,6 +31,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal/clustersealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // ---------------------------------------------------------------------------
@@ -42,11 +44,14 @@ type fakeShardLifecycle struct {
 	mu        sync.Mutex
 	started   map[raftShardKey]bool
 	observers map[raftShardKey]bool
-	attached  []raftShardKey
-	closed    []raftShardKey
-	purged    []raftShardKey
-	attachFn  func(tenantID, db string) error
-	closeErr  error
+	// placed marks the started shards the lifecycle started from a
+	// placement entry (StartedShard.Placed), as opposed to catalog-managed.
+	placed   map[raftShardKey]bool
+	attached []raftShardKey
+	closed   []raftShardKey
+	purged   []raftShardKey
+	attachFn func(tenantID, db string) error
+	closeErr error
 	// passes counts ListStarted calls: ReconcileOnce makes exactly one per
 	// pass, so this counts reconcile passes.
 	passes int
@@ -56,6 +61,7 @@ func newFakeShardLifecycle() *fakeShardLifecycle {
 	return &fakeShardLifecycle{
 		started:   make(map[raftShardKey]bool),
 		observers: make(map[raftShardKey]bool),
+		placed:    make(map[raftShardKey]bool),
 	}
 }
 
@@ -88,7 +94,7 @@ func (f *fakeShardLifecycle) Close(tenantID, db string) error {
 // CloseAndPurge mirrors RaftBackendFactory.CloseAndPurge: it stops the shard
 // (same bookkeeping as Close, so existing tests asserting closeCount() after
 // a demotion continue to hold) and additionally records the purge.
-func (f *fakeShardLifecycle) CloseAndPurge(tenantID, db string) error {
+func (f *fakeShardLifecycle) CloseAndPurge(tenantID, db string, _ uint64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	key := raftShardKey{tenantID: tenantID, database: db}
@@ -98,13 +104,18 @@ func (f *fakeShardLifecycle) CloseAndPurge(tenantID, db string) error {
 	return nil
 }
 
+// CloseAndPurgeStarted purges by name: the fake keeps no start identity.
+func (f *fakeShardLifecycle) CloseAndPurgeStarted(s StartedShard) error {
+	return f.CloseAndPurge(s.TenantID, s.Database, 0)
+}
+
 func (f *fakeShardLifecycle) ListStarted() []StartedShard {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.passes++
 	out := make([]StartedShard, 0, len(f.started))
 	for k := range f.started {
-		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database})
+		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database, Placed: f.placed[k]})
 	}
 	return out
 }
@@ -398,6 +409,89 @@ func newTestReconciler(
 	return r, store
 }
 
+// successorHookLifecycle runs beforePurge ahead of every listed purge: the
+// window between the reconciler's absence check and its purge.
+type successorHookLifecycle struct {
+	*RaftBackendFactory
+	beforePurge func()
+}
+
+func (l *successorHookLifecycle) CloseAndPurgeStarted(s StartedShard) error {
+	if l.beforePurge != nil {
+		l.beforePurge()
+	}
+	return l.RaftBackendFactory.CloseAndPurgeStarted(s)
+}
+
+// TestTenantShardReconciler_PurgeWithoutPlacementSparesTheSuccessor: a
+// placed shard whose placement is gone is purged only if it is still the
+// start the pass listed. A drop and recreate that starts a successor under
+// the same name after the absence check leaves the successor running with
+// its data directory intact; the next pass, which lists the successor,
+// purges it.
+func TestTenantShardReconciler_PurgeWithoutPlacementSparesTheSuccessor(t *testing.T) {
+	ctx := context.Background()
+	host, _ := newSharedTestHost(t)
+	reg := newVolumePooledRegistry(t)
+	src := newFakeRaftInfoSource()
+	f := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg, src, volTestLogger())
+	t.Cleanup(func() { _ = f.CloseAll() })
+	dataRoot, _ := registerVolumeTenant(t, reg, "rp")
+	src.add("rp", "app", 1105, dataRoot)
+	src.placements = map[raftShardKey]*placement.Placement{{tenantID: "rp", database: "app"}: {
+		TenantID: "rp", Database: "app", ShardID: 1105,
+		Replicas: []placement.Replica{{ReplicaID: sharedHostReplicaID, NodeID: sharedHostRaftAddr, RaftAddr: sharedHostRaftAddr}},
+	}}
+	if _, err := f.Services(ctx, "rp", "app"); err != nil {
+		t.Fatalf("Services: %v", err)
+	}
+	dataDir := filepath.Join(dataRoot, "databases", "app")
+	listed := f.ListStarted()
+	if len(listed) != 1 || !listed[0].Placed {
+		t.Fatalf("precondition: ListStarted = %+v, want one placed shard", listed)
+	}
+	key := raftShardKey{tenantID: "rp", database: "app"}
+	var successor *raftShard
+	hook := &successorHookLifecycle{RaftBackendFactory: f}
+	hook.beforePurge = func() {
+		hook.beforePurge = nil
+		if err := f.Close("rp", "app"); err != nil {
+			t.Errorf("Close: %v", err)
+			return
+		}
+		if _, err := f.Services(ctx, "rp", "app"); err != nil {
+			t.Errorf("Services (successor): %v", err)
+			return
+		}
+		f.mu.Lock()
+		successor = f.shards[key]
+		f.mu.Unlock()
+	}
+	r, _ := newTestReconciler(t, hook, nil)
+	r.ReconcileOnce(ctx)
+
+	f.mu.Lock()
+	running := f.shards[key]
+	f.mu.Unlock()
+	if successor == nil || running != successor {
+		t.Fatalf("after the pass the cache holds %p, want the successor %p", running, successor)
+	}
+	if _, err := os.Stat(dataDir); err != nil {
+		t.Fatalf("successor's data dir %q after the pass: %v", dataDir, err)
+	}
+
+	r.ReconcileOnce(ctx)
+	f.mu.Lock()
+	_, still := f.shards[key]
+	f.mu.Unlock()
+	if still {
+		t.Fatal("the successor is still running after a pass that listed it")
+	}
+	if _, err := os.Stat(dataDir); !os.IsNotExist(err) {
+		t.Fatalf("data dir %q after the second pass: stat err = %v, want not exist", dataDir, err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -603,6 +697,82 @@ func TestTenantShardReconciler_BarrierNotReadyDefers(t *testing.T) {
 	}
 	if !factory.isStarted("acme", "orders") {
 		t.Error("acme/orders should be started after barrier becomes ready")
+	}
+}
+
+// TestTenantShardReconciler_SystemTenantStartsWithoutATenantBarrier pins
+// that the system tenant's shards, which run under the host-wide barrier,
+// start ahead of time although no tenant barrier exists for them, while a
+// regular tenant without a barrier still defers and registers its shell.
+func TestTenantShardReconciler_SystemTenantStartsWithoutATenantBarrier(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	barriers := newFakeBarrierReadiness()
+	barriers.markMissing(tenantid.System)
+	barriers.markMissing("acme")
+	r, _ := newTestReconciler(t, factory, barriers,
+		placement1(tenantid.System, "catalog", 1001),
+		placement1("acme", "orders", 1002))
+	shells := &recordingShellRegistrar{}
+	r.SetShellRegistrar(shells)
+
+	r.ReconcileOnce(context.Background())
+
+	if factory.attachCount() != 1 {
+		t.Fatalf("Attach called %d times, want 1 (the system tenant's shard only)", factory.attachCount())
+	}
+	if got := shells.registered(); len(got) != 1 || got[0] != "acme" {
+		t.Fatalf("shells registered = %v, want [acme] (no shell for the system tenant)", got)
+	}
+}
+
+// groupBarrierLifecycle answers GroupBarrierReady from a fixed table.
+type groupBarrierLifecycle struct {
+	*fakeShardLifecycle
+	ready map[string]bool
+	err   map[string]error
+}
+
+func (g *groupBarrierLifecycle) GroupBarrierReady(_ context.Context, tenantID string) (bool, error) {
+	if err := g.err[tenantID]; err != nil {
+		return false, err
+	}
+	return g.ready[tenantID], nil
+}
+
+func TestTenantShardReconciler_StartsPrefixTenantReplicaWithoutTenantBarrier(t *testing.T) {
+	cases := []struct {
+		name       string
+		ready      bool
+		err        error
+		wantAttach int
+		wantShells int
+	}{
+		{name: "prefix tenant under an unsealed node barrier starts", ready: true, wantAttach: 1},
+		{name: "barrier tenant without its barrier defers", err: seal.ErrTenantNotFound, wantShells: 1},
+		{name: "prefix tenant under a sealed node barrier defers"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			factory := &groupBarrierLifecycle{
+				fakeShardLifecycle: newFakeShardLifecycle(),
+				ready:              map[string]bool{"pt": tc.ready},
+				err:                map[string]error{"pt": tc.err},
+			}
+			barriers := newFakeBarrierReadiness()
+			barriers.markMissing("pt")
+			r, _ := newTestReconciler(t, factory, barriers, placement1("pt", "app", 1001))
+			shells := &recordingShellRegistrar{}
+			r.SetShellRegistrar(shells)
+
+			r.ReconcileOnce(context.Background())
+
+			if got := factory.attachCount(); got != tc.wantAttach {
+				t.Fatalf("Attach called %d times, want %d", got, tc.wantAttach)
+			}
+			if got := shells.registered(); len(got) != tc.wantShells {
+				t.Fatalf("shells registered = %v, want %d", got, tc.wantShells)
+			}
+		})
 	}
 }
 
@@ -1396,7 +1566,7 @@ func TestTenantShardReconciler_DemotionCloseFailureKeepsShard(t *testing.T) {
 
 	r.ReconcileOnce(ctx)
 	r.handleEvent(ctx, placement.Event{Type: placement.EventPut, TenantID: "acme", Database: "orders", Placement: demoted})
-	r.handleEvent(ctx, placement.Event{Type: placement.EventDelete, TenantID: "acme", Database: "orders"})
+	r.handleEvent(ctx, placement.Event{Type: placement.EventDelete, TenantID: "acme", Database: "orders", Placement: demoted})
 	if !factory.isStarted("acme", "orders") || factory.closeCount() != 0 {
 		t.Fatalf("a failed close must keep the shard started (closed %d)", factory.closeCount())
 	}
@@ -1414,13 +1584,155 @@ func TestTenantShardReconciler_EventDelete_PurgesByDefault(t *testing.T) {
 	r := NewTenantShardReconciler(store, factory, "local:1", nil)
 
 	r.handleEvent(context.Background(), placement.Event{
+		Type:      placement.EventDelete,
+		TenantID:  "acme",
+		Database:  "orders",
+		Placement: &placement.Placement{TenantID: "acme", Database: "orders", ShardID: 7},
+	})
+
+	if factory.purgeCount() != 1 {
+		t.Errorf("purgeCount() = %d, want 1 (EventDelete purges by default)", factory.purgeCount())
+	}
+}
+
+// TestTenantShardReconciler_EventDeleteWithoutPriorValueDoesNotPurgeByName
+// proves a delete that names no incarnation (no prior placement value) never
+// purges by name -- the shard under the name may be a recreated database's --
+// and queues a pass instead, which purges only a start whose placement is
+// gone.
+func TestTenantShardReconciler_EventDeleteWithoutPriorValueDoesNotPurgeByName(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	factory.mu.Lock()
+	factory.started[raftShardKey{tenantID: "acme", database: "orders"}] = true
+	factory.mu.Unlock()
+
+	store, _ := placement.NewStore(newMemKV())
+	r := NewTenantShardReconciler(store, factory, "local:1", nil)
+
+	r.handleEvent(context.Background(), placement.Event{
 		Type:     placement.EventDelete,
 		TenantID: "acme",
 		Database: "orders",
 	})
 
+	if factory.purgeCount() != 0 || !factory.isStarted("acme", "orders") {
+		t.Fatalf("purgeCount() = %d, started = %v; want the shard kept", factory.purgeCount(), factory.isStarted("acme", "orders"))
+	}
+	select {
+	case <-r.kick:
+	default:
+		t.Fatal("a delete without its prior value queued no reconcile pass")
+	}
+}
+
+// TestTenantShardReconciler_PlacementDeletePurgesAPrefixTenantGroup proves
+// that the delete of a prefix tenant's dedicated database placement -- the
+// group a backend: raft database of a non-raft tenant runs (OD-1 A) -- closes
+// and purges that group's shard once.
+func TestTenantShardReconciler_PlacementDeletePurgesAPrefixTenantGroup(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	key := raftShardKey{tenantID: "prefix-t", database: "orders"}
+	factory.mu.Lock()
+	factory.started[key] = true
+	factory.placed[key] = true
+	factory.mu.Unlock()
+
+	r, _ := newTestReconciler(t, factory, nil)
+	r.handleEvent(context.Background(), placement.Event{
+		Type:      placement.EventDelete,
+		TenantID:  "prefix-t",
+		Database:  "orders",
+		Placement: &placement.Placement{TenantID: "prefix-t", Database: "orders", ShardID: 9},
+	})
+
 	if factory.purgeCount() != 1 {
-		t.Errorf("purgeCount() = %d, want 1 (EventDelete purges by default)", factory.purgeCount())
+		t.Fatalf("purgeCount() = %d, want 1", factory.purgeCount())
+	}
+	if !factory.isPurged("prefix-t", "orders") {
+		t.Fatal("prefix-t/orders was not purged")
+	}
+}
+
+// TestTenantShardReconciler_ReconcileOncePurgesAStartedShardWithoutPlacement
+// proves the catch-up for a missed delete event: a shard the lifecycle started
+// from a placement whose placement is gone is closed and purged, a placed
+// shard that still has its placement is kept, and a catalog-managed shard
+// (never placed) survives.
+func TestTenantShardReconciler_ReconcileOncePurgesAStartedShardWithoutPlacement(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	gone := raftShardKey{tenantID: "prefix-t", database: "dropped"}
+	kept := raftShardKey{tenantID: "acme", database: "orders"}
+	meta := raftShardKey{tenantID: "sys", database: "meta"}
+	factory.mu.Lock()
+	factory.started[gone] = true
+	factory.placed[gone] = true
+	factory.started[kept] = true
+	factory.placed[kept] = true
+	factory.started[meta] = true
+	factory.mu.Unlock()
+
+	r, _ := newTestReconciler(t, factory, nil, placement1("acme", "orders", 1))
+	r.ReconcileOnce(context.Background())
+
+	if !factory.isPurged("prefix-t", "dropped") {
+		t.Fatal("a placed shard whose placement is gone must be purged")
+	}
+	if factory.isPurged("acme", "orders") || !factory.isStarted("acme", "orders") {
+		t.Fatal("a shard that still has its placement must keep running")
+	}
+	if factory.isPurged("sys", "meta") || !factory.isStarted("sys", "meta") {
+		t.Fatal("a catalog-managed shard (never placed) must survive")
+	}
+	if factory.purgeCount() != 1 {
+		t.Fatalf("purgeCount() = %d, want 1", factory.purgeCount())
+	}
+}
+
+// listHookLifecycle runs beforeList ahead of each ListStarted, as a
+// foreground resolution that places and starts a shard after the
+// reconciler's placement List.
+type listHookLifecycle struct {
+	*fakeShardLifecycle
+	beforeList func()
+}
+
+func (l *listHookLifecycle) ListStarted() []StartedShard {
+	if l.beforeList != nil {
+		hook := l.beforeList
+		l.beforeList = nil
+		hook()
+	}
+	return l.fakeShardLifecycle.ListStarted()
+}
+
+func TestTenantShardReconciler_DoesNotPurgeGroupPlacedAfterSnapshot(t *testing.T) {
+	ctx := context.Background()
+	fake := newFakeShardLifecycle()
+	factory := &listHookLifecycle{fakeShardLifecycle: fake}
+	gone := raftShardKey{tenantID: "acme", database: "dropped"}
+	fake.mu.Lock()
+	fake.started[gone] = true
+	fake.placed[gone] = true
+	fake.mu.Unlock()
+	r, store := newTestReconciler(t, factory, nil)
+	factory.beforeList = func() {
+		if err := store.Put(ctx, placement1("acme", "fresh", 7)); err != nil {
+			t.Fatalf("store.Put: %v", err)
+		}
+		fresh := raftShardKey{tenantID: "acme", database: "fresh"}
+		fake.mu.Lock()
+		fake.started[fresh] = true
+		fake.placed[fresh] = true
+		fake.mu.Unlock()
+	}
+
+	r.ReconcileOnce(ctx)
+
+	if fake.isPurged("acme", "fresh") || !fake.isStarted("acme", "fresh") {
+		t.Fatal("a shard placed after the reconciler's placement snapshot was purged")
+	}
+	if !fake.isPurged("acme", "dropped") {
+		t.Fatal("a placed shard whose placement is really gone must still be purged")
 	}
 }
 

@@ -43,6 +43,49 @@ func bindTenant(isolation tenant.IsolationType) BindingTenant {
 // composition table in docs/databases/architecture.md names, or to its typed
 // refusal. Each expected binding is written out in full, so a cell that
 // resolves to the right kind in the wrong place still fails.
+// TestBinding_Describe_EncryptionAndNodes pins the read-only block database
+// info reports: the binding's kind, whose key encrypts the store (with
+// "+database" when the database has its own barrier), and the owner node.
+func TestBinding_Describe_EncryptionAndNodes(t *testing.T) {
+	cases := []struct {
+		name       string
+		binding    Binding
+		owner      string
+		generation uint64
+		want       DatabaseBinding
+	}{
+		{"prefix tenant local", Binding{Kind: BindingLocal, Encryptor: EncryptorNode}, "", 1,
+			DatabaseBinding{Kind: BindingLocal, Encryption: "node", Generation: 1}},
+		{"barrier tenant", Binding{Kind: BindingLocal, Encryptor: EncryptorTenant}, "", 2,
+			DatabaseBinding{Kind: BindingLocal, Encryption: "tenant", Generation: 2}},
+		{"database barrier", Binding{Kind: BindingLocal, Encryptor: EncryptorTenant, DatabaseBarrier: true}, "", 3,
+			DatabaseBinding{Kind: BindingLocal, Encryption: "tenant+database", Generation: 3}},
+		{"owner node", Binding{Kind: BindingLocal, Encryptor: EncryptorNode}, "n1", 7,
+			DatabaseBinding{Kind: BindingLocal, Encryption: "node", Nodes: []string{"n1"}, Generation: 7}},
+		{"raft without owner", Binding{Kind: BindingRaft, Encryptor: EncryptorNode}, "", 0,
+			DatabaseBinding{Kind: BindingRaft, Encryption: "node"}},
+		// A raft binding's nodes are its group's replicas, not the owner:
+		// every replica serves the database.
+		{"raft with replicas", Binding{Kind: BindingRaft, Encryptor: EncryptorTenant, Raft: &RaftBinding{Replicas: 2, Nodes: []string{"127.0.0.1:7001", "127.0.0.1:7002"}}}, "n1", 4,
+			DatabaseBinding{Kind: BindingRaft, Encryption: "tenant", Nodes: []string{"127.0.0.1:7001", "127.0.0.1:7002"}, Generation: 4}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.binding.Describe(tc.owner, tc.generation)
+			if got == nil {
+				t.Fatal("Describe returned nil")
+			}
+			if !reflect.DeepEqual(*got, tc.want) {
+				t.Fatalf("Describe(%q, %d) = %+v, want %+v", tc.owner, tc.generation, *got, tc.want)
+			}
+		})
+	}
+	var nilBinding *Binding
+	if got := nilBinding.Describe("n1", 1); got != nil {
+		t.Fatalf("nil binding described as %+v", got)
+	}
+}
+
 func TestResolveBinding_IsolationByBackend(t *testing.T) {
 	nodeRoot := filepath.Join(bindNodeDir, "tenants", "acme", "databases", "app")
 	tenantRoot := filepath.Join(bindTenantRoot, "databases", "app")
@@ -180,7 +223,7 @@ func TestResolveBinding_Refusals(t *testing.T) {
 		},
 		{
 			name:    "state storage on pebble",
-			cfg:     &DatabaseConfig{Name: "app", Backend: BackendPebble, Raft: &DatabaseRaftConfig{StateStorage: BackendFile}},
+			cfg:     &DatabaseConfig{Name: "app", Backend: BackendPebble, Raft: &DatabaseRaftConfig{StateStorage: BackendMemory}},
 			tenant:  bindTenant(tenant.IsolationPrefix),
 			node:    raftNode,
 			wantErr: &RaftOptionsRequireRaftBackendError{Name: "app", Backend: BackendPebble, Option: "raft.stateStorage"},
@@ -232,7 +275,7 @@ func TestResolveBinding_Refusals(t *testing.T) {
 			cfg:     &DatabaseConfig{Name: "app", Backend: BackendRaft},
 			tenant:  bindTenant(tenant.IsolationRaft),
 			node:    BindingNode{DataDir: bindNodeDir, RaftMode: true, Defaults: Defaults{RaftStateStorage: BackendFile}},
-			wantErr: &BackendIsolationConflictError{Name: "app", Backend: BackendFile, Isolation: string(tenant.IsolationRaft)},
+			wantErr: &InvalidRaftStateStorageError{Name: "app", StateStorage: BackendFile},
 		},
 		{
 			name:    "objstore state storage",
@@ -346,7 +389,7 @@ func TestResolveBinding_Defaults(t *testing.T) {
 			cfg: &DatabaseConfig{Name: "app", Backend: BackendRaft,
 				Raft: &DatabaseRaftConfig{ClusterMode: RaftLocal, StateStorage: BackendMemory}},
 			node: BindingNode{DataDir: bindNodeDir, RaftMode: true, Defaults: Defaults{
-				RaftStateStorage: BackendFile,
+				RaftStateStorage: BackendMemory,
 			}},
 			wantBackend: BackendRaft,
 			wantRaft:    &RaftBinding{Host: RaftHostSystem, Replicas: 1, ClusterMode: RaftLocal, StateStorage: BackendMemory},

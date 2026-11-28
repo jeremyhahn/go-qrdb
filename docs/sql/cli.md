@@ -85,6 +85,12 @@ qrdbd start \
 | `--pgsql-port` | `5432` | PostgreSQL wire protocol server port |
 | `--sql-database` | `qrdb` | Default SQL database name |
 
+The `--sql-database` database, when the daemon provisions it, and every
+database SQL `CREATE DATABASE` makes are created through the node's
+[`database_defaults`](../12-configuration.md#database_defaults): each records
+its backend, else the run mode's default (`raft` in raft mode, `pebble` in
+standalone mode). `--sm` picks no database's backend.
+
 
 TLS and auth must both be enabled when either protocol is active; the daemon
 refuses to start otherwise.

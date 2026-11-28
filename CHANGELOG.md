@@ -13,8 +13,45 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Fixed
+
+- A system-tenant raft shard starts on every replica ahead of time: the
+  shard reconciler no longer waits for a tenant barrier the system tenant
+  does not have (its shards run under the host-wide barrier), so the
+  replicas elect a leader and a drop removes the group from every
+  replica (#923).
+
+- A system-tenant raft database is placed on its replicas and stored under
+  the tenant root: its create takes the tenant create path, skipping only the
+  quota and entitlement checks, and its drop retires the placement (#923).
+
+- A barrier tenant's memory database refuses every read and write, and a cached vector search, once the tenant barrier seals, as the encrypted backends do (#923).
+- The legacy shared-store probe also finds a database whose only data is time series (raw `ts:`, `idx:metric:` and `retention:` keys), and a read fault under a prefix query is returned instead of reading as absence (#923).
+- Dropping a database evicts its cached service bundles on every transport and closes their vector services, so a dropped database's closed store and vector indexes are no longer reachable (#923).
+- The reserved SQL engine table names and reserved database names are refused with MySQL 1103 / 1102 (SQLSTATE 42000) and PostgreSQL SQLSTATE 42939 instead of the generic 1105 / XXUUU (#923).
+- `SHOW TABLES` over the PostgreSQL wire lists the database's tables instead of answering no rows (#923).
+- A materialized database's vector writes (upsert, batch upsert, delete, metadata update, namespace create, update and delete) now carry the database's drop-fence write guard in their Raft proposal, so a write that passed the drop check and proposed after `DROP DATABASE` fenced the database is refused at apply time; the shared node vector store keeps the check-before-write (#923).
+- A materialized database's cached vector search now goes through its binding store first, so a sealed barrier refuses it instead of serving the cached index (#923).
+- An open Pebble store now refuses every read (get, list, exists, iterator, snapshot) once its barrier seals, so memtable and block-cache data is not served after a seal; the refusal maps to Unavailable on every transport (#923).
+- A `backend: memory` database whose data predates its own store keeps its shared-store route on qrdbd and the SDK standalone node, which now install the shared-keyspace probe, instead of being materialized empty (#923).
+
+### Added
+
+- Raft-mode nodes (qrdbd and the SDK clustered node) give memory, file, pebble and objstore databases their own store on the owner node, under `<data-dir>/tenants/<tenant>/databases/<name>`, as standalone nodes do; `database info` reports their binding as `local`, and `backend: raft` databases keep the raft path (docs/databases/architecture.md, #923).
+- `database info` and `database list` report a read-only `binding` block on every transport (gRPC `DatabaseBindingInfo`, REST, QUIC, Unix, MCP, both SDKs and the CLI table output): the binding kind (`local` or `raft`), the owning node when one is recorded and the encryption scope (`node` or `tenant`, with `+database` for a per-database barrier), as the server's binding resolver decides it (docs/databases/api.md, #923).
+- The `binding` block reports the database's `generation` on every transport (gRPC `DatabaseBindingInfo.generation`, field 4) and in the CLI table output: the catalog keeps a per-name counter that a drop never removes, so a database dropped and created again under the same name reports a higher generation than the one it replaced (docs/databases/api.md, #923).
+
 ### Changed
 
+- A `backend: raft` database of a prefix, barrier or volume tenant runs its own Raft group (#923).
+- **Breaking:** the SQL engine tables are renamed to `qrdb_ts_datapoints`, `qrdb_ts_metrics`, `qrdb_vector_namespaces` and `qrdb_vector_vectors` and are served only when their engine is compiled in; the four names are reserved for `CREATE TABLE` and `RENAME TABLE`, and `metrics`, `vectors`, `datapoints` and `namespaces` are ordinary user table names (#923).
+- A standalone node's non-shared database keeps its vectors in its own binding store (memory, file, pebble or objstore), written through its apply host under its encryptor; the separate per-database Pebble vector store under `<root>/vector` is gone (#923).
+- On a standalone node a prefix tenant's plain database (no per-database barrier, no explicit data directory, not raft) now lives in its own store under `<data-dir>/tenants/<tenant>/databases/<name>`, on its own backend, written through the node encryptor and served from its own host on every transport; `DROP DATABASE` removes that directory. Raft mode, the system tenant and volume and raft tenants are unchanged (barrier tenants: next entry). An existing standalone node's prefix-tenant databases created before this release are not moved: while such a database has no store under its binding root and its earlier store holds data, it keeps opening on that store and serves its data from there; moving it to its own store is a later slice (docs/databases/architecture.md, #923).
+- On a standalone node a barrier tenant's plain database now lives in its own store under `<data-dir>/tenants/<tenant>/databases/<name>` as a prefix tenant's does, written through the tenant's own barrier and never the node encryptor: while that barrier is sealed the database's data is refused, not served. Sealing the tenant barrier refuses KV, SQL, indexes and time series on every transport, collections and MVCC at the store, and the store cannot be reopened while it is sealed. Volume and raft tenants are unchanged. A barrier tenant's databases created before this release are not moved: while such a database has no store under its binding root and its earlier store holds data, it keeps opening on that store and serves its data from there; moving it to its own store is a later slice (docs/databases/architecture.md, #923).
+- On a standalone node the system tenant's databases (all but its `system` database, which stays on the control-plane store) now live in their own store under `<data-dir>/tenants/system/databases/<name>`, written through the node encryptor, and a database created with an explicit data directory and no per-database barrier now lives in its own store in that directory; both are served from their own host on every transport, and `DROP DATABASE` removes the directory. Databases created before this release are not moved: their data stays where it was written and is not served from the new store, and an explicit data directory written before this release is not converted (docs/databases/architecture.md, #923).
+- A standalone node's local store follows `storage.backend` (pebble when empty): `databases[0].backend` no longer picks it, and a `databases[]` entry's backend, the first included, is recorded for that database only. A configuration that set only `databases[0].backend` to choose the node's engine must set `storage.backend` (for an ephemeral store, `storage.backend: memory`). The standalone `databases[...].backend: raft` start refusal is gone with it: `storage.backend` cannot name `raft` (docs/databases/architecture.md, #923).
+
+- SQL `CREATE DATABASE` (MySQL and PostgreSQL wire, and the DatabaseService path) and the database `qrdbd start --sql-database` provisions are created through the node's `database_defaults`: each records the configured backend, else the run mode's default (`raft` in raft mode, `pebble` in standalone mode). `CREATE DATABASE` no longer hardcodes `pebble`, and `--sm` no longer picks the `--sql-database` database's backend; an existing database keeps the backend it recorded (docs/databases/architecture.md, #923).
 - **Roles come only from the bound user record (#1651).** An authenticator's or token's role list is discarded on every path; a subject with no go-qrdb record, a sealed tenant and a node with no user store carry no roles. `authtest.FixedAuthenticator` gains `Users()`, the read-only user store a test pairs with it so its fixed identity's roles resolve through a record (SPEC `authz-claim-roles`).
 
 - Verifiable log review fixes (#1655): the kv surface refuses a barrier database's reserved verifiable-log keyspace with `ReservedKeyError` (`InvalidArgument`); dropping a database reclaims its logs, so a re-created name starts empty; a barrier tenant's audit trail stays on the system shard, as before, and the log service reads it there; only that audit log goes there, and the tenant's other logs stay under its own barrier; a tenant's encryption migration carries its verifiable logs; a drop reclaims logs before the name is released, behind the new `verifiable-log-drop` feature gate.
@@ -66,6 +103,10 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **A database `data_dir` can no longer claim or drop the node's local object store.** The reservation now covers the store at its real path (a relative `storage.objstore.settings.path` or `storage.wal_dir` resolves against the working directory, as the store opens it, not against the data directory) and the object store's `<root>.journal` commit-journal sibling; a node store whose path cannot be resolved refuses the data directory.
+
+- **A reopened store serves the secondary indexes created before it closed.** The MVCC engine kept an index's definition only in memory, so a standalone store reopened over the same data (and a Raft snapshot recovery) answered "index not found" for every index it held, although the index entries were on disk. The definition is now recorded in an index catalog table, written in the apply batch of the create and removed in that of the drop, carried by snapshots and covered by replica hashes, and the engine restores the indexes from it on open and after a failed commit (#923).
+- On a standalone node an objstore database on the local provider now lives in its own store under its binding root (`<data-dir>/tenants/<tenant>/databases/<name>/objstore`), with the node's provider; before this it opened the configured `storage.objstore` path, shared with every other objstore database and with the node's own store. `storage.objstore`'s path now places the node's own store only, and a remote provider is unchanged. Data an objstore database wrote at the configured path before this release is not moved (docs/databases/architecture.md, #923).
 - **A tenant move no longer counts a replica whose tenant reopens sealed as settled (#925).** A self-managed tenant's barrier stays sealed until its administrator unseals it; the move step's settle now keeps that replica's step settling (no attempt counted, "tenant sealed" in the journal's error) until the unseal and the replica's catch-up, instead of releasing it and granting the next replica's step, which could cost a serving tenant its quorum.
 - **A tenant move no longer aborts while a replica node is sealed (#925).** A copy step on a node that is sealed, or whose destination pool is unavailable, counted a failed attempt each tick and aborted the move after three; the step now waits for the unseal without counting an attempt, `get-move` shows the reason ("move copy step waiting: node sealed"), a cancel still aborts, and the same step runs once the node is unsealed.
 - **A tenant move whose reopen fails recovers without a restart (#925).** A failed reopen or settle of a moving tenant's stores (a catch-up timeout, a cancelled context) left them closed until the next boot; the move worker now retries the reopen on every tick until the tenant serves again (a self-managed tenant comes back sealed, as before).
@@ -1051,6 +1092,10 @@ are not reconstructed here — their history is in the git log.
 
 ### Removed
 
+- **Breaking:** remote-mode databases leave the clients (OD-9 A): the CLI's `qrdb database update-connection`, the Go SDK's `UpdateDatabaseConnection` and `DatabaseConnectionConfig` and the `Connection` field of its database types, and the TypeScript SDK's `updateDatabaseConnection` and connection types are deleted (#923).
+- **Breaking:** remote-mode databases, the `connection` block and the update-connection verb are removed on every transport (REST, gRPC, QUIC, MCP, Unix): the gRPC `DatabaseUpdateConnection` RPC and `DatabaseInfoResponse.connection` are gone (field 11 and the name reserved), and a create or a config entry carrying `mode: remote` or a `connection` block is refused (#923).
+- **Breaking:** no client sends a vector shard ID (OD-14 A): the database's binding decides the vector shard. The CLI's `--shard-id` is gone from every `qrdb vector` verb, `ShardID` from the Go SDK's twenty-one vector request types and every Go transport (gRPC, Unix, QUIC, REST, MCP, embedded), and `shardId` from the TypeScript SDK's vector request types and its REST and desktop transports (#923).
+- **Breaking:** `shard_id` is removed from every vector request on every transport (REST, gRPC, Unix, QUIC, MCP, embedded); the twenty vector request messages reserve the proto field number and name. REST refuses a vector body naming `shard_id` (400) and MCP refuses it as an unknown argument; gRPC, Unix and QUIC drop it as an unknown protobuf field (#923).
 - The dev container's internal module-forge path (GITEA_HOST, MODULE_FORGE_TOKEN); modules resolve from the public proxy.
 
 ## [0.58.0-alpha] - 2026-10-27

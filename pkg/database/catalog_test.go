@@ -361,6 +361,93 @@ func TestKVCatalog_DeleteRemovesOnlyTheNamedIncarnationUnderItsClaim(t *testing.
 	}
 }
 
+// createGeneration creates (tenant, name) in a droppable state and returns
+// the generation the catalog recorded for it.
+func createGeneration(t *testing.T, cat *KVCatalog, tenant, name, incarnation string) uint64 {
+	t.Helper()
+	ctx := context.Background()
+	meta := DatabaseMeta{Name: name, TenantID: tenant, Backend: BackendMemory, Incarnation: incarnation, Dropping: true, DropClaim: "c-" + incarnation}
+	if err := cat.Create(ctx, meta); err != nil {
+		t.Fatalf("Create %s/%s: %v", tenant, name, err)
+	}
+	got, err := cat.Get(ctx, tenant, name)
+	if err != nil {
+		t.Fatalf("Get %s/%s: %v", tenant, name, err)
+	}
+	return got.Generation
+}
+
+func dropGeneration(t *testing.T, cat *KVCatalog, tenant, name, incarnation string) {
+	t.Helper()
+	if err := cat.Delete(context.Background(), tenant, name, incarnation, "c-"+incarnation); err != nil {
+		t.Fatalf("Delete %s/%s: %v", tenant, name, err)
+	}
+}
+
+func TestKVCatalog_GenerationIncrementsAcrossDrop(t *testing.T) {
+	cat, system := newTestCatalog(t, nil)
+	if g := createGeneration(t, cat, "acme", "orders", "i1"); g != 1 {
+		t.Fatalf("first create: generation = %d, want 1", g)
+	}
+	dropGeneration(t, cat, "acme", "orders", "i1")
+	if v, _ := system.Get(context.Background(), catalogGenerationKey("acme", "orders")); v == nil {
+		t.Fatal("Delete removed the generation counter")
+	}
+	if g := createGeneration(t, cat, "acme", "orders", "i2"); g != 2 {
+		t.Fatalf("create after drop: generation = %d, want 2", g)
+	}
+}
+
+func TestKVCatalog_GenerationPerName(t *testing.T) {
+	cat, _ := newTestCatalog(t, nil)
+	if g := createGeneration(t, cat, "acme", "a", "i1"); g != 1 {
+		t.Fatalf("a: generation = %d, want 1", g)
+	}
+	dropGeneration(t, cat, "acme", "a", "i1")
+	if g := createGeneration(t, cat, "acme", "a", "i2"); g != 2 {
+		t.Fatalf("a again: generation = %d, want 2", g)
+	}
+	if g := createGeneration(t, cat, "acme", "b", "i3"); g != 1 {
+		t.Fatalf("b: generation = %d, want 1 (names count independently)", g)
+	}
+	if g := createGeneration(t, cat, "other", "a", "i4"); g != 1 {
+		t.Fatalf("other/a: generation = %d, want 1 (tenants count independently)", g)
+	}
+}
+
+func TestKVCatalog_FailedCreateStillAdvancesGeneration(t *testing.T) {
+	ctx := context.Background()
+	cat, _ := newTestCatalog(t, nil)
+	first := createGeneration(t, cat, "acme", "orders", "i1")
+	var exists *AlreadyExistsError
+	if err := cat.Create(ctx, DatabaseMeta{Name: "orders", TenantID: "acme", Backend: BackendMemory, Incarnation: "i9"}); !errors.As(err, &exists) {
+		t.Fatalf("second create: err = %v, want *AlreadyExistsError", err)
+	}
+	got, err := cat.Get(ctx, "acme", "orders")
+	if err != nil || got.Generation != first || got.Incarnation != "i1" {
+		t.Fatalf("record after a refused create = %+v, %v; want generation %d, incarnation i1", got, err, first)
+	}
+	dropGeneration(t, cat, "acme", "orders", "i1")
+	if g := createGeneration(t, cat, "acme", "orders", "i2"); g <= first+1 {
+		t.Fatalf("create after drop: generation = %d, want above %d (the refused create advanced the counter)", g, first+1)
+	}
+}
+
+func TestKVCatalog_IsolatedTenantGenerationInHome(t *testing.T) {
+	ctx := context.Background()
+	home := kvstore.NewMemoryKVStore()
+	cat, system := newTestCatalog(t, &fakeCatalogHomes{homes: map[string]kvstore.KVStore{"iso": home}})
+	if g := createGeneration(t, cat, "iso", "a", "i1"); g != 1 {
+		t.Fatalf("generation = %d, want 1", g)
+	}
+	if v, _ := system.Get(ctx, catalogGenerationKey("iso", "a")); v != nil {
+		t.Fatal("an isolated tenant's generation counter is in the system store")
+	}
+	if v, _ := home.Get(ctx, catalogGenerationKey("iso", "a")); v == nil {
+		t.Fatal("an isolated tenant's generation counter is not in its home store")
+	}
+}
+
 func TestManager_OpenAll_RequiresACatalog(t *testing.T) {
 	m := NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = m.Close() })

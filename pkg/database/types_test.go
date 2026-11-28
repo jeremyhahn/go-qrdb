@@ -399,7 +399,6 @@ func TestDatabaseMode_Valid_RecognizedTypes(t *testing.T) {
 		mode DatabaseMode
 	}{
 		{"embedded", ModeEmbedded},
-		{"remote", ModeRemote},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -434,8 +433,33 @@ func TestDatabaseMode_Constants(t *testing.T) {
 	if ModeEmbedded != "embedded" {
 		t.Errorf("ModeEmbedded = %q, want %q", ModeEmbedded, "embedded")
 	}
-	if ModeRemote != "remote" {
-		t.Errorf("ModeRemote = %q, want %q", ModeRemote, "remote")
+}
+
+// TestDatabaseMode_NoRemote asserts remote mode is gone (OD-9 A): the valid
+// mode set is exactly {embedded}.
+func TestDatabaseMode_NoRemote(t *testing.T) {
+	if DatabaseMode("remote").Valid() {
+		t.Fatal(`DatabaseMode("remote").Valid() = true, want false`)
+	}
+	if len(validModes) != 1 {
+		t.Fatalf("validModes = %v, want only %q", validModes, ModeEmbedded)
+	}
+	if _, ok := validModes[ModeEmbedded]; !ok {
+		t.Fatalf("validModes = %v, want %q", validModes, ModeEmbedded)
+	}
+}
+
+// TestDatabaseConfig_RemoteModeRefused asserts a config naming mode "remote"
+// is refused with the invalid-mode error (OD-9 A).
+func TestDatabaseConfig_RemoteModeRefused(t *testing.T) {
+	cfg := DatabaseConfig{Name: "testdb", Backend: BackendMemory, Mode: DatabaseMode("remote")}
+	err := cfg.Validate()
+	var modeErr *InvalidModeError
+	if !errors.As(err, &modeErr) {
+		t.Fatalf("Validate() = %v (%T), want *InvalidModeError", err, err)
+	}
+	if modeErr.Mode != "remote" {
+		t.Errorf("InvalidModeError.Mode = %q, want %q", modeErr.Mode, "remote")
 	}
 }
 
@@ -932,89 +956,6 @@ func TestDatabaseRaftConfig_Validate_DiscoverySkippedForNonDistributed(t *testin
 	}
 }
 
-func TestDatabaseConnectionConfig_Validate_Valid(t *testing.T) {
-	tests := []struct {
-		name string
-		cfg  DatabaseConnectionConfig
-	}{
-		{
-			name: "grpc_transport",
-			cfg:  DatabaseConnectionConfig{Transport: "grpc", Address: "localhost:9090"},
-		},
-		{
-			name: "rest_transport",
-			cfg:  DatabaseConnectionConfig{Transport: "rest", Address: "https://db.example.com"},
-		},
-		{
-			name: "unix_transport",
-			cfg:  DatabaseConnectionConfig{Transport: "unix", Address: "/var/run/qrdb.sock"},
-		},
-		{
-			name: "with_tls_files",
-			cfg: DatabaseConnectionConfig{
-				Transport: "grpc",
-				Address:   "localhost:9090",
-				CAFile:    "/etc/certs/ca.pem",
-				CertFile:  "/etc/certs/client.pem",
-				KeyFile:   "/etc/certs/client-key.pem",
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if err := tt.cfg.Validate(); err != nil {
-				t.Errorf("Validate() returned unexpected error: %v", err)
-			}
-		})
-	}
-}
-
-func TestDatabaseConnectionConfig_Validate_MissingTransport(t *testing.T) {
-	tests := []struct {
-		name      string
-		transport string
-	}{
-		{"empty_transport", ""},
-		{"whitespace_transport", "   "},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := DatabaseConnectionConfig{Transport: tt.transport, Address: "localhost:9090"}
-			err := cfg.Validate()
-			if err == nil {
-				t.Fatal("Validate() returned nil, want *ConnectionRequiredError")
-			}
-			var connErr *ConnectionRequiredError
-			if !errors.As(err, &connErr) {
-				t.Fatalf("Validate() error type = %T, want *ConnectionRequiredError", err)
-			}
-		})
-	}
-}
-
-func TestDatabaseConnectionConfig_Validate_MissingAddress(t *testing.T) {
-	tests := []struct {
-		name    string
-		address string
-	}{
-		{"empty_address", ""},
-		{"whitespace_address", "   "},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := DatabaseConnectionConfig{Transport: "grpc", Address: tt.address}
-			err := cfg.Validate()
-			if err == nil {
-				t.Fatal("Validate() returned nil, want *ConnectionRequiredError")
-			}
-			var connErr *ConnectionRequiredError
-			if !errors.As(err, &connErr) {
-				t.Fatalf("Validate() error type = %T, want *ConnectionRequiredError", err)
-			}
-		})
-	}
-}
-
 func TestEtcdConfig_Validate_DisabledNeedsNoListenAddr(t *testing.T) {
 	cfg := &EtcdConfig{Enabled: false, ListenAddr: ""}
 	if err := cfg.Validate(); err != nil {
@@ -1036,55 +977,9 @@ func TestDatabaseConfig_Validate_EmptyModeDefaultsToEmbedded(t *testing.T) {
 	}
 }
 
-func TestDatabaseConfig_Validate_RemoteRequiresConnection(t *testing.T) {
-	cfg := DatabaseConfig{
-		Name: "remote-db",
-		Mode: ModeRemote,
-		// Connection is nil
-	}
-	err := cfg.Validate()
-	if err == nil {
-		t.Fatal("Validate() returned nil, want *ConnectionRequiredError")
-	}
-	var connErr *ConnectionRequiredError
-	if !errors.As(err, &connErr) {
-		t.Fatalf("Validate() error type = %T, want *ConnectionRequiredError", err)
-	}
-}
-
-func TestDatabaseConfig_Validate_RemoteWithConnection(t *testing.T) {
-	cfg := DatabaseConfig{
-		Name: "remote-db",
-		Mode: ModeRemote,
-		Connection: &DatabaseConnectionConfig{
-			Transport: "grpc",
-			Address:   "localhost:9090",
-		},
-	}
-	if err := cfg.Validate(); err != nil {
-		t.Errorf("Validate() returned unexpected error: %v", err)
-	}
-}
-
 // TestDatabaseConfig_Validate_RemoteInvalidConnection pins that a remote
 // database's Validate runs its connection's own validation rather than
 // stopping at the nil check.
-func TestDatabaseConfig_Validate_RemoteInvalidConnection(t *testing.T) {
-	cfg := DatabaseConfig{
-		Name: "remote-db",
-		Mode: ModeRemote,
-		Connection: &DatabaseConnectionConfig{
-			Transport: "grpc",
-			Address:   "",
-		},
-	}
-	err := cfg.Validate()
-	var connErr *ConnectionRequiredError
-	if !errors.As(err, &connErr) {
-		t.Fatalf("Validate() error = %v (%T), want *ConnectionRequiredError", err, err)
-	}
-}
-
 func TestDatabaseConfig_Validate_InvalidMode(t *testing.T) {
 	cfg := DatabaseConfig{
 		Name:    "testdb",
@@ -1147,23 +1042,6 @@ func TestDatabaseConfig_Validate_WithRaftConfig(t *testing.T) {
 	}
 }
 
-func TestDatabaseConfig_Validate_RemoteSkipsBackendValidation(t *testing.T) {
-	// Remote mode with an invalid backend should still pass because
-	// backend validation is skipped for remote databases.
-	cfg := DatabaseConfig{
-		Name:    "remote-db",
-		Backend: BackendType("invalid"),
-		Mode:    ModeRemote,
-		Connection: &DatabaseConnectionConfig{
-			Transport: "grpc",
-			Address:   "localhost:9090",
-		},
-	}
-	if err := cfg.Validate(); err != nil {
-		t.Errorf("Validate() returned unexpected error: %v", err)
-	}
-}
-
 func TestDatabaseMeta_BackwardCompat_MissingMode(t *testing.T) {
 	// Simulate JSON from before the Mode field was added.
 	raw := `{"name":"legacy-db","engine":"kv","backend":"memory"}`
@@ -1190,9 +1068,6 @@ func TestDatabaseMeta_BackwardCompat_MissingMode(t *testing.T) {
 	if meta.Barrier != nil {
 		t.Error("Barrier = non-nil, want nil for missing JSON field")
 	}
-	if meta.Connection != nil {
-		t.Error("Connection = non-nil, want nil for missing JSON field")
-	}
 }
 
 func TestDatabaseInfo_NewFields_JSONRoundTrip(t *testing.T) {
@@ -1215,11 +1090,6 @@ func TestDatabaseInfo_NewFields_JSONRoundTrip(t *testing.T) {
 			Mode:           "shamir",
 			SharesRequired: 3,
 			SharesTotal:    5,
-		},
-		Connection: &DatabaseConnectionConfig{
-			Transport: "grpc",
-			Address:   "localhost:9090",
-			CAFile:    "/etc/ca.pem",
 		},
 	}
 
@@ -1280,18 +1150,6 @@ func TestDatabaseInfo_NewFields_JSONRoundTrip(t *testing.T) {
 	}
 	if got.Barrier.SharesTotal != 5 {
 		t.Errorf("Barrier.SharesTotal = %d, want %d", got.Barrier.SharesTotal, 5)
-	}
-	if got.Connection == nil {
-		t.Fatal("Connection = nil, want non-nil")
-	}
-	if got.Connection.Transport != "grpc" {
-		t.Errorf("Connection.Transport = %q, want %q", got.Connection.Transport, "grpc")
-	}
-	if got.Connection.Address != "localhost:9090" {
-		t.Errorf("Connection.Address = %q, want %q", got.Connection.Address, "localhost:9090")
-	}
-	if got.Connection.CAFile != "/etc/ca.pem" {
-		t.Errorf("Connection.CAFile = %q, want %q", got.Connection.CAFile, "/etc/ca.pem")
 	}
 }
 

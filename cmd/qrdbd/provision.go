@@ -19,8 +19,12 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
+	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
@@ -37,6 +41,13 @@ type databaseProvisioner interface {
 	Provision(ctx context.Context, cfg database.DatabaseConfig) (*database.Database, error)
 	UpdateProtocolForTenant(ctx context.Context, name string, protocol database.ProtocolConfig) error
 	UpdateSQLForTenant(ctx context.Context, name string, sqlCfg *database.SQLConfig) error
+}
+
+// databasePlacer gives a provisioned database the replicated placement an
+// API create gives it (service.DatabaseService.PlaceProvisioned): Provision
+// records a backend: raft database, and its group, but writes no placement.
+type databasePlacer interface {
+	PlaceProvisioned(ctx context.Context, db *database.Database) error
 }
 
 var _ databaseProvisioner = (*database.Manager)(nil)
@@ -66,7 +77,17 @@ var _ databaseProvisioner = (*database.Manager)(nil)
 // after server.AwaitShardLeader returned successfully. Every write below is retried
 // through WhileSystemShardSettling for exactly that reason; any other
 // error class is returned at once.
-func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisioner, node server.LeaderSource) error {
+func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisioner, placer databasePlacer, node server.LeaderSource) error {
+	// place gives a provisioned database its placement; a node with no
+	// placer (standalone) places nothing.
+	place := func(name string, db *database.Database) error {
+		if placer == nil || db == nil {
+			return nil
+		}
+		return server.WhileSystemShardSettling(ctx, node, "place database "+name, func(context.Context) error {
+			return placer.PlaceProvisioned(ctx, db)
+		})
+	}
 	if err := server.AwaitShardLeader(ctx, node, leaderWaitBudget(f), shard.ShardKV); err != nil {
 		return &DatabaseProvisionError{Step: "wait for leader", Err: err}
 	}
@@ -75,10 +96,28 @@ func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisio
 	// attempt's: a cut-off attempt would leave a proposal in flight whose
 	// retry races it.
 	for _, cfg := range configuredDatabases(f) {
-		if err := server.WhileSystemShardSettling(ctx, node, "provision database "+cfg.Name, func(context.Context) error {
-			_, err := dbs.Provision(ctx, cfg)
-			return err
+		held := false
+		var db *database.Database
+		if err := whileShardIDsActivate(ctx, leaderWaitBudget(f), shardIDsActivationPoll, func() error {
+			return server.WhileSystemShardSettling(ctx, node, "provision database "+cfg.Name, func(context.Context) error {
+				var err error
+				db, err = dbs.Provision(ctx, cfg)
+				if heldElsewhere(err) {
+					held = true
+					return nil
+				}
+				return err
+			})
 		}); err != nil {
+			return err
+		}
+		// In raft mode the node that first provisioned the database holds
+		// it; this node forwards to it and applies none of its settings.
+		if held {
+			slog.Info("configured database is held by another node; not opening it here", "database", cfg.Name)
+			continue
+		}
+		if err := place(cfg.Name, db); err != nil {
 			return err
 		}
 		// The file declares the database's SQL settings: a database that
@@ -97,6 +136,9 @@ func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisio
 		return nil
 	}
 	_, err := dbs.GetOwned(f.sqlDatabase, tenantid.System)
+	if heldElsewhere(err) {
+		return nil
+	}
 	if err == nil {
 		return server.WhileSystemShardSettling(ctx, node, "update protocol of SQL database "+f.sqlDatabase, func(context.Context) error {
 			return dbs.UpdateProtocolForTenant(ctx, f.sqlDatabase, sqlDatabaseConfig(f).Protocol)
@@ -106,10 +148,19 @@ func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisio
 	var dde *database.DroppingError
 	switch {
 	case errors.As(err, &nfe):
-		return server.WhileSystemShardSettling(ctx, node, "provision SQL database "+f.sqlDatabase, func(context.Context) error {
-			_, err := dbs.Provision(ctx, sqlDatabaseConfig(f))
+		var db *database.Database
+		if err := server.WhileSystemShardSettling(ctx, node, "provision SQL database "+f.sqlDatabase, func(context.Context) error {
+			var err error
+			db, err = dbs.Provision(ctx, sqlDatabaseConfig(f))
+			if heldElsewhere(err) {
+				db = nil
+				return nil
+			}
 			return err
-		})
+		}); err != nil {
+			return err
+		}
+		return place(f.sqlDatabase, db)
 	case errors.As(err, &dde):
 		// The SQL database is fenced by a drop still in flight, most likely
 		// one a crash interrupted. Failing boot would leave the node
@@ -123,6 +174,45 @@ func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisio
 	default:
 		return err
 	}
+}
+
+// shardIDsActivationPoll is how often whileShardIDsActivate retries.
+const shardIDsActivationPoll = 250 * time.Millisecond
+
+// whileShardIDsActivate runs provision until it returns anything but the
+// cluster-shard-ids NotActiveError. A provisioned raft database claims its
+// group's shard ID, and the claim is refused until the feature gate (started
+// before provisioning) has activated cluster-shard-ids, which on a fresh
+// cluster waits for every member's advertisement. The wait is bounded by
+// budget: past it boot fails with a *DatabaseProvisionError naming the step,
+// never waits forever.
+func whileShardIDsActivate(ctx context.Context, budget, poll time.Duration, provision func() error) error {
+	deadline := time.Now().Add(budget)
+	ticker := time.NewTicker(poll)
+	defer ticker.Stop()
+	for {
+		err := provision()
+		var notActive *feature.NotActiveError
+		if !errors.As(err, &notActive) || notActive.Feature != featuregate.ClusterShardIDs {
+			return err
+		}
+		if !time.Now().Before(deadline) {
+			return &DatabaseProvisionError{Step: "wait for cluster-shard-ids to activate", Err: err}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+// heldElsewhere reports whether err is the refusal of a database another
+// node holds (*placement.NotAReplicaError): in raft mode a provisioned local
+// database is held by the one node that recorded it, and the others forward.
+func heldElsewhere(err error) bool {
+	var nar *placement.NotAReplicaError
+	return errors.As(err, &nar)
 }
 
 // configuredDatabases returns the database configurations the daemon's
@@ -156,16 +246,13 @@ func configuredDatabases(f *startFlags) []database.DatabaseConfig {
 }
 
 // sqlDatabaseConfig returns the configuration --sql-database is provisioned
-// with: a KV database on the state machine's backend, serving the enabled
-// SQL wire protocols.
+// with: a database on the node's database_defaults backend (else the run
+// mode's default), serving the enabled SQL wire protocols. It names no
+// backend, so --sm never picks one: Manager.Provision fills the defaults
+// once and records them.
 func sqlDatabaseConfig(f *startFlags) database.DatabaseConfig {
-	backend := database.BackendPebble
-	if f.smType == "memory" || f.smType == "concurrent" {
-		backend = database.BackendMemory
-	}
 	return database.DatabaseConfig{
-		Name:    f.sqlDatabase,
-		Backend: backend,
+		Name: f.sqlDatabase,
 		Protocol: database.ProtocolConfig{
 			MySQL:      f.enableMySQL,
 			PostgreSQL: f.enablePgSQL,

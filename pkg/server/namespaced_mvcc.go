@@ -73,6 +73,15 @@ type leaseOwnership interface {
 	requireOwned(ctx context.Context, leaseID int64) error
 }
 
+// shardLeaseOwnership is the lease ownership of a dedicated-raft database's
+// pass-through view: the shard IS the database's keyspace and its lease
+// service is the database's own, so every lease in it belongs to the
+// database. Attachment is not confined here; the shard's engine refuses a
+// lease it does not hold (*service.LeaseNotFoundError) when the write applies.
+type shardLeaseOwnership struct{}
+
+func (shardLeaseOwnership) requireOwned(context.Context, int64) error { return nil }
+
 // Compile-time interface checks.
 var (
 	_ service.MVCCKVServicer          = (*namespacedMVCCService)(nil)

@@ -285,36 +285,6 @@ func (t *Transport) UpdateDatabaseSQL(ctx context.Context, req transport.UpdateD
 	return dbconv.Info(resp), nil
 }
 
-// UpdateDatabaseConnection updates the remote connection configuration for a
-// database by calling the DatabaseUpdateConnection gRPC method over the Unix
-// domain socket.
-func (t *Transport) UpdateDatabaseConnection(ctx context.Context, req transport.UpdateDatabaseConnectionRequest) (*transport.DatabaseInfo, error) {
-	if t.closed.Load() {
-		return nil, &transport.ClosedError{}
-	}
-
-	pbReq := &pb.DatabaseUpdateConnectionRequest{
-		Name: req.Name,
-	}
-
-	if req.Connection != nil {
-		pbReq.Connection = &pb.DatabaseConnectionConfig{
-			Transport:     req.Connection.Transport,
-			RemoteAddress: req.Connection.Address,
-			CaFile:        req.Connection.CAFile,
-			CertFile:      req.Connection.CertFile,
-			KeyFile:       req.Connection.KeyFile,
-		}
-	}
-
-	resp, err := t.client.DatabaseUpdateConnection(ctx, pbReq)
-	if err != nil {
-		return nil, mapGRPCError("UpdateDatabaseConnection", err)
-	}
-
-	return dbconv.Info(resp), nil
-}
-
 // ---------------------------------------------------------------------------
 // Proto conversion helpers
 // ---------------------------------------------------------------------------

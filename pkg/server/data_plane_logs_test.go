@@ -27,6 +27,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -46,7 +47,11 @@ func TestNewDataPlaneCreateFunc_EveryStateMachineHasItsOwnLogs(t *testing.T) {
 	_, tb := registerVolumeTenant(t, newVolumePooledRegistry(t), "acme")
 	hub := watch.NewHub()
 	t.Cleanup(hub.Close)
-	storetest.RequireOwnLogsPerStateMachine(t, newDataPlaneCreateFunc(tb, lease.NewLessor(), hub))
+	createFn, err := newDataPlaneCreateFunc(tb, lease.NewLessor(), hub, database.DefaultRaftStateStorage)
+	if err != nil {
+		t.Fatalf("newDataPlaneCreateFunc: %v", err)
+	}
+	storetest.RequireOwnLogsPerStateMachine(t, createFn)
 }
 
 // TestNewDataPlaneCreateFunc_LogKeysSurviveSnapshotRestore pins that a barrier
@@ -62,7 +67,10 @@ func TestNewDataPlaneCreateFunc_LogKeysSurviveSnapshotRestore(t *testing.T) {
 	_, tb := registerVolumeTenant(t, newVolumePooledRegistry(t), "acme")
 	hub := watch.NewHub()
 	t.Cleanup(hub.Close)
-	createFn := newDataPlaneCreateFunc(tb, lease.NewLessor(), hub)
+	createFn, err := newDataPlaneCreateFunc(tb, lease.NewLessor(), hub, database.DefaultRaftStateStorage)
+	if err != nil {
+		t.Fatalf("newDataPlaneCreateFunc: %v", err)
+	}
 
 	open := func(t *testing.T, shardID uint64, dir string) *store.MVCCStateMachine {
 		t.Helper()

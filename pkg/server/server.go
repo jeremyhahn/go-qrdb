@@ -150,6 +150,10 @@ var newSQLServiceFn buildSQLServiceFn
 // based on the protocol configuration and manages their lifecycles with
 // rollback on startup failure.
 type Server struct {
+	// bundleEvictors evicts a dropped database from every transport's
+	// service-bundle caches at its drop fence (storeResolver.FenceTarget).
+	bundleEvictors bundleEvictors
+
 	// autoClientCAs is the one ClientCAs pool every auto-provisioned
 	// listener configuration shares; see autoTLSClientCAs.
 	autoClientCAs struct {
@@ -259,47 +263,53 @@ type serverOptions struct {
 	// after the built-in ones at MCP server construction (WithMCPServerOptions)
 	// — e.g. the OAuth discovery surface (mcpapi.WithBearerChallenge,
 	// mcpapi.WithProtectedResourceMetadata) go-quicbaas configures.
-	mcpServerOpts      []mcpapi.ServerOption
-	userSvc            user.UserServicer
-	roleSvc            role.RoleServicer
-	groupSvc           group.GroupServicer
-	certProv           cert.CertProvider
-	certEnroll         service.CertEnrollmentServicer
-	invitations        service.InvitationServicer
-	onboarding         service.TenantOnboardingServicer
-	authMW             *authmw.AuthMiddleware
-	caBootstrapCert    []byte
-	caBootstrapBundle  func(context.Context) ([]byte, error)
-	batchSvc           service.BatchServicer
-	txSvc              service.TransactionServicer
-	mvccSvc            service.MVCCKVServicer
-	leaseSvc           service.LeaseServicer
-	lockSvc            service.LockServicer
-	tsSvc              service.TimeSeriesServicer
-	indexSvc           service.IndexServicer
-	vectorSvc          service.VectorServicer
-	logSvc             service.LogService
-	embeddingSvc       service.EmbeddingServicer
-	ragSvc             service.RAGServicer
-	watchSvc           service.WatchServicer
-	databaseSvc        service.DatabaseServicer
-	dbManager          *database.Manager
-	barrierSvc         service.BarrierServicer
-	encMigrator        service.EncryptionMigrator
-	clusterEncMigrator service.EncryptionMigrator
-	ceremonySvc        service.CeremonyServicer
-	credentialSvc      service.CredentialServicer
-	ceremonyCA         ceremony.CeremonyCA
-	serverTLSKey       crypto.Signer
-	collectionSvc      service.CollectionServicer
-	barrierRegistry    *seal.BarrierRegistry
-	dekSvc             service.DEKServicer
-	policySvc          service.PolicyServicer
-	tenantSvc          tenant.TenantServicer
-	tenantStoreRes     tenant.StoreResolver
-	backupSvc          service.BackupServicer
-	rebalanceSvc       service.RebalanceServicer
-	dbRegistry         *DatabaseServiceRegistry
+	mcpServerOpts     []mcpapi.ServerOption
+	userSvc           user.UserServicer
+	roleSvc           role.RoleServicer
+	groupSvc          group.GroupServicer
+	certProv          cert.CertProvider
+	certEnroll        service.CertEnrollmentServicer
+	invitations       service.InvitationServicer
+	onboarding        service.TenantOnboardingServicer
+	authMW            *authmw.AuthMiddleware
+	caBootstrapCert   []byte
+	caBootstrapBundle func(context.Context) ([]byte, error)
+	batchSvc          service.BatchServicer
+	txSvc             service.TransactionServicer
+	mvccSvc           service.MVCCKVServicer
+	leaseSvc          service.LeaseServicer
+	lockSvc           service.LockServicer
+	tsSvc             service.TimeSeriesServicer
+	indexSvc          service.IndexServicer
+	vectorSvc         service.VectorServicer
+	logSvc            service.LogService
+	embeddingSvc      service.EmbeddingServicer
+	ragSvc            service.RAGServicer
+	watchSvc          service.WatchServicer
+	databaseSvc       service.DatabaseServicer
+	dbManager         *database.Manager
+	// bindingImportSession, bindingIndex and bindingTimeSeries configure
+	// the services built over a materialized database's own host
+	// (WithBindingServiceConfig).
+	bindingImportSession config.ImportSessionConfig
+	bindingIndex         config.IndexConfig
+	bindingTimeSeries    config.TimeSeriesConfig
+	barrierSvc           service.BarrierServicer
+	encMigrator          service.EncryptionMigrator
+	clusterEncMigrator   service.EncryptionMigrator
+	ceremonySvc          service.CeremonyServicer
+	credentialSvc        service.CredentialServicer
+	ceremonyCA           ceremony.CeremonyCA
+	serverTLSKey         crypto.Signer
+	collectionSvc        service.CollectionServicer
+	barrierRegistry      *seal.BarrierRegistry
+	dekSvc               service.DEKServicer
+	policySvc            service.PolicyServicer
+	tenantSvc            tenant.TenantServicer
+	tenantStoreRes       tenant.StoreResolver
+	backupSvc            service.BackupServicer
+	rebalanceSvc         service.RebalanceServicer
+	dbRegistry           *DatabaseServiceRegistry
 
 	// collectionSweepInterval and collectionStaleAfter tune the collection
 	// sweeper; zero keeps the defaults. See WithCollectionSweep.
@@ -1036,6 +1046,19 @@ func WithDatabaseManager(manager *database.Manager) ServerOption {
 	return func(o *serverOptions) { o.dbManager = manager }
 }
 
+// WithBindingServiceConfig configures the services the server builds over a
+// materialized database's own host (a database the Manager opened in its
+// own store): the import-session, index and time-series services, with the
+// same configuration the node gives a tenant's dedicated host. Zero values
+// take the packages' defaults.
+func WithBindingServiceConfig(importSession config.ImportSessionConfig, index config.IndexConfig, ts config.TimeSeriesConfig) ServerOption {
+	return func(o *serverOptions) {
+		o.bindingImportSession = importSession
+		o.bindingIndex = index
+		o.bindingTimeSeries = ts
+	}
+}
+
 // WithBarrierService configures the barrier service for all protocol servers.
 func WithBarrierService(svc service.BarrierServicer) ServerOption {
 	return func(o *serverOptions) { o.barrierSvc = svc }
@@ -1738,8 +1761,13 @@ func (s *Server) wireCompactionPolicies() {
 // wireTenantHostShards gives the tenant Host registry the raft backend
 // factory, so an IsolationVolume tenant's encryption migration re-encrypts the
 // dedicated raft shards the tenant runs beside its Host -- its home group --
-// under the same tenant barrier. It is a no-op unless the server has both.
+// under the same tenant barrier, and the database manager, so the migration
+// also re-encrypts the tenant's materialized databases' own stores. Each
+// half is a no-op unless the server has the registry and that dependency.
 func (s *Server) wireTenantHostShards() {
+	if s.opts.tenantHosts != nil && s.opts.dbManager != nil {
+		s.opts.tenantHosts.databases.Store(s.opts.dbManager)
+	}
 	if s.opts.tenantHosts != nil && s.opts.raftBackend != nil {
 		s.opts.tenantHosts.raftShards.Store(s.opts.raftBackend)
 	}
@@ -1760,17 +1788,26 @@ func (s *Server) wireTenantHostShards() {
 //     in;
 //   - a barrier-isolated tenant's logs are proposed to its home group, so
 //     the drop fence of each of its databases goes there.
+//   - a database the Manager materialized in its own store keeps its drop
+//     fence in that store, where its writes are guarded.
 //
 // It is a no-op without the reclaim service, because then there is nothing to
-// attach it to, and without either registry, because then every database's
+// attach it to, and without any of the three, because then every database's
 // data is in the system store the reclaim service already targets.
 func (s *Server) wireStoreResolver() {
-	if s.opts.keyspaceReclaim == nil || (s.opts.tenantHosts == nil && s.opts.raftBackend == nil) {
+	if s.opts.keyspaceReclaim == nil || (s.opts.tenantHosts == nil && s.opts.raftBackend == nil && s.opts.dbManager == nil) {
 		return
 	}
-	resolver := &storeResolver{
-		tenantSvc:    s.opts.tenantSvc,
-		systemTenant: tenantid.System,
+	resolver := &storeResolver{systemTenant: tenantid.System, evictBundles: s.bundleEvictors.evictAll}
+	// Without a volume or raft registry no tenant's isolation moves its data
+	// out of the system store, so the tenant lookup is left unset.
+	if s.opts.tenantHosts != nil || s.opts.raftBackend != nil {
+		resolver.tenantSvc = s.opts.tenantSvc
+	}
+	// A database the Manager materialized in its own store keeps its drop
+	// fence there (storeResolver.materializedFenceTarget).
+	if s.opts.dbManager != nil {
+		resolver.databases = s.opts.dbManager
 	}
 	if s.opts.tenantHosts != nil {
 		resolver.hosts = s.opts.tenantHosts
@@ -2518,7 +2555,11 @@ func (s *Server) buildServiceRegistry() service.Registry {
 	if s.opts.dbRegistry == nil {
 		return nil
 	}
-	return NewRESTServiceRegistry(s.opts.dbRegistry, s.opts.barrierRegistry, tenantid.System, s.restRegistryOptions()...)
+	reg := NewRESTServiceRegistry(s.opts.dbRegistry, s.opts.barrierRegistry, tenantid.System, s.restRegistryOptions()...)
+	if rr, ok := reg.(*restServiceRegistry); ok {
+		s.bundleEvictors.add(rr.dedicatedStore, rr.materialized)
+	}
+	return reg
 }
 
 // restRegistryOptions is the one option list every restServiceRegistry this
@@ -2531,6 +2572,7 @@ func (s *Server) restRegistryOptions() []RESTRegistryOption {
 	}
 	if s.opts.dbManager != nil {
 		regOpts = append(regOpts, WithRegistryDatabaseManager(s.opts.dbManager))
+		regOpts = append(regOpts, withBindingServiceConfig(s.opts.bindingImportSession, s.opts.bindingIndex, s.opts.bindingTimeSeries))
 	}
 	if s.opts.tenantHosts != nil {
 		regOpts = append(regOpts, withTenantHostRegistry(s.opts.tenantHosts))

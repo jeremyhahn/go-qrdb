@@ -322,6 +322,24 @@ func (e *KVEngine) Lookup(_ context.Context, query interface{}) (interface{}, er
 		}
 		return results, nil
 
+	case service.VectorRebuildQuery:
+		if e.indexMgr == nil {
+			return nil, &InvalidQueryError{Reason: "vector index not configured"}
+		}
+		return nil, e.indexMgr.RebuildNamespace(e.stg, q.Namespace)
+
+	case service.VectorNamespaceQuery:
+		return lookupVectorNamespace(e.stg, q.Namespace)
+
+	case service.VectorNamespaceListQuery:
+		return lookupVectorNamespaces(e.stg)
+
+	case service.VectorGetQuery:
+		return lookupVector(e.stg, q.Namespace, q.ID)
+
+	case service.VectorScanQuery:
+		return lookupVectorScan(e.stg, q)
+
 	default:
 		return nil, &InvalidQueryError{Reason: "unsupported query type"}
 	}
@@ -418,6 +436,7 @@ func (e *KVEngine) adaptVectorHandler(op byte, fn func(storage.Batch, []byte) (s
 		}
 
 		e.indexMgr.ApplyEffects(effects)
+		e.indexMgr.RebuildReconfigured(e.stg, effects)
 		return result, nil
 	}
 }

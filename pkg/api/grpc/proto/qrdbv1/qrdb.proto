@@ -1070,11 +1070,6 @@ service QRDBService {
         option (qrdb.v1.permission) = "databases:update";
     }
 
-    // DatabaseUpdateConnection updates the remote connection configuration.
-    rpc DatabaseUpdateConnection(DatabaseUpdateConnectionRequest) returns (DatabaseInfoResponse) {
-        option (qrdb.v1.permission) = "databases:update";
-    }
-
     // DatabaseUpdateSQL updates a database's SQL settings -- its
     // sql.concurrency (optimistic or pessimistic). See docs/row-locking/.
     rpc DatabaseUpdateSQL(DatabaseUpdateSQLRequest) returns (DatabaseInfoResponse) {
@@ -2815,7 +2810,8 @@ message VectorCreateNamespaceRequest {
     DistanceMetric distance_metric = 3;
     VectorIndexType index_type = 4;
     string index_params_json = 5;
-    uint64 shard_id = 6;
+    reserved 6;
+    reserved "shard_id";
 }
 
 // VectorCreateNamespaceResponse is the result of a namespace creation.
@@ -2844,12 +2840,14 @@ message VectorUpdateNamespaceResponse {
 // VectorDeleteNamespaceRequest removes a namespace and all its vectors.
 message VectorDeleteNamespaceRequest {
     string namespace = 1;
-    uint64 shard_id = 2;
+    reserved 2;
+    reserved "shard_id";
 }
 
 // VectorListNamespacesRequest lists all vector namespaces.
 message VectorListNamespacesRequest {
-    uint64 shard_id = 1;
+    reserved 1;
+    reserved "shard_id";
 }
 
 // VectorListNamespacesResponse returns all namespace names.
@@ -2860,7 +2858,8 @@ message VectorListNamespacesResponse {
 // VectorGetNamespaceInfoRequest retrieves namespace metadata.
 message VectorGetNamespaceInfoRequest {
     string namespace = 1;
-    uint64 shard_id = 2;
+    reserved 2;
+    reserved "shard_id";
 }
 
 // VectorNamespaceInfo contains metadata about a vector namespace.
@@ -2900,7 +2899,8 @@ message VectorUpsertRequest {
     string id = 2;
     repeated float vector = 3;
     string metadata_json = 4;
-    uint64 shard_id = 5;
+    reserved 5;
+    reserved "shard_id";
 }
 
 // VectorUpsertResponse is the result of a vector upsert.
@@ -2915,14 +2915,16 @@ message VectorGetRequest {
     string namespace = 1;
     string id = 2;
     ConsistencyLevel consistency = 3;
-    uint64 shard_id = 4;
+    reserved 4;
+    reserved "shard_id";
 }
 
 // VectorDeleteRequest removes a single vector by ID.
 message VectorDeleteRequest {
     string namespace = 1;
     string id = 2;
-    uint64 shard_id = 3;
+    reserved 3;
+    reserved "shard_id";
 }
 
 // VectorBatchError describes a failure for a single vector in a batch.
@@ -2935,7 +2937,8 @@ message VectorBatchError {
 message VectorBatchUpsertRequest {
     string namespace = 1;
     repeated VectorDataProto vectors = 2;
-    uint64 shard_id = 3;
+    reserved 3;
+    reserved "shard_id";
 }
 
 // VectorBatchUpsertResponse is the result of a batch upsert.
@@ -2949,7 +2952,8 @@ message VectorBatchUpsertResponse {
 message VectorBatchDeleteRequest {
     string namespace = 1;
     repeated string ids = 2;
-    uint64 shard_id = 3;
+    reserved 3;
+    reserved "shard_id";
 }
 
 // VectorBatchDeleteResponse is the result of a batch delete.
@@ -2965,7 +2969,8 @@ message VectorListRequest {
     int32 limit = 2;
     int32 offset = 3;
     string cursor = 4;
-    uint64 shard_id = 5;
+    reserved 5;
+    reserved "shard_id";
 }
 
 // VectorListResponse contains a paginated list of vectors.
@@ -2980,7 +2985,8 @@ message VectorUpdateMetadataRequest {
     string namespace = 1;
     string id = 2;
     string metadata_json = 3;
-    uint64 shard_id = 4;
+    reserved 4;
+    reserved "shard_id";
 }
 
 // ---------------------------------------------------------------------------
@@ -3003,7 +3009,8 @@ message VectorSearchSimilarRequest {
     int32 ef_search = 4;
     double min_score = 5;
     ConsistencyLevel consistency = 6;
-    uint64 shard_id = 7;
+    reserved 7;
+    reserved "shard_id";
 }
 
 // VectorSearchSimilarResponse contains similarity search results.
@@ -3019,7 +3026,8 @@ message VectorSearchByMetadataRequest {
     int32 limit = 3;
     int32 offset = 4;
     ConsistencyLevel consistency = 5;
-    uint64 shard_id = 6;
+    reserved 6;
+    reserved "shard_id";
 }
 
 // VectorSearchByMetadataResponse contains metadata search results.
@@ -3037,7 +3045,8 @@ message VectorHybridSearchRequest {
     double vector_weight = 5;
     double metadata_weight = 6;
     ConsistencyLevel consistency = 7;
-    uint64 shard_id = 8;
+    reserved 8;
+    reserved "shard_id";
 }
 
 // VectorHybridSearchResponse contains hybrid search results.
@@ -3052,7 +3061,8 @@ message VectorSearchByIDRequest {
     string id = 2;
     int32 k = 3;
     ConsistencyLevel consistency = 4;
-    uint64 shard_id = 5;
+    reserved 5;
+    reserved "shard_id";
 }
 
 // ---------------------------------------------------------------------------
@@ -3062,7 +3072,8 @@ message VectorSearchByIDRequest {
 // VectorRebuildIndexRequest triggers an asynchronous index rebuild.
 message VectorRebuildIndexRequest {
     string namespace = 1;
-    uint64 shard_id = 2;
+    reserved 2;
+    reserved "shard_id";
 }
 
 // VectorRebuildIndexResponse is the result of an index rebuild request.
@@ -3076,7 +3087,8 @@ message VectorRebuildIndexResponse {
 message VectorGetRebuildProgressRequest {
     string namespace = 1;
     string job_id = 2;
-    uint64 shard_id = 3;
+    reserved 3;
+    reserved "shard_id";
 }
 
 // VectorRebuildProgress describes the current state of a rebuild job.
@@ -3092,7 +3104,8 @@ message VectorRebuildProgress {
 // VectorGetIndexStatsRequest queries index statistics.
 message VectorGetIndexStatsRequest {
     string namespace = 1;
-    uint64 shard_id = 2;
+    reserved 2;
+    reserved "shard_id";
 }
 
 // VectorIndexStats describes the current state of a namespace's vector index.
@@ -3112,7 +3125,8 @@ message VectorIndexStats {
 // VectorCompactNamespaceRequest triggers asynchronous namespace compaction.
 message VectorCompactNamespaceRequest {
     string namespace = 1;
-    uint64 shard_id = 2;
+    reserved 2;
+    reserved "shard_id";
 }
 
 // VectorCompactNamespaceResponse is the result of a compaction request.
@@ -3125,7 +3139,8 @@ message VectorCompactNamespaceResponse {
 message VectorGetCompactionProgressRequest {
     string namespace = 1;
     string job_id = 2;
-    uint64 shard_id = 3;
+    reserved 3;
+    reserved "shard_id";
 }
 
 // VectorCompactionProgress describes the current state of a compaction job.
@@ -4211,7 +4226,9 @@ message DatabaseInfoResponse {
     // request messages', less the secrets.
     DatabaseRaftInfo raft = 9;
     DatabaseBarrierInfo barrier = 10;
-    DatabaseConnectionConfig connection = 11;
+    // Field 11 was the remote-mode connection block (removed, OD-9 A).
+    reserved 11;
+    reserved "connection";
     string tenant_id = 12;
     // replicas is the replication factor of a dedicated-raft database. Zero for
     // non-raft databases.
@@ -4230,6 +4247,28 @@ message DatabaseInfoResponse {
     // compaction_unavailable reports that the database's store could not be
     // read for its policy: compaction is unknown, not off.
     bool compaction_unavailable = 18;
+    // binding is the read-only binding block: what the node's binding
+    // resolver decided for the database. Unset where the node describes no
+    // bindings (raft mode until raft bindings).
+    DatabaseBindingInfo binding = 19;
+}
+
+// DatabaseBindingInfo is the read-only binding block of DatabaseInfoResponse.
+message DatabaseBindingInfo {
+    // kind is the kind of host that applies the database's writes: "local"
+    // or "raft".
+    string kind = 1;
+    // nodes are the nodes that hold the database; empty when any node opens
+    // it.
+    repeated string nodes = 2;
+    // encryption names whose key encrypts the store at rest: "node",
+    // "tenant", or "tenant+database" when the database has its own barrier
+    // over the tenant's.
+    string encryption = 3;
+    // generation numbers the create of the database's name: every create
+    // of the tenant's name gets one higher than any earlier create of it,
+    // so a name dropped and created again reports a higher generation.
+    uint64 generation = 4;
 }
 
 // DatabaseRaftInfo is a database's Raft configuration as a response reports
@@ -4449,16 +4488,6 @@ message DatabaseBarrierConfig {
     string secret = 5;
 }
 
-// DatabaseConnectionConfig holds remote connection settings.
-message DatabaseConnectionConfig {
-    string remote_address = 1;
-    bool use_tls = 2;
-    string transport = 3;
-    string ca_file = 4;
-    string cert_file = 5;
-    string key_file = 6;
-}
-
 // DatabaseUpdateProtocolRequest updates the wire protocol configuration.
 message DatabaseUpdateProtocolRequest {
     string name = 1;
@@ -4491,12 +4520,6 @@ message DatabaseScaleRequest {
 message DatabaseUpdateBarrierRequest {
     string name = 1;
     DatabaseBarrierConfig barrier = 2;
-}
-
-// DatabaseUpdateConnectionRequest updates the remote connection configuration.
-message DatabaseUpdateConnectionRequest {
-    string name = 1;
-    DatabaseConnectionConfig connection = 2;
 }
 
 // DatabaseUpdateSQLRequest updates a database's SQL settings. An unset sql

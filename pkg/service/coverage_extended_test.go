@@ -206,7 +206,7 @@ func TestWithBarrierManager_Option(t *testing.T) {
 func TestDatabaseService_UpdateEtcd_Success(t *testing.T) {
 	svc := newTestDatabaseService(t)
 
-	if _, err := svc.Create(testDBConfig("etcd-db")); err != nil {
+	if _, err := svc.Create(testEtcdDBConfig("etcd-db")); err != nil {
 		t.Fatalf("Create() error: %v", err)
 	}
 
@@ -441,7 +441,7 @@ func TestDatabaseService_UpdateEtcdForTenant_Success(t *testing.T) {
 	svc := newTestDatabaseService(t)
 	ctx := tenantCtx("tenant-etcd")
 
-	if _, err := svc.CreateForTenant(ctx, testDBConfig("t-etcd-db")); err != nil {
+	if _, err := svc.CreateForTenant(ctx, testEtcdDBConfig("t-etcd-db")); err != nil {
 		t.Fatalf("CreateForTenant() error: %v", err)
 	}
 
@@ -461,7 +461,7 @@ func TestDatabaseService_UpdateEtcdForTenant_Success(t *testing.T) {
 func TestDatabaseService_UpdateEtcdForTenant_SystemTenantRoutesToAdmin(t *testing.T) {
 	svc := newTestDatabaseService(t)
 
-	if _, err := svc.CreateForTenant(context.Background(), testDBConfig("sys-etcd-db")); err != nil {
+	if _, err := svc.CreateForTenant(context.Background(), testEtcdDBConfig("sys-etcd-db")); err != nil {
 		t.Fatalf("CreateForTenant() as system error: %v", err)
 	}
 	info, err := svc.UpdateEtcdForTenant(context.Background(), "sys-etcd-db", &database.EtcdConfig{
@@ -480,7 +480,7 @@ func TestDatabaseService_UpdateRaftForTenant_Success(t *testing.T) {
 	svc := newTestDatabaseService(t)
 	ctx := tenantCtx("tenant-raft")
 
-	if _, err := svc.CreateForTenant(ctx, testDBConfig("t-raft-db")); err != nil {
+	if _, err := svc.CreateForTenant(ctx, testRaftDBConfig("t-raft-db")); err != nil {
 		t.Fatalf("CreateForTenant() error: %v", err)
 	}
 
@@ -500,7 +500,7 @@ func TestDatabaseService_UpdateRaftForTenant_Success(t *testing.T) {
 func TestDatabaseService_UpdateRaftForTenant_SystemTenantRoutesToAdmin(t *testing.T) {
 	svc := newTestDatabaseService(t)
 
-	if _, err := svc.CreateForTenant(context.Background(), testDBConfig("sys-raft-db")); err != nil {
+	if _, err := svc.CreateForTenant(context.Background(), testRaftDBConfig("sys-raft-db")); err != nil {
 		t.Fatalf("CreateForTenant() as system error: %v", err)
 	}
 	info, err := svc.UpdateRaftForTenant(context.Background(), "sys-raft-db", &database.DatabaseRaftConfig{
@@ -573,49 +573,6 @@ func TestDatabaseService_UpdateBarrierForTenant_SystemTenantRoutesToAdmin(t *tes
 	}
 	if info.Barrier == nil || !info.Barrier.Enabled {
 		t.Error("Barrier.Enabled = false, want true")
-	}
-}
-
-func TestDatabaseService_UpdateConnectionForTenant_Success(t *testing.T) {
-	svc := newTestDatabaseService(t)
-	ctx := tenantCtx("tenant-conn")
-
-	if _, err := svc.CreateForTenant(ctx, testDBConfig("t-conn-db")); err != nil {
-		t.Fatalf("CreateForTenant() error: %v", err)
-	}
-
-	connCfg := &database.DatabaseConnectionConfig{
-		Transport: "grpc",
-		Address:   "localhost:9090",
-		CAFile:    "/certs/ca.pem",
-	}
-	info, err := svc.UpdateConnectionForTenant(ctx, "t-conn-db", connCfg)
-	if err != nil {
-		t.Fatalf("UpdateConnectionForTenant() error: %v", err)
-	}
-	if info.Name != "t-conn-db" {
-		t.Errorf("Name = %q, want %q", info.Name, "t-conn-db")
-	}
-	if info.Connection == nil || info.Connection.Transport != "grpc" {
-		t.Error("Connection.Transport != grpc")
-	}
-}
-
-func TestDatabaseService_UpdateConnectionForTenant_SystemTenantRoutesToAdmin(t *testing.T) {
-	svc := newTestDatabaseService(t)
-
-	if _, err := svc.CreateForTenant(context.Background(), testDBConfig("sys-conn-db")); err != nil {
-		t.Fatalf("CreateForTenant() as system error: %v", err)
-	}
-	info, err := svc.UpdateConnectionForTenant(context.Background(), "sys-conn-db", &database.DatabaseConnectionConfig{
-		Transport: "grpc",
-		Address:   "localhost:9090",
-	})
-	if err != nil {
-		t.Fatalf("UpdateConnectionForTenant() as system error: %v", err)
-	}
-	if info.Connection == nil || info.Connection.Transport != "grpc" {
-		t.Error("Connection.Transport != grpc")
 	}
 }
 

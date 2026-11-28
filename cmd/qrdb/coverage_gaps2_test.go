@@ -402,9 +402,8 @@ func TestDaemonBinding_Restart_WithTrackedProcess(t *testing.T) {
 // implemented via injected function fields for complete update command coverage.
 type fullFnDatabaseService struct {
 	fnDatabaseService
-	updateRaftFn       func(name string, cfg *database.DatabaseRaftConfig) (*database.DatabaseInfo, error)
-	updateBarrierFn    func(name string, cfg *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error)
-	updateConnectionFn func(name string, cfg *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error)
+	updateRaftFn    func(name string, cfg *database.DatabaseRaftConfig) (*database.DatabaseInfo, error)
+	updateBarrierFn func(name string, cfg *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error)
 }
 
 func (m *fullFnDatabaseService) UpdateRaft(name string, cfg *database.DatabaseRaftConfig) (*database.DatabaseInfo, error) {
@@ -417,13 +416,6 @@ func (m *fullFnDatabaseService) UpdateRaft(name string, cfg *database.DatabaseRa
 func (m *fullFnDatabaseService) UpdateBarrier(name string, cfg *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
 	if m.updateBarrierFn != nil {
 		return m.updateBarrierFn(name, cfg)
-	}
-	return nil, &database.NotFoundError{Name: name}
-}
-
-func (m *fullFnDatabaseService) UpdateConnection(name string, cfg *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	if m.updateConnectionFn != nil {
-		return m.updateConnectionFn(name, cfg)
 	}
 	return nil, &database.NotFoundError{Name: name}
 }
@@ -478,10 +470,6 @@ func (m *fullFnDatabaseService) UpdateRaftForTenant(_ context.Context, name stri
 
 func (m *fullFnDatabaseService) UpdateBarrierForTenant(_ context.Context, name string, cfg *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
 	return m.UpdateBarrier(name, cfg)
-}
-
-func (m *fullFnDatabaseService) UpdateConnectionForTenant(_ context.Context, name string, cfg *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	return m.UpdateConnection(name, cfg)
 }
 
 func (m *fullFnDatabaseService) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
@@ -645,13 +633,9 @@ func TestDatabaseUpdate_JSONFormat(t *testing.T) {
 	svc.updateBarrierFn = func(name string, _ *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
 		return info(name), nil
 	}
-	svc.updateConnectionFn = func(name string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-		return info(name), nil
-	}
 	for _, args := range [][]string{
 		{"update-raft", "mydb"},
 		{"update-barrier", "mydb", "--enabled"},
-		{"update-connection", "mydb", "--address", "remote.example.com:9090"},
 	} {
 		t.Run(args[0], func(t *testing.T) {
 			out, err := executeDatabaseCmd(t, svc, args...)
@@ -677,53 +661,6 @@ func TestDatabaseUpdateBarrier_MissingArg(t *testing.T) {
 // built with that tag, so the tests exercising it live in their own file
 // with a matching build constraint. See coverage_gaps2_etcd_test.go.
 
-// ---------------------------------------------------------------------------
-// update-connection
-// ---------------------------------------------------------------------------
-
-func TestDatabaseUpdateConnection_Success(t *testing.T) {
-	var gotCfg *database.DatabaseConnectionConfig
-
-	svc := newFullFnDatabaseService()
-	svc.updateConnectionFn = func(name string, cfg *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-		gotCfg = cfg
-		return &database.DatabaseInfo{
-			Name:       name,
-			Backend:    "pebble",
-			Status:     "open",
-			Connection: cfg,
-		}, nil
-	}
-
-	output, err := executeDatabaseCmd(t, svc, "update-connection", "mydb",
-		"--conn-transport", "quic",
-		"--address", "remote.example.com:9090",
-	)
-	if err != nil {
-		t.Fatalf("update-connection error: %v", err)
-	}
-	if gotCfg == nil {
-		t.Fatal("expected non-nil ConnectionConfig")
-	}
-	if gotCfg.Transport != "quic" {
-		t.Errorf("Transport = %q, want %q", gotCfg.Transport, "quic")
-	}
-	if gotCfg.Address != "remote.example.com:9090" {
-		t.Errorf("Address = %q, want %q", gotCfg.Address, "remote.example.com:9090")
-	}
-	if !strings.Contains(output, "Connection:") {
-		t.Errorf("output missing Connection:, got: %q", output)
-	}
-}
-
-func TestDatabaseUpdateConnection_MissingArg(t *testing.T) {
-	svc := newFullFnDatabaseService()
-	_, err := executeDatabaseCmd(t, svc, "update-connection")
-	if err == nil {
-		t.Fatal("expected error for missing name argument")
-	}
-}
-
 // TestDatabaseUpdate_ServiceError requires each update command to return the
 // service's failure and print no database info.
 func TestDatabaseUpdate_ServiceError(t *testing.T) {
@@ -735,13 +672,9 @@ func TestDatabaseUpdate_ServiceError(t *testing.T) {
 	svc.updateBarrierFn = func(string, *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
 		return nil, errUpdate
 	}
-	svc.updateConnectionFn = func(string, *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-		return nil, errUpdate
-	}
 	for _, args := range [][]string{
 		{"update-raft", "mydb", "--cluster-mode", "local"},
 		{"update-barrier", "mydb", "--enabled"},
-		{"update-connection", "mydb", "--address", "remote.example.com:9090"},
 	} {
 		t.Run(args[0], func(t *testing.T) {
 			out, err := executeDatabaseCmd(t, svc, args...)

@@ -2769,16 +2769,6 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             db.barrier = barrier;
             return db;
           },
-          UpdateConnection: async (name: string, req: unknown) => {
-            // The binding takes *transport.UpdateDatabaseConnectionRequest: {connection: {...}}.
-            const connection = settingsEnvelope("DatabaseBinding.UpdateConnection", req, "connection");
-            maybeReject("DatabaseBinding.UpdateConnection");
-            const s = getState();
-            const db = s.databases.find((d: { name: string }) => d.name === name) as Record<string, unknown> | undefined;
-            if (!db) throw new Error(`database "${name}" not found`);
-            db.connection = connection;
-            return db;
-          },
           Scale: async (name: string, targetReplicas: number) => {
             maybeReject("DatabaseBinding.Scale");
             const s = getState();

@@ -98,6 +98,15 @@ type Database struct {
 	// (DatabaseMeta.OwnerNode). Set once, like incarnation, before the
 	// database is published; empty when any node opens it.
 	ownerNode string
+
+	// binding is the read-only binding block Info reports
+	// (Manager.describeBinding). Set once, like ownerNode, before the
+	// database is published; nil where the node describes no bindings.
+	binding *DatabaseBinding
+	// bindingNodes names a raft binding's replica nodes when Info is
+	// served: its placement is written after the database opens, so the
+	// nodes cannot be fixed with binding. Nil for every other binding.
+	bindingNodes func() []string
 }
 
 // NewDatabase creates a Database from the given config and backend.
@@ -408,18 +417,6 @@ func sameSQL(a, b *SQLConfig) bool {
 	return *a == *b
 }
 
-// updateConnection atomically replaces the connection configuration.
-func (d *Database) updateConnection(conn *DatabaseConnectionConfig) {
-	for {
-		old := d.config.Load()
-		updated := *old
-		updated.Connection = conn
-		if d.config.CompareAndSwap(old, &updated) {
-			return
-		}
-	}
-}
-
 // reportedStatus returns StatusDropping when a drop is fencing the database
 // (see Dropping), overriding whatever Status() would otherwise answer. This
 // is the ONLY place StatusDropping is exposed -- the underlying status field
@@ -450,9 +447,16 @@ func (d *Database) Info() DatabaseInfo {
 		DedicatedWAL: cfg.DedicatedWAL,
 		Raft:         cfg.Raft,
 		Barrier:      cfg.Barrier,
-		Connection:   cfg.Connection,
 		SQL:          cfg.SQL,
 		OwnerNode:    d.ownerNode,
+		Binding:      d.binding,
+	}
+	if d.binding != nil && d.bindingNodes != nil {
+		if nodes := d.bindingNodes(); len(nodes) > 0 {
+			b := *d.binding
+			b.Nodes = nodes
+			info.Binding = &b
+		}
 	}
 	if cfg.Raft != nil {
 		info.ShardID = cfg.Raft.ShardID

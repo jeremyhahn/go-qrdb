@@ -402,22 +402,6 @@ func TestHandleVectorListNamespaces_NilService(t *testing.T) {
 	assertStatus(t, rec, http.StatusNotImplemented)
 }
 
-func TestHandleVectorListNamespaces_WithShardID(t *testing.T) {
-	srv := newVectorServer(&mockVectorService{})
-	req := httptest.NewRequest(http.MethodGet, "/vector/namespaces?shard_id=1", nil)
-	rec := httptest.NewRecorder()
-	srv.dispatch(rec, req)
-	assertStatus(t, rec, http.StatusOK)
-}
-
-func TestHandleVectorListNamespaces_InvalidShardID(t *testing.T) {
-	srv := newVectorServer(&mockVectorService{})
-	req := httptest.NewRequest(http.MethodGet, "/vector/namespaces?shard_id=abc", nil)
-	rec := httptest.NewRecorder()
-	srv.dispatch(rec, req)
-	assertStatus(t, rec, http.StatusBadRequest)
-}
-
 func TestHandleVectorListNamespaces_ServiceError(t *testing.T) {
 	vecSvc := &mockVectorService{
 		listNamespacesFn: func(_ context.Context, _ *service.ListNamespacesRequest) (*service.ListNamespacesResponse, error) {
@@ -460,14 +444,6 @@ func TestHandleVectorGetNamespaceInfo_NilService(t *testing.T) {
 func TestHandleVectorGetNamespaceInfo_MissingNamespace(t *testing.T) {
 	srv := newVectorServer(&mockVectorService{})
 	req := httptest.NewRequest(http.MethodGet, "/vector/namespace/info", nil)
-	rec := httptest.NewRecorder()
-	srv.dispatch(rec, req)
-	assertStatus(t, rec, http.StatusBadRequest)
-}
-
-func TestHandleVectorGetNamespaceInfo_InvalidShardID(t *testing.T) {
-	srv := newVectorServer(&mockVectorService{})
-	req := httptest.NewRequest(http.MethodGet, "/vector/namespace/info?namespace=ns&shard_id=abc", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 	assertStatus(t, rec, http.StatusBadRequest)
@@ -612,14 +588,6 @@ func TestHandleVectorGet_InvalidID(t *testing.T) {
 func TestHandleVectorGet_InvalidConsistency(t *testing.T) {
 	srv := newVectorServer(&mockVectorService{})
 	req := httptest.NewRequest(http.MethodGet, "/vector/get?namespace=ns&id=1&consistency=abc", nil)
-	rec := httptest.NewRecorder()
-	srv.dispatch(rec, req)
-	assertStatus(t, rec, http.StatusBadRequest)
-}
-
-func TestHandleVectorGet_InvalidShardID(t *testing.T) {
-	srv := newVectorServer(&mockVectorService{})
-	req := httptest.NewRequest(http.MethodGet, "/vector/get?namespace=ns&id=1&shard_id=abc", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 	assertStatus(t, rec, http.StatusBadRequest)
@@ -828,14 +796,6 @@ func TestHandleVectorListVectors_MissingNamespace(t *testing.T) {
 func TestHandleVectorListVectors_InvalidLimit(t *testing.T) {
 	srv := newVectorServer(&mockVectorService{})
 	req := httptest.NewRequest(http.MethodGet, "/vector/list?namespace=ns&limit=abc", nil)
-	rec := httptest.NewRecorder()
-	srv.dispatch(rec, req)
-	assertStatus(t, rec, http.StatusBadRequest)
-}
-
-func TestHandleVectorListVectors_InvalidShardID(t *testing.T) {
-	srv := newVectorServer(&mockVectorService{})
-	req := httptest.NewRequest(http.MethodGet, "/vector/list?namespace=ns&shard_id=abc", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 	assertStatus(t, rec, http.StatusBadRequest)
@@ -1263,14 +1223,6 @@ func TestHandleVectorGetIndexStats_MissingNamespace(t *testing.T) {
 	assertStatus(t, rec, http.StatusBadRequest)
 }
 
-func TestHandleVectorGetIndexStats_InvalidShardID(t *testing.T) {
-	srv := newVectorServer(&mockVectorService{})
-	req := httptest.NewRequest(http.MethodGet, "/vector/index/stats?namespace=ns&shard_id=abc", nil)
-	rec := httptest.NewRecorder()
-	srv.dispatch(rec, req)
-	assertStatus(t, rec, http.StatusBadRequest)
-}
-
 func TestHandleVectorGetIndexStats_ServiceError(t *testing.T) {
 	vecSvc := &mockVectorService{
 		getIndexStatsFn: func(_ context.Context, _ *service.GetIndexStatsRequest) (*service.GetIndexStatsResponse, error) {
@@ -1371,14 +1323,6 @@ func TestHandleVectorGetCompactionProgress_MissingNamespace(t *testing.T) {
 func TestHandleVectorGetCompactionProgress_MissingOperationID(t *testing.T) {
 	srv := newVectorServer(&mockVectorService{})
 	req := httptest.NewRequest(http.MethodGet, "/vector/compact/progress?namespace=ns", nil)
-	rec := httptest.NewRecorder()
-	srv.dispatch(rec, req)
-	assertStatus(t, rec, http.StatusBadRequest)
-}
-
-func TestHandleVectorGetCompactionProgress_InvalidShardID(t *testing.T) {
-	srv := newVectorServer(&mockVectorService{})
-	req := httptest.NewRequest(http.MethodGet, "/vector/compact/progress?namespace=ns&operation_id=op-1&shard_id=abc", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 	assertStatus(t, rec, http.StatusBadRequest)

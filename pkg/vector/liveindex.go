@@ -17,6 +17,7 @@ package vector
 import (
 	"bytes"
 	"errors"
+	"math"
 	"sort"
 	"strconv"
 	"sync"
@@ -126,14 +127,87 @@ func NewLiveIndex(namespace string, rec NamespaceRecord) (LiveIndex, error) {
 	return build(namespace, rec)
 }
 
+// SameLiveIndexShape reports whether a live index built for record a serves
+// record b unchanged. It compares exactly the fields NewLiveIndex and its
+// builders read: dimension, distance metric, index type, the IVF
+// partition count and the HNSW m, ef_construction and ef_search settings. A reconfigure that only rewrites namespace metadata
+// (labels, owner, update time) keeps the shape, so its index stays live; any
+// other reconfigure needs a new index rebuilt from the records.
+func SameLiveIndexShape(a, b NamespaceRecord) bool {
+	if a.Dimension != b.Dimension ||
+		a.DistanceMetric != b.DistanceMetric ||
+		a.IndexType != b.IndexType ||
+		a.IndexParams["num_centroids"] != b.IndexParams["num_centroids"] {
+		return false
+	}
+	for _, key := range hnswParamKeys {
+		if a.IndexParams[key] != b.IndexParams[key] {
+			return false
+		}
+	}
+	return true
+}
+
 func newHNSWLiveIndex(namespace string, rec NamespaceRecord) (LiveIndex, error) {
 	cfg := hnsw.DefaultConfig()
 	cfg.DistanceMetric = hnswDistanceMetrics[rec.DistanceMetric]
+	// A malformed setting keeps its default, as the service's own builder
+	// does: the namespace still gets a usable index.
+	_ = ApplyHNSWParams(cfg, rec.IndexParams)
 	idx, err := hnsw.NewHNSWIndex(cfg)
 	if err != nil {
 		return nil, err
 	}
 	return &hnswLiveIndex{namespace: namespace, idx: idx, ml: cfg.Ml}, nil
+}
+
+// hnswParamKeys are the namespace index-config keys an HNSW index reads.
+var hnswParamKeys = []string{"m", "ef_construction", "ef_search"}
+
+// ApplyHNSWParams sets cfg's M, EfConstruction and EfSearch from the
+// namespace index-config keys m, ef_construction and ef_search. A key that
+// is absent, or not a positive integer, leaves its field at its current
+// value; the malformed ones are returned joined. Setting m also sets MMax
+// to 2*m and Ml to 1/ln(m). The engine's live index and the service's own
+// HNSW builder both use it, so a namespace's settings mean the same index
+// whichever side builds it.
+func ApplyHNSWParams(cfg *hnsw.Config, params map[string]string) error {
+	var errs []error
+	for _, key := range hnswParamKeys {
+		raw, ok := params[key]
+		if !ok {
+			continue
+		}
+		n, err := strconv.Atoi(raw)
+		if err != nil || n <= 0 {
+			errs = append(errs, &InvalidHNSWParamError{Key: key, Value: raw})
+			continue
+		}
+		switch key {
+		case "m":
+			cfg.M = n
+			cfg.MMax = 2 * n
+			if n > 1 {
+				cfg.Ml = 1 / math.Log(float64(n))
+			}
+		case "ef_construction":
+			cfg.EfConstruction = n
+		case "ef_search":
+			cfg.EfSearch = n
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// InvalidHNSWParamError reports an HNSW index-config value that is not a
+// positive integer.
+type InvalidHNSWParamError struct {
+	Key   string
+	Value string
+}
+
+func (e *InvalidHNSWParamError) Error() string {
+	return "vector: HNSW index parameter " + strconv.Quote(e.Key) + " = " + strconv.Quote(e.Value) + " is not a positive integer"
 }
 
 func newFlatLiveIndex(_ string, rec NamespaceRecord) (LiveIndex, error) {

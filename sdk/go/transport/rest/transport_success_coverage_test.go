@@ -45,16 +45,16 @@ func TestRESTVector_AllMethods_Success(t *testing.T) {
 	if _, err := rt.DeleteNamespace(ctx, &transport.DeleteNamespaceRequest{Namespace: "ns"}); err != nil {
 		t.Fatalf("DeleteNamespace: %v", err)
 	}
-	if _, err := rt.ListNamespaces(ctx, &transport.ListNamespacesRequest{ShardID: 1}); err != nil {
+	if _, err := rt.ListNamespaces(ctx, &transport.ListNamespacesRequest{}); err != nil {
 		t.Fatalf("ListNamespaces: %v", err)
 	}
-	if _, err := rt.GetNamespaceInfo(ctx, &transport.GetNamespaceInfoRequest{Namespace: "ns", ShardID: 1}); err != nil {
+	if _, err := rt.GetNamespaceInfo(ctx, &transport.GetNamespaceInfoRequest{Namespace: "ns"}); err != nil {
 		t.Fatalf("GetNamespaceInfo: %v", err)
 	}
 	if _, err := rt.UpsertVector(ctx, &transport.UpsertVectorRequest{Namespace: "ns", ID: 1, Vector: []float32{0.1}}); err != nil {
 		t.Fatalf("UpsertVector: %v", err)
 	}
-	if _, err := rt.GetVector(ctx, &transport.GetVectorRequest{Namespace: "ns", ID: 1, IncludeVector: true, IncludeMetadata: true, ShardID: 1, Consistency: 1}); err != nil {
+	if _, err := rt.GetVector(ctx, &transport.GetVectorRequest{Namespace: "ns", ID: 1, IncludeVector: true, IncludeMetadata: true, Consistency: 1}); err != nil {
 		t.Fatalf("GetVector: %v", err)
 	}
 	if _, err := rt.DeleteVector(ctx, &transport.DeleteVectorRequest{Namespace: "ns", ID: 1}); err != nil {
@@ -66,7 +66,7 @@ func TestRESTVector_AllMethods_Success(t *testing.T) {
 	if _, err := rt.BatchDeleteVectors(ctx, &transport.BatchDeleteVectorsRequest{Namespace: "ns", IDs: []uint64{1}}); err != nil {
 		t.Fatalf("BatchDeleteVectors: %v", err)
 	}
-	if _, err := rt.ListVectors(ctx, &transport.ListVectorsRequest{Namespace: "ns", Limit: 10, Cursor: "c", IncludeVectors: true, IncludeMetadata: true, ShardID: 1, Consistency: 1}); err != nil {
+	if _, err := rt.ListVectors(ctx, &transport.ListVectorsRequest{Namespace: "ns", Limit: 10, Cursor: "c", IncludeVectors: true, IncludeMetadata: true, Consistency: 1}); err != nil {
 		t.Fatalf("ListVectors: %v", err)
 	}
 	if _, err := rt.UpdateMetadata(ctx, &transport.UpdateVectorMetadataRequest{Namespace: "ns", ID: 1}); err != nil {
@@ -90,7 +90,7 @@ func TestRESTVector_AllMethods_Success(t *testing.T) {
 	if _, err := rt.GetRebuildProgress(ctx, &transport.GetRebuildProgressRequest{Namespace: "ns", JobID: "j1"}); err != nil {
 		t.Fatalf("GetRebuildProgress: %v", err)
 	}
-	if _, err := rt.GetIndexStats(ctx, &transport.GetIndexStatsRequest{Namespace: "ns", ShardID: 1}); err != nil {
+	if _, err := rt.GetIndexStats(ctx, &transport.GetIndexStatsRequest{Namespace: "ns"}); err != nil {
 		t.Fatalf("GetIndexStats: %v", err)
 	}
 	if _, err := rt.CompactNamespace(ctx, &transport.CompactNamespaceRequest{Namespace: "ns"}); err != nil {

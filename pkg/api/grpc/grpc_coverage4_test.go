@@ -187,9 +187,6 @@ func (m *databaseSvcMini) UpdateRaft(_ string, _ *database.DatabaseRaftConfig) (
 func (m *databaseSvcMini) UpdateBarrier(_ string, _ *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
 	return m.updateResult, m.updateErr
 }
-func (m *databaseSvcMini) UpdateConnection(_ string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	return m.updateResult, m.updateErr
-}
 func (m *databaseSvcMini) SealDatabase(_ context.Context, _ string) error { return nil }
 func (m *databaseSvcMini) UnsealDatabase(_ context.Context, _ string, _ seal.Credentials) error {
 	return nil
@@ -230,10 +227,6 @@ func (m *databaseSvcMini) UpdateRaftForTenant(_ context.Context, _ string, _ *da
 func (m *databaseSvcMini) UpdateBarrierForTenant(_ context.Context, _ string, _ *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
 	return m.updateResult, m.updateErr
 }
-func (m *databaseSvcMini) UpdateConnectionForTenant(_ context.Context, _ string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	return m.updateResult, m.updateErr
-}
-
 func (m *databaseSvcMini) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
 	return &database.DatabaseInfo{Name: name, SQL: sqlCfg}, nil
 }
@@ -1167,27 +1160,6 @@ func TestDatabase_UpdateBarrier_NilService(t *testing.T) {
 	defer cleanup()
 
 	_, err := client.DatabaseUpdateBarrier(context.Background(), &pb.DatabaseUpdateBarrierRequest{Name: "db"})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestDatabase_UpdateConnection_Success(t *testing.T) {
-	svc := newDatabaseSvcMini()
-	client, cleanup := startTestServerFull(t, WithDatabaseService(svc))
-	defer cleanup()
-
-	_, err := client.DatabaseUpdateConnection(context.Background(), &pb.DatabaseUpdateConnectionRequest{Name: "db"})
-	if err != nil {
-		t.Fatalf("DatabaseUpdateConnection failed: %v", err)
-	}
-}
-
-func TestDatabase_UpdateConnection_NilService(t *testing.T) {
-	client, cleanup := startTestServerFull(t)
-	defer cleanup()
-
-	_, err := client.DatabaseUpdateConnection(context.Background(), &pb.DatabaseUpdateConnectionRequest{Name: "db"})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

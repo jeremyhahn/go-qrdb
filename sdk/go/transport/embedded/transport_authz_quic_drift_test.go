@@ -176,7 +176,6 @@ var quicToEmbeddedMethod = map[string]string{
 	"db.Unseal":                           "UnsealDatabase",
 	"db.UpdateBarrier":                    "UpdateDatabaseBarrier",
 	"db.UpdateCompaction":                 "UpdateDatabaseCompaction",
-	"db.UpdateConnection":                 "UpdateDatabaseConnection",
 	"db.UpdateEtcd":                       "UpdateDatabaseEtcd",
 	"db.UpdateProtocol":                   "UpdateDatabaseProtocol",
 	"db.UpdateRaft":                       "UpdateDatabaseRaft",

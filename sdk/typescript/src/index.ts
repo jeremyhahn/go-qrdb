@@ -364,12 +364,10 @@ export type {
     DatabaseBarrierConfig,
     DatabaseBarrierStatus,
     DatabaseBarrierRequest,
-    DatabaseConnectionConfig,
     UpdateDatabaseProtocolRequest,
     UpdateDatabaseSQLRequest,
     UpdateDatabaseRaftRequest,
     UpdateDatabaseBarrierRequest,
-    UpdateDatabaseConnectionRequest,
     ListDatabasesResponse,
     DaemonStatus,
 

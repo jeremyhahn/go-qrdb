@@ -51,6 +51,24 @@ func testDBConfig(name string) database.DatabaseConfig {
 	}
 }
 
+// testRaftDBConfig returns a raft-backend database configuration: only a
+// raft-backend database takes a Raft configuration update.
+func testRaftDBConfig(name string) database.DatabaseConfig {
+	return database.DatabaseConfig{
+		Name:    name,
+		Backend: database.BackendRaft,
+	}
+}
+
+// testEtcdDBConfig returns a raft-backend database configuration: etcd needs
+// a replicated log, so only a raft-backend database may enable it.
+func testEtcdDBConfig(name string) database.DatabaseConfig {
+	return database.DatabaseConfig{
+		Name:    name,
+		Backend: database.BackendRaft,
+	}
+}
+
 func TestDatabaseService_Create(t *testing.T) {
 	svc := newTestDatabaseService(t)
 
@@ -285,9 +303,13 @@ func TestDatabaseService_UpdateRaft_Success(t *testing.T) {
 	svc := newTestDatabaseService(t)
 
 	// Create a database first.
-	cfg := testDBConfig("raft-db")
-	if _, err := svc.Create(cfg); err != nil {
+	cfg := testRaftDBConfig("raft-db")
+	created, err := svc.Create(cfg)
+	if err != nil {
 		t.Fatalf("Create() returned unexpected error: %v", err)
+	}
+	if created.Raft == nil || created.Raft.ShardID == 0 {
+		t.Fatalf("Create().Raft = %+v, want an issued shard", created.Raft)
 	}
 
 	// Update Raft config via service.
@@ -309,10 +331,9 @@ func TestDatabaseService_UpdateRaft_Success(t *testing.T) {
 	if info.Raft.ClusterMode != database.RaftLocal {
 		t.Errorf("UpdateRaft().Raft.ClusterMode = %q, want %q", info.Raft.ClusterMode, database.RaftLocal)
 	}
-	// The database was created with no Raft configuration, so it was issued
-	// no shard, and an update cannot give it one.
-	if info.Raft.ShardID != 0 {
-		t.Errorf("UpdateRaft().Raft.ShardID = %d, want 0", info.Raft.ShardID)
+	// The shard is issued at create; an update keeps it.
+	if info.Raft.ShardID != created.Raft.ShardID {
+		t.Errorf("UpdateRaft().Raft.ShardID = %d, want %d", info.Raft.ShardID, created.Raft.ShardID)
 	}
 	if info.Raft.ReplicaID != 1 {
 		t.Errorf("UpdateRaft().Raft.ReplicaID = %d, want 1", info.Raft.ReplicaID)
@@ -354,7 +375,7 @@ func TestDatabaseService_UpdateRaft_InvalidClusterMode(t *testing.T) {
 	svc := newTestDatabaseService(t)
 
 	// Create a database first.
-	cfg := testDBConfig("raft-invalid-db")
+	cfg := testRaftDBConfig("raft-invalid-db")
 	if _, err := svc.Create(cfg); err != nil {
 		t.Fatalf("Create() returned unexpected error: %v", err)
 	}
@@ -461,103 +482,6 @@ func TestDatabaseService_UpdateBarrier_NotFound(t *testing.T) {
 	}
 	if notFoundErr.Name != "nonexistent-barrier-db" {
 		t.Errorf("NotFoundError.Name = %q, want %q", notFoundErr.Name, "nonexistent-barrier-db")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// UpdateConnection tests
-// ---------------------------------------------------------------------------
-
-func TestDatabaseService_UpdateConnection_Success(t *testing.T) {
-	svc := newTestDatabaseService(t)
-
-	// Create a database first.
-	cfg := testDBConfig("conn-db")
-	if _, err := svc.Create(cfg); err != nil {
-		t.Fatalf("Create() returned unexpected error: %v", err)
-	}
-
-	// Update connection config via service.
-	connCfg := &database.DatabaseConnectionConfig{
-		Transport: "grpc",
-		Address:   "localhost:9090",
-		CAFile:    "/etc/certs/ca.pem",
-	}
-	info, err := svc.UpdateConnection("conn-db", connCfg)
-	if err != nil {
-		t.Fatalf("UpdateConnection() returned unexpected error: %v", err)
-	}
-
-	if info.Name != "conn-db" {
-		t.Errorf("UpdateConnection().Name = %q, want %q", info.Name, "conn-db")
-	}
-	if info.Connection == nil {
-		t.Fatal("UpdateConnection().Connection is nil, want non-nil")
-	}
-	if info.Connection.Transport != "grpc" {
-		t.Errorf("UpdateConnection().Connection.Transport = %q, want %q", info.Connection.Transport, "grpc")
-	}
-	if info.Connection.Address != "localhost:9090" {
-		t.Errorf("UpdateConnection().Connection.Address = %q, want %q", info.Connection.Address, "localhost:9090")
-	}
-	if info.Connection.CAFile != "/etc/certs/ca.pem" {
-		t.Errorf("UpdateConnection().Connection.CAFile = %q, want %q", info.Connection.CAFile, "/etc/certs/ca.pem")
-	}
-
-	// Verify Get also reflects the update.
-	got, err := svc.Get("conn-db")
-	if err != nil {
-		t.Fatalf("Get() returned unexpected error: %v", err)
-	}
-	if got.Connection == nil {
-		t.Fatal("Get().Connection is nil after UpdateConnection, want non-nil")
-	}
-	if got.Connection.Transport != "grpc" {
-		t.Errorf("Get().Connection.Transport = %q after UpdateConnection, want %q", got.Connection.Transport, "grpc")
-	}
-}
-
-func TestDatabaseService_UpdateConnection_NotFound(t *testing.T) {
-	svc := newTestDatabaseService(t)
-
-	connCfg := &database.DatabaseConnectionConfig{
-		Transport: "grpc",
-		Address:   "localhost:9090",
-	}
-	_, err := svc.UpdateConnection("nonexistent-conn-db", connCfg)
-	if err == nil {
-		t.Fatal("UpdateConnection() returned nil, want *database.NotFoundError")
-	}
-	var notFoundErr *database.NotFoundError
-	if !errors.As(err, &notFoundErr) {
-		t.Fatalf("UpdateConnection() error type = %T, want *database.NotFoundError", err)
-	}
-	if notFoundErr.Name != "nonexistent-conn-db" {
-		t.Errorf("NotFoundError.Name = %q, want %q", notFoundErr.Name, "nonexistent-conn-db")
-	}
-}
-
-func TestDatabaseService_UpdateConnection_InvalidMissingFields(t *testing.T) {
-	svc := newTestDatabaseService(t)
-
-	// Create a database first.
-	cfg := testDBConfig("conn-invalid-db")
-	if _, err := svc.Create(cfg); err != nil {
-		t.Fatalf("Create() returned unexpected error: %v", err)
-	}
-
-	// Attempt to update with missing required fields.
-	connCfg := &database.DatabaseConnectionConfig{
-		Transport: "",
-		Address:   "",
-	}
-	_, err := svc.UpdateConnection("conn-invalid-db", connCfg)
-	if err == nil {
-		t.Fatal("UpdateConnection() returned nil, want *database.ConnectionRequiredError")
-	}
-	var connErr *database.ConnectionRequiredError
-	if !errors.As(err, &connErr) {
-		t.Fatalf("UpdateConnection() error type = %T, want *database.ConnectionRequiredError", err)
 	}
 }
 

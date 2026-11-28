@@ -258,31 +258,36 @@ func TestEffectiveCapabilities_UnencryptedAtRest(t *testing.T) {
 		mode    string
 		seal    bool
 		smType  string
-		backend string
+		backend string // storage.backend: the standalone node store
+		dbEntry string // databases[0].backend: that database's own record only
 		want    string // substring of the single reported gap; "" = none
 	}{
-		{"raft mvcc", "raft", true, "mvcc", "", ""},
-		{"raft pebble", "raft", true, "pebble", "", ""},
-		{"raft default sm", "raft", true, "", "", ""},
+		{"raft mvcc", "raft", true, "mvcc", "", "", ""},
+		{"raft pebble", "raft", true, "pebble", "", "", ""},
+		{"raft default sm", "raft", true, "", "", "", ""},
 		// A raft node starts no state machine that persists plaintext under
 		// the barrier (disk/fast over pebble are encrypted, over file refused
 		// at start; the rest persist nothing), so it reports no gap.
-		{"raft disk", "raft", true, "disk", "", ""},
-		{"raft fast", "raft", true, "fast", "", ""},
-		{"raft memory", "raft", true, "memory", "", ""},
-		{"raft disk, seal off", "raft", false, "disk", "", ""},
-		{"standalone pebble", "standalone", true, "", "pebble", ""},
-		{"standalone default", "standalone", true, "", "", ""},
-		{"standalone memory", "standalone", true, "", "memory", ""},
-		{"standalone file", "standalone", true, "", "file", ""},
-		{"standalone objstore", "standalone", true, "", "objstore", ""},
-		{"standalone file, seal off", "standalone", false, "", "file", ""},
+		{"raft disk", "raft", true, "disk", "", "", ""},
+		{"raft fast", "raft", true, "fast", "", "", ""},
+		{"raft memory", "raft", true, "memory", "", "", ""},
+		{"raft disk, seal off", "raft", false, "disk", "", "", ""},
+		{"standalone pebble", "standalone", true, "", "pebble", "", ""},
+		{"standalone default", "standalone", true, "", "", "", ""},
+		{"standalone memory", "standalone", true, "", "memory", "", ""},
+		{"standalone file", "standalone", true, "", "file", "", ""},
+		{"standalone objstore", "standalone", true, "", "objstore", "", ""},
+		{"standalone file, seal off", "standalone", false, "", "file", "", ""},
+		// A databases entry's backend never picks the node store: an
+		// objstore entry on a pebble node store reports no gap.
+		{"standalone pebble store, objstore entry", "standalone", true, "", "pebble", "objstore", ""},
+		{"standalone default store, objstore entry", "standalone", true, "", "", "objstore", ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			cfg := &Config{Mode: c.mode, Seal: SealConfig{Enabled: c.seal}, Raft: RaftConfig{SMType: c.smType}}
-			if c.backend != "" {
-				cfg.Databases = []DatabaseConfig{{Name: "system", Backend: c.backend}}
+			cfg := &Config{Mode: c.mode, Seal: SealConfig{Enabled: c.seal}, Raft: RaftConfig{SMType: c.smType}, Storage: StorageConfig{Backend: c.backend}}
+			if c.dbEntry != "" {
+				cfg.Databases = []DatabaseConfig{{Name: "app", Backend: c.dbEntry}}
 			}
 			gaps := cfg.EffectiveCapabilities().UnencryptedAtRest
 			if c.want == "" {

@@ -96,7 +96,6 @@ type CreateNamespaceRequest struct {
 	IndexType      string                 `json:"index_type"`
 	IndexConfig    map[string]string      `json:"index_config,omitempty"`
 	Metadata       map[string]interface{} `json:"metadata,omitempty"`
-	ShardID        uint64                 `json:"shard_id,omitempty"`
 }
 
 // CreateNamespaceResponse contains the result of a namespace creation.
@@ -131,7 +130,6 @@ type UpdateNamespaceResponse struct {
 // DeleteNamespaceRequest contains the parameters for deleting a namespace.
 type DeleteNamespaceRequest struct {
 	Namespace string `json:"namespace"`
-	ShardID   uint64 `json:"shard_id,omitempty"`
 }
 
 // DeleteNamespaceResponse contains the result of namespace deletion.
@@ -143,10 +141,9 @@ type DeleteNamespaceResponse struct {
 
 // ListNamespacesRequest contains the parameters for listing namespaces.
 type ListNamespacesRequest struct {
-	Prefix  string `json:"prefix,omitempty"`
-	Limit   int    `json:"limit,omitempty"`
-	Offset  int    `json:"offset,omitempty"`
-	ShardID uint64 `json:"shard_id,omitempty"`
+	Prefix string `json:"prefix,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
+	Offset int    `json:"offset,omitempty"`
 }
 
 // ListNamespacesResponse contains the list of namespaces.
@@ -159,7 +156,6 @@ type ListNamespacesResponse struct {
 // GetNamespaceInfoRequest contains the parameters for retrieving namespace metadata.
 type GetNamespaceInfoRequest struct {
 	Namespace string `json:"namespace"`
-	ShardID   uint64 `json:"shard_id,omitempty"`
 }
 
 // GetNamespaceInfoResponse contains namespace information.
@@ -208,7 +204,6 @@ type UpsertVectorRequest struct {
 	ID        uint64                 `json:"id"`
 	Vector    []float32              `json:"vector"`
 	Metadata  map[string]interface{} `json:"metadata,omitempty"`
-	ShardID   uint64                 `json:"shard_id,omitempty"`
 }
 
 // UpsertVectorResponse contains the result of a vector upsert.
@@ -225,7 +220,6 @@ type GetVectorRequest struct {
 	ID              uint64 `json:"id"`
 	IncludeVector   bool   `json:"include_vector,omitempty"`
 	IncludeMetadata bool   `json:"include_metadata,omitempty"`
-	ShardID         uint64 `json:"shard_id,omitempty"`
 	Consistency     uint8  `json:"consistency,omitempty"`
 }
 
@@ -244,7 +238,6 @@ type GetVectorResponse struct {
 type DeleteVectorRequest struct {
 	Namespace string `json:"namespace"`
 	ID        uint64 `json:"id"`
-	ShardID   uint64 `json:"shard_id,omitempty"`
 }
 
 // DeleteVectorResponse contains the result of vector deletion.
@@ -257,7 +250,6 @@ type DeleteVectorResponse struct {
 type BatchUpsertRequest struct {
 	Namespace string        `json:"namespace"`
 	Vectors   []*VectorData `json:"vectors"`
-	ShardID   uint64        `json:"shard_id,omitempty"`
 }
 
 // BatchUpsertResponse contains the result of a batch upsert operation.
@@ -273,7 +265,6 @@ type BatchUpsertResponse struct {
 type BatchDeleteVectorsRequest struct {
 	Namespace string   `json:"namespace"`
 	IDs       []uint64 `json:"ids"`
-	ShardID   uint64   `json:"shard_id,omitempty"`
 }
 
 // BatchDeleteVectorsResponse contains the result of a batch delete.
@@ -292,7 +283,6 @@ type ListVectorsRequest struct {
 	IDPrefix        string `json:"id_prefix,omitempty"`
 	IncludeVectors  bool   `json:"include_vectors,omitempty"`
 	IncludeMetadata bool   `json:"include_metadata,omitempty"`
-	ShardID         uint64 `json:"shard_id,omitempty"`
 	Consistency     uint8  `json:"consistency,omitempty"`
 }
 
@@ -311,7 +301,6 @@ type UpdateVectorMetadataRequest struct {
 	Metadata      map[string]interface{} `json:"metadata"`
 	MergeMetadata bool                   `json:"merge_metadata,omitempty"`
 	DeleteKeys    []string               `json:"delete_keys,omitempty"`
-	ShardID       uint64                 `json:"shard_id,omitempty"`
 }
 
 // UpdateVectorMetadataResponse contains the result of metadata update.
@@ -346,7 +335,6 @@ type SearchSimilarRequest struct {
 	IncludeVectors  bool                   `json:"include_vectors,omitempty"`
 	IncludeMetadata bool                   `json:"include_metadata,omitempty"`
 	MetadataFilter  map[string]interface{} `json:"metadata_filter,omitempty"`
-	ShardID         uint64                 `json:"shard_id,omitempty"`
 	Consistency     uint8                  `json:"consistency,omitempty"`
 }
 
@@ -366,7 +354,6 @@ type SearchByMetadataRequest struct {
 	Offset          int                    `json:"offset,omitempty"`
 	IncludeVectors  bool                   `json:"include_vectors,omitempty"`
 	IncludeMetadata bool                   `json:"include_metadata,omitempty"`
-	ShardID         uint64                 `json:"shard_id,omitempty"`
 	Consistency     uint8                  `json:"consistency,omitempty"`
 }
 
@@ -390,7 +377,6 @@ type HybridSearchRequest struct {
 	RerankingAlgorithm string                 `json:"reranking_algorithm,omitempty"`
 	IncludeVectors     bool                   `json:"include_vectors,omitempty"`
 	IncludeMetadata    bool                   `json:"include_metadata,omitempty"`
-	ShardID            uint64                 `json:"shard_id,omitempty"`
 	Consistency        uint8                  `json:"consistency,omitempty"`
 }
 
@@ -414,7 +400,6 @@ type SearchByIDRequest struct {
 	IncludeMetadata bool                   `json:"include_metadata,omitempty"`
 	MetadataFilter  map[string]interface{} `json:"metadata_filter,omitempty"`
 	ExcludeSelf     bool                   `json:"exclude_self,omitempty"`
-	ShardID         uint64                 `json:"shard_id,omitempty"`
 	Consistency     uint8                  `json:"consistency,omitempty"`
 }
 
@@ -435,7 +420,6 @@ type RebuildIndexRequest struct {
 	Namespace   string            `json:"namespace"`
 	IndexConfig map[string]string `json:"index_config,omitempty"`
 	Async       bool              `json:"async,omitempty"`
-	ShardID     uint64            `json:"shard_id,omitempty"`
 }
 
 // RebuildIndexResponse contains the result of an index rebuild request.
@@ -474,7 +458,6 @@ type GetRebuildProgressResponse struct {
 // GetIndexStatsRequest contains the parameters for querying index statistics.
 type GetIndexStatsRequest struct {
 	Namespace string `json:"namespace"`
-	ShardID   uint64 `json:"shard_id,omitempty"`
 }
 
 // GetIndexStatsResponse contains index statistics.
@@ -509,7 +492,6 @@ type CompactNamespaceRequest struct {
 	Namespace string `json:"namespace"`
 	Async     bool   `json:"async,omitempty"`
 	TimeoutMs int64  `json:"timeout_ms,omitempty"`
-	ShardID   uint64 `json:"shard_id,omitempty"`
 }
 
 // CompactNamespaceResponse contains the result of a compaction request.
@@ -525,7 +507,6 @@ type CompactNamespaceResponse struct {
 type GetCompactionProgressRequest struct {
 	Namespace   string `json:"namespace"`
 	OperationID string `json:"operation_id,omitempty"`
-	ShardID     uint64 `json:"shard_id,omitempty"`
 }
 
 // GetCompactionProgressResponse contains compaction progress information.

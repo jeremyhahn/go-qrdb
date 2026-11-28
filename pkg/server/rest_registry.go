@@ -22,11 +22,13 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
 // errNotDedicatedDatabaseBarrier is a sentinel returned by
@@ -60,12 +62,13 @@ var errNotDedicatedDatabaseBarrier = errors.New("server: database has no dedicat
 //
 // restServiceRegistry is safe for concurrent use.
 type restServiceRegistry struct {
-	dbReg        *DatabaseServiceRegistry
-	barrierReg   *seal.BarrierRegistry
-	tenantSvc    tenant.TenantServicer
-	catalog      DatabaseCatalog
-	tenantHosts  *TenantHostRegistry
-	raftBackend  *RaftBackendFactory
+	dbReg       *DatabaseServiceRegistry
+	barrierReg  *seal.BarrierRegistry
+	tenantSvc   tenant.TenantServicer
+	catalog     DatabaseCatalog
+	tenantHosts *TenantHostRegistry
+	raftBackend *RaftBackendFactory
+
 	accountant   *quota.Accountant
 	systemTenant string
 
@@ -92,6 +95,16 @@ type restServiceRegistry struct {
 	// resolveDedicatedDatabaseBarrier for the non-raft (direct encrypting
 	// Backend()) case. Always non-nil; unused when dbManager is nil.
 	dedicatedStore *dedicatedStoreServiceCache
+
+	// materialized caches the bundle served from each materialized
+	// database's own host (a backend implementing materializedStore).
+	materialized *materializedServiceCache
+	// bindingImportSession, bindingIndex and bindingTimeSeries configure the
+	// services built over a materialized database's host; zero values
+	// resolve to the package defaults (withBindingServiceConfig).
+	bindingImportSession qrdbconfig.ImportSessionConfig
+	bindingIndex         qrdbconfig.IndexConfig
+	bindingTimeSeries    qrdbconfig.TimeSeriesConfig
 
 	// reclaimOrigin identifies this node on the reclaim-job index entries
 	// its TableServices publish (service.ReclaimIndexEntry.Origin), so a job
@@ -162,6 +175,7 @@ func newRESTRegistry(
 		barrierReg:     barrierReg,
 		systemTenant:   systemTenant,
 		dedicatedStore: newDedicatedStoreServiceCache(),
+		materialized:   newMaterializedServiceCache(),
 		collections:    newCompositeCollectionCache(),
 	}
 	for _, opt := range opts {
@@ -201,10 +215,10 @@ func withTenantHostRegistry(reg *TenantHostRegistry) RESTRegistryOption {
 }
 
 // withRaftBackendFactory sets the dedicated per-database raft shard factory.
-// When configured, IsolationRaft tenants are routed to their database's
-// dedicated Raft shard on the shared system Host (full engines on the tenant's
-// own DataRoot) instead of the shared system service set. Other isolation modes
-// are unaffected.
+// When configured, every backend: raft database -- an IsolationRaft tenant's,
+// and a prefix, barrier or volume tenant's (OD-1 A) -- is routed to its own
+// dedicated Raft shard on the shared system Host instead of the shared system
+// service set or the tenant's volume shard.
 func withRaftBackendFactory(f *RaftBackendFactory) RESTRegistryOption {
 	return func(r *restServiceRegistry) {
 		r.raftBackend = f
@@ -244,6 +258,95 @@ func WithRegistryDatabaseManager(mgr *database.Manager) RESTRegistryOption {
 		r.dbManager = mgr
 		r.catalog = newManagerCatalog(mgr)
 	}
+}
+
+// withBindingServiceConfig sets the import-session, index and time-series
+// configuration of the services built over a materialized database's own
+// host. Zero values resolve to the package defaults, as they do for the
+// system shard.
+func withBindingServiceConfig(importSession qrdbconfig.ImportSessionConfig, index qrdbconfig.IndexConfig, ts qrdbconfig.TimeSeriesConfig) RESTRegistryOption {
+	return func(r *restServiceRegistry) {
+		r.bindingImportSession = importSession
+		r.bindingIndex = index
+		r.bindingTimeSeries = ts
+	}
+}
+
+// materializedStore is the backend of a database whose local binding is
+// materialized (lifecycle.MaterializedBinding): the database's own service
+// host, the shard its data lives on there, and the watch hub its engine
+// publishes to. pkg/server sees it only through this interface, because
+// pkg/server/lifecycle imports pkg/server.
+type materializedStore interface {
+	Host() service.Host
+	ShardID() uint64
+	WatchHub() *watch.Hub
+	Binding() *database.Binding
+	// Vector is the database's own vector service, over storage under its
+	// binding root; nil when the binding built none.
+	Vector() service.VectorServicer
+}
+
+// resolveMaterialized serves a materialized database from its own host. The
+// host is the database's whole keyspace, so its views carry no namespace
+// prefix; every write still carries the database's drop fence guard, the
+// same guard the shared store's views carry.
+func (r *restServiceRegistry) resolveMaterialized(tenantID, db string, info *tenant.TenantInfo, dbase *database.Database, ms materializedStore) (*DatabaseServices, error) {
+	// A barrier binding opens its engine once its database barrier is
+	// unsealed; until then it refuses as sealed, and no bundle is cached
+	// over a host that cannot serve.
+	if rd, ok := ms.(interface{ Ready() error }); ok {
+		if err := rd.Ready(); err != nil {
+			return nil, err
+		}
+	}
+	base := r.materialized.getOrBuild(dbase, func() *DatabaseServices {
+		svcs := buildDataPlaneServices(ms.Host(), ms.ShardID(), tenantID, ms.WatchHub(),
+			r.bindingImportSession, r.bindingIndex, r.bindingTimeSeries, service.WithDedicatedKeyspace())
+		// The vector service is the binding's own, over its own storage;
+		// the shared node's vector store never holds this database's data.
+		if v := ms.Vector(); v != nil {
+			svcs.Vector = v
+		}
+		return svcs
+	})
+	incarnation := dbase.Incarnation()
+	// The drop fence lives in this database's own store
+	// (storeResolver.materializedFenceTarget), where every write below lands,
+	// so each write carries the guard and a handle resolved before a drop is
+	// refused once Manager.Drop fences it. The store is the incarnation -- a
+	// drop removes the binding root, a create under the name opens a new one
+	// -- so the guard and the compaction binding carry no incarnation and the
+	// marker is absent while the database is live, as for a dedicated-raft
+	// database's shard; CompactionScheduleGuard finds the same marker. The
+	// vector view's writes are OpVector* proposals through this store's host
+	// (service.WithVectorApplyHost), so they carry the guard too: an upsert
+	// that passed the check and proposed after the drop is refused at apply
+	// time. The view also keeps its check against the catalog's incarnation,
+	// which is what fences the shared node vector store's node-local writes.
+	fence, err := newDatabaseFence(tenantID, db, "", func() error { return r.refuseIfDropping(tenantID, db, true, incarnation) })
+	if err != nil {
+		return nil, err
+	}
+	fenced := fence.apply(base, "", false)
+	if base.Collection != nil {
+		fenced.Collection = &guardedCollectionService{dbGuard: dbGuard{guard: fence.guard}, inner: base.Collection}
+	}
+	svcs := r.applyQuota(fenced, tenantID, info)
+	svcs.Placement = service.StorePlacementNode
+	return svcs, nil
+}
+
+// SweepStuckCollections forwards the collection sweeper's pass to the inner
+// service when it sweeps, so a fenced materialized database still finishes
+// a collection create or drop a crash left CREATING or DROPPING. An inner
+// service that does not sweep sweeps nothing.
+func (g *guardedCollectionService) SweepStuckCollections(ctx context.Context, database string, staleAfter time.Duration) (service.CollectionSweepResult, error) {
+	sweeper, ok := g.inner.(service.CollectionSweeper)
+	if !ok {
+		return service.CollectionSweepResult{}, nil
+	}
+	return sweeper.SweepStuckCollections(ctx, database, staleAfter)
 }
 
 // withReclaimOrigin sets this node's identity as recorded on the reclaim-job
@@ -301,12 +404,32 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 		return nil, err
 	}
 
+	// OD-1 A: every backend: raft database runs its own Raft group, whatever
+	// the tenant's isolation -- a prefix tenant's under the node barrier, a
+	// barrier or volume tenant's under its tenant barrier -- with its keys at
+	// the root of the group's store.
+	if isolation != tenant.IsolationRaft {
+		raftGroup, err := r.isRaftGroupDatabase(tenantID, db, isolation, managed)
+		if err != nil {
+			return nil, err
+		}
+		if raftGroup {
+			return r.resolveRaftGroup(tenantID, db, info)
+		}
+	}
+
 	// IsolationVolume tenants are backed by a dedicated per-tenant Raft Host on
 	// their own DataRoot (full engines, encrypted under the tenant DEK). The
 	// per-tenant Host exposes one shard shared by all the tenant's databases;
 	// the composite (tenant, db) namespace prefix below keeps each database's
 	// keyspace disjoint, exactly as on the shared system shard.
 	if isolation == tenant.IsolationVolume {
+		// A volume tenant's memory or pebble database materialized under
+		// the tenant's data root (lifecycle.LocalBindingFactory) is served
+		// from its own host, never from a namespace of the volume shard.
+		if ms, ok := materializedStoreOf(managed.db); ok {
+			return r.resolveMaterialized(tenantID, db, info, managed.db, ms)
+		}
 		// Fail closed: a volume-isolated tenant MUST be served from its dedicated
 		// per-tenant Host. When the Host registry is not wired into this server,
 		// falling through to the shared-store path below would silently downgrade
@@ -355,42 +478,7 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 		// by (tenantID, db) — which preserves tenant ownership — so it is the
 		// correct existence authority. A genuinely unknown database surfaces as
 		// ErrRaftDatabaseUnknown, mapped to a 404 below.
-		base, err := r.raftBackend.Services(context.Background(), tenantID, db)
-		if err != nil {
-			if errors.Is(err, ErrRaftDatabaseUnknown) {
-				return nil, &rest.DatabaseNotFoundError{TenantID: tenantID, Database: db}
-			}
-			return nil, err
-		}
-		// Every write to the dedicated shard carries the database's drop
-		// fence guard, and DROP DATABASE writes the fence into this same
-		// shard before tearing it down (KeyspaceReclaimService.
-		// FenceDatabaseKeyspace), so a write resolved before the drop and
-		// applied after the fence is refused by the shard's own state
-		// machine. The replicated placement marker RaftBackendFactory checks
-		// at resolution refuses new handles; the guard is what refuses the
-		// ones already in hand.
-		//
-		// The views are wrapped without a namespace (the shard IS the
-		// database's keyspace), and Watch and Lease are left exactly as
-		// RaftBackendFactory built them. Collection keeps the instance the
-		// factory built -- routing it through the composite cache keyed by
-		// the empty prefix every raft database shares would thrash that
-		// cache -- and carries the guard on the context of its writes.
-		// The shard is the incarnation: a database created again under
-		// this name gets a new shard, so the guard carries no incarnation
-		// and the marker is absent while the database is live.
-		fence, err := newDatabaseFence(tenantID, db, "", func() error { return r.raftBackend.RefuseIfDropping(tenantID, db) })
-		if err != nil {
-			return nil, err
-		}
-		fenced := fence.apply(base, "", false)
-		if base.Collection != nil {
-			fenced.Collection = &guardedCollectionService{dbGuard: dbGuard{guard: fence.guard}, inner: base.Collection}
-		}
-		svcs := r.applyQuota(fenced, tenantID, info)
-		svcs.Placement = service.StorePlacementShard
-		return svcs, nil
+		return r.resolveRaftGroup(tenantID, db, info)
 	}
 
 	// A specific database may carry its OWN encryption barrier over its OWN
@@ -407,6 +495,16 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 			svcs.Placement = service.StorePlacementNode
 		}
 		return svcs, err
+	}
+
+	// A database whose local binding is materialized has its own store,
+	// engine and host (lifecycle.LocalBindingFactory): it is served from
+	// that host, never from a namespace of the shared store.
+	// The record is the one managedDatabase already resolved: no second
+	// lookup, so a failing catalog read surfaced above as an error and can
+	// never fall through to the shared store below.
+	if ms, ok := materializedStoreOf(managed.db); ok {
+		return r.resolveMaterialized(tenantID, db, info, managed.db, ms)
 	}
 
 	// A database is a key-namespace layered over the shared service set, so
@@ -476,9 +574,76 @@ func (r *restServiceRegistry) resolveShared(tenantID, db string, info *tenant.Te
 // here, directly over the database's own encrypting Backend()
 // (buildDedicatedStoreServices); it fails closed when the database's barrier
 // is sealed rather than falling back to the shared (unencrypted) store.
+// resolveRaftGroup serves a backend: raft database from its own Raft group
+// through the raft backend factory (OD-1 A), for a tenant of any isolation.
+func (r *restServiceRegistry) resolveRaftGroup(tenantID, db string, info *tenant.TenantInfo) (*DatabaseServices, error) {
+	base, err := r.raftBackend.Services(context.Background(), tenantID, db)
+	if err != nil {
+		if errors.Is(err, ErrRaftDatabaseUnknown) {
+			return nil, &rest.DatabaseNotFoundError{TenantID: tenantID, Database: db}
+		}
+		return nil, err
+	}
+	// Every write to the dedicated shard carries the database's drop
+	// fence guard, and DROP DATABASE writes the fence into this same
+	// shard before tearing it down (KeyspaceReclaimService.
+	// FenceDatabaseKeyspace), so a write resolved before the drop and
+	// applied after the fence is refused by the shard's own state
+	// machine. The replicated placement marker RaftBackendFactory checks
+	// at resolution refuses new handles; the guard is what refuses the
+	// ones already in hand.
+	//
+	// The views are wrapped without a namespace (the shard IS the
+	// database's keyspace), and Watch and Lease are left exactly as
+	// RaftBackendFactory built them. Collection keeps the instance the
+	// factory built -- routing it through the composite cache keyed by
+	// the empty prefix every raft database shares would thrash that
+	// cache -- and carries the guard on the context of its writes.
+	// The shard is the incarnation: a database created again under
+	// this name gets a new shard, so the guard carries no incarnation
+	// and the marker is absent while the database is live.
+	fence, err := newDatabaseFence(tenantID, db, "", func() error { return r.raftBackend.RefuseIfDropping(tenantID, db) })
+	if err != nil {
+		return nil, err
+	}
+	fenced := fence.apply(base, "", false)
+	if base.Collection != nil {
+		fenced.Collection = &guardedCollectionService{dbGuard: dbGuard{guard: fence.guard}, inner: base.Collection}
+	}
+	svcs := r.applyQuota(fenced, tenantID, info)
+	svcs.Placement = service.StorePlacementShard
+	return svcs, nil
+}
+
+// isRaftGroupDatabase reports whether a non-raft tenant's database is a
+// backend: raft database served from its own group: the raft backend
+// factory knows its shard, the open database (when this node has it) says
+// backend raft without a database barrier (that layering is 3b.5).
+func (r *restServiceRegistry) isRaftGroupDatabase(tenantID, db string, isolation tenant.IsolationType, managed managedRecord) (bool, error) {
+	if r.raftBackend == nil {
+		return false, nil
+	}
+	if managed.db != nil {
+		cfg := managed.db.Config()
+		if cfg.Backend != database.BackendRaft || (cfg.Barrier != nil && cfg.Barrier.Enabled) {
+			return false, nil
+		}
+	}
+	// A placement naming only other nodes is returned as
+	// *placement.NotAReplicaError, which forwards the request to a replica;
+	// it never falls back to the shared store.
+	return r.raftBackend.HostsDatabase(tenantID, db)
+}
+
 func (r *restServiceRegistry) resolveDedicatedDatabaseBarrier(tenantID, db string, info *tenant.TenantInfo) (*DatabaseServices, error) {
 	dbase, ok := r.ownedDatabase(tenantID, db)
 	if !ok {
+		return nil, errNotDedicatedDatabaseBarrier
+	}
+	// A barrier database whose binding is materialized serves the full
+	// bundle from its own host, the barrier layered on its store
+	// (resolveMaterialized), never this KV+collections bundle.
+	if _, materialized := materializedStoreOf(dbase); materialized {
 		return nil, errNotDedicatedDatabaseBarrier
 	}
 
@@ -504,6 +669,39 @@ func (r *restServiceRegistry) resolveDedicatedDatabaseBarrier(tenantID, db strin
 // shared/prefix tenant's database.
 func servesFromNodeLocalStore(cfg *database.DatabaseConfig) bool {
 	return cfg.Barrier != nil && cfg.Barrier.Enabled && cfg.BarrierOnDataPath()
+}
+
+// materializedDatabase returns tenantID's database db when the Manager opened
+// it in its own store (a materializedStore backend): every path that serves
+// such a database must use its own host, never the shared store. A database
+// that does not exist is (nil, nil, false, nil); any other lookup failure is
+// returned, so a transient catalog error never reads as "not materialized".
+func (r *restServiceRegistry) materializedDatabase(tenantID, db string) (*database.Database, materializedStore, bool, error) {
+	if db == "" || r.dbManager == nil {
+		return nil, nil, false, nil
+	}
+	dbase, err := r.dbManager.GetOwned(db, tenantID)
+	if err != nil {
+		var notFound *database.NotFoundError
+		if errors.As(err, &notFound) {
+			return nil, nil, false, nil
+		}
+		return nil, nil, false, err
+	}
+	ms, ok := materializedStoreOf(dbase)
+	return dbase, ms, ok, nil
+}
+
+// materializedStoreOf reports whether dbase, a catalog record the caller has
+// already looked up, is opened in its own store (a materializedStore
+// backend). It performs no lookup of its own, so it has no failure to
+// mistake for "not materialized".
+func materializedStoreOf(dbase *database.Database) (materializedStore, bool) {
+	if dbase == nil {
+		return nil, false
+	}
+	ms, ok := dbase.Backend().(materializedStore)
+	return ms, ok
 }
 
 // ownedDatabase returns the catalog record for db when tenantID owns it
@@ -813,8 +1011,11 @@ func (r *restServiceRegistry) checkTenantBarrier(tenantID string) error {
 // Every write-capable view also carries fence.guard, the database's drop
 // fence guard (see dbGuard): each write it proposes is refused by the state
 // machine once DROP DATABASE has fenced the database -- or the name has been
-// created again -- in the same Raft command as the write. The vector view, whose writes are not Raft
-// proposals, is given fence.vectorCheck instead (see dropFence).
+// created again -- in the same Raft command as the write. The vector view
+// carries the guard as well (its writes are proposals when its servicer
+// writes through a Raft host, as a materialized database's does) and is also
+// given fence.vectorCheck, which is what fences the shared node vector
+// store, whose writes are not Raft proposals (see dropFence).
 //
 // Collection is REBUILT over the wrapped engines rather than copied. This
 // comment previously claimed the opposite — that Collection "is intentionally
@@ -842,8 +1043,8 @@ func (r *restServiceRegistry) applyComposite(svcs *DatabaseServices, tenantID, d
 
 // databaseFence is what a database's views need to refuse writes once DROP
 // DATABASE has fenced it: the write guard every Raft write carries, and the
-// check the vector view -- whose writes are not Raft proposals -- runs
-// before it writes.
+// check the vector view also runs before it writes, for the shared node
+// vector store, whose writes are not Raft proposals.
 type databaseFence struct {
 	guard       service.WriteGuard
 	vectorCheck func() error
@@ -966,8 +1167,9 @@ func (f databaseFence) apply(svcs *DatabaseServices, prefix string, wrapLease bo
 	// wrapLease is false only for a dedicated-raft database's empty-prefix
 	// call (applyComposite's IsolationRaft branch): the shard IS the
 	// database's keyspace, so Watch and Lease are left exactly as
-	// RaftBackendFactory built them, and the namespaced MVCC view gets no
-	// ownership check over them.
+	// RaftBackendFactory built them, and the namespaced MVCC view attaches
+	// any of the shard's leases (shardLeaseOwnership): the shard's engine
+	// refuses a lease it does not hold.
 	var leases *namespacedLeaseService
 	if wrapLease && svcs.Lease != nil {
 		leases = newNamespacedLeaseService(svcs.Lease, svcs.MVCC, prefix)
@@ -975,8 +1177,13 @@ func (f databaseFence) apply(svcs *DatabaseServices, prefix string, wrapLease bo
 	}
 	if svcs.MVCC != nil {
 		var owned leaseOwnership
-		if leases != nil {
+		switch {
+		case leases != nil:
 			owned = leases
+		case !wrapLease && svcs.Lease != nil:
+			// A dedicated shard's leases are all the database's own: the
+			// view attaches any of them and the shard refuses an unknown one.
+			owned = shardLeaseOwnership{}
 		}
 		mvcc := newNamespacedMVCCService(svcs.MVCC, prefix, owned)
 		mvcc.dbGuard = g
@@ -1006,6 +1213,7 @@ func (f databaseFence) apply(svcs *DatabaseServices, prefix string, wrapLease bo
 	}
 	if svcs.Vector != nil {
 		vec := newNamespacedVectorService(svcs.Vector, prefix)
+		vec.dbGuard = g
 		vec.dropFence = dropFence{check: f.vectorCheck}
 		out.Vector = vec
 	}

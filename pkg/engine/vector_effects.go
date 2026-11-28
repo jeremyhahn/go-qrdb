@@ -18,6 +18,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/vector"
 )
@@ -59,6 +60,7 @@ import (
 // (every other vector command's effect is derivable from its own payload
 // and Result alone, without a pre-image).
 func vectorBatchUpsertPreNextID(batch storage.Batch, cmd protocol.Command) *uint64 {
+	cmd = unwrapGuardedVectorCommand(cmd)
 	if cmd.Op != protocol.OpVectorBatchUpsert {
 		return nil
 	}
@@ -94,9 +96,45 @@ func vectorIndexEffects(batch storage.Batch, op byte, payload []byte, result sm.
 		return effectsBatchDelete(payload)
 	case protocol.OpVectorIndexReconfigure:
 		return effectsReconfigure(batch, payload)
+	case protocol.OpGuarded:
+		return effectsGuarded(batch, payload, result, preNextID)
 	default:
 		return nil, nil
 	}
+}
+
+// unwrapGuardedVectorCommand returns the inner command of an OpGuarded
+// entry, and cmd itself otherwise. A raft database's writes are proposed
+// guarded, so the vector op the index follows is the inner one.
+func unwrapGuardedVectorCommand(cmd protocol.Command) protocol.Command {
+	if cmd.Op != protocol.OpGuarded {
+		return cmd
+	}
+	_, inner, err := protocol.DecodeGuarded(cmd.Payload)
+	if err != nil || len(inner) == 0 {
+		return cmd
+	}
+	return protocol.Command{Op: inner[0], Payload: inner[1:]}
+}
+
+// effectsGuarded computes the index effects of an OpGuarded entry: those of
+// its inner command when handleGuarded dispatched it, none when the guard
+// refused it (a reserved-key compare or a failed compare changes nothing).
+func effectsGuarded(batch storage.Batch, payload []byte, result sm.Result, preNextID *uint64) ([]vector.IndexEffect, error) {
+	compares, inner, err := protocol.DecodeGuarded(payload)
+	if err != nil {
+		return nil, err
+	}
+	if _, refused := statemachine.ReservedKeyRefusal(statemachine.CompareKeys(compares)...); refused {
+		return nil, nil
+	}
+	if _, refused := protocol.DecodeGuardRefusal(result.Data); refused {
+		return nil, nil
+	}
+	if len(inner) == 0 || inner[0] == protocol.OpGuarded {
+		return nil, nil
+	}
+	return vectorIndexEffects(batch, inner[0], inner[1:], result, preNextID)
 }
 
 func effectsNamespaceCreate(batch storage.Batch, payload []byte) ([]vector.IndexEffect, error) {

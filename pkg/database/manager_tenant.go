@@ -116,7 +116,9 @@ func (m *Manager) ListForTenant(ctx context.Context) ([]DatabaseInfo, error) {
 		// Another node holds it: it is listed as the catalog records it,
 		// and nothing is opened here.
 		if _, held := m.ownerRefusal(key, meta); held {
-			infos = append(infos, remoteInfo(meta))
+			info := remoteInfo(meta)
+			info.Binding = m.describeBinding(meta)
+			infos = append(infos, info)
 			continue
 		}
 		db, err := m.openRecord(key, meta)
@@ -289,15 +291,6 @@ func (m *Manager) UpdateBarrierForTenant(ctx context.Context, name string, barri
 		return err
 	}
 	return m.updateBarrier(db, barrier)
-}
-
-// UpdateConnectionForTenant updates connection config after verifying tenant ownership.
-func (m *Manager) UpdateConnectionForTenant(ctx context.Context, name string, conn *DatabaseConnectionConfig) error {
-	db, err := m.GetOwned(name, tenant.FromContext(ctx))
-	if err != nil {
-		return err
-	}
-	return m.updateConnection(db, conn)
 }
 
 // UpdateSQLForTenant updates the SQL settings after verifying tenant

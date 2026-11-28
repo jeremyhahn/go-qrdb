@@ -127,7 +127,6 @@ import type {
     DaemonStatus,
     DatabaseBarrierConfig,
     DatabaseBarrierStatus,
-    DatabaseConnectionConfig,
     DatabaseRaftConfig,
     DatabaseProtocolConfig,
     DatabaseSQLConfig,
@@ -1657,7 +1656,6 @@ export class RestClient implements Client {
                             distance_metric: distanceMetricToRestWire(req.distanceMetric),
                             index_type: indexTypeToRestWire(req.indexType),
                             index_config: indexParamsToWire(req.indexParams),
-                            shard_id: req.shardId,
                         }),
                     },
                 );
@@ -1671,10 +1669,10 @@ export class RestClient implements Client {
                 );
             },
             listNamespaces: async (
-                req: ListNamespacesRequest,
+                _req: ListNamespacesRequest,
             ): Promise<ListNamespacesResponse> => {
                 this.ensureConnected();
-                const resp = await this.fetchJSON<ListNamespacesResponse>(`/vector/namespaces${buildQuery({ shard_id: req.shardId })}`,
+                const resp = await this.fetchJSON<ListNamespacesResponse>('/vector/namespaces',
                 );
                 // Namespace entries that arrive as info objects carry wire
                 // enum strings; convert them to the SDK's numeric enums.
@@ -1687,7 +1685,6 @@ export class RestClient implements Client {
                 this.ensureConnected();
                 const info = await this.fetchJSON<NamespaceInfo>(`/vector/namespace/info${buildQuery({
                         namespace: req.namespace,
-                        shard_id: req.shardId,
                     })}`,
                 );
                 return normalizeVectorEnumFields(info);
@@ -1707,7 +1704,6 @@ export class RestClient implements Client {
                         namespace: req.namespace,
                         id: req.id,
                         consistency: req.consistency,
-                        shard_id: req.shardId,
                     })}`,
                 );
                 return normalizeVectorIDField(vec);
@@ -1764,7 +1760,6 @@ export class RestClient implements Client {
                         namespace: req.namespace,
                         limit: req.limit,
                         cursor: req.cursor,
-                        shard_id: req.shardId,
                     })}`,
                 );
                 // The wire answers the namespace size as total_count.
@@ -1819,7 +1814,6 @@ export class RestClient implements Client {
                             k: req.k,
                             metadataFilter: req.metadataFilters,
                             consistency: req.consistency,
-                            shardId: req.shardId,
                         }),
                     },
                 );
@@ -1852,7 +1846,6 @@ export class RestClient implements Client {
                 const resp = await this.fetchJSON<WireRebuildProgress>(`/vector/index/rebuild/progress${buildQuery({
                         namespace: req.namespace,
                         job_id: req.jobId,
-                        shard_id: req.shardId,
                     })}`,
                 );
                 return rebuildProgressFromWire(resp);
@@ -1866,7 +1859,6 @@ export class RestClient implements Client {
                     indexSizeBytes?: number;
                 }>(`/vector/index/stats${buildQuery({
                         namespace: req.namespace,
-                        shard_id: req.shardId,
                     })}`,
                 );
                 const { memoryUsageBytes, indexSizeBytes, ...rest } = stats;
@@ -1893,7 +1885,6 @@ export class RestClient implements Client {
                 const resp = await this.fetchJSON<WireCompactionProgress>(`/vector/compact/progress${buildQuery({
                         namespace: req.namespace,
                         operation_id: req.jobId,
-                        shard_id: req.shardId,
                     })}`,
                 );
                 return compactionProgressFromWire(resp);
@@ -2219,17 +2210,12 @@ export class RestClient implements Client {
             create: async (req: CreateDatabaseRequest): Promise<DatabaseInfo> => {
                 this.ensureConnected();
                 // A REST client creates the database on the server it talks
-                // to: that is an embedded database of that server. A remote
-                // mode or a connection to another server is a desktop-side
-                // registration this transport cannot make, so it is refused
-                // before anything is sent rather than created embedded.
+                // to: that is an embedded database of that server. Any other
+                // mode is refused before anything is sent rather than
+                // created embedded.
                 if (req.mode !== undefined && req.mode !== '' && req.mode !== 'embedded') {
                     throw new UnsupportedOptionError('database.create', 'mode',
                         `mode "${req.mode}" is not served over REST; only an embedded database can be created`);
-                }
-                if (req.connection !== undefined) {
-                    throw new UnsupportedOptionError('database.create', 'connection',
-                        'a remote connection is not served over REST; only an embedded database can be created');
                 }
                 // "embedded" is the only mode left and the server's create
                 // request has no mode field (its strict decoder refuses an
@@ -2319,16 +2305,6 @@ export class RestClient implements Client {
                 return normalizeDatabaseBarrierStatus(await this.fetchJSON<DatabaseBarrierStatus>(
                     `/v1/databases/${encodeURIComponent(name)}/barrier/status`,
                 ));
-            },
-            updateConnection: async (name: string, connection: DatabaseConnectionConfig): Promise<DatabaseInfo> => {
-                this.ensureConnected();
-                return this.fetchJSON<DatabaseInfo>(`/v1/databases/${encodeURIComponent(name)}/connection`,
-                    {
-                        method: 'PATCH',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(connection),
-                    },
-                );
             },
             scale: async (name: string, targetReplicas: number): Promise<DatabaseInfo> => {
                 this.ensureConnected();

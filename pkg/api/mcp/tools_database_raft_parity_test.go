@@ -108,7 +108,7 @@ func TestDatabaseCreateTool_EveryRaftFieldReachesTheService(t *testing.T) {
 	args["raft_address"] = "db2.example.com:63001"
 	args["raft_peers"] = []any{"db2.example.com:63001", "db3.example.com:63001"}
 	args["raft_local_node_count"] = 5
-	args["raft_state_storage"] = "file"
+	args["raft_state_storage"] = "pebble"
 
 	r, err := handleDatabaseCreate(svc)(context.Background(), buildCallToolRequest(t, "qrdb_database_create", args))
 	if err != nil {
@@ -183,8 +183,8 @@ func TestDatabaseUpdateRaftTool_StateStorageChangeIsRefused(t *testing.T) {
 	if !errors.As(err, &storageErr) {
 		t.Fatalf("update naming another state storage: err = %v, want *database.StateStorageUpdateError", err)
 	}
-	if storageErr.Recorded != database.BackendFile || storageErr.Requested != database.BackendMemory {
-		t.Fatalf("StateStorageUpdateError = %+v, want Recorded=file Requested=memory", storageErr)
+	if storageErr.Recorded != database.BackendPebble || storageErr.Requested != database.BackendMemory {
+		t.Fatalf("StateStorageUpdateError = %+v, want Recorded=pebble Requested=memory", storageErr)
 	}
 	after, err := svc.Get(dbwiretest.Name)
 	if err != nil {

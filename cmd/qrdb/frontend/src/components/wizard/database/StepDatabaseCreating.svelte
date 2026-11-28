@@ -109,7 +109,6 @@
     console.debug("[StepDatabaseCreating] runCreate started", {
       name: dbWizardStore.name,
       engine: dbWizardStore.engine,
-      mode: dbWizardStore.mode,
     });
     let phaseIdx = 0;
 
@@ -124,9 +123,20 @@
     const barrierSecret = takeBarrierPassphrase();
     // The engine is a UI choice only: a database serves every engine, and the
     // server's strict decoder refuses a field it does not define.
+    // A database is raft-backed only on a Raft-mode server with a dedicated
+    // Raft group (cluster mode local or distributed). Its backend is then
+    // "raft" and the storage step's choice is the group's state storage; any
+    // other create is a local database and carries no raft options, which the
+    // server refuses on a local backend.
+    const storage = dbWizardStore.backend || "pebble";
+    const raftConfig = dbWizardStore.raftConfig;
+    const raftBacked =
+      dbWizardStore.serverMode === "raft" &&
+      raftConfig !== null &&
+      raftConfig.clusterMode !== "none";
     const req = {
       name: dbWizardStore.name,
-      backend: dbWizardStore.backend || "pebble",
+      backend: raftBacked ? "raft" : storage,
       // The storage step offers a data directory in every mode; it is a path
       // on the server, and an explicit one gives the database a dedicated
       // store (which a per-database barrier requires).
@@ -142,25 +152,17 @@
             ...(dbWizardStore.dedicatedWal ? { dedicatedWal: true } : {}),
           }
         : {}),
-      ...(dbWizardStore.mode === "embedded" && dbWizardStore.raftConfig !== null
+      // Raft options belong only to a raft-backed create: the store keeps a
+      // default raftConfig, and a local create must not carry it.
+      ...(raftBacked
         ? {
             raft: {
-              clusterMode: dbWizardStore.raftConfig.clusterMode,
-              replicaId: dbWizardStore.raftConfig.replicaId,
-              raftAddress: dbWizardStore.raftConfig.raftAddress,
-              peers: dbWizardStore.raftConfig.peers,
-              localNodeCount: dbWizardStore.raftConfig.localNodeCount,
-            },
-          }
-        : {}),
-      ...(dbWizardStore.mode === "remote" && dbWizardStore.connectionConfig !== null
-        ? {
-            connection: {
-              transport: dbWizardStore.connectionConfig.transport,
-              address: dbWizardStore.connectionConfig.address,
-              ...(dbWizardStore.connectionConfig.caFile ? { caFile: dbWizardStore.connectionConfig.caFile } : {}),
-              ...(dbWizardStore.connectionConfig.certFile ? { certFile: dbWizardStore.connectionConfig.certFile } : {}),
-              ...(dbWizardStore.connectionConfig.keyFile ? { keyFile: dbWizardStore.connectionConfig.keyFile } : {}),
+              clusterMode: raftConfig.clusterMode,
+              replicaId: raftConfig.replicaId,
+              raftAddress: raftConfig.raftAddress,
+              peers: raftConfig.peers,
+              localNodeCount: raftConfig.localNodeCount,
+              stateStorage: storage,
             },
           }
         : {}),

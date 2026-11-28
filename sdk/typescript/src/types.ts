@@ -987,8 +987,6 @@ export interface CreateNamespaceRequest {
     readonly indexType: VectorIndexType;
     /** Algorithm-specific index configuration parameters. */
     readonly indexParams?: Readonly<Record<string, unknown>>;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Result of a namespace creation. */
@@ -1003,14 +1001,10 @@ export interface CreateNamespaceResponse {
 export interface DeleteNamespaceRequest {
     /** Namespace to delete. */
     readonly namespace: string;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Parameters for listing vector namespaces. */
 export interface ListNamespacesRequest {
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Response containing namespace names. */
@@ -1023,8 +1017,6 @@ export interface ListNamespacesResponse {
 export interface GetNamespaceInfoRequest {
     /** Namespace name. */
     readonly namespace: string;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Metadata about a vector namespace. */
@@ -1071,8 +1063,6 @@ export interface UpsertVectorRequest {
     readonly vector: readonly number[];
     /** Arbitrary metadata key-value pairs. */
     readonly metadata?: Readonly<Record<string, unknown>>;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Result of a vector upsert. */
@@ -1093,8 +1083,6 @@ export interface GetVectorRequest {
     readonly id: string;
     /** Consistency level (0 = default). */
     readonly consistency?: number;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Parameters for deleting a single vector. */
@@ -1103,8 +1091,6 @@ export interface DeleteVectorRequest {
     readonly namespace: string;
     /** Vector identifier. */
     readonly id: string;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Parameters for bulk vector upserts. */
@@ -1113,8 +1099,6 @@ export interface BatchUpsertRequest {
     readonly namespace: string;
     /** Vectors to upsert. */
     readonly vectors: readonly VectorData[];
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Result of a batch upsert operation. */
@@ -1141,8 +1125,6 @@ export interface BatchDeleteVectorsRequest {
     readonly namespace: string;
     /** Vector identifiers to delete. */
     readonly ids: readonly string[];
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Result of a batch vector deletion. */
@@ -1166,8 +1148,6 @@ export interface ListVectorsRequest {
      * page. Listing pages by cursor only.
      */
     readonly cursor?: string;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Paginated list of vectors. */
@@ -1188,8 +1168,6 @@ export interface UpdateMetadataRequest {
     readonly id: string;
     /** New metadata key-value pairs (replaces existing metadata). */
     readonly metadata: Readonly<Record<string, unknown>>;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** A single result from a similarity search. */
@@ -1218,8 +1196,6 @@ export interface SearchSimilarRequest {
     readonly minScore?: number;
     /** Consistency level (0 = default). */
     readonly consistency?: number;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Results of a similarity search. */
@@ -1242,8 +1218,6 @@ export interface SearchByMetadataRequest {
     readonly offset?: number;
     /** Consistency level (0 = default). */
     readonly consistency?: number;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Results of a metadata search. */
@@ -1269,8 +1243,6 @@ export interface HybridSearchRequest {
     readonly k: number;
     /** Consistency level (0 = default). */
     readonly consistency?: number;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Results of a hybrid search. */
@@ -1291,16 +1263,12 @@ export interface SearchByIDRequest {
     readonly k: number;
     /** Consistency level (0 = default). */
     readonly consistency?: number;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Parameters for triggering an index rebuild. */
 export interface RebuildIndexRequest {
     /** Target namespace. */
     readonly namespace: string;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Result of an index rebuild request. */
@@ -1319,8 +1287,6 @@ export interface GetRebuildProgressRequest {
     readonly namespace: string;
     /** Job identifier. */
     readonly jobId: string;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Current state of an index rebuild job. */
@@ -1343,8 +1309,6 @@ export interface RebuildProgress {
 export interface GetIndexStatsRequest {
     /** Target namespace. */
     readonly namespace: string;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Statistics about a namespace's vector index. */
@@ -1367,8 +1331,6 @@ export interface IndexStats {
 export interface CompactNamespaceRequest {
     /** Target namespace. */
     readonly namespace: string;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Result of a compaction request. */
@@ -1385,8 +1347,6 @@ export interface GetCompactionProgressRequest {
     readonly namespace: string;
     /** Job identifier. */
     readonly jobId: string;
-    /** Target shard identifier. */
-    readonly shardId?: number;
 }
 
 /** Current state of a compaction job. */
@@ -2937,20 +2897,6 @@ export interface DatabaseBarrierRequest extends DatabaseBarrierConfig {
     readonly secret?: string;
 }
 
-/** Remote connection configuration for a database. */
-export interface DatabaseConnectionConfig {
-    /** Transport protocol (e.g. "rest", "grpc", "unix"). */
-    readonly transport: string;
-    /** Server address. */
-    readonly address: string;
-    /** Path to the CA certificate file. */
-    readonly caFile?: string;
-    /** Path to the client certificate file. */
-    readonly certFile?: string;
-    /** Path to the client private key file. */
-    readonly keyFile?: string;
-}
-
 /** Request to update Raft configuration for a database. */
 export interface UpdateDatabaseRaftRequest {
     /** Raft consensus configuration. */
@@ -2961,12 +2907,6 @@ export interface UpdateDatabaseRaftRequest {
 export interface UpdateDatabaseBarrierRequest {
     /** Encryption barrier configuration. */
     readonly barrier: DatabaseBarrierConfig;
-}
-
-/** Request to update connection configuration for a database. */
-export interface UpdateDatabaseConnectionRequest {
-    /** Remote connection configuration. */
-    readonly connection: DatabaseConnectionConfig;
 }
 
 /** Status of the qrdbd daemon process. */
@@ -3006,7 +2946,7 @@ export interface DatabaseInfo {
     /** Raft shard ID the cluster issued at create; absent for non-raft
      * databases. It never changes. */
     readonly shardId?: number;
-    /** Database mode (e.g. "embedded", "remote"). */
+    /** Database mode ("embedded"). */
     readonly mode?: string;
     /** The codec the database's values are stored in; absent means the
      * node's default. */
@@ -3020,8 +2960,26 @@ export interface DatabaseInfo {
     readonly raft?: DatabaseRaftInfo;
     /** Encryption barrier configuration. */
     readonly barrier?: DatabaseBarrierConfig;
-    /** Remote connection configuration. */
-    readonly connection?: DatabaseConnectionConfig;
+    /** Read-only binding block: what the server's binding resolver decided
+     * for the database. Absent where the server describes no bindings. */
+    readonly binding?: DatabaseBindingInfo;
+}
+
+/** Read-only binding block of {@link DatabaseInfo}. */
+export interface DatabaseBindingInfo {
+    /** Kind of host that applies the database's writes: "local" or "raft". */
+    readonly kind: string;
+    /** Nodes that hold the database; absent when any node opens it. */
+    readonly nodes?: readonly string[];
+    /** Whose key encrypts the store at rest: "node", "tenant", or
+     * "tenant+database" when the database has its own barrier. */
+    readonly encryption: string;
+    /** The database's generation: each create of a name gets a number higher
+     * than any earlier create of that name, so a recreated database never
+     * shares a generation with the one it replaced. Generations only rise but
+     * may skip values. A uint64 on the wire, within
+     * Number.MAX_SAFE_INTEGER in practice. */
+    readonly generation: number;
 }
 
 /** Request to create a new database. */
@@ -3037,7 +2995,7 @@ export interface CreateDatabaseRequest {
     readonly sql?: DatabaseSQLConfig;
     /** Custom data directory for file/pebble backends. */
     readonly dataDir?: string;
-    /** Database mode (e.g. "embedded", "remote"). */
+    /** Database mode ("embedded"). */
     readonly mode?: string;
     /** Replication factor for a dedicated-raft database. Meaningful only for the
      * raft backend; unset defaults to 1 replica. */
@@ -3052,8 +3010,6 @@ export interface CreateDatabaseRequest {
     /** Encryption barrier configuration, with the passphrase that
      * initialises it. */
     readonly barrier?: DatabaseBarrierRequest;
-    /** Remote connection configuration. */
-    readonly connection?: DatabaseConnectionConfig;
 }
 
 /** Request to update SQL wire protocol configuration for a database. */

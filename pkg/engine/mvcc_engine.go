@@ -20,7 +20,9 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"maps"
 	"sort"
 	"sync"
 	"time"
@@ -98,6 +100,21 @@ type MVCCEngine struct {
 	// indexValueTypes holds the term encoding each index was built with (see
 	// IndexCreateValueType). Guarded by indexMu with the maps above.
 	indexValueTypes map[string]index.IndexValueType
+
+	// readerIndexes is the index set readers (Lookup) see. The maps above
+	// are the apply view: a create or drop changes them as it is applied,
+	// so later entries of the same batch maintain the new set, but the
+	// batch carrying its backfill or its clear commits only afterwards.
+	// publishReaderIndexes copies the apply view here once the batch has
+	// committed (the post-commit seam DeliverNotifications), so no reader
+	// finds a definition ahead of its committed entries. A failed commit
+	// never publishes; restoreIndexes rebuilds both views from storage.
+	// indexPublishPending marks an apply view not yet published, and
+	// indexRetired holds the indexes a rebuild or drop replaced, closed
+	// once readers can no longer reach them. Guarded by indexMu.
+	readerIndexes       map[string]index.Index
+	indexPublishPending bool
+	indexRetired        []index.Index
 
 	lessor     *lease.Lessor
 	logs       *vlog.Chain
@@ -216,6 +233,13 @@ func NewMVCCEngine(stg storage.Storage, opts ...MVCCOption) (*MVCCEngine, error)
 			return nil, err
 		}
 	}
+	// The secondary-index maps are a cache of the index catalog in this
+	// storage, for the same reason again: a reopened standalone store has no
+	// log to replay the creates from, and a snapshot recovery does not replay
+	// them either.
+	if err := e.restoreIndexes(); err != nil {
+		return nil, err
+	}
 	// Attach the revision-index replayer so watches created with a start
 	// revision replay durable history before switching to live delivery.
 	if e.hub != nil {
@@ -262,7 +286,8 @@ func (e *MVCCEngine) TimeSeries() *timeseries.Storage { return e.ts }
 func (e *MVCCEngine) Update(_ context.Context, entries []sm.Entry, results []sm.Result) error {
 	if err := e.update(entries, results); err != nil {
 		err = e.resyncLessor(err)
-		return e.resyncAuditChain(err)
+		err = e.resyncAuditChain(err)
+		return e.resyncIndexes(err)
 	}
 	return nil
 }
@@ -322,6 +347,99 @@ func (e *MVCCEngine) resyncAuditChain(applyErr error) error {
 		return &AuditChainResyncError{ApplyErr: applyErr, RestoreErr: err}
 	}
 	return applyErr
+}
+
+// IndexResyncError is returned by MVCCEngine.Update when an apply failed and
+// the secondary indexes could not then be rebuilt from the committed index
+// catalog: the in-memory index set may describe creates or drops the store
+// never committed.
+type IndexResyncError struct {
+	ApplyErr   error
+	RestoreErr error
+}
+
+func (e *IndexResyncError) Error() string {
+	return "engine: apply failed (" + e.ApplyErr.Error() + ") and the secondary indexes could not be rebuilt from storage: " + e.RestoreErr.Error()
+}
+
+// Unwrap returns both causes.
+func (e *IndexResyncError) Unwrap() []error {
+	return []error{e.ApplyErr, e.RestoreErr}
+}
+
+// resyncIndexes rebuilds the secondary-index maps from the committed index
+// catalog after the apply that failed with applyErr, mirroring resyncLessor:
+// an index a create published for a batch that never committed must not be
+// served, and an index a failed drop unpublished must be served again.
+func (e *MVCCEngine) resyncIndexes(applyErr error) error {
+	if err := e.restoreIndexes(); err != nil {
+		return &IndexResyncError{ApplyErr: applyErr, RestoreErr: err}
+	}
+	return applyErr
+}
+
+// restoreIndexes replaces the engine's secondary-index maps with the
+// definitions the committed index catalog holds. Each record is the payload
+// of the create that wrote it; the index is rebuilt through openIndex, as
+// the create built it, but neither cleared nor backfilled: its entries are
+// already in storage, written in the batch that wrote the record. The
+// in-memory indexes it replaces are closed.
+func (e *MVCCEngine) restoreIndexes() error {
+	type restored struct {
+		name, fieldName string
+		opts            protocol.IndexCreateOptions
+	}
+	var defs []restored
+	start, end := index.CatalogRange()
+	it := e.stg.NewIterator(&storage.IteratorOptions{LowerBound: start, UpperBound: end})
+	for ok := it.SeekToFirst(); ok && it.Valid(); ok = it.Next() {
+		name, fieldName, opts, err := protocol.DecodeIndexCreateOpts(it.Value())
+		if err != nil {
+			_ = it.Close()
+			return err
+		}
+		defs = append(defs, restored{name: name, fieldName: fieldName, opts: opts})
+	}
+	if err := it.Error(); err != nil {
+		_ = it.Close()
+		return err
+	}
+	if err := it.Close(); err != nil {
+		return err
+	}
+
+	e.indexMu.Lock()
+	defer e.indexMu.Unlock()
+	var closeErr error
+	for _, idx := range e.indexes {
+		if err := idx.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+	}
+	for _, idx := range e.indexRetired {
+		if err := idx.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+	}
+	e.indexRetired = nil
+	// The rebuilt set is the committed one: readers see it at once.
+	defer func() {
+		e.readerIndexes = nil
+		e.indexPublishPending = false
+	}()
+	e.indexes = make(map[string]index.Index, len(defs))
+	e.indexFields = make(map[string]string, len(defs))
+	e.indexScopes = make(map[string][]byte, len(defs))
+	e.indexOwners = make(map[string]string, len(defs))
+	e.indexValueTypes = make(map[string]index.IndexValueType, len(defs))
+	for _, d := range defs {
+		idx, scope, err := e.openIndex(d.name, d.opts)
+		if err != nil {
+			return err
+		}
+		e.publishIndex(d.name, d.fieldName, idx, scope, d.opts)
+	}
+	return closeErr
 }
 
 // UpdateEntries dispatches entries to their handlers using the provided batch,
@@ -483,6 +601,7 @@ func commandRequiresExclusiveApply(op byte, payload []byte) bool {
 // with no index manager configured or an empty slice.
 func (e *MVCCEngine) ApplyVectorIndexEffects(effects []vector.IndexEffect) {
 	e.indexMgr.ApplyEffects(effects)
+	e.indexMgr.RebuildReconfigured(e.stg, effects)
 }
 
 // WarmVectorIndex populates the engine's vector index manager from the
@@ -504,6 +623,9 @@ func (e *MVCCEngine) VectorIndex() *VectorIndexManager {
 // DeliverNotifications sends accumulated notifications to the watch hub.
 // Called after a batch is committed. Safe to call with nil hub or empty slice.
 func (e *MVCCEngine) DeliverNotifications(notifications []Notification) {
+	// The batch has committed: index creates and drops it applied become
+	// visible to readers now, never ahead of their entries.
+	e.publishReaderIndexes()
 	if e.hub == nil || len(notifications) == 0 {
 		return
 	}
@@ -720,8 +842,8 @@ func (e *MVCCEngine) LookupAt(_ context.Context, r storage.Reader, rev int64, qu
 
 	case service.IndexListRequest:
 		e.indexMu.RLock()
-		names := make([]string, 0, len(e.indexes))
-		for name := range e.indexes {
+		names := make([]string, 0, len(e.readerIndexSet()))
+		for name := range e.readerIndexSet() {
 			names = append(names, name)
 		}
 		e.indexMu.RUnlock()
@@ -759,6 +881,9 @@ func (e *MVCCEngine) LookupAt(_ context.Context, r storage.Reader, rev int64, qu
 
 	case *statemachine.PrefixQuery:
 		return e.lookupPrefix(r, q)
+
+	case *statemachine.RawPrefixExistsQuery:
+		return e.lookupRawPrefixExists(r, q)
 
 	case kv.ListQuery:
 		return e.listKeys(r, q.Prefix)
@@ -811,6 +936,24 @@ func (e *MVCCEngine) LookupAt(_ context.Context, r storage.Reader, rev int64, qu
 		}
 		return results, nil
 
+	case service.VectorRebuildQuery:
+		if e.indexMgr == nil {
+			return nil, &InvalidQueryError{Reason: "vector index not configured"}
+		}
+		return nil, e.indexMgr.RebuildNamespace(e.stg, q.Namespace)
+
+	case service.VectorNamespaceQuery:
+		return lookupVectorNamespace(r, q.Namespace)
+
+	case service.VectorNamespaceListQuery:
+		return lookupVectorNamespaces(r)
+
+	case service.VectorGetQuery:
+		return lookupVector(r, q.Namespace, q.ID)
+
+	case service.VectorScanQuery:
+		return lookupVectorScan(r, q)
+
 	default:
 		return nil, &InvalidQueryError{Reason: "unsupported query type"}
 	}
@@ -830,7 +973,7 @@ var _ readerBoundIndex = (*index.StoragePebbleIndex)(nil)
 // readerIndex returns the named index as a readerBoundIndex.
 func (e *MVCCEngine) readerIndex(name string) (readerBoundIndex, error) {
 	e.indexMu.RLock()
-	idx, ok := e.indexes[name]
+	idx, ok := e.readerIndexSet()[name]
 	e.indexMu.RUnlock()
 	if !ok {
 		return nil, &index.NotFoundError{Name: name}
@@ -893,12 +1036,21 @@ func (e *MVCCEngine) lookupPrefix(r storage.Reader, q *statemachine.PrefixQuery)
 
 	result := make(map[string][]byte)
 	count := 0
+	var readErr error
 	err := mvcc.ForEachMetaKeyWithPrefix(iter, q.Prefix, func(userKey []byte) bool {
 		if !skipFilter && isInternalKey(string(userKey)) {
 			return true
 		}
 		kvResult, getErr := e.store.GetFrom(r, userKey)
-		if getErr != nil || kvResult == nil {
+		if getErr != nil {
+			var knf *mvcc.KeyNotFoundError
+			if errors.As(getErr, &knf) {
+				return true
+			}
+			readErr = getErr
+			return false
+		}
+		if kvResult == nil {
 			return true
 		}
 		result[string(userKey)] = kvResult.Value
@@ -908,7 +1060,40 @@ func (e *MVCCEngine) lookupPrefix(r storage.Reader, q *statemachine.PrefixQuery)
 	if err != nil {
 		return nil, err
 	}
+	if readErr != nil {
+		return nil, fmt.Errorf("prefix query: read %q: %w", q.Prefix, readErr)
+	}
 	return result, nil
+}
+
+// lookupRawPrefixExists answers a RawPrefixExistsQuery with one bounded
+// iterator per prefix over the raw keyspace: the first key found answers
+// true; an iterator fault is returned, never read as absence.
+func (e *MVCCEngine) lookupRawPrefixExists(r storage.Reader, q *statemachine.RawPrefixExistsQuery) (bool, error) {
+	for _, prefix := range q.Prefixes {
+		if len(prefix) == 0 {
+			return false, &InvalidQueryError{Reason: "raw prefix exists query: empty prefix"}
+		}
+		found, err := rawPrefixExists(r, prefix)
+		if err != nil || found {
+			return found, err
+		}
+	}
+	return false, nil
+}
+
+func rawPrefixExists(r storage.Reader, prefix []byte) (bool, error) {
+	iter := r.NewIterator(&storage.IteratorOptions{
+		LowerBound: prefix,
+		UpperBound: storage.PrefixEnd(prefix),
+		OnlyKeys:   true,
+	})
+	defer func() { _ = iter.Close() }()
+	found := iter.SeekToFirst() && iter.Valid()
+	if err := iter.Error(); err != nil {
+		return false, fmt.Errorf("raw prefix exists query: scan %q: %w", prefix, err)
+	}
+	return found, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -924,6 +1109,10 @@ func (e *MVCCEngine) Close(_ context.Context) error {
 	for _, idx := range e.indexes {
 		_ = idx.Close()
 	}
+	for _, idx := range e.indexRetired {
+		_ = idx.Close()
+	}
+	e.indexRetired = nil
 	return nil
 }
 
@@ -2440,6 +2629,14 @@ func (e *MVCCEngine) handleVerifiableLog(_ *mvcc.Store, _ *lease.Lessor, batch s
 // Index handlers
 // ---------------------------------------------------------------------------
 
+// batchClearableIndex is an index the apply path clears and backfills in the
+// apply batch (index.StoragePebbleIndex), so its entries change atomically
+// with its catalog record.
+type batchClearableIndex interface {
+	index.BatchableIndex
+	ClearBatch(batch storage.Batch) error
+}
+
 // handleIndexCreate creates a new secondary index, storage-backed via
 // index.NewStoragePebbleIndex so it works identically over every
 // storage.Storage implementation. After creation, existing data is
@@ -2490,10 +2687,11 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 			e.indexMu.Unlock()
 			return sm.Result{Value: 1}, nil, nil
 		}
-		// A different value type (see IndexCreateValueType) or key scope
-		// rebuilds the index at the requested one: the old terms are cleared
-		// and only the new scope is backfilled. The stale index is unpublished first, so a
-		// concurrent Lookup finds no index rather than one being cleared.
+		// A different value type (see IndexCreateValueType) or, for a
+		// command carrying Rescope, key scope rebuilds the index at the
+		// requested one: the old terms are cleared and only the new scope is
+		// backfilled. A unique rescope whose new scope already holds a
+		// duplicate is refused before anything changes.
 		if opts.Rescope && opts.Unique && !bytes.Equal(e.indexScopes[name], scope) {
 			check := NewUniqueScopeCheck(fieldName, scope, index.IndexConfig{ValueType: valueType, CaseSensitive: !opts.CaseInsensitive})
 			start, end := backfillRange(scope)
@@ -2510,50 +2708,13 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 				return RescopeConflictResult(name), nil, nil
 			}
 		}
-		delete(e.indexes, name)
-		delete(e.indexFields, name)
-		delete(e.indexScopes, name)
-		delete(e.indexOwners, name)
-		delete(e.indexValueTypes, name)
-		if err := existing.Close(); err != nil {
-			e.indexMu.Unlock()
-			return sm.Result{}, nil, err
-		}
+		// The stale index leaves the apply view now; readers keep it, over
+		// its committed terms, until the batch carrying the rebuild commits,
+		// and it is closed then.
+		e.unpublishIndex(name, existing)
 	}
 
-	// Sparse is carried on the config for fidelity with the command, but no
-	// Index implementation reads it: skipping absent fields happens in the
-	// backfill/maintenance callers (see indexing.go), not in the index.
-	cfg := index.IndexConfig{
-		Name:      name,
-		Type:      index.IndexTypeNormal,
-		Unique:    opts.Unique,
-		Sparse:    opts.Sparse,
-		ValueType: valueType,
-		// A create builds the index now, so its terms are written at the
-		// current encoding; the clear below removes any written earlier.
-		EncodingVersion: index.NumericEncodingVersion,
-		// The key scope the creator declared, relative to the namespace the
-		// name carries. Recorded on the config so the index's definition is
-		// complete; the apply path reads the composed scope out of
-		// e.indexScopes (go-qrdb#410).
-		KeyPrefix: opts.KeyPrefix,
-		Owner:     opts.Owner,
-		// Derived from the command instead of left at its zero value. This
-		// engine used to discard the flag, so an index:"case_insensitive"
-		// definition became a case-SENSITIVE index and a lookup for "Alpha"
-		// over a stored "alpha" answered empty with a nil error (go-qrdb#34).
-		CaseSensitive: !opts.CaseInsensitive,
-	}
-	if opts.Unique {
-		cfg.Type = index.IndexTypeUnique
-	}
-
-	log := e.logger
-	if log == nil {
-		log = defaultLogger()
-	}
-	idx, idxErr := index.NewStoragePebbleIndex(e.stg, cfg, log)
+	idx, scope, idxErr := e.openIndex(name, opts)
 	if idxErr != nil {
 		e.indexMu.Unlock()
 		return sm.Result{}, nil, idxErr
@@ -2577,44 +2738,212 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 	// creating an index on one database does not read every other database's
 	// keys on the way past.
 	//
-	// Entries already stored under the name are cleared first, then the scope
-	// is backfilled. A command carrying Rescope clears and backfills through
-	// the apply batch, dropping index entries earlier entries of the batch
-	// staged; a command without it clears committed storage and backfills
-	// directly, as every replica of the merge base does.
+	// Entries already stored under the name are cleared first. They are
+	// what a create leaves behind when it is applied again over storage
+	// that outlived the in-memory index -- and they may be terms of an
+	// older encoding, which would sort among the new ones out of numeric
+	// order. Clearing and backfilling is the rebuild a stale definition
+	// gets.
+	//
+	// Both the clear and the backfill are queued into the apply batch, the
+	// one the catalog record below is written in, so a batch that fails to
+	// commit leaves the old definition and its terms exactly as they were.
 	start, end := backfillRange(scope)
 	scan := func() ([]*service.KeyValue, error) {
 		kvs, _, _, err := store.RangeInBatch(batch, start, end)
 		return kvs, err
 	}
-	if opts.Rescope {
-		if err := idx.ClearBatch(batch); err != nil {
+	//
+	// Only a create proposed under the index-catalog feature (opts.Catalog)
+	// clears and backfills in the batch: a member that predates the feature
+	// clears the committed entries and writes the backfill outside it, and a
+	// put earlier in the same batch would leave the two with different
+	// entries. Without the feature, every member does what the old one does.
+	//
+	// A command carrying Rescope (featuregate.IndexRescope) clears and
+	// backfills in the batch too, so a rebuild drops the index entries
+	// earlier entries of the batch staged.
+	if bIdx, ok := idx.(batchClearableIndex); ok && (opts.Catalog || opts.Rescope) {
+		if err := bIdx.ClearBatch(batch); err != nil {
+			_ = idx.Close()
 			return sm.Result{}, nil, err
 		}
-		BackfillIndexInBatch(batch, scan, idx, fieldName, scope)
+		BackfillIndexBatch(scan, bIdx, batch, fieldName, scope)
 	} else {
+		if exists {
+			e.indexMu.Lock()
+			e.withdrawReaderIndex(name)
+			e.indexMu.Unlock()
+		}
 		if err := idx.Clear(); err != nil {
 			return sm.Result{}, nil, err
 		}
 		BackfillIndex(scan, idx, fieldName, scope)
 	}
 
+	// The definition is recorded in the index catalog, in the same batch as
+	// the entries the backfill wrote, so a fresh engine over this storage
+	// -- a reopened standalone store or a snapshot recovery, neither of which
+	// replays the create -- restores the index (see restoreIndexes). The
+	// record is the create payload itself, so the restored definition is the
+	// one applied here.
+	//
+	// Only a create proposed under the index-catalog feature
+	// (opts.Catalog) writes the record: the record is in replica hashes and
+	// snapshots, so writing it for a create a member that predates the
+	// catalog also applies would diverge the group. A create without it
+	// still clears a record an earlier create under the name left, so a
+	// fresh engine never restores a definition the log has since replaced.
+	if opts.Catalog {
+		if err := batch.Set(index.CatalogKey(name), payload); err != nil {
+			_ = idx.Close()
+			return sm.Result{}, nil, err
+		}
+	} else if exists {
+		if err := batch.Delete(index.CatalogKey(name)); err != nil {
+			_ = idx.Close()
+			return sm.Result{}, nil, err
+		}
+	}
+
 	e.indexMu.Lock()
+	e.publishIndex(name, fieldName, idx, scope, opts)
+	e.indexMu.Unlock()
+
+	return sm.Result{Value: 1}, nil, nil
+}
+
+// openIndex builds the secondary index a create command defines over this
+// engine's storage and returns it with its composed key scope. It does not
+// clear, backfill or publish the index. The apply path (handleIndexCreate)
+// and the restore path (restoreIndexes) both build through it, so an index
+// restored on open is configured exactly as the create configured it.
+func (e *MVCCEngine) openIndex(name string, opts protocol.IndexCreateOptions) (index.Index, []byte, error) {
+	// Sparse is carried on the config for fidelity with the command, but no
+	// Index implementation reads it: skipping absent fields happens in the
+	// backfill/maintenance callers (see indexing.go), not in the index.
+	cfg := index.IndexConfig{
+		Name:      name,
+		Type:      index.IndexTypeNormal,
+		Unique:    opts.Unique,
+		Sparse:    opts.Sparse,
+		ValueType: IndexCreateValueType(opts),
+		// A create builds the index now, so its terms are written at the
+		// current encoding; the create path's clear removes any written
+		// earlier, and a restored index was built by such a create.
+		EncodingVersion: index.NumericEncodingVersion,
+		// The key scope the creator declared, relative to the namespace the
+		// name carries. Recorded on the config so the index's definition is
+		// complete; the apply path reads the composed scope out of
+		// e.indexScopes (go-qrdb#410).
+		KeyPrefix: opts.KeyPrefix,
+		Owner:     opts.Owner,
+		// Derived from the command instead of left at its zero value. This
+		// engine used to discard the flag, so an index:"case_insensitive"
+		// definition became a case-SENSITIVE index and a lookup for "Alpha"
+		// over a stored "alpha" answered empty with a nil error (go-qrdb#34).
+		CaseSensitive: !opts.CaseInsensitive,
+	}
+	if opts.Unique {
+		cfg.Type = index.IndexTypeUnique
+	}
+
+	log := e.logger
+	if log == nil {
+		log = defaultLogger()
+	}
+	idx, err := index.NewStoragePebbleIndex(e.stg, cfg, log)
+	if err != nil {
+		return nil, nil, err
+	}
+	// The key prefix every key this index may hold must carry: the namespace
+	// read back off the name plus the prefix the creator declared. It bounds
+	// both the create's backfill and every subsequent maintenance call
+	// (go-qrdb#410).
+	return idx, ComposeIndexScope(name, opts.KeyPrefix), nil
+}
+
+// publishIndex records idx and its definition in the engine's five index
+// maps. The caller holds e.indexMu.
+func (e *MVCCEngine) publishIndex(name, fieldName string, idx index.Index, scope []byte, opts protocol.IndexCreateOptions) {
+	e.holdReaderIndexes()
 	e.indexes[name] = idx
 	e.indexFields[name] = fieldName
 	e.indexScopes[name] = scope
 	e.indexOwners[name] = opts.Owner
-	e.indexValueTypes[name] = valueType
-	e.indexMu.Unlock()
+	e.indexValueTypes[name] = IndexCreateValueType(opts)
+	e.indexPublishPending = true
+}
 
-	return sm.Result{Value: 1}, nil, nil
+// unpublishIndex removes name from the apply view and retires idx: readers
+// keep it until the batch removing it commits (publishReaderIndexes), and
+// it is closed then. The caller holds e.indexMu.
+func (e *MVCCEngine) unpublishIndex(name string, idx index.Index) {
+	e.holdReaderIndexes()
+	delete(e.indexes, name)
+	delete(e.indexFields, name)
+	delete(e.indexScopes, name)
+	delete(e.indexOwners, name)
+	delete(e.indexValueTypes, name)
+	e.indexRetired = append(e.indexRetired, idx)
+	e.indexPublishPending = true
+}
+
+// publishReaderIndexes makes the apply view's index set the one readers see
+// and closes the indexes it replaced. It runs only after the batch the
+// creates and drops were applied in has committed.
+func (e *MVCCEngine) publishReaderIndexes() {
+	e.indexMu.Lock()
+	defer e.indexMu.Unlock()
+	if !e.indexPublishPending {
+		return
+	}
+	e.readerIndexes = nil
+	for _, idx := range e.indexRetired {
+		_ = idx.Close()
+	}
+	e.indexRetired = nil
+	e.indexPublishPending = false
+}
+
+// holdReaderIndexes snapshots the committed index set for readers before the
+// first create or drop of a batch changes the apply view. The caller holds
+// e.indexMu.
+func (e *MVCCEngine) holdReaderIndexes() {
+	if e.indexPublishPending {
+		return
+	}
+	e.readerIndexes = maps.Clone(e.indexes)
+	e.indexPublishPending = true
+}
+
+// withdrawReaderIndex takes name out of the reader view at once. A create or
+// drop applied without the index-catalog feature rewrites the index's
+// committed entries directly, outside the apply batch, as a member that
+// predates the feature does; moving that write after the commit would change
+// the keys the group stores. Readers therefore stop seeing the index before
+// its committed entries change, rather than read it half cleared, and see
+// whatever the batch publishes once it commits. Callers hold indexMu.
+func (e *MVCCEngine) withdrawReaderIndex(name string) {
+	e.holdReaderIndexes()
+	delete(e.readerIndexes, name)
+}
+
+// readerIndexSet is the index set a reader sees: the committed snapshot
+// while a batch's creates or drops are applied but not committed, the apply
+// view otherwise. The caller holds e.indexMu (read or write).
+func (e *MVCCEngine) readerIndexSet() map[string]index.Index {
+	if e.indexPublishPending {
+		return e.readerIndexes
+	}
+	return e.indexes
 }
 
 // handleIndexDrop removes a secondary index and clears all its entries.
 // If the index does not exist the operation is a no-op; Raft state machine
 // handlers must be idempotent so that cleanup proposals (e.g. deferred test
 // teardown) do not return a fatal Apply error that would stall consensus.
-func (e *MVCCEngine) handleIndexDrop(_ *mvcc.Store, _ *lease.Lessor, _ storage.Batch, payload []byte) (sm.Result, []Notification, error) {
+func (e *MVCCEngine) handleIndexDrop(_ *mvcc.Store, _ *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
 	name, dropOpts, err := protocol.DecodeIndexDropOpts(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
@@ -2632,18 +2961,35 @@ func (e *MVCCEngine) handleIndexDrop(_ *mvcc.Store, _ *lease.Lessor, _ storage.B
 		e.indexMu.Unlock()
 		return sm.Result{Data: protocol.EncodeIndexOwnershipError(name, owner)}, nil, nil
 	}
-	delete(e.indexes, name)
-	delete(e.indexFields, name)
-	delete(e.indexScopes, name)
-	delete(e.indexOwners, name)
-	delete(e.indexValueTypes, name)
-	e.indexMu.Unlock()
-
-	if err := idx.Clear(); err != nil {
+	// The catalog record goes in the same batch as the drop, so a reopened
+	// engine does not restore an index the store dropped.
+	if err := batch.Delete(index.CatalogKey(name)); err != nil {
+		e.indexMu.Unlock()
 		return sm.Result{}, nil, err
 	}
-	if err := idx.Close(); err != nil {
-		return sm.Result{}, nil, err
+	// Readers keep the index until the batch dropping it commits; it is
+	// closed then (publishReaderIndexes).
+	e.unpublishIndex(name, idx)
+	e.indexMu.Unlock()
+
+	// The entries are removed in the batch that deletes the catalog record,
+	// so a batch that fails to commit keeps the definition and every entry.
+	// That is only for a drop proposed under the index-catalog feature
+	// (dropOpts.Catalog): before it, every member clears the committed
+	// entries only, as a member that predates the feature does, so a put
+	// and a drop in one batch leave every member the same keys.
+	if bIdx, ok := idx.(batchClearableIndex); ok && dropOpts.Catalog {
+		if err := bIdx.ClearBatch(batch); err != nil {
+			_ = idx.Close()
+			return sm.Result{}, nil, err
+		}
+	} else {
+		e.indexMu.Lock()
+		e.withdrawReaderIndex(name)
+		e.indexMu.Unlock()
+		if err := idx.Clear(); err != nil {
+			return sm.Result{}, nil, err
+		}
 	}
 
 	return sm.Result{Value: 1}, nil, nil

@@ -22,8 +22,9 @@ import (
 	"github.com/dolthub/vitess/go/sqltypes"
 )
 
-// namespacesTableName is the fixed name of the namespaces table.
-const namespacesTableName = "namespaces"
+// namespacesTableName is the reserved name of the vector namespaces table
+// (OD-12 B).
+const namespacesTableName = "qrdb_vector_namespaces"
 
 // namespacesSchema defines the SQL schema for the namespaces table.
 var namespacesSchema = sqle.Schema{
@@ -106,5 +107,5 @@ type namespacesPartition struct{}
 
 // Key returns the partition key.
 func (p *namespacesPartition) Key() []byte {
-	return []byte("namespaces")
+	return []byte(namespacesTableName)
 }

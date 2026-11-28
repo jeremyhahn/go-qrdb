@@ -551,32 +551,16 @@ func TestRunStart_SQLDatabaseSetup_CreatesNewDatabase(t *testing.T) {
 	require.True(t, errors.As(err, &smErr))
 }
 
-func TestRunStart_SQLDatabaseSetup_MemoryBackend(t *testing.T) {
-	dir := t.TempDir()
-
-	// Use smType "memory" for the backend determination (line 712-714).
-	f := &startFlags{
-		dataDir:         dir,
-		smType:          "memory",
-		discoveryMethod: "static",
-		peers:           []string{"1=127.0.0.1:63001"},
-		listen:          "127.0.0.1:0",
-		raftAddress:     "127.0.0.1:0",
-		shardID:         1,
-		replicaID:       1,
-		sqlDatabase:     "my-mem-sql-db",
-		enablePgSQL:     true,
-		host:            testBindHost,
+func TestSQLDatabaseConfig_NamesNoBackendWhateverTheSM(t *testing.T) {
+	for _, sm := range []string{"memory", "concurrent", "mvcc"} {
+		t.Run(sm, func(t *testing.T) {
+			cfg := sqlDatabaseConfig(&startFlags{smType: sm, sqlDatabase: "my-sql-db", enablePgSQL: true})
+			assert.Empty(t, cfg.Backend, "--sm %s must not pick the database's backend", sm)
+			assert.Equal(t, "my-sql-db", cfg.Name)
+			assert.False(t, cfg.Protocol.MySQL)
+			assert.True(t, cfg.Protocol.PostgreSQL)
+		})
 	}
-
-	// Fail initializeNode fast by blocking the WAL path.
-	walPath := filepath.Join(dir, "wal")
-	require.NoError(t, os.WriteFile(walPath, []byte("x"), 0o600))
-
-	// The SQL DB with memory backend (line 713) is created, then
-	// initializeNode fails due to blocked WAL dir.
-	err := runStart(f)
-	require.Error(t, err)
 }
 
 func TestRunStart_SQLDatabaseSetup_ExistingDatabase_UpdatesProtocol(t *testing.T) {

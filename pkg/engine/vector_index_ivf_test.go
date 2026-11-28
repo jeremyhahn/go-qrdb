@@ -213,3 +213,95 @@ func TestVectorIndexManager_RebuildNamespace_ExistingRecordRebuildsFromStore(t *
 		t.Fatalf("Search = %+v, want ID 1", hits)
 	}
 }
+
+// A metadata-only namespace update arrives as a reconfigure that keeps the
+// index shape and bumps the training generation: the live index must keep
+// serving searches, with no rebuild, and carry the new record.
+func TestVectorIndexManager_ApplyEffects_MetadataOnlyReconfigureKeepsIndex(t *testing.T) {
+	m := NewVectorIndexManager("", nil)
+	m.ApplyEffects([]vector.IndexEffect{
+		{Op: vector.IndexEffectNamespaceCreate, Namespace: "ns", Record: vector.NamespaceRecord{Dimension: 2, DistanceMetric: vector.DistanceCosine, IndexType: vector.IndexHNSW}},
+	})
+	m.ApplyEffects([]vector.IndexEffect{
+		{Op: vector.IndexEffectUpsert, Namespace: "ns", ID: 1, Embedding: []float32{1, 0}},
+	})
+	updated := vector.NamespaceRecord{
+		Dimension:          2,
+		DistanceMetric:     vector.DistanceCosine,
+		IndexType:          vector.IndexHNSW,
+		IndexParams:        map[string]string{"label.team": "search", "updated_at": "42"},
+		TrainingGeneration: 1,
+	}
+	effects := []vector.IndexEffect{{Op: vector.IndexEffectReconfigure, Namespace: "ns", Record: updated}}
+	m.ApplyEffects(effects)
+	// No storage: a rebuild attempt would fail and leave the namespace
+	// warming, so a passing search proves no rebuild was needed.
+	m.RebuildReconfigured(nil, effects)
+
+	hits, err := m.Search("ns", []float32{1, 0}, 1)
+	if err != nil {
+		t.Fatalf("Search after metadata-only reconfigure: %v", err)
+	}
+	if len(hits) != 1 || hits[0].ID != 1 {
+		t.Fatalf("Search = %+v, want ID 1", hits)
+	}
+	ns := m.get("ns")
+	ns.mu.RLock()
+	gen, label := ns.rec.TrainingGeneration, ns.rec.IndexParams["label.team"]
+	ns.mu.RUnlock()
+	if gen != 1 || label != "search" {
+		t.Fatalf("record after reconfigure = gen %d label %q, want gen 1 label search", gen, label)
+	}
+}
+
+// A reconfigure that changes the index geometry discards the old index;
+// RebuildReconfigured then rebuilds it from the committed records so the
+// namespace serves searches again.
+func TestVectorIndexManager_RebuildReconfigured_GeometryChangeRebuildsFromStore(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	m := NewVectorIndexManager("", nil)
+	m.ApplyEffects([]vector.IndexEffect{
+		{Op: vector.IndexEffectNamespaceCreate, Namespace: "ns", Record: vector.NamespaceRecord{Dimension: 1, DistanceMetric: vector.DistanceCosine, IndexType: vector.IndexHNSW}},
+		{Op: vector.IndexEffectNamespaceCreate, Namespace: "other", Record: vector.NamespaceRecord{Dimension: 1, DistanceMetric: vector.DistanceCosine, IndexType: vector.IndexHNSW}},
+	})
+
+	flat := vector.NamespaceRecord{Dimension: 1, DistanceMetric: vector.DistanceCosine, IndexType: vector.IndexFlat, TrainingGeneration: 1}
+	data, err := vector.EncodeNamespaceRecord(flat)
+	if err != nil {
+		t.Fatalf("EncodeNamespaceRecord: %v", err)
+	}
+	if err := stg.Set(vector.NamespaceKey("ns"), data); err != nil {
+		t.Fatalf("Set(namespace record): %v", err)
+	}
+	vdata, err := vector.EncodeVectorRecord(vector.VectorRecord{Embedding: []float32{1}})
+	if err != nil {
+		t.Fatalf("EncodeVectorRecord: %v", err)
+	}
+	if err := stg.Set(vector.VectorKey("ns", 1), vdata); err != nil {
+		t.Fatalf("Set(vector record): %v", err)
+	}
+
+	effects := []vector.IndexEffect{
+		{Op: vector.IndexEffectUpsert, Namespace: "other", ID: 9, Embedding: []float32{1}},
+		{Op: vector.IndexEffectReconfigure, Namespace: "ns", Record: flat},
+		{Op: vector.IndexEffectReconfigure, Namespace: "unknown", Record: flat},
+	}
+	m.ApplyEffects(effects)
+	if _, err := m.Search("ns", []float32{1}, 1); err == nil {
+		t.Fatal("Search before RebuildReconfigured = nil error, want warming")
+	}
+	m.RebuildReconfigured(stg, effects)
+
+	hits, err := m.Search("ns", []float32{1}, 1)
+	if err != nil {
+		t.Fatalf("Search after RebuildReconfigured: %v", err)
+	}
+	if len(hits) != 1 || hits[0].ID != 1 {
+		t.Fatalf("Search = %+v, want ID 1", hits)
+	}
+
+	var nilMgr *VectorIndexManager
+	nilMgr.RebuildReconfigured(stg, effects) // must not panic
+}

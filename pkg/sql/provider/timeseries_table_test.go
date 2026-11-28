@@ -33,8 +33,8 @@ func TestNewDatapointsTable(t *testing.T) {
 	tbl := NewDatapointsTable()
 
 	require.NotNil(t, tbl)
-	assert.Equal(t, "datapoints", tbl.Name())
-	assert.Equal(t, "datapoints", tbl.String())
+	assert.Equal(t, "qrdb_ts_datapoints", tbl.Name())
+	assert.Equal(t, "qrdb_ts_datapoints", tbl.String())
 }
 
 func TestDatapointsTable_Schema(t *testing.T) {
@@ -47,22 +47,22 @@ func TestDatapointsTable_Schema(t *testing.T) {
 	assert.Equal(t, "metric", schema[0].Name)
 	assert.True(t, schema[0].PrimaryKey)
 	assert.False(t, schema[0].Nullable)
-	assert.Equal(t, "datapoints", schema[0].Source)
+	assert.Equal(t, "qrdb_ts_datapoints", schema[0].Source)
 
 	assert.Equal(t, "timestamp", schema[1].Name)
 	assert.True(t, schema[1].PrimaryKey)
 	assert.False(t, schema[1].Nullable)
-	assert.Equal(t, "datapoints", schema[1].Source)
+	assert.Equal(t, "qrdb_ts_datapoints", schema[1].Source)
 
 	assert.Equal(t, "value", schema[2].Name)
 	assert.False(t, schema[2].PrimaryKey)
 	assert.False(t, schema[2].Nullable)
-	assert.Equal(t, "datapoints", schema[2].Source)
+	assert.Equal(t, "qrdb_ts_datapoints", schema[2].Source)
 
 	assert.Equal(t, "tags", schema[3].Name)
 	assert.False(t, schema[3].PrimaryKey)
 	assert.True(t, schema[3].Nullable)
-	assert.Equal(t, "datapoints", schema[3].Source)
+	assert.Equal(t, "qrdb_ts_datapoints", schema[3].Source)
 }
 
 func TestDatapointsTable_Collation(t *testing.T) {
@@ -79,7 +79,7 @@ func TestDatapointsTable_Partitions(t *testing.T) {
 
 	p, err := iter.Next(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, []byte("datapoints"), p.Key())
+	assert.Equal(t, []byte("qrdb_ts_datapoints"), p.Key())
 
 	_, err = iter.Next(ctx)
 	assert.ErrorIs(t, err, io.EOF)
@@ -98,5 +98,5 @@ func TestDatapointsTable_PartitionRows_Empty(t *testing.T) {
 
 func TestDatapointsPartition_Key(t *testing.T) {
 	p := &datapointsPartition{}
-	assert.Equal(t, []byte("datapoints"), p.Key())
+	assert.Equal(t, []byte("qrdb_ts_datapoints"), p.Key())
 }

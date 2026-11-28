@@ -69,17 +69,10 @@
             {engineLabels[dbWizardStore.engine] ?? dbWizardStore.engine}
           </span>
         </div>
-        <div class="flex items-center justify-between">
-          <span class="text-base-content/70">Mode</span>
-          <span class="badge badge-sm badge-outline">
-            {dbWizardStore.mode === "embedded" ? "Embedded" : "Remote"}
-          </span>
-        </div>
       </div>
     </div>
 
-    <!-- Storage (embedded only) -->
-    {#if dbWizardStore.mode === "embedded"}
+    <!-- Storage -->
       <div class="bg-base-200 rounded-lg p-4">
         <h3
           class="mb-3 text-sm font-semibold uppercase tracking-wide text-primary"
@@ -149,40 +142,6 @@
           </div>
         </div>
       {/if}
-    {/if}
-
-    <!-- Connection (remote only) -->
-    {#if dbWizardStore.mode === "remote" && dbWizardStore.connectionConfig !== null}
-      <div class="bg-base-200 rounded-lg p-4">
-        <h3
-          class="mb-3 text-sm font-semibold uppercase tracking-wide text-primary"
-        >
-          Connection
-        </h3>
-        <div class="space-y-2">
-          <div class="flex items-center justify-between">
-            <span class="text-base-content/70">Transport</span>
-            <span class="font-medium">
-              {dbWizardStore.connectionConfig.transport}
-            </span>
-          </div>
-          <div class="flex items-center justify-between">
-            <span class="text-base-content/70">Address</span>
-            <span class="font-mono text-sm">
-              {dbWizardStore.connectionConfig.address}
-            </span>
-          </div>
-          {#if dbWizardStore.connectionConfig.caFile}
-            <div class="flex items-center justify-between">
-              <span class="text-base-content/70">CA Certificate</span>
-              <span class="font-mono text-sm">
-                {dbWizardStore.connectionConfig.caFile}
-              </span>
-            </div>
-          {/if}
-        </div>
-      </div>
-    {/if}
 
     <!-- SQL Wire Protocols -->
     {#if dbWizardStore.sqlMySQL || dbWizardStore.sqlPostgreSQL}

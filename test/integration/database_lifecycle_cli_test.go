@@ -20,7 +20,7 @@
 // (REST, gRPC, QUIC, MCP, Unix), using the shared startMultiProtocolNode
 // harness (multi_protocol_helpers_test.go). It closes the CLI coverage
 // audit's two biggest database-command gaps: `update-protocol`,
-// `update-raft`, `update-barrier`, `update-connection`, and `scale` had zero
+// `update-raft`, `update-barrier`, `update-connection` (since removed), and `scale` had zero
 // integration coverage of any kind, and the whole command tree was
 // previously exercised only on the default (REST) transport.
 //
@@ -42,8 +42,7 @@ import (
 )
 
 // TestDatabaseLifecycle_CLI_PerProtocol drives database create / list / info
-// / update-protocol / update-raft / update-barrier / update-connection /
-// scale / drop through the CLI binary against every transport, sharing one
+// / update-protocol / update-raft / update-barrier / scale / drop through the CLI binary against every transport, sharing one
 // multiProtoNode. Each protocol subtest operates on its own uniquely-named
 // database(s) so protocols never contend over the same resource.
 func TestDatabaseLifecycle_CLI_PerProtocol(t *testing.T) {
@@ -74,8 +73,7 @@ func cliDatabaseInfo(t *testing.T, node *multiProtoNode, proto multiProtocol, na
 }
 
 // testDatabaseLifecycleOverProtocol exercises database create, list, info,
-// update-protocol, update-raft, update-barrier, update-connection, scale,
-// and drop against a single protocol.
+// update-protocol, update-raft, update-barrier, scale, and drop against a single protocol.
 func testDatabaseLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
 	t.Helper()
 
@@ -134,15 +132,15 @@ func testDatabaseLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto
 	if err == nil {
 		t.Fatalf("[%s] database update-raft %s --cluster-mode bogus-mode succeeded, want error (output: %s)", proto.name, dbName, out)
 	}
-	if !strings.Contains(strings.ToLower(out+err.Error()), "cluster mode") {
-		t.Fatalf("[%s] database update-raft %s --cluster-mode bogus-mode error should mention %q, got: %s / %v", proto.name, dbName, "cluster mode", out, err)
-	}
-	// A recognized cluster mode ("none") succeeds and updates the
-	// metadata even off a non-raft-backend database -- the server's
-	// UpdateRaft does not gate on the database's storage backend.
+	// A raft block belongs to a raft-backend database only: even a
+	// recognized cluster mode is refused on this pebble database, and
+	// the refusal names the backend it needs.
 	out, err = runCLIProto(t, node, proto, "database", "update-raft", dbName, "--cluster-mode", "none")
-	if err != nil {
-		t.Fatalf("[%s] database update-raft %s --cluster-mode none: %v\noutput: %s", proto.name, dbName, err, out)
+	if err == nil {
+		t.Fatalf("[%s] database update-raft %s --cluster-mode none on a pebble database succeeded, want a refusal (output: %s)", proto.name, dbName, out)
+	}
+	if !strings.Contains(out+err.Error(), `requires backend "raft"`) {
+		t.Fatalf("[%s] database update-raft %s --cluster-mode none error should mention %q, got: %s / %v", proto.name, dbName, `requires backend "raft"`, out, err)
 	}
 
 	// --- update-barrier ------------------------------------------------
@@ -161,22 +159,6 @@ func testDatabaseLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto
 	out, err = runCLIProto(t, node, proto, "database", "update-barrier", dbName, "--disabled")
 	if err != nil {
 		t.Fatalf("[%s] database update-barrier %s --disabled: %v\noutput: %s", proto.name, dbName, err, out)
-	}
-
-	// --- update-connection ---------------------------------------------
-	out, err = runCLIProto(t, node, proto, "database", "update-connection", dbName,
-		"--conn-transport", "tcp", "--address", "127.0.0.1:59999")
-	if err != nil {
-		t.Fatalf("[%s] database update-connection %s: %v\noutput: %s", proto.name, dbName, err, out)
-	}
-	info = cliDatabaseInfo(t, node, proto, dbName)
-	if info.Connection == nil || info.Connection.Address != "127.0.0.1:59999" || info.Connection.Transport != "tcp" {
-		t.Fatalf("[%s] database info %s after update-connection: Connection = %+v, want {tcp 127.0.0.1:59999}", proto.name, dbName, info.Connection)
-	}
-	// An empty address must fail closed (ConnectionRequiredError).
-	out, err = runCLIProto(t, node, proto, "database", "update-connection", dbName, "--conn-transport", "tcp")
-	if err == nil {
-		t.Fatalf("[%s] database update-connection %s with no --address succeeded, want error (output: %s)", proto.name, dbName, out)
 	}
 
 	// --- scale -------------------------------------------------------
@@ -305,7 +287,8 @@ func TestDatabaseLifecycle_CLI_BackendVariants(t *testing.T) {
 
 // TestDatabaseLifecycle_CLI_RaftStateStorage proves that every create
 // transport carries --state-storage: the database record read back with
-// `database info` holds the requested Raft state storage.
+// `database info` holds the requested Raft state storage, and a state storage
+// no data-plane state machine runs on (file) is refused at create.
 func TestDatabaseLifecycle_CLI_RaftStateStorage(t *testing.T) {
 	t.Parallel()
 	node := startMultiProtocolNode(t)
@@ -317,21 +300,21 @@ func TestDatabaseLifecycle_CLI_RaftStateStorage(t *testing.T) {
 
 			out, err := runCLIProto(t, node, proto, "database", "create", dbName,
 				"--backend", "raft", "--cluster-mode", "local", "--replicas", "1",
-				"--state-storage", "file")
+				"--state-storage", "memory")
 			if err != nil {
-				t.Fatalf("[%s] database create %s --state-storage file: %v\noutput: %s", proto.name, dbName, err, out)
+				t.Fatalf("[%s] database create %s --state-storage memory: %v\noutput: %s", proto.name, dbName, err, out)
 			}
 			info := cliDatabaseInfo(t, node, proto, dbName)
-			if info.Raft == nil || info.Raft.StateStorage != "file" {
-				t.Fatalf("[%s] database info %s: Raft = %+v, want StateStorage=file", proto.name, dbName, info.Raft)
+			if info.Raft == nil || info.Raft.StateStorage != "memory" {
+				t.Fatalf("[%s] database info %s: Raft = %+v, want StateStorage=memory", proto.name, dbName, info.Raft)
 			}
 
 			out, err = runCLIProto(t, node, proto, "database", "info", dbName)
 			if err != nil {
 				t.Fatalf("[%s] database info %s: %v\noutput: %s", proto.name, dbName, err, out)
 			}
-			if !strings.Contains(out, "State:    file") {
-				t.Fatalf("[%s] database info %s: output lacks %q\noutput: %s", proto.name, dbName, "State:    file", out)
+			if !strings.Contains(out, "State:    memory") {
+				t.Fatalf("[%s] database info %s: output lacks %q\noutput: %s", proto.name, dbName, "State:    memory", out)
 			}
 
 			// A raft block naming only its state storage takes the
@@ -339,13 +322,29 @@ func TestDatabaseLifecycle_CLI_RaftStateStorage(t *testing.T) {
 			bare := dbName + "-bare"
 			t.Cleanup(func() { _, _ = runCLIProto(t, node, proto, "database", "drop", bare) })
 			out, err = runCLIProto(t, node, proto, "database", "create", bare,
-				"--backend", "raft", "--state-storage", "file")
+				"--backend", "raft", "--state-storage", "memory")
 			if err != nil {
-				t.Fatalf("[%s] database create %s --state-storage file without --cluster-mode: %v\noutput: %s", proto.name, bare, err, out)
+				t.Fatalf("[%s] database create %s --state-storage memory without --cluster-mode: %v\noutput: %s", proto.name, bare, err, out)
 			}
 			info = cliDatabaseInfo(t, node, proto, bare)
-			if info.Raft == nil || info.Raft.StateStorage != "file" || info.Raft.ClusterMode == "" {
-				t.Fatalf("[%s] database info %s: Raft = %+v, want StateStorage=file and a cluster mode", proto.name, bare, info.Raft)
+			if info.Raft == nil || info.Raft.StateStorage != "memory" || info.Raft.ClusterMode == "" {
+				t.Fatalf("[%s] database info %s: Raft = %+v, want StateStorage=memory and a cluster mode", proto.name, bare, info.Raft)
+			}
+
+			// file is refused at create, on every transport, and nothing
+			// is created.
+			refused := dbName + "-file"
+			t.Cleanup(func() { _, _ = runCLIProto(t, node, proto, "database", "drop", refused) })
+			out, err = runCLIProto(t, node, proto, "database", "create", refused,
+				"--backend", "raft", "--state-storage", "file")
+			if err == nil {
+				t.Fatalf("[%s] database create %s --state-storage file succeeded, want a refusal\noutput: %s", proto.name, refused, out)
+			}
+			if !strings.Contains(out, `raft state storage "file"`) {
+				t.Fatalf("[%s] database create %s --state-storage file: output lacks the refusal\noutput: %s", proto.name, refused, out)
+			}
+			if _, err := runCLIProto(t, node, proto, "database", "info", refused); err == nil {
+				t.Fatalf("[%s] database info %s: a refused create left a database", proto.name, refused)
 			}
 		})
 	}

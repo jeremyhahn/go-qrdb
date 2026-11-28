@@ -19,7 +19,7 @@ There is no `--engine` flag; passing one is an unknown-flag error. Every databas
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
 | `--backend` | string | node default (`database_defaults.backend`, else the run mode's) | `pebble \| memory \| file \| raft \| objstore` — see below |
-| `--data-dir` | string | — | dedicated data directory; **required for a per-database barrier**. Honoured for the system tenant only |
+| `--data-dir` | string | — | dedicated data directory; **required for a per-database barrier**; on a standalone node the database's own store (without a per-database barrier as well). Honoured for the system tenant only |
 | `--cluster-mode` | string | unset (server applies `local`) | `local \| distributed` — **raft backend only** |
 | `--replicas` | int | unset (server applies `1`) | replication factor — **raft backend only** |
 | `--state-storage` | string | unset (node `database_defaults`) | `pebble \| file \| memory` — the Raft group state's store; create records the resolved value |
@@ -224,19 +224,8 @@ qrdb database update-etcd k8s --enabled --listen-addr :2379
 | `--replica-id` | uint64 | raft replica ID |
 | `--raft-address` | string | raft address, `host:port` |
 
-### `qrdb database update-connection <name>`
-
-For a database backed by a remote node. The connection is recorded and never
-used — no remote proxy is constructed. The target design removes it, with
-remote mode (OD-9).
-
-| Flag | Type | Default | Meaning |
-|---|---|---|---|
-| `--address` | string | — | remote database address, `host:port` |
-| `--conn-transport` | string | `tcp` | `tcp \| quic` |
-| `--conn-ca-file` | string | — | connection TLS CA certificate |
-| `--conn-cert-file` | string | — | connection TLS client certificate |
-| `--conn-key-file` | string | — | connection TLS client key |
+There is no `update-connection` verb: remote-mode databases are removed
+(OD-9 A).
 
 ## Scoping data-plane commands
 

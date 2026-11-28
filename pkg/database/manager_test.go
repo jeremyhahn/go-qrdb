@@ -979,6 +979,55 @@ func TestManager_UpdateEtcd_InvalidConfig(t *testing.T) {
 	}
 }
 
+// The etcd revision counter needs a replicated log: an update enabling etcd
+// refuses every non-raft backend with the same typed error ResolveBinding
+// returns at create, leaves the record unchanged, and accepts a raft backend.
+// Disabling etcd is accepted on every backend.
+func TestManager_UpdateEtcd_RequiresRaftBackend(t *testing.T) {
+	tests := []struct {
+		backend BackendType
+		refused bool
+	}{
+		{BackendPebble, true},
+		{BackendMemory, true},
+		{BackendFile, true},
+		{BackendRaft, false},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.backend), func(t *testing.T) {
+			mgr := newTestManager(t)
+			defer func() { _ = mgr.Close() }()
+
+			name := "etcd-" + string(tt.backend) + "-db"
+			if _, err := mgr.Create(DatabaseConfig{Name: name, Backend: tt.backend}); err != nil {
+				t.Fatalf("Create(%s) error = %v", tt.backend, err)
+			}
+
+			err := mgr.UpdateEtcd(name, &EtcdConfig{Enabled: true, ListenAddr: "127.0.0.1:2379"})
+			if !tt.refused {
+				if err != nil {
+					t.Fatalf("UpdateEtcd() on %s = %v, want nil", tt.backend, err)
+				}
+				return
+			}
+			var raftErr *EtcdRequiresRaftBackendError
+			if !errors.As(err, &raftErr) || raftErr.Name != name || raftErr.Backend != tt.backend {
+				t.Fatalf("UpdateEtcd() on %s = %v, want *EtcdRequiresRaftBackendError{%s, %s}", tt.backend, err, name, tt.backend)
+			}
+			db, err := mgr.Get(name)
+			if err != nil {
+				t.Fatalf("Get() error = %v", err)
+			}
+			if e := db.Config().Protocol.Etcd; e != nil && e.Enabled {
+				t.Fatalf("refused UpdateEtcd() left etcd enabled on %s: %+v", tt.backend, e)
+			}
+			if err := mgr.UpdateEtcd(name, &EtcdConfig{Enabled: false}); err != nil {
+				t.Fatalf("UpdateEtcd(disabled) on %s = %v, want nil", tt.backend, err)
+			}
+		})
+	}
+}
+
 func TestManager_UpdateRaft_NotFound(t *testing.T) {
 	mgr := newTestManager(t)
 	defer func() { _ = mgr.Close() }()
@@ -997,7 +1046,7 @@ func TestManager_UpdateRaft_InvalidConfig(t *testing.T) {
 	mgr := newTestManager(t)
 	defer func() { _ = mgr.Close() }()
 
-	cfg := validMemoryConfig("raft-invalid-db")
+	cfg := DatabaseConfig{Name: "raft-invalid-db", Backend: BackendRaft}
 	if _, err := mgr.Create(cfg); err != nil {
 		t.Fatalf("Create() returned unexpected error: %v", err)
 	}
@@ -1134,68 +1183,6 @@ func TestManager_UpdateBarrier_IdempotentRefresh_Allowed(t *testing.T) {
 	}
 }
 
-func TestManager_UpdateConnection_NotFound(t *testing.T) {
-	mgr := newTestManager(t)
-	defer func() { _ = mgr.Close() }()
-
-	conn := &DatabaseConnectionConfig{Transport: "grpc", Address: "127.0.0.1:9090"}
-	err := mgr.UpdateConnection("nonexistent", conn)
-	if err == nil {
-		t.Fatal("UpdateConnection() returned nil, want *NotFoundError")
-	}
-	var notFoundErr *NotFoundError
-	if !errors.As(err, &notFoundErr) {
-		t.Fatalf("UpdateConnection() error type = %T, want *NotFoundError", err)
-	}
-}
-
-func TestManager_UpdateConnection_InvalidConfig(t *testing.T) {
-	mgr := newTestManager(t)
-	defer func() { _ = mgr.Close() }()
-
-	cfg := validMemoryConfig("conn-invalid-db")
-	if _, err := mgr.Create(cfg); err != nil {
-		t.Fatalf("Create() returned unexpected error: %v", err)
-	}
-
-	// Missing address should fail validation.
-	err := mgr.UpdateConnection("conn-invalid-db", &DatabaseConnectionConfig{Transport: "grpc", Address: ""})
-	if err == nil {
-		t.Fatal("UpdateConnection() returned nil, want error for invalid connection config")
-	}
-	var connErr *ConnectionRequiredError
-	if !errors.As(err, &connErr) {
-		t.Fatalf("UpdateConnection() error type = %T, want *ConnectionRequiredError", err)
-	}
-}
-
-func TestManager_UpdateConnection_Success(t *testing.T) {
-	mgr := newTestManager(t)
-	defer func() { _ = mgr.Close() }()
-
-	cfg := validMemoryConfig("conn-update-db")
-	if _, err := mgr.Create(cfg); err != nil {
-		t.Fatalf("Create() returned unexpected error: %v", err)
-	}
-
-	conn := &DatabaseConnectionConfig{Transport: "grpc", Address: "127.0.0.1:9090"}
-	if err := mgr.UpdateConnection("conn-update-db", conn); err != nil {
-		t.Fatalf("UpdateConnection() returned unexpected error: %v", err)
-	}
-
-	db, err := mgr.Get("conn-update-db")
-	if err != nil {
-		t.Fatalf("Get() returned unexpected error: %v", err)
-	}
-	info := db.Info()
-	if info.Connection == nil {
-		t.Fatal("Info().Connection = nil, want non-nil after UpdateConnection")
-	}
-	if info.Connection.Transport != "grpc" {
-		t.Errorf("Connection.Transport = %q, want %q", info.Connection.Transport, "grpc")
-	}
-}
-
 func TestManager_UpdateEtcd_NilConfig(t *testing.T) {
 	mgr := newTestManager(t)
 	defer func() { _ = mgr.Close() }()
@@ -1223,21 +1210,6 @@ func TestManager_UpdateRaft_NilConfig(t *testing.T) {
 	// nil raft config should be accepted.
 	if err := mgr.UpdateRaft("raft-nil-db", nil); err != nil {
 		t.Fatalf("UpdateRaft(nil) returned unexpected error: %v", err)
-	}
-}
-
-func TestManager_UpdateConnection_NilConfig(t *testing.T) {
-	mgr := newTestManager(t)
-	defer func() { _ = mgr.Close() }()
-
-	cfg := validMemoryConfig("conn-nil-db")
-	if _, err := mgr.Create(cfg); err != nil {
-		t.Fatalf("Create() returned unexpected error: %v", err)
-	}
-
-	// nil connection config should be accepted.
-	if err := mgr.UpdateConnection("conn-nil-db", nil); err != nil {
-		t.Fatalf("UpdateConnection(nil) returned unexpected error: %v", err)
 	}
 }
 

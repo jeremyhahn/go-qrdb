@@ -789,8 +789,7 @@ func TestCredentialService_CredentialGCExpired_MissingCredReturnsZero(t *testing
 // database_service.go – WithBarrierManager, UpdateEtcd, UnsealDatabase,
 //                        GetForTenant, ListForTenant, DropForTenant,
 //                        UpdateProtocolForTenant, UpdateEtcdForTenant,
-//                        UpdateRaftForTenant, UpdateBarrierForTenant,
-//                        UpdateConnectionForTenant (all 0%)
+//                        UpdateRaftForTenant, UpdateBarrierForTenant (all 0%)
 // ---------------------------------------------------------------------------
 
 func TestDatabaseService_WithBarrierManager_Option(t *testing.T) {
@@ -893,15 +892,6 @@ func TestDatabaseService_UpdateBarrierForTenant_NotFound(t *testing.T) {
 	svc := newTenantDatabaseService(t)
 	ctx := tenant.WithTenantID(context.Background(), "acme")
 	_, err := svc.UpdateBarrierForTenant(ctx, "no-db", &database.DatabaseBarrierConfig{Enabled: true})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestDatabaseService_UpdateConnectionForTenant_NotFound(t *testing.T) {
-	svc := newTenantDatabaseService(t)
-	ctx := tenant.WithTenantID(context.Background(), "acme")
-	_, err := svc.UpdateConnectionForTenant(ctx, "no-db", &database.DatabaseConnectionConfig{Transport: "grpc", Address: "h:9"})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

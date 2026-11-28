@@ -103,7 +103,7 @@ func TestShardIDs_ProvisionRefusesARaftDatabase(t *testing.T) {
 // The shard a database was issued is its identity and never changes.
 func TestShardIDs_UpdateRaftCannotChangeTheShard(t *testing.T) {
 	m := clusterNode(t, kvstore.NewMemoryKVStore())
-	db, err := m.Create(DatabaseConfig{Name: "fixed", Backend: BackendMemory, Raft: validRaftConfig(0)})
+	db, err := m.Create(DatabaseConfig{Name: "fixed", Backend: BackendRaft, Raft: validRaftConfig(0)})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}

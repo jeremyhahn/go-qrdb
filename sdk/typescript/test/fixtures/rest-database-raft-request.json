@@ -34,5 +34,5 @@
     "clusterSize": 5,
     "timeout": "90s"
   },
-  "stateStorage": "file"
+  "stateStorage": "pebble"
 }

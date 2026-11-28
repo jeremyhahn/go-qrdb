@@ -59,10 +59,6 @@ func databaseVerbs(svc *DatabaseService) map[string]func(ctx context.Context, na
 			_, err := svc.UpdateBarrierForTenant(ctx, name, &database.DatabaseBarrierConfig{})
 			return err
 		},
-		"update connection": func(ctx context.Context, name string) error {
-			_, err := svc.UpdateConnectionForTenant(ctx, name, &database.DatabaseConnectionConfig{})
-			return err
-		},
 		"update sql": func(ctx context.Context, name string) error {
 			_, err := svc.UpdateSQLForTenant(ctx, name, &database.SQLConfig{})
 			return err

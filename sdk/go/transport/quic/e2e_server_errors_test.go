@@ -720,13 +720,6 @@ func TestE2E_BulkServerErr_RemainingMethods(t *testing.T) {
 			t.Fatal("expected err")
 		}
 	})
-	t.Run("db.UpdateConnection", func(t *testing.T) {
-		srv, tr := startE2EServer(t)
-		serverErr(srv, "db.UpdateConnection", "err")
-		if _, err := tr.UpdateDatabaseConnection(context.Background(), transport.UpdateDatabaseConnectionRequest{Name: "db"}); err == nil {
-			t.Fatal("expected err")
-		}
-	})
 
 	t.Run("tenant.Create", func(t *testing.T) {
 		srv, tr := startE2EServer(t)

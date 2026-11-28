@@ -49,6 +49,24 @@ INSERT INTO kv (key, value) VALUES ('config/db', x'0102');
 Your tenant prefix is added and stripped for you — you see and write the key
 you asked for.
 
+**Query the engine tables.** A database also serves the engines compiled into
+the server as read-only tables under reserved names: `qrdb_ts_datapoints` and
+`qrdb_ts_metrics` when the time-series engine is compiled in,
+`qrdb_vector_namespaces` and `qrdb_vector_vectors` when the vector engine is.
+A server built without an engine has no tables for it. `SHOW TABLES` lists
+them beside your own tables over the MySQL wire, the PostgreSQL wire and the
+CLI.
+
+```sql
+SELECT * FROM qrdb_ts_metrics;
+SHOW TABLES;
+```
+
+The `qrdb_` names are reserved: `CREATE TABLE` and `RENAME TABLE` (or
+`ALTER TABLE ... RENAME TO`) refuse them in any letter case, whether or not
+the engine is compiled in. `metrics`, `vectors`, `datapoints` and `namespaces`
+are ordinary names you can give your own tables.
+
 **Create real tables.**
 
 ```sql

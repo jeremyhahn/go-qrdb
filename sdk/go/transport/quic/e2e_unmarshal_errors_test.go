@@ -853,13 +853,3 @@ func TestE2E_UpdateDatabaseBarrier_UnmarshalError(t *testing.T) {
 		t.Fatal("expected unmarshal error")
 	}
 }
-
-func TestE2E_UpdateDatabaseConnection_UnmarshalError(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("db.UpdateConnection", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, garbageJSON
-	})
-	if _, err := tr.UpdateDatabaseConnection(context.Background(), transport.UpdateDatabaseConnectionRequest{Name: "db"}); err == nil {
-		t.Fatal("expected unmarshal error")
-	}
-}

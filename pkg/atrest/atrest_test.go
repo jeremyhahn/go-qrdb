@@ -93,6 +93,52 @@ func TestNilEncryptor_EnabledFalse(t *testing.T) {
 	}
 }
 
+// newNoneBarrier returns an initialized barrier whose active strategy is
+// seal.StrategyNone: it is present but writes plaintext.
+func newNoneBarrier(t *testing.T) *seal.StorageBarrier {
+	t.Helper()
+	ctx := context.Background()
+	barrier, err := seal.NewStorageBarrier(slog.New(slog.NewTextHandler(io.Discard, nil)), seal.NewMemoryBackend(),
+		seal.BarrierConfig{RootKeyPath: "atrest-none-root-key", DeploymentID: 1}, seal.NewNoneStrategy())
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	if err := barrier.InitializeWithStrategy(ctx, seal.NewNoneStrategy(), seal.Credentials{}); err != nil {
+		t.Fatalf("InitializeWithStrategy: %v", err)
+	}
+	if barrier.IsSealed() {
+		if err := barrier.UnsealWithStrategy(ctx, seal.NewNoneStrategy(), seal.Credentials{}); err != nil {
+			t.Fatalf("UnsealWithStrategy: %v", err)
+		}
+	}
+	if got := barrier.ActiveStrategy(); got != seal.StrategyNone {
+		t.Fatalf("ActiveStrategy = %q, want %q", got, seal.StrategyNone)
+	}
+	return barrier
+}
+
+// TestEncryptor_Encrypts proves Encrypts is true only for a barrier whose
+// active strategy encrypts: nil and StrategyNone barriers do not.
+func TestEncryptor_Encrypts(t *testing.T) {
+	var nilEnc *atrest.Encryptor
+	if nilEnc.Encrypts() {
+		t.Fatal("nil Encryptor: Encrypts() = true")
+	}
+	if atrest.New(nil).Encrypts() {
+		t.Fatal("no barrier: Encrypts() = true")
+	}
+	none := atrest.New(newNoneBarrier(t))
+	if !none.Enabled() {
+		t.Fatal("StrategyNone barrier: Enabled() = false, want true")
+	}
+	if none.Encrypts() {
+		t.Fatal("StrategyNone barrier: Encrypts() = true, want false")
+	}
+	if !atrest.New(newTestBarrier(t)).Encrypts() {
+		t.Fatal("passphrase barrier: Encrypts() = false, want true")
+	}
+}
+
 // TestFS_NilBarrierReturnsBase confirms that FS() on a nil-barrier Encryptor
 // returns the base FS (filesys.Default) rather than nil.
 func TestFS_NilBarrierReturnsBase(t *testing.T) {

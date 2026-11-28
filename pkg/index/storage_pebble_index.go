@@ -472,36 +472,11 @@ func (idx *StoragePebbleIndex) GetAll() ([][]byte, error) {
 
 // Clear removes all entries from the index.
 func (idx *StoragePebbleIndex) Clear() error {
-	prefix := idx.buildIndexPrefix()
-
 	batch := idx.storage.Batch()
 	defer func() { _ = batch.Close() }()
 
-	iter := idx.storage.NewIterator(&storage.IteratorOptions{
-		LowerBound: prefix,
-		UpperBound: storageIncrementBytes(prefix),
-		OnlyKeys:   true,
-	})
-	defer func() { _ = iter.Close() }()
-
-	for iter.SeekToFirst(); iter.Valid(); iter.Next() {
-		if err := batch.Delete(iter.Key()); err != nil {
-			return errors.Wrapf(
-				err,
-				errors.ErrStorage,
-				"index.StoragePebbleIndex.Clear",
-				"failed to delete entry",
-			)
-		}
-	}
-
-	if err := iter.Error(); err != nil {
-		return errors.Wrapf(
-			err,
-			errors.ErrStorage,
-			"index.StoragePebbleIndex.Clear",
-			"iterator error",
-		)
+	if err := idx.clearInto(idx.storage, batch, "index.StoragePebbleIndex.Clear"); err != nil {
+		return err
 	}
 
 	if err := batch.Commit(); err != nil {
@@ -516,20 +491,41 @@ func (idx *StoragePebbleIndex) Clear() error {
 	return nil
 }
 
-// ClearBatch queues the removal of every entry of the index into the
-// provided batch as one range delete. Unlike Clear, it also drops entries
-// written earlier into the same batch and not yet committed, so a rebuild
-// applied inside an apply batch leaves nothing staged before it behind. The
-// caller is responsible for committing the batch.
+// ClearBatch queues the removal of every entry of this index into batch,
+// which the caller commits: the apply path clears an index in the same batch
+// that writes or deletes its catalog record, so a batch that fails to commit
+// leaves both the definition and its entries as they were. The entries are
+// read through batch, so ones an earlier entry of the same batch wrote are
+// removed too.
 func (idx *StoragePebbleIndex) ClearBatch(batch storage.Batch) error {
+	return idx.clearInto(batch, batch, "index.StoragePebbleIndex.ClearBatch")
+}
+
+// clearInto queues into batch a delete of every entry of this index that r
+// holds. The keys are collected before any delete is queued, so the scan
+// never iterates over its own deletions when r is batch.
+func (idx *StoragePebbleIndex) clearInto(r storage.Reader, batch storage.Batch, op string) error {
 	prefix := idx.buildIndexPrefix()
-	if err := batch.DeleteRange(prefix, storageIncrementBytes(prefix)); err != nil {
-		return errors.Wrapf(
-			err,
-			errors.ErrStorage,
-			"index.StoragePebbleIndex.ClearBatch",
-			"failed to delete index range",
-		)
+
+	iter := r.NewIterator(&storage.IteratorOptions{
+		LowerBound: prefix,
+		UpperBound: storageIncrementBytes(prefix),
+		OnlyKeys:   true,
+	})
+	var keys [][]byte
+	for iter.SeekToFirst(); iter.Valid(); iter.Next() {
+		keys = append(keys, append([]byte(nil), iter.Key()...))
+	}
+	iterErr := iter.Error()
+	_ = iter.Close()
+	if iterErr != nil {
+		return errors.Wrapf(iterErr, errors.ErrStorage, op, "iterator error")
+	}
+
+	for _, key := range keys {
+		if err := batch.Delete(key); err != nil {
+			return errors.Wrapf(err, errors.ErrStorage, op, "failed to delete entry")
+		}
 	}
 	return nil
 }

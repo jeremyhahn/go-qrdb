@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // defaultReconcilerPollInterval is the fallback reconciliation period used when
@@ -43,9 +44,16 @@ type ShardLifecycle interface {
 	Close(tenantID, db string) error
 
 	// CloseAndPurge stops the named shard (as Close does) and removes its
-	// on-disk dataDir subtree. It is a no-op for an unknown (tenantID, db)
-	// pair.
-	CloseAndPurge(tenantID, db string) error
+	// on-disk dataDir subtree, when the shard running under the name is
+	// shardID: a delete or demotion read for one incarnation never purges a
+	// database created again under the same name on a new shard. It is a
+	// no-op for an unknown (tenantID, db) pair.
+	CloseAndPurge(tenantID, db string, shardID uint64) error
+
+	// CloseAndPurgeStarted is CloseAndPurge for the one start s names (a
+	// ListStarted entry): a no-op when the shard running under s's name is
+	// no longer that start, as after a drop and recreate.
+	CloseAndPurgeStarted(s StartedShard) error
 
 	// ListStarted returns the set of (TenantID, Database) pairs whose dedicated
 	// raft shards are currently started on this node. Used by ReconcileOnce to
@@ -112,6 +120,13 @@ type BarrierReadiness interface {
 	// GetTenant returns the registered TenantBarrier for tenantID, or an error
 	// when no barrier is registered.
 	GetTenant(tenantID string) (*seal.TenantBarrier, error)
+}
+
+// GroupBarrierReadiness is an optional ShardLifecycle extension that reports
+// whether the barrier a tenant's group runs under is present and unsealed; a
+// prefix tenant's group runs under the node barrier and has no tenant barrier.
+type GroupBarrierReadiness interface {
+	GroupBarrierReady(ctx context.Context, tenantID string) (bool, error)
 }
 
 // ShellRegistrar registers a tenant's barrier on this node as an
@@ -348,9 +363,28 @@ func (r *TenantShardReconciler) ReconcileOnce(ctx context.Context) {
 		key := raftShardKey{tenantID: s.TenantID, database: s.Database}
 		p, hasPlacement := allPlacements[key]
 		if !hasPlacement {
-			// No placement entry — this shard is catalog-managed (opened from
-			// the database catalog at boot or single-node Phase-4b). Do not
-			// tear it down.
+			if s.Placed {
+				// The shard was started from a placement entry that is now
+				// gone: the database was dropped and this node missed the
+				// delete event (or it arrived before the shard was cached).
+				// Close and purge it, as the delete event would have.
+				if !r.placementGone(ctx, s.TenantID, s.Database) {
+					continue
+				}
+				r.logger.Info("placement reconciler: purging a shard whose placement is gone",
+					slog.String("tenant", s.TenantID),
+					slog.String("database", s.Database))
+				if err := r.closeListed(s); err != nil {
+					r.logger.Warn("placement reconciler: purge of a shard without placement failed",
+						slog.String("tenant", s.TenantID),
+						slog.String("database", s.Database),
+						slog.Any("error", err))
+				}
+				continue
+			}
+			// No placement entry and never placed — this shard is
+			// catalog-managed (opened from the database catalog at boot or
+			// single-node Phase-4b). Do not tear it down.
 			continue
 		}
 		if _, ok := p.ReplicaForNode(r.selfNodeID); ok {
@@ -361,7 +395,7 @@ func (r *TenantShardReconciler) ReconcileOnce(ctx context.Context) {
 		r.logger.Info("placement reconciler: stopping demoted shard",
 			slog.String("tenant", s.TenantID),
 			slog.String("database", s.Database))
-		if err := r.closeDemoted(s.TenantID, s.Database); err != nil {
+		if err := r.closeListed(s); err != nil {
 			r.logger.Warn("placement reconciler: demoted shard stop failed",
 				slog.String("tenant", s.TenantID),
 				slog.String("database", s.Database),
@@ -377,11 +411,43 @@ func (r *TenantShardReconciler) ReconcileOnce(ctx context.Context) {
 // of the shard — unlike graceful process shutdown (CloseAll), which must
 // never purge because the data must survive for the next restart's
 // re-attach.
-func (r *TenantShardReconciler) closeDemoted(tenantID, db string) error {
+func (r *TenantShardReconciler) closeDemoted(tenantID, db string, shardID uint64) error {
 	if r.purgeOnDemotion {
-		return r.factory.CloseAndPurge(tenantID, db)
+		return r.factory.CloseAndPurge(tenantID, db, shardID)
 	}
 	return r.factory.Close(tenantID, db)
+}
+
+// closeListed is closeDemoted for a shard the pass decided on from its
+// ListStarted snapshot. The purge acts only on that start: a drop and
+// recreate since the listing leaves the successor running with its data.
+// Without purging, Close by name is safe, since the next pass starts a
+// successor it stopped again from its placement.
+func (r *TenantShardReconciler) closeListed(s StartedShard) error {
+	if r.purgeOnDemotion {
+		return r.factory.CloseAndPurgeStarted(s)
+	}
+	return r.factory.Close(s.TenantID, s.Database)
+}
+
+// placementGone re-reads the placement of a placed shard absent from the
+// pass's snapshot: a foreground resolution may have placed and started it
+// after the List. It reports true only when the entry is still absent; a
+// read failure keeps the shard. A start in flight that read the entry
+// before it went is sent back to read it again by CloseAndPurge.
+func (r *TenantShardReconciler) placementGone(ctx context.Context, tenantID, db string) bool {
+	p, err := r.placement.Get(ctx, tenantID, db)
+	if err == nil {
+		return p == nil
+	}
+	if errors.Is(err, placement.ErrPlacementNotFound) {
+		return true
+	}
+	r.logger.Warn("placement reconciler: placement re-read before purge failed; keeping the shard",
+		slog.String("tenant", tenantID),
+		slog.String("database", db),
+		slog.Any("error", err))
+	return false
 }
 
 // maybeRestartPromotedLocal restarts the LOCAL replica of p as a full
@@ -615,7 +681,20 @@ func (r *TenantShardReconciler) ensureStarted(ctx context.Context, p *placement.
 			slog.String("database", p.Database))
 		return false
 	}
-	if r.barriers != nil {
+	// The system tenant has no tenant barrier: its shards run under the
+	// host-wide barrier, so only a regular tenant waits for its own.
+	if gb, ok := r.factory.(GroupBarrierReadiness); ok && !tenantid.IsSystem(p.TenantID) {
+		ready, err := gb.GroupBarrierReady(ctx, p.TenantID)
+		if errors.Is(err, seal.ErrTenantNotFound) {
+			r.registerShell(ctx, p.TenantID)
+		}
+		if err != nil || !ready {
+			r.logger.Debug("placement reconciler: group barrier not ready, deferring shard start",
+				slog.String("tenant", p.TenantID),
+				slog.String("database", p.Database))
+			return false
+		}
+	} else if r.barriers != nil && !tenantid.IsSystem(p.TenantID) {
 		tb, err := r.barriers.GetTenant(p.TenantID)
 		if err != nil || tb == nil {
 			r.registerShell(ctx, p.TenantID)
@@ -769,14 +848,25 @@ func (r *TenantShardReconciler) handleEvent(ctx context.Context, ev placement.Ev
 			break
 		}
 		// This node is no longer in the replica set — demotion (M1).
-		if err := r.closeDemoted(ev.TenantID, ev.Database); err != nil {
+		if err := r.closeDemoted(ev.TenantID, ev.Database, ev.Placement.ShardID); err != nil {
 			r.logger.Warn("placement reconciler: shard close on demotion failed",
 				slog.String("tenant", ev.TenantID),
 				slog.String("database", ev.Database),
 				slog.Any("error", err))
 		}
 	case placement.EventDelete:
-		if err := r.closeDemoted(ev.TenantID, ev.Database); err != nil {
+		if ev.Placement == nil {
+			// The delete names no incarnation, so it cannot tell the
+			// dropped database's shard from one created again under the
+			// name. A pass purges only a start whose placement is gone
+			// (ReconcileOnce, closeListed).
+			r.queuePass(ctx, "placement delete without its prior value")
+			break
+		}
+		r.logger.Info("placement reconciler: placement deleted, closing the database's shard",
+			slog.String("tenant", ev.TenantID),
+			slog.String("database", ev.Database))
+		if err := r.closeDemoted(ev.TenantID, ev.Database, ev.Placement.ShardID); err != nil {
 			r.logger.Warn("placement reconciler: shard close on delete failed",
 				slog.String("tenant", ev.TenantID),
 				slog.String("database", ev.Database),

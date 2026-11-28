@@ -199,17 +199,18 @@ in the object-storage bucket under the prefix `lsm`:
   bucket and data directory and write the data back with `qrdb kv put` (SQL
   data with SQL). See [../key-value/user.md](../key-value/user.md).
 
-Not built yet: a database created with `backend: objstore` is still refused
-when it opens (see [../databases/user.md](../databases/user.md)); lifting that
-is an open question. If it ships:
+A database created with `backend: objstore` opens as its own non-replicated
+store: the Pebble engine with its durable data (SSTables) in S3, GCS, Azure or
+a local object-store directory, with capacity that is not bounded by the
+node's attached disk. With the seal barrier on, it opens under the encrypting
+barrier with the barrier's key: its WAL, MANIFEST and read cache go through
+the encrypting file system and every bucket object is sealed. While the
+tenant's barrier is sealed, opening it is refused with the sealed error;
+unseal and it opens.
 
-- You would pick `objstore` for a database when you want its durable data in
-  S3, GCS, Azure or a local object-store directory, with capacity that is not
-  bounded by the node's attached disk.
-- `glacier` and `azurearchive` would remain backup and archive destinations
+- `glacier` and `azurearchive` remain backup and archive destinations
   reached through `qrdb backup create`, never a live `objstore` provider —
   their retrieval delays are measured in hours, which is incompatible with
   serving reads.
-- Whether this also becomes available as a Raft hot apply path, not only a
-  standalone or per-database backend, is an open question the design defers
-  to a later, separately gated phase.
+- `objstore` as a Raft hot apply path (`raft.sm_storage`/`state_storage`) is
+  still refused; the design defers it to a later, separately gated phase.

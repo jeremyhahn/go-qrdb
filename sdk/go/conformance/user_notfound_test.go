@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -507,11 +508,32 @@ func bootAuthorizedCell(t *testing.T, tk transportKind, seed func(*node.Node)) *
 // cell composes an audit logger.
 func bootCellAs(t *testing.T, tk transportKind, callerTenant string, extraOpts []server.ServerOption, seed func(*node.Node)) *sdk.Client {
 	t.Helper()
+	return bootCellIn(t, tk, callerTenant, extraOpts, seed, standalone)
+}
+
+// bootRaftAuthorizedCell is bootAuthorizedCell on a single-replica raft-mode
+// node: the cell for a verb whose backend only a raft node serves (a raft
+// database, and so an etcd-protocol one).
+func bootRaftAuthorizedCell(t *testing.T, tk transportKind, seed func(*node.Node)) *sdk.Client {
+	t.Helper()
+	return bootCellIn(t, tk, tenantid.System, nil, seed, raft)
+}
+
+// bootCellIn is bootCellAs on a node of the given run mode.
+func bootCellIn(t *testing.T, tk transportKind, callerTenant string, extraOpts []server.ServerOption, seed func(*node.Node), runMode mode) *sdk.Client {
+	t.Helper()
 
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.DataDir = t.TempDir()
 	cfg.Server.Host = "127.0.0.1"
-	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
+	if runMode == raft {
+		cfg.Raft.RaftAddress = fmt.Sprintf("127.0.0.1:%d", raftPortBase+raftPortSeed.Add(1))
+		cfg.Raft.ReplicaID = 1
+		cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendPebble)}}
+		cfg.Storage.VolumePools = []qrdbconfig.VolumePoolConfig{{Name: "default", Path: cfg.Raft.DataDir}}
+	} else {
+		cfg.Storage.Backend = string(database.BackendMemory)
+	}
 	cfg.Seal.Enabled = true
 	cfg.Seal.Strategy = "none"
 
@@ -543,7 +565,13 @@ func bootCellAs(t *testing.T, tk transportKind, callerTenant string, extraOpts [
 	}
 	serverOpts = append(serverOpts, extraOpts...)
 
-	n, err := node.NewStandaloneNode(context.Background(), cfg, serverOpts)
+	var n *node.Node
+	var err error
+	if runMode == raft {
+		n, err = node.NewClusteredNode(context.Background(), cfg, map[uint64]string{1: cfg.Raft.RaftAddress}, serverOpts)
+	} else {
+		n, err = node.NewStandaloneNode(context.Background(), cfg, serverOpts)
+	}
 	if err != nil {
 		t.Fatalf("boot %s: %v", tk, err)
 	}

@@ -274,6 +274,9 @@ func (s *PebbleStorage) Get(key []byte) ([]byte, error) {
 	if len(key) == 0 {
 		return nil, storage.ErrEmptyKey
 	}
+	if err := s.readable(); err != nil {
+		return nil, err
+	}
 
 	s.readSem <- struct{}{}
 	defer func() { <-s.readSem }()
@@ -394,6 +397,29 @@ func unboundedRangeEnd(r pebble.Reader, start []byte) (end []byte, err error) {
 	return append(append([]byte(nil), iter.Key()...), 0x00), nil
 }
 
+// readable returns the *SealedError a sealed barrier gives, before a read
+// touches the database, and nil when the store has no seal watch or its
+// barrier is unsealed. An open store keeps its memtables and block cache in
+// plaintext, so without the check a sealed barrier would still serve reads
+// from memory; the refusal matches the one a reopen under the sealed barrier
+// gives.
+func (s *PebbleStorage) readable() error {
+	if s.seals == nil {
+		return nil
+	}
+	return s.seals.Check()
+}
+
+// sealedIterator is the iterator a read on a sealed store returns: invalid
+// everywhere, reporting the barrier's *SealedError from Error.
+type sealedIterator struct {
+	storage.Iterator
+	err error
+}
+
+// Error reports the sealed barrier.
+func (it *sealedIterator) Error() error { return it.err }
+
 // CompareAndSwap implements storage.GuardedStorage. The read, compare and
 // write run under the exclusive casMu, so concurrent swaps on a key serialise
 // and no Set, Delete or batch commit interleaves between compare and write.
@@ -447,6 +473,9 @@ func (s *PebbleStorage) List(prefix []byte) ([][]byte, error) {
 	if s.closed.Load() {
 		return nil, &storage.ClosedError{}
 	}
+	if err := s.readable(); err != nil {
+		return nil, err
+	}
 
 	s.readSem <- struct{}{}
 	defer func() { <-s.readSem }()
@@ -498,6 +527,9 @@ func (s *PebbleStorage) Exists(key []byte) (bool, error) {
 	if len(key) == 0 {
 		return false, storage.ErrEmptyKey
 	}
+	if err := s.readable(); err != nil {
+		return false, err
+	}
 
 	s.readSem <- struct{}{}
 	defer func() { <-s.readSem }()
@@ -537,6 +569,9 @@ func (s *PebbleStorage) NewIterator(opts *storage.IteratorOptions) storage.Itera
 	if s.closed.Load() {
 		return storage.NewClosedIterator()
 	}
+	if err := s.readable(); err != nil {
+		return &sealedIterator{Iterator: storage.NewClosedIterator(), err: err}
+	}
 	return newIterator(s.db, opts)
 }
 
@@ -546,6 +581,9 @@ func (s *PebbleStorage) Snapshot() (storage.Snapshot, error) {
 	defer s.gate.RUnlock()
 	if s.closed.Load() {
 		return nil, &storage.ClosedError{}
+	}
+	if err := s.readable(); err != nil {
+		return nil, err
 	}
 	return newSnapshot(s, s.db.NewSnapshot()), nil
 }

@@ -34,12 +34,17 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	api "github.com/jeremyhahn/go-qrdb/pkg/api"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/quiesce"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/util/metrics"
+	vectorindex "github.com/jeremyhahn/go-qrdb/pkg/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/vector/hnsw"
 )
 
@@ -53,6 +58,8 @@ type vectorService struct {
 	storage      vector.Storage
 	raftNode     interfaces.RaftNode
 	featureGates FeatureGatedHost // cluster feature gates; nil reads the raft node's
+	applyHost    Host             // set by WithVectorApplyHost: storage is NewHostVectorStorage over it
+	applyShardID uint64           // the shard applyHost applies vector commands on
 	shardID      uint64
 	nodeID       string
 	hnswIndexes  map[string]interfaces.HNSWIndex // Map scoped-namespace -> HNSW index
@@ -226,6 +233,18 @@ func WithFeatureGates(gates FeatureGatedHost) VectorServiceOption {
 	}
 }
 
+// WithVectorApplyHost makes the service's storage NewHostVectorStorage over
+// host: every write is an OpVector* command in host's apply batch on
+// shardID, and every read an engine lookup through host. NewVectorService
+// must then be given a nil storage. When host implements FeatureGatedHost
+// and no WithFeatureGates was given, it also serves as the feature gates.
+func WithVectorApplyHost(host Host, shardID uint64) VectorServiceOption {
+	return func(v *vectorService) {
+		v.applyHost = host
+		v.applyShardID = shardID
+	}
+}
+
 // WithVectorShardID sets the shard ID for vector operations.
 func WithVectorShardID(shardID uint64) VectorServiceOption {
 	return func(v *vectorService) {
@@ -383,27 +402,10 @@ func (v *vectorService) newNamespaceIndex(info *vector.NamespaceInfo, indexConfi
 // A parameter that does not parse is logged and left at its default; a
 // parsed m also sets MMax to twice it.
 func (v *vectorService) applyHNSWParams(config *hnsw.Config, params map[string]string) {
-	fields := map[string]*int{
-		"m":               &config.M,
-		"ef_construction": &config.EfConstruction,
-		"ef_search":       &config.EfSearch,
-	}
-	for name, field := range fields {
-		raw, ok := params[name]
-		if !ok {
-			continue
-		}
-		if _, err := fmt.Sscanf(raw, "%d", field); err != nil {
-			v.logger.WithFields(map[string]interface{}{
-				"parameter": name,
-				"value":     raw,
-				"error":     err,
-			}).Warn("failed to parse index parameter")
-			continue
-		}
-		if name == "m" {
-			config.MMax = config.M * 2
-		}
+	if err := vectorindex.ApplyHNSWParams(config, params); err != nil {
+		v.logger.WithFields(map[string]interface{}{
+			"error": err,
+		}).Warn("failed to parse index parameter")
 	}
 }
 
@@ -413,10 +415,6 @@ func NewVectorService(
 	logger interfaces.Logger,
 	opts ...VectorServiceOption,
 ) (VectorService, error) {
-	if storage == nil {
-		return nil, &api.RequiredFieldError{Field: "storage"}
-	}
-
 	if logger == nil {
 		return nil, &api.RequiredFieldError{Field: "logger"}
 	}
@@ -434,6 +432,21 @@ func NewVectorService(
 	// Apply functional options
 	for _, opt := range opts {
 		opt(svc)
+	}
+	switch {
+	case svc.applyHost != nil && storage != nil:
+		svc.bgCancel()
+		return nil, &VectorStorageConflictError{}
+	case svc.applyHost != nil:
+		svc.storage = NewHostVectorStorage(svc.applyHost, svc.applyShardID)
+		if svc.featureGates == nil {
+			if gates, ok := svc.applyHost.(FeatureGatedHost); ok {
+				svc.featureGates = gates
+			}
+		}
+	case storage == nil:
+		svc.bgCancel()
+		return nil, &api.RequiredFieldError{Field: "storage"}
 	}
 
 	// Initialize metrics
@@ -492,6 +505,48 @@ func (v *vectorService) admit(access func() error) error {
 		return &VectorServiceClosedError{}
 	}
 	return access()
+}
+
+// admitIndexRead gates a read served from the in-memory index of namespace
+// on the store under it. A service built over an apply host (a
+// materialized database's binding store, WithVectorApplyHost) keeps its
+// HNSW indexes in memory, so a cached search never reaches the store and
+// would answer from a sealed barrier. One engine lookup of the namespace
+// through the host runs first: a sealed store refuses it, surfaced as
+// *BarrierSealedError, and a dropped namespace answers not-found. A service
+// without an apply host (the node's shared vector store) is unchanged.
+func (v *vectorService) admitIndexRead(ctx context.Context, namespace string) error {
+	if v.applyHost == nil {
+		return nil
+	}
+	if _, err := v.storage.GetNamespaceInfo(ctx, namespace); err != nil {
+		return translateVectorSealed(err)
+	}
+	return nil
+}
+
+// translateVectorSealed maps a sealed-barrier refusal of the store under a
+// vector service to *BarrierSealedError, the typed error every transport maps
+// to its sealed status (HTTP 503 / gRPC Unavailable). Any other error is
+// returned unchanged.
+func translateVectorSealed(err error) error {
+	if sealed, ok := errors.AsType[*BarrierSealedError](err); ok {
+		return sealed
+	}
+	if _, ok := errors.AsType[*database.SealedError](err); ok {
+		return &BarrierSealedError{}
+	}
+	// A barrier-encrypted binding store reports the barrier's own sealed
+	// error, or the quiesce gate a seal closes, on the read it refuses.
+	if errors.Is(err, seal.ErrSealed) || errors.Is(err, quiesce.ErrSealing) {
+		return &BarrierSealedError{}
+	}
+	// A Pebble binding store under a sealed barrier refuses with its own
+	// sealed error.
+	if _, ok := errors.AsType[*pebble.SealedError](err); ok || errors.Is(err, pebble.ErrBarrierSealed) {
+		return &BarrierSealedError{}
+	}
+	return err
 }
 
 // startBackground runs job on its own goroutine under the service's
@@ -641,13 +696,18 @@ func (v *vectorService) ensureHNSWIndex(ctx context.Context, namespace string) (
 	v.indexMu.RUnlock()
 
 	if exists {
+		// A cached index answers only once the store under it admits the
+		// read: a sealed binding store refuses it.
+		if err := v.admitIndexRead(ctx, namespace); err != nil {
+			return nil, err
+		}
 		return index, nil
 	}
 
 	// Index doesn't exist, check if namespace exists in storage
 	info, err := v.storage.GetNamespaceInfo(ctx, namespace)
 	if err != nil {
-		return nil, err
+		return nil, translateVectorSealed(err)
 	}
 
 	if err := checkStoredGeometry(namespace, info); err != nil {
@@ -693,6 +753,46 @@ func (v *vectorService) ensureHNSWIndex(ctx context.Context, namespace string) (
 	}).Info("lazily created index for namespace")
 
 	return newIndex, nil
+}
+
+// namespaceSearch returns the k-nearest-neighbour search of namespace.
+// Without an apply host it is the service's own HNSW index. With one
+// (WithVectorApplyHost) it is the engine-owned index of the replica the
+// host reads: every replica updates that index as it applies each
+// replicated vector command, so a search on any replica sees writes and
+// deletes proposed through any other. A per-service cache would not: an
+// apply on another node never reaches it.
+func (v *vectorService) namespaceSearch(ctx context.Context, namespace string) (func([]float32, int) ([]*interfaces.HNSWSearchResult, error), error) {
+	if v.applyHost == nil {
+		index, err := v.ensureHNSWIndex(ctx, namespace)
+		if err != nil {
+			return nil, err
+		}
+		return index.Search, nil
+	}
+	info, err := v.storage.GetNamespaceInfo(ctx, namespace)
+	if err != nil {
+		return nil, translateVectorSealed(err)
+	}
+	if err := checkStoredGeometry(namespace, info); err != nil {
+		return nil, err
+	}
+	return func(query []float32, k int) ([]*interfaces.HNSWSearchResult, error) {
+		answer, err := v.applyHost.SyncRead(ctx, v.applyShardID,
+			VectorSearchQuery{Namespace: hostNamespace(namespace), Query: query, K: k})
+		if err != nil {
+			return nil, translateVectorSealed(err)
+		}
+		hits, ok := answer.([]VectorSearchHit)
+		if !ok {
+			return nil, &HostVectorAnswerError{Query: "vector search", Got: fmt.Sprintf("%T", answer)}
+		}
+		results := make([]*interfaces.HNSWSearchResult, len(hits))
+		for i, h := range hits {
+			results[i] = &interfaces.HNSWSearchResult{ID: h.ID, Distance: h.Distance}
+		}
+		return results, nil
+	}, nil
 }
 
 // =============================================================================
@@ -792,6 +892,9 @@ func invalidVectorFromStorage(_ string, _ uint64, err error) error {
 // namespace is the caller's LOGICAL namespace, never the tenant-scoped storage
 // key, so an error message cannot leak another tenant's key layout.
 func vectorStorageError(op, namespace string, id uint64, err error) error {
+	if sealed, ok := errors.AsType[*BarrierSealedError](translateVectorSealed(err)); ok {
+		return sealed
+	}
 	for _, row := range vectorStorageErrors {
 		if errors.Is(err, row.sentinel) {
 			return row.typed(namespace, id, err)
@@ -1103,6 +1206,15 @@ func (v *vectorService) UpdateNamespace(ctx context.Context, req *UpdateNamespac
 				v.metrics.operationErrors.With("update_namespace", "raft_error").Inc()
 			}
 			return nil, err
+		}
+	} else if patcher, ok := v.storage.(vectorNamespacePatcher); ok {
+		// A replicated store merges the request's keys at apply time, so
+		// a concurrent patch of other keys from another instance survives.
+		if err := patcher.PatchNamespace(ctx, scoped, req.IndexConfig, metadata, now); err != nil {
+			if v.metrics != nil {
+				v.metrics.operationErrors.With("update_namespace", "storage_error").Inc()
+			}
+			return nil, vectorStorageError("update namespace", req.Namespace, 0, err)
 		}
 	} else if err := v.storage.UpdateNamespace(ctx, scoped, update); err != nil {
 		if v.metrics != nil {
@@ -1886,13 +1998,28 @@ func (v *vectorService) SearchSimilar(ctx context.Context, req *SearchSimilarReq
 		return nil, &VectorServiceClosedError{}
 	}
 
-	index, err := v.ensureHNSWIndex(ctx, scoped)
+	search, err := v.namespaceSearch(ctx, scoped)
 	if err != nil {
 		if unsupported, ok := errors.AsType[*UnsupportedNamespaceGeometryError](err); ok {
 			if v.metrics != nil {
 				v.metrics.operationErrors.With("search_similar", "unsupported_geometry").Inc()
 			}
 			return nil, unsupported
+		}
+		if sealed, ok := errors.AsType[*BarrierSealedError](translateVectorSealed(err)); ok {
+			if v.metrics != nil {
+				v.metrics.operationErrors.With("search_similar", "barrier_sealed").Inc()
+			}
+			return nil, sealed
+		}
+		// Only a namespace that does not exist answers with no results;
+		// a refused or failed read is the caller's error, never an empty
+		// successful search.
+		if !errors.Is(err, vector.ErrNamespaceNotFound) {
+			if v.metrics != nil {
+				v.metrics.operationErrors.With("search_similar", "read_failed").Inc()
+			}
+			return nil, err
 		}
 		v.logger.WithFields(map[string]interface{}{
 			"namespace": req.Namespace,
@@ -1906,7 +2033,7 @@ func (v *vectorService) SearchSimilar(ctx context.Context, req *SearchSimilarReq
 	}
 
 	searchStart := time.Now()
-	results, err := index.Search(req.QueryVector, req.K)
+	results, err := search(req.QueryVector, req.K)
 	if err != nil {
 		if errors.Is(err, hnsw.ErrEmptyIndex) {
 			return &SearchSimilarResponse{
@@ -2057,7 +2184,6 @@ func (v *vectorService) HybridSearch(ctx context.Context, req *HybridSearchReque
 		MinScore:        req.MinScore,
 		IncludeVectors:  req.IncludeVectors,
 		IncludeMetadata: true,
-		ShardID:         req.ShardID,
 		Consistency:     req.Consistency,
 	}
 
@@ -2301,6 +2427,23 @@ func (v *vectorService) performIndexRebuild(ctx context.Context, jobID, namespac
 		job.mu.Unlock()
 	}()
 
+	if v.applyHost != nil {
+		if err := v.rebuildHostIndex(ctx, namespace, info, indexConfig); err != nil {
+			job.mu.Lock()
+			job.Error = err
+			job.mu.Unlock()
+			return err
+		}
+		job.mu.Lock()
+		job.VectorsProcessed = info.VectorCount
+		job.mu.Unlock()
+		v.logger.WithFields(map[string]interface{}{
+			"namespace": namespace,
+			"job_id":    jobID,
+		}).Info("index rebuild completed successfully")
+		return nil
+	}
+
 	newIndex, err := v.newNamespaceIndex(info, indexConfig)
 	if err != nil {
 		job.mu.Lock()
@@ -2366,6 +2509,25 @@ func (v *vectorService) performIndexRebuild(ctx context.Context, jobID, namespac
 		"job_id":    jobID,
 	}).Info("index rebuild completed successfully")
 
+	return nil
+}
+
+// rebuildHostIndex rebuilds the index an apply host's searches read: the
+// engine's ANN index on v.applyShardID, not the service-local index, which
+// that mode never searches. Index parameters that differ from the stored
+// record are proposed as a reconfigure, after which every replica rebuilds
+// its own index under them; otherwise the rebuild is node-local on the
+// answering node.
+func (v *vectorService) rebuildHostIndex(ctx context.Context, namespace string, info *vector.NamespaceInfo, indexConfig map[string]string) error {
+	if update, changed := vector.MergeNamespaceUpdate(info, indexConfig, nil, time.Now().UnixNano()); changed {
+		if err := v.storage.UpdateNamespace(ctx, namespace, update); err != nil {
+			return vectorStorageError("reconfigure index", namespace, 0, err)
+		}
+		return nil
+	}
+	if _, err := v.applyHost.SyncRead(ctx, v.applyShardID, VectorRebuildQuery{Namespace: hostNamespace(namespace)}); err != nil {
+		return &VectorOperationError{Op: "rebuild index", Err: translateVectorSealed(err)}
+	}
 	return nil
 }
 
@@ -3126,7 +3288,6 @@ func (v *vectorService) BatchDeleteVectors(ctx context.Context, req *BatchDelete
 			deleteReq := &DeleteVectorRequest{
 				Namespace: req.Namespace,
 				ID:        id,
-				ShardID:   req.ShardID,
 			}
 
 			_, deleteErr := v.DeleteVector(ctx, deleteReq)
@@ -3289,6 +3450,22 @@ func (v *vectorService) ListVectors(ctx context.Context, req *ListVectorsRequest
 	}, nil
 }
 
+// vectorNamespacePatcher is a vector store that merges a namespace patch
+// (the index-config and metadata keys a request sets) into the committed
+// namespace record at apply time (hostVectorStorage). UpdateNamespace uses
+// it instead of writing the whole merged record.
+type vectorNamespacePatcher interface {
+	PatchNamespace(ctx context.Context, namespace string, indexConfig, metadata map[string]string, updatedAt int64) error
+}
+
+// vectorMetadataUpdater is a vector store that applies a metadata-only
+// update itself, merging against the committed record at apply time
+// (hostVectorStorage). UpdateMetadata uses it instead of a read and an
+// upsert of the whole vector.
+type vectorMetadataUpdater interface {
+	UpdateVectorMetadata(ctx context.Context, namespace string, id uint64, metadata map[string]string, merge bool, deleteKeys []string, updatedAt int64) error
+}
+
 // UpdateMetadata updates only the metadata of a vector without modifying the vector values.
 func (v *vectorService) UpdateMetadata(ctx context.Context, req *UpdateVectorMetadataRequest) (*UpdateVectorMetadataResponse, error) {
 	start := time.Now()
@@ -3316,6 +3493,26 @@ func (v *vectorService) UpdateMetadata(ctx context.Context, req *UpdateVectorMet
 	// the ID cannot land between them and be overwritten.
 	v.writeMu.Lock()
 	defer v.writeMu.Unlock()
+
+	// A replicated store applies the update itself: the merge runs against
+	// the committed record at apply time and the embedding is never read
+	// or re-sent, so another service instance's upsert or delete of the ID
+	// committed after this call started is never reverted (writeMu only
+	// orders writers inside this instance).
+	if updater, ok := v.storage.(vectorMetadataUpdater); ok {
+		var deleteKeys []string
+		if req.MergeMetadata {
+			deleteKeys = req.DeleteKeys
+		}
+		now := time.Now().UnixNano()
+		if err := updater.UpdateVectorMetadata(ctx, scoped, req.ID, convertToStringMap(req.Metadata), req.MergeMetadata, deleteKeys, now); err != nil {
+			return nil, vectorStorageError("update vector metadata", req.Namespace, req.ID, err)
+		}
+		if v.metrics != nil {
+			v.metrics.operationDuration.With("update_metadata").Observe(time.Since(start).Seconds())
+		}
+		return &UpdateVectorMetadataResponse{ID: req.ID, Version: 1, Timestamp: now, Success: true}, nil
+	}
 
 	existingVector, err := v.storage.GetVector(ctx, scoped, req.ID)
 	if err != nil {
@@ -3345,7 +3542,6 @@ func (v *vectorService) UpdateMetadata(ctx context.Context, req *UpdateVectorMet
 		ID:        req.ID,
 		Vector:    existingVector.Embedding,
 		Metadata:  newMetadata,
-		ShardID:   req.ShardID,
 	}
 
 	if err := v.validateUpsertVectorRequest(upsertReq); err != nil {
@@ -3414,7 +3610,6 @@ func (v *vectorService) SearchByID(ctx context.Context, req *SearchByIDRequest) 
 		IncludeVectors:  req.IncludeVectors,
 		IncludeMetadata: req.IncludeMetadata,
 		MetadataFilter:  req.MetadataFilter,
-		ShardID:         req.ShardID,
 		Consistency:     req.Consistency,
 	}
 

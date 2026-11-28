@@ -366,8 +366,10 @@ func qrdbWarmupWrite(b *testing.B, tlsCfg *tls.Config, port int, timeout time.Du
 	b.Fatalf("qrdbWarmupWrite: timed out after %v waiting for warmup write on port %d", timeout, port)
 }
 
-// createDatabaseWithEtcd creates a KV database via the REST API and then
-// enables the etcd wire protocol on the given etcd port.
+// createDatabaseWithEtcd creates a raft-backend KV database via the REST API
+// and then enables the etcd wire protocol on the given etcd port. etcd's
+// revision counter needs a replicated log, so only a raft-backend database may
+// enable it.
 func createDatabaseWithEtcd(b *testing.B, tlsCfg *tls.Config, adminPort int, dbName string, etcdPort int) {
 	b.Helper()
 
@@ -376,7 +378,7 @@ func createDatabaseWithEtcd(b *testing.B, tlsCfg *tls.Config, adminPort int, dbN
 	// Step 1: Create the database.
 	createBody := map[string]interface{}{
 		"name":    dbName,
-		"backend": "pebble",
+		"backend": "raft",
 	}
 	createJSON, err := json.Marshal(createBody)
 	if err != nil {

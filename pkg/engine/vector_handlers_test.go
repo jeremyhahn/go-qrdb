@@ -17,6 +17,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"maps"
 	"math"
 	"path/filepath"
 	"strings"
@@ -645,6 +646,43 @@ func TestVectorUpdateMetadata_ReplacesMetadataWithoutTouchingTheEmbedding(t *tes
 	})
 }
 
+func TestVectorUpdateMetadata_MergeAppliesAgainstTheStoredRecord(t *testing.T) {
+	forEachVectorEngine(t, func(t *testing.T, eng Engine, stg storage.Storage) {
+		createNamespace(t, eng, "ns", 1)
+		applyVectorCmd(t, eng, mustEncodeVector(protocol.EncodeVectorUpsert("ns", 1, protocol.VectorUpsertParams{
+			HasID: true, ID: 1, Embedding: []float32{5}, Metadata: map[string]string{"a": "1", "b": "1", "c": "1"},
+		})))
+
+		result := applyVectorCmd(t, eng, mustEncodeVector(protocol.EncodeVectorUpdateMetadata(protocol.VectorUpdateMetadataParams{
+			Name: "ns", ID: 1, TimestampUnixNano: 2, Metadata: map[string]string{"b": "2"},
+			Merge: true, DeleteKeys: []string{"c"},
+		})))
+		if _, refused := protocol.DecodeAppError(result.Data); refused {
+			t.Fatalf("update metadata refused: %+v", result)
+		}
+
+		data, err := stg.Get(vector.VectorKey("ns", 1))
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		rec, err := vector.DecodeVectorRecord(data)
+		if err != nil {
+			t.Fatalf("DecodeVectorRecord: %v", err)
+		}
+		want := map[string]string{"a": "1", "b": "2"}
+		if !maps.Equal(rec.Metadata, want) {
+			t.Fatalf("metadata = %v, want %v", rec.Metadata, want)
+		}
+		gone, err := stg.Get(vector.MetadataKey("ns", "c", "1", 1))
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if gone != nil {
+			t.Fatal("deleted key's metadata index entry survived")
+		}
+	})
+}
+
 func TestVectorUpdateMetadata_UnknownVectorIsRefused(t *testing.T) {
 	forEachVectorEngine(t, func(t *testing.T, eng Engine, stg storage.Storage) {
 		createNamespace(t, eng, "ns", 1)
@@ -677,6 +715,27 @@ func TestVectorIndexReconfigure_AdvancesTrainingGeneration(t *testing.T) {
 		}
 		if rec.IndexType != vector.IndexFlat || rec.IndexParams["nlist"] != "64" || rec.TrainingGeneration != 1 {
 			t.Fatalf("record = %+v, want IndexType=flat nlist=64 TrainingGeneration=1", rec)
+		}
+	})
+}
+
+func TestVectorIndexReconfigure_MergesPatchesOnDifferentKeys(t *testing.T) {
+	forEachVectorEngine(t, func(t *testing.T, eng Engine, stg storage.Storage) {
+		createNamespace(t, eng, "ns", 1)
+		for _, patch := range []map[string]string{{"a": "1", "b": "1"}, {"b": "2"}, {"c": "3"}} {
+			result := applyVectorCmd(t, eng, mustEncodeVector(protocol.EncodeVectorIndexReconfigure(protocol.VectorIndexReconfigureParams{
+				Name: "ns", IndexType: vector.IndexFlat, IndexParams: patch,
+			})))
+			if _, refused := protocol.DecodeAppError(result.Data); refused {
+				t.Fatalf("index reconfigure refused: %+v", result)
+			}
+		}
+		rec, err := readNamespaceRecord(stg, "ns")
+		if err != nil {
+			t.Fatalf("readNamespaceRecord: %v", err)
+		}
+		if want := map[string]string{"a": "1", "b": "2", "c": "3"}; !maps.Equal(rec.IndexParams, want) {
+			t.Fatalf("IndexParams = %v, want %v", rec.IndexParams, want)
 		}
 	})
 }

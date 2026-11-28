@@ -1549,9 +1549,6 @@ func (s *stubDatabaseSvc) UpdateRaft(_ string, _ *database.DatabaseRaftConfig) (
 func (s *stubDatabaseSvc) UpdateBarrier(_ string, _ *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
 	return nil, nil
 }
-func (s *stubDatabaseSvc) UpdateConnection(_ string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	return nil, nil
-}
 func (s *stubDatabaseSvc) SealDatabase(_ context.Context, _ string) error { return nil }
 func (s *stubDatabaseSvc) UnsealDatabase(_ context.Context, _ string, _ seal.Credentials) error {
 	return nil
@@ -1592,10 +1589,6 @@ func (s *stubDatabaseSvc) UpdateRaftForTenant(_ context.Context, _ string, _ *da
 func (s *stubDatabaseSvc) UpdateBarrierForTenant(_ context.Context, _ string, _ *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
 	return nil, nil
 }
-func (s *stubDatabaseSvc) UpdateConnectionForTenant(_ context.Context, _ string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	return nil, nil
-}
-
 func (s *stubDatabaseSvc) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
 	return &database.DatabaseInfo{Name: name, SQL: sqlCfg}, nil
 }

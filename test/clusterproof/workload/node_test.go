@@ -43,7 +43,7 @@ func startNode(t *testing.T) Dialer {
 	t.Helper()
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.DataDir = t.TempDir()
-	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
+	cfg.Storage.Backend = string(database.BackendMemory)
 	// The test proves the workload's recording against a real store, not
 	// authorization; the embedded transport's own tests cover auth.
 	cfg.Auth.Enabled = qrdbconfig.BoolPtr(false)

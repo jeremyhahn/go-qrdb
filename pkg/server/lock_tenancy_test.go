@@ -53,6 +53,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
@@ -216,8 +217,14 @@ func (staticRaftInfo) databaseInfo(string, string, bool) (uint64, string, bool) 
 func (staticRaftInfo) placementInfo(string, string) (*placement.Placement, bool, error) {
 	return nil, false, nil
 }
-func (staticRaftInfo) dedicatedWAL(string, string) bool { return false }
+func (staticRaftInfo) dedicatedWAL(string, string) (bool, error) { return false, nil }
+
+func (staticRaftInfo) stateStorage(string, string) (database.BackendType, error) { return "", nil }
 func (staticRaftInfo) recordedIncarnation(context.Context, string, string) (string, bool, error) {
+	return "", false, nil
+}
+
+func (staticRaftInfo) recordedDataDir(context.Context, string, string) (string, bool, error) {
 	return "", false, nil
 }
 

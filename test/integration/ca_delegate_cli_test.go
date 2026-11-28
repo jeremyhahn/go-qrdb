@@ -132,7 +132,7 @@ func startDelegationNodeWith(t *testing.T, extra ...string) (*multiProtoNode, de
 	cfg.Unix.SocketPath = unixSocket
 	cfg.Protocols.REST, cfg.Protocols.GRPC, cfg.Protocols.QUIC = true, true, true
 	cfg.Protocols.MCP, cfg.Protocols.Unix = true, true
-	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
+	cfg.Storage.Backend = string(database.BackendMemory)
 	cfg.Seal.Enabled = true
 	cfg.Seal.Strategy = "none"
 	cfg.Storage.VolumePools = []qrdbconfig.VolumePoolConfig{{Name: "default", Path: t.TempDir()}}

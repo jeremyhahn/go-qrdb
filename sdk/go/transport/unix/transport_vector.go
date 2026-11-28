@@ -166,7 +166,6 @@ func (t *Transport) CreateNamespace(ctx context.Context, req *transport.CreateNa
 		DistanceMetric:  metric,
 		IndexType:       vectorIndexTypeToProto[req.IndexType],
 		IndexParamsJson: indexParamsJSON,
-		ShardId:         req.ShardID,
 	})
 	if err != nil {
 		return nil, mapGRPCError("CreateNamespace", err)
@@ -222,7 +221,6 @@ func (t *Transport) DeleteNamespace(ctx context.Context, req *transport.DeleteNa
 
 	_, err := t.client.VectorDeleteNamespace(ctx, &pb.VectorDeleteNamespaceRequest{
 		Namespace: req.Namespace,
-		ShardId:   req.ShardID,
 	})
 	if err != nil {
 		return nil, mapGRPCError("DeleteNamespace", err)
@@ -237,9 +235,7 @@ func (t *Transport) ListNamespaces(ctx context.Context, req *transport.ListNames
 		return nil, &transport.ClosedError{}
 	}
 
-	resp, err := t.client.VectorListNamespaces(ctx, &pb.VectorListNamespacesRequest{
-		ShardId: req.ShardID,
-	})
+	resp, err := t.client.VectorListNamespaces(ctx, &pb.VectorListNamespacesRequest{})
 	if err != nil {
 		return nil, mapGRPCError("ListNamespaces", err)
 	}
@@ -266,7 +262,6 @@ func (t *Transport) GetNamespaceInfo(ctx context.Context, req *transport.GetName
 
 	resp, err := t.client.VectorGetNamespaceInfo(ctx, &pb.VectorGetNamespaceInfoRequest{
 		Namespace: req.Namespace,
-		ShardId:   req.ShardID,
 	})
 	if err != nil {
 		return nil, mapGRPCError("GetNamespaceInfo", err)
@@ -318,7 +313,6 @@ func (t *Transport) UpsertVector(ctx context.Context, req *transport.UpsertVecto
 		Id:           formatVectorID(req.ID),
 		Vector:       req.Vector,
 		MetadataJson: metadataJSON,
-		ShardId:      req.ShardID,
 	})
 	if err != nil {
 		return nil, mapGRPCError("UpsertVector", err)
@@ -342,7 +336,6 @@ func (t *Transport) GetVector(ctx context.Context, req *transport.GetVectorReque
 		Namespace:   req.Namespace,
 		Id:          formatVectorID(req.ID),
 		Consistency: vectorConsistencyToProto(req.Consistency),
-		ShardId:     req.ShardID,
 	})
 	if err != nil {
 		return nil, mapGRPCError("GetVector", err)
@@ -378,7 +371,6 @@ func (t *Transport) DeleteVector(ctx context.Context, req *transport.DeleteVecto
 	_, err := t.client.VectorDelete(ctx, &pb.VectorDeleteRequest{
 		Namespace: req.Namespace,
 		Id:        formatVectorID(req.ID),
-		ShardId:   req.ShardID,
 	})
 	if err != nil {
 		return nil, mapGRPCError("DeleteVector", err)
@@ -405,7 +397,6 @@ func (t *Transport) BatchUpsert(ctx context.Context, req *transport.BatchUpsertR
 	resp, err := t.client.VectorBatchUpsert(ctx, &pb.VectorBatchUpsertRequest{
 		Namespace: req.Namespace,
 		Vectors:   pbVectors,
-		ShardId:   req.ShardID,
 	})
 	if err != nil {
 		return nil, mapGRPCError("BatchUpsert", err)
@@ -431,7 +422,6 @@ func (t *Transport) BatchDeleteVectors(ctx context.Context, req *transport.Batch
 	resp, err := t.client.VectorBatchDelete(ctx, &pb.VectorBatchDeleteRequest{
 		Namespace: req.Namespace,
 		Ids:       ids,
-		ShardId:   req.ShardID,
 	})
 	if err != nil {
 		return nil, mapGRPCError("BatchDeleteVectors", err)
@@ -462,7 +452,6 @@ func (t *Transport) ListVectors(ctx context.Context, req *transport.ListVectorsR
 		Namespace: req.Namespace,
 		Limit:     int32(req.Limit),
 		Cursor:    req.Cursor,
-		ShardId:   req.ShardID,
 	})
 	if err != nil {
 		return nil, mapGRPCError("ListVectors", err)
@@ -500,7 +489,6 @@ func (t *Transport) UpdateMetadata(ctx context.Context, req *transport.UpdateVec
 		Namespace:    req.Namespace,
 		Id:           formatVectorID(req.ID),
 		MetadataJson: metadataJSON,
-		ShardId:      req.ShardID,
 	})
 	if err != nil {
 		return nil, mapGRPCError("UpdateMetadata", err)
@@ -529,7 +517,6 @@ func (t *Transport) SearchSimilar(ctx context.Context, req *transport.SearchSimi
 		EfSearch:    int32(req.EfSearch),
 		MinScore:    float64(req.MinScore),
 		Consistency: vectorConsistencyToProto(req.Consistency),
-		ShardId:     req.ShardID,
 	})
 	if err != nil {
 		return nil, mapGRPCError("SearchSimilar", err)
@@ -563,7 +550,6 @@ func (t *Transport) SearchByMetadata(ctx context.Context, req *transport.SearchB
 		Limit:       int32(req.Limit),
 		Offset:      int32(req.Offset),
 		Consistency: vectorConsistencyToProto(req.Consistency),
-		ShardId:     req.ShardID,
 	})
 	if err != nil {
 		return nil, mapGRPCError("SearchByMetadata", err)
@@ -602,7 +588,6 @@ func (t *Transport) HybridSearch(ctx context.Context, req *transport.HybridSearc
 		MetadataFiltersJson: metadataFiltersJSON,
 		K:                   int32(req.K),
 		Consistency:         vectorConsistencyToProto(req.Consistency),
-		ShardId:             req.ShardID,
 	})
 	if err != nil {
 		return nil, mapGRPCError("HybridSearch", err)
@@ -631,7 +616,6 @@ func (t *Transport) SearchByID(ctx context.Context, req *transport.SearchByIDReq
 		Id:          formatVectorID(req.ID),
 		K:           int32(req.K),
 		Consistency: vectorConsistencyToProto(req.Consistency),
-		ShardId:     req.ShardID,
 	})
 	if err != nil {
 		return nil, mapGRPCError("SearchByID", err)
@@ -662,7 +646,6 @@ func (t *Transport) RebuildIndex(ctx context.Context, req *transport.RebuildInde
 
 	resp, err := t.client.VectorRebuildIndex(ctx, &pb.VectorRebuildIndexRequest{
 		Namespace: req.Namespace,
-		ShardId:   req.ShardID,
 	})
 	if err != nil {
 		return nil, mapGRPCError("RebuildIndex", err)
@@ -718,7 +701,6 @@ func (t *Transport) GetIndexStats(ctx context.Context, req *transport.GetIndexSt
 
 	resp, err := t.client.VectorGetIndexStats(ctx, &pb.VectorGetIndexStatsRequest{
 		Namespace: req.Namespace,
-		ShardId:   req.ShardID,
 	})
 	if err != nil {
 		return nil, mapGRPCError("GetIndexStats", err)
@@ -747,7 +729,6 @@ func (t *Transport) CompactNamespace(ctx context.Context, req *transport.Compact
 
 	resp, err := t.client.VectorCompactNamespace(ctx, &pb.VectorCompactNamespaceRequest{
 		Namespace: req.Namespace,
-		ShardId:   req.ShardID,
 	})
 	if err != nil {
 		return nil, mapGRPCError("CompactNamespace", err)
@@ -768,7 +749,6 @@ func (t *Transport) GetCompactionProgress(ctx context.Context, req *transport.Ge
 	resp, err := t.client.VectorGetCompactionProgress(ctx, &pb.VectorGetCompactionProgressRequest{
 		Namespace: req.Namespace,
 		JobId:     req.OperationID,
-		ShardId:   req.ShardID,
 	})
 	if err != nil {
 		return nil, mapGRPCError("GetCompactionProgress", err)

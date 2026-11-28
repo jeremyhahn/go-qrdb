@@ -190,8 +190,15 @@ func NewLocalEngine(_ database.BackendType, stg storage.Storage, pdb *pebble.DB,
 		mvccOpts = append(mvccOpts, engine.WithMVCCTimeSeries(tsStorage))
 	}
 
+	// The engine owns the vector index and updates it on every applied
+	// vector command, as each raft replica's engine does.
+	mvccOpts = append(mvccOpts, engine.WithMVCCVectorIndex("", nil))
 	eng, err := engine.NewMVCCEngine(stg, mvccOpts...)
 	if err != nil {
+		return nil, &LocalEngineError{Err: err}
+	}
+	if err := eng.WarmVectorIndex(); err != nil {
+		_ = eng.Close(context.Background())
 		return nil, &LocalEngineError{Err: err}
 	}
 	return eng, nil

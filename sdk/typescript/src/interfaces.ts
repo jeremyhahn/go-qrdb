@@ -163,7 +163,6 @@ import type {
     DatabaseRaftConfig,
     DatabaseBarrierConfig,
     DatabaseBarrierStatus,
-    DatabaseConnectionConfig,
     DaemonStatus,
     SQLQueryResult,
 
@@ -1508,15 +1507,6 @@ export interface DatabaseClient {
      * @returns The barrier's status.
      */
     barrierStatus(name: string): Promise<DatabaseBarrierStatus>;
-
-    /**
-     * Updates the remote connection configuration for a database.
-     *
-     * @param name - Database name.
-     * @param connection - Connection configuration.
-     * @returns The updated database information.
-     */
-    updateConnection(name: string, connection: DatabaseConnectionConfig): Promise<DatabaseInfo>;
 
     /**
      * Changes the replication factor of an existing dedicated-raft database,

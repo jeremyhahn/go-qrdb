@@ -19,6 +19,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -67,7 +68,23 @@ const (
 // defense-in-depth complement to -- not a substitute for -- the exhaustive
 // per-database collision check in validateDataDir, which is what actually
 // prevents one database's DataDir from being pointed at another's.
-var reservedDataSubdirs = []string{"seal", "wal", "snapshot", "snapshots", "system", "raft", "meta"}
+var reservedDataSubdirs = []string{"seal", "wal", "snapshot", "snapshots", "system", "raft", "meta",
+	// The node's own control-plane stores, one per storage engine.
+	"pebble", "file", "vector", "objstore",
+	// The default local object store's commit-journal sibling.
+	"objstore.journal",
+	// The objstore backend's local Pebble state and its object cache.
+	"objstore-lsm", "objstore-lsm-cache"}
+
+// ReservedRootsReporter is implemented by a BackendFactory that knows node
+// stores at the paths storage opens them (the write-ahead log directory, a
+// local object store, its physical root and its commit-journal sibling). The
+// Manager refuses a database data directory overlapping any of them, and never
+// removes one. An error means a store's location cannot be resolved; the
+// Manager then refuses the data directory (fail closed).
+type ReservedRootsReporter interface {
+	ReservedRoots() ([]string, error)
+}
 
 // Manager manages the lifecycle of all databases. It creates isolated
 // storage directories for each database and provides CRUD operations.
@@ -83,6 +100,11 @@ var reservedDataSubdirs = []string{"seal", "wal", "snapshot", "snapshots", "syst
 // A database's DatabaseMeta is its record in the replicated Catalog, not a
 // file under its directory.
 type Manager struct {
+	// raftReplicas names the replica nodes of a backend: raft database's
+	// own Raft group for the binding block; unset, no nodes are reported
+	// (see SetRaftReplicaNodes).
+	raftReplicas atomic.Pointer[RaftReplicaNodes]
+
 	logger     *slog.Logger
 	dataDir    string
 	databases  sync.Map // dbKey -> *Database
@@ -113,6 +135,22 @@ type Manager struct {
 	// teardown must not interleave with either. The channel is closed when
 	// the claim is released, for a drop waiting to take it (awaitClaim).
 	inFlight sync.Map // dbKey -> chan struct{}
+
+	// createRoots holds the data roots of every create in flight, from
+	// before its root checks until it commits or rolls back
+	// (reserveCreateRoots). The root checks see only committed databases;
+	// without it a create of /x and one of /x/child could both pass them,
+	// and the rollback of the one that then failed its post-open check
+	// would remove the other's committed store. Guarded by createRootsMu.
+	createRootsMu sync.Mutex
+	createRoots   map[*createRootReservation]struct{}
+}
+
+// createRootReservation is the set of canonical data roots one in-flight
+// create holds (see Manager.createRoots).
+type createRootReservation struct {
+	key   dbKey
+	roots []string
 }
 
 // dbKey identifies a database on this node: its owning tenant, normalized,
@@ -160,6 +198,35 @@ func WithBackendFactory(f BackendFactory) ManagerOption {
 	return func(m *Manager) {
 		m.factory = f
 	}
+}
+
+// SetBackendFactory installs the factory every later open uses, for a
+// node that can build its factory only after the Manager exists (the
+// standalone start builds the binding factory once the node encryptor is
+// up). It is refused with a *BackendFactoryInUseError while the Manager
+// holds any open database: a database already opened through the old
+// factory would otherwise be closed and reopened through different stores.
+// A nil f keeps the current factory and returns nil. On success the
+// replaced factory is closed and its Close error returned. It must be
+// called before the Manager is shared with concurrent callers.
+func (m *Manager) SetBackendFactory(f BackendFactory) error {
+	if f == nil {
+		return nil
+	}
+	open := 0
+	m.databases.Range(func(_, _ any) bool {
+		open++
+		return true
+	})
+	if open > 0 {
+		return &BackendFactoryInUseError{Open: open}
+	}
+	old := m.factory
+	m.factory = f
+	if old == nil {
+		return nil
+	}
+	return old.Close()
 }
 
 // WithBarrierManager sets the DatabaseBarrierManager for barrier operations.
@@ -244,7 +311,7 @@ func (m *Manager) SetBarrierManager(bm *DatabaseBarrierManager) {
 		// calls (e.g. a cluster migration rebuilding the registry against a
 		// new root key) idempotent instead of nesting BarrierBackend
 		// wrappers.
-		db.setActiveBackend(NewBarrierBackend(db.rawDataBackend(), encryptor))
+		db.setActiveBackend(layerDatabaseBarrier(db.rawDataBackend(), encryptor))
 		db.setBarrierMetaBackend(barrierMetaBackend)
 		db.SetBarrierEnabled(true)
 		db.SetStatus(StatusSealed)
@@ -276,6 +343,10 @@ func (m *Manager) CreateWithCredentials(ctx context.Context, cfg DatabaseConfig,
 // dropped tombstone to absent, which is live for the empty incarnation; a
 // marker holding a live incarnation -- the name created through the API on
 // some node -- refuses the provisioning with *AlreadyExistsError.
+//
+// In raft mode (SetLocalNode) the database is held by the node whose
+// provisioning recorded it; on every other node Provision answers
+// *placement.NotAReplicaError naming that owner, and opens nothing.
 func (m *Manager) Provision(ctx context.Context, cfg DatabaseConfig) (*Database, error) {
 	// A provisioned database is created on every node independently, so a
 	// raft one would need a shard ID every node agrees on without a claim,
@@ -309,8 +380,9 @@ func (m *Manager) Provision(ctx context.Context, cfg DatabaseConfig) (*Database,
 func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Credentials, shared bool) (*Database, error) {
 	// The node's defaults are filled in once, here, and recorded with the
 	// rest of the config; opening the database never consults them again.
-	// Boot provisioning (shared) never synthesizes a raft block: see fillFor.
-	m.defaults.fillFor(&cfg, !shared)
+	// A raft database always records a raft block (see fill), boot
+	// provisioning included, so it runs its own group.
+	m.defaults.fill(&cfg)
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -318,8 +390,34 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	if err != nil {
 		return nil, err
 	}
+	// Held before any root check and through the rollback: a create whose
+	// root overlaps an in-flight create of another name cannot pass its
+	// checks before that create commits, nor lose its directories to that
+	// create's rollback.
+	release, err := m.reserveCreateRoots(cfg)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if err := m.validateDataDir(cfg.TenantID, cfg.Name, cfg.DataDir); err != nil {
 		return nil, err
+	}
+	// validateDataDir sees only the databases open here; the catalog holds
+	// every tenant's, the unopened ones included.
+	if err := m.recordRootConflict(ctx, keyFor(cfg.TenantID, cfg.Name), cfg.Name, cfg.DataDir); err != nil {
+		return nil, err
+	}
+	// The root the factory resolves for this database, a raft group's included.
+	if resolver, ok := m.factory.(RecordRootResolver); ok {
+		root, rerr := resolver.RecordRoot(cfg)
+		if rerr != nil {
+			return nil, rerr
+		}
+		if root != cfg.DataDir {
+			if err := m.recordRootConflict(ctx, keyFor(cfg.TenantID, cfg.Name), cfg.Name, root); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if cfg.Barrier != nil && cfg.Barrier.Enabled {
 		if err := barrierDataPathError(cfg); err != nil {
@@ -427,7 +525,7 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	// dropping. The record is created only where none exists, so of two
 	// nodes creating one name, one is refused here.
 	meta := metaFromConfig(cfg, false, incarnation)
-	meta.OwnerNode = m.ownerFor(cfg, shared)
+	meta.OwnerNode = m.ownerFor(cfg)
 	if err := cat.Create(ctx, meta); err != nil {
 		// A write that may have committed is settled first: rolling back
 		// around a record it left would orphan the name. A record that
@@ -437,10 +535,31 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 			if serr := undo.settleCatalog(ctx, cat, incarnation, err); serr != nil {
 				return nil, serr
 			}
+			// Settled: no record of this create survives, so the root
+			// claim the catalog kept for it is released.
+			if rel, ok := cat.(createClaimReleaser); ok {
+				relCtx, cancel := DropRollbackContext(ctx)
+				rerr := rel.ReleaseCreateClaim(relCtx, meta)
+				cancel()
+				if rerr != nil {
+					return nil, errors.Join(err, rerr)
+				}
+			}
 		}
 		return nil, undo.run(ctx, err)
 	}
 	undo.catalog, undo.incarnation = cat, incarnation
+	// The catalog numbered this create (DatabaseMeta.Generation); read the
+	// record back for it. A failed read leaves generation 0 in this node's
+	// memory only: the record holds the number and every open reads it.
+	if recorded, gerr := cat.Get(ctx, meta.TenantID, meta.Name); gerr == nil && recorded.Incarnation == meta.Incarnation {
+		meta.Generation = recorded.Generation
+	} else if gerr != nil {
+		m.logger.Debug("database generation not read back",
+			slog.String("tenant", meta.TenantID),
+			slog.String("name", meta.Name),
+			slog.String("error", gerr.Error()))
+	}
 
 	// Open storage backend via factory.
 	backend, err := m.factory.Create(cfg, dataDir)
@@ -448,6 +567,12 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 		return nil, undo.run(ctx, err)
 	}
 	undo.backends = append(undo.backends, backend)
+	if err := m.backendRootConflict(keyFor(cfg.TenantID, cfg.Name), cfg.Name, backend); err != nil {
+		return nil, undo.run(ctx, err)
+	}
+	if err := m.ownedRecordRootConflict(ctx, keyFor(cfg.TenantID, cfg.Name), cfg.Name, backend); err != nil {
+		return nil, undo.run(ctx, err)
+	}
 
 	// Register a dedicated per-database barrier when enabled, and wrap the
 	// data-plane backend so every value it stores is encrypted under the
@@ -471,7 +596,7 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 		if encryptor == nil {
 			return nil, undo.run(ctx, &BarrierEncryptorUnavailableError{Name: cfg.Name})
 		}
-		dataBackend = NewBarrierBackend(backend, encryptor)
+		dataBackend = layerDatabaseBarrier(backend, encryptor)
 	}
 
 	db := NewDatabase(cfg, dataBackend, dataDir)
@@ -489,6 +614,8 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	}
 	db.incarnation = incarnation
 	db.ownerNode = meta.OwnerNode
+	db.binding = m.describeBinding(meta)
+	db.bindingNodes = m.bindingNodesFor(meta, db.binding)
 
 	// Mark the new incarnation live in the store holding the database's
 	// data. This is the LAST fallible step before the database becomes
@@ -594,27 +721,8 @@ func (m *Manager) openMeta(key dbKey, meta DatabaseMeta) (*Database, error) {
 		dataDir = meta.DataDir
 	}
 
-	// Default missing mode to embedded for backward compat.
-	mode := meta.Mode
-	if mode == "" {
-		mode = ModeEmbedded
-	}
-
-	cfg := DatabaseConfig{
-		TenantID:     meta.TenantID,
-		Name:         meta.Name,
-		Backend:      meta.Backend,
-		Protocol:     meta.Protocol,
-		DataDir:      meta.DataDir,
-		Mode:         mode,
-		StorageCodec: meta.StorageCodec,
-		Replicas:     meta.Replicas,
-		DedicatedWAL: meta.DedicatedWAL,
-		Raft:         meta.Raft,
-		Barrier:      meta.Barrier,
-		Connection:   meta.Connection,
-		SQL:          meta.SQL,
-	}
+	// A missing mode defaults to embedded (configFromMeta).
+	cfg := configFromMeta(meta)
 	if meta.Barrier != nil && meta.Barrier.Enabled && !cfg.HasDedicatedStore() {
 		return nil, &SharedStoreBarrierUnsupportedError{Name: name, Backend: cfg.Backend}
 	}
@@ -643,6 +751,9 @@ func (m *Manager) openMeta(key dbKey, meta DatabaseMeta) (*Database, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := m.backendRootConflict(key, name, backend); err != nil {
+		return nil, errors.Join(err, backend.Close())
+	}
 
 	// Register the per-database barrier when enabled and wrap the
 	// data-plane backend so it decrypts (once unsealed) rather than serving
@@ -670,7 +781,7 @@ func (m *Manager) openMeta(key dbKey, meta DatabaseMeta) (*Database, error) {
 			_ = barrierMetaBackend.Close()
 			return nil, &BarrierEncryptorUnavailableError{Name: name}
 		}
-		dataBackend = NewBarrierBackend(backend, encryptor)
+		dataBackend = layerDatabaseBarrier(backend, encryptor)
 	}
 
 	db := NewDatabase(cfg, dataBackend, dataDir)
@@ -697,6 +808,8 @@ func (m *Manager) openMeta(key dbKey, meta DatabaseMeta) (*Database, error) {
 	}
 	db.incarnation = meta.Incarnation
 	db.ownerNode = meta.OwnerNode
+	db.binding = m.describeBinding(meta)
+	db.bindingNodes = m.bindingNodesFor(meta, db.binding)
 
 	if actual, loaded := m.databases.LoadOrStore(key, db); loaded {
 		// Another goroutine opened it concurrently.
@@ -891,6 +1004,18 @@ func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 	}
 	defer m.dropping.Delete(key)
 
+	// A store root that equals or contains another registered database's
+	// root is never removed: the drop is refused before anything is fenced
+	// or deleted.
+	if err := m.backendRootConflict(key, name, db.rawBackend); err != nil {
+		return &DropError{Name: name, Err: err}
+	}
+	// The same against every catalog record, opened here or not: a tenant
+	// whose databases this node has not opened still has its data there.
+	if err := m.ownedRecordRootConflict(ctx, key, name, db.rawBackend); err != nil {
+		return &DropError{Name: name, Err: err}
+	}
+
 	// 0. Fence: refuse every new caller before the data they would touch
 	//    starts being reclaimed (go-qrdb#482). The IN-MEMORY flag is set
 	//    FIRST, so loadDatabase -- the seam every Update*/Get resolution
@@ -1005,6 +1130,36 @@ func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 	//    what this drop removed above was still its own, because the
 	//    successor cannot open here while the drop holds the name's claim,
 	//    and its entry goes with it.
+	//    A backend that owns a store directory of its own (a materialized
+	//    binding's root) has it removed too, so a recreate starts empty.
+	if owner, ok := db.rawBackend.(DataRootOwner); ok {
+		if root := owner.DataRoot(); root != "" {
+			// Re-checked here, at the removal: a record created since the
+			// check before the fence may have its root inside this one.
+			if err := m.recordRootConflict(ctx, key, name, root); err != nil {
+				return &DropError{Name: name, Err: err}
+			}
+			if err := m.removableRoot(name, root); err != nil {
+				return &DropError{Name: name, Err: err}
+			}
+			if err := os.RemoveAll(root); err != nil {
+				return &DropError{Name: name, Err: err}
+			}
+		}
+	}
+	//    A store's own files outside its root (an external write-ahead
+	//    log) go after the root: a crash in between leaves a log with no
+	//    store, which the binding discards when it opens again.
+	if owner, ok := db.rawBackend.(ExternalDirOwner); ok {
+		for _, dir := range owner.ExternalDirs() {
+			if strings.TrimSpace(dir) == "" {
+				continue
+			}
+			if err := os.RemoveAll(dir); err != nil {
+				return &DropError{Name: name, Err: err}
+			}
+		}
+	}
 	if err := os.RemoveAll(m.dbDir(key.tenant, name)); err != nil {
 		return &DropError{Name: name, Err: err}
 	}
@@ -1132,6 +1287,12 @@ func (m *Manager) updateEtcd(db *Database, etcd *EtcdConfig) error {
 		if err := etcd.Validate(); err != nil {
 			return err
 		}
+		// The etcd revision counter needs a replicated log: enabling etcd on a
+		// non-raft database is refused here exactly as ResolveBinding refuses
+		// it at create.
+		if etcd.Enabled && db.BackendType() != BackendRaft {
+			return &EtcdRequiresRaftBackendError{Name: db.Name(), Backend: db.BackendType()}
+		}
 	}
 	db.UpdateEtcd(etcd)
 
@@ -1164,6 +1325,12 @@ func (m *Manager) updateRaft(db *Database, raft *DatabaseRaftConfig) error {
 		}
 		db.updateRaft(nil)
 		return m.rewriteMeta(db, func(meta *DatabaseMeta) { meta.Raft = nil })
+	}
+	// A Raft configuration means nothing to a database on another backend:
+	// it is refused here exactly as ResolveBinding refuses raft-only options
+	// at create, before memory or the catalog changes.
+	if db.BackendType() != BackendRaft {
+		return &RaftOptionsRequireRaftBackendError{Name: name, Backend: db.BackendType(), Option: "raft"}
 	}
 	issued := db.ShardID()
 	if raft.ShardID != 0 && raft.ShardID != issued {
@@ -1379,28 +1546,6 @@ func (m *Manager) RecordShamirScheme(db *Database, threshold, total int) error {
 	return m.rewriteMeta(db, func(meta *DatabaseMeta) { meta.Barrier = &next })
 }
 
-// UpdateConnection updates the remote connection configuration for a database.
-// It updates both the in-memory config and the catalog record.
-func (m *Manager) UpdateConnection(name string, conn *DatabaseConnectionConfig) error {
-	db, err := m.loadDatabase(name)
-	if err != nil {
-		return err
-	}
-	return m.updateConnection(db, conn)
-}
-
-// updateConnection is UpdateConnection on a resolved database.
-func (m *Manager) updateConnection(db *Database, conn *DatabaseConnectionConfig) error {
-	if conn != nil {
-		if err := conn.Validate(); err != nil {
-			return err
-		}
-	}
-	db.updateConnection(conn)
-
-	return m.rewriteMeta(db, func(meta *DatabaseMeta) { meta.Connection = conn })
-}
-
 // UpdateSQL replaces the SQL settings of a database, in memory and in its
 // catalog record. A nil sqlCfg restores the defaults.
 func (m *Manager) UpdateSQL(name string, sqlCfg *SQLConfig) error {
@@ -1446,7 +1591,6 @@ func metaFromConfig(cfg DatabaseConfig, dropping bool, incarnation string) Datab
 		DedicatedWAL: cfg.DedicatedWAL,
 		Raft:         cfg.Raft,
 		Barrier:      cfg.Barrier,
-		Connection:   cfg.Connection,
 		SQL:          cfg.SQL,
 		Dropping:     dropping,
 		Incarnation:  incarnation,
@@ -1568,6 +1712,38 @@ func (m *Manager) updateMeta(ctx context.Context, db *Database, mutate func(*Dat
 	return cat.Update(ctx, db.TenantID(), db.Name(), db.Incarnation(), mutate)
 }
 
+// ListRecords returns every database record the catalog holds, open on
+// this node or not: the system store's, and an isolated tenant's in its
+// home store. Records being dropped are left out. Background maintenance
+// enumerates these, not List, so a database nothing has opened since a
+// restart is still reached. A tenant whose home is sealed here is
+// skipped (*TenantsSkippedError): maintenance cannot reach its stores
+// anyway, and every other tenant's databases are still listed.
+func (m *Manager) ListRecords(ctx context.Context) ([]DatabaseMeta, error) {
+	cat, err := m.catalog("list database records")
+	if err != nil {
+		return nil, err
+	}
+	var metas []DatabaseMeta
+	if all, ok := cat.(AllTenantsCatalog); ok {
+		metas, err = all.ListAll(ctx)
+	} else {
+		metas, err = cat.List(ctx)
+	}
+	var skipped *TenantsSkippedError
+	if err != nil && !errors.As(err, &skipped) {
+		return nil, err
+	}
+	out := metas[:0]
+	for _, meta := range metas {
+		if meta.Dropping {
+			continue
+		}
+		out = append(out, meta)
+	}
+	return out, nil
+}
+
 // List returns information about all open databases, sorted by name.
 func (m *Manager) List() []DatabaseInfo {
 	var infos []DatabaseInfo
@@ -1639,6 +1815,29 @@ func (m *Manager) Close() error {
 	if err := m.factory.Close(); err != nil && firstErr == nil {
 		firstErr = err
 	}
+	return firstErr
+}
+
+// CloseTenant closes every open database of tenantID and drops it from the
+// open-database map, releasing its store's locks; the next access opens it
+// again (Get, Open), through the factory's current encryptor. A tenant's
+// encryption migration calls it before re-encrypting the tenant's database
+// stores. The first close error is returned; every database is dropped.
+func (m *Manager) CloseTenant(tenantID string) error {
+	var firstErr error
+	m.databases.Range(func(key, value any) bool {
+		if key.(dbKey).tenant != tenantID { //nolint:errcheck // type assertion on a key this container only ever holds
+			return true
+		}
+		db := value.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
+		if status := db.Status(); status == StatusOpen || status == StatusSealed {
+			if err := db.Close(); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+		m.databases.Delete(key)
+		return true
+	})
 	return firstErr
 }
 
@@ -1853,6 +2052,319 @@ func resolveDataDir(dataDir string) (string, error) {
 // pathContains reports whether candidate is equal to base or nested within
 // it. Both arguments must already be cleaned, comparable paths (as returned
 // by resolveDataDir).
+// ownedRootConflict reports a *DataDirConflictError when resolved (the
+// resolved data_dir or store root of the database self, called name) equals,
+// contains or lies inside the store root of any OTHER registered database:
+// its materialized binding root (DataRootOwner) or its data directory. A
+// binding root is where Drop removes a database's store, so two databases
+// whose roots nest would let one's drop delete the other's data.
+func (m *Manager) ownedRootConflict(self dbKey, name, dataDir, resolved string) error {
+	var conflict error
+	m.databases.Range(func(key, value any) bool {
+		other, _ := key.(dbKey)
+		if other == self {
+			return true
+		}
+		db, _ := value.(*Database)
+		if db == nil {
+			return true
+		}
+		roots := []string{db.DataDir()}
+		if owner, ok := db.rawBackend.(DataRootOwner); ok {
+			roots = append(roots, owner.DataRoot())
+		}
+		for _, r := range roots {
+			if strings.TrimSpace(r) == "" {
+				continue
+			}
+			otherRoot, err := resolveDataDir(r)
+			if err != nil {
+				continue
+			}
+			if pathContains(resolved, otherRoot) || pathContains(otherRoot, resolved) {
+				conflict = &DataDirConflictError{Name: name, DataDir: dataDir, With: other.name}
+				return false
+			}
+		}
+		return true
+	})
+	return conflict
+}
+
+// backendRootConflict checks the store root a backend owns (DataRootOwner)
+// against every other registered database's roots, the way validateDataDir
+// checks an explicit data_dir: before a newly opened database is registered,
+// and before Drop removes the root. A backend that owns no root passes.
+func (m *Manager) backendRootConflict(self dbKey, name string, backend Backend) error {
+	owner, ok := backend.(DataRootOwner)
+	if !ok {
+		return nil
+	}
+	root := owner.DataRoot()
+	if strings.TrimSpace(root) == "" {
+		return nil
+	}
+	resolved, err := resolveDataDir(root)
+	if err != nil {
+		return &InvalidDataDirError{Name: name, DataDir: root, Err: err}
+	}
+	return m.ownedRootConflict(self, name, root, resolved)
+}
+
+// RecordRootResolver is implemented by a BackendFactory whose backends own a
+// store directory of their own (DataRootOwner). RecordRoot names the
+// directory Create would open for the database cfg describes, without
+// opening it, so a database that is recorded in the catalog but not open on
+// this node (OpenAll does not open every record) still has its root checked
+// before a create claims it or a drop removes it. An empty root owns nothing
+// on disk.
+type RecordRootResolver interface {
+	RecordRoot(cfg DatabaseConfig) (string, error)
+}
+
+// RecordBindingResolver is implemented by a BackendFactory that
+// materializes some databases in a store of their own. RecordBinding is
+// the binding Create would open for the database cfg describes, without
+// opening it, or nil for a database it serves from the fallback store.
+type RecordBindingResolver interface {
+	RecordBinding(cfg DatabaseConfig) (*Binding, error)
+}
+
+// BindingDescriber is implemented by a BackendFactory that can say what
+// ResolveBinding decides for any database cfg describes, whether the
+// factory materializes it in a store of its own or serves it from the
+// fallback store. DescribeBinding opens nothing.
+type BindingDescriber interface {
+	DescribeBinding(cfg DatabaseConfig) (*Binding, error)
+}
+
+// describeBinding is the read-only binding block database info reports for
+// meta: nil when the backend factory describes no bindings or the binding
+// cannot be resolved. Info never fails over the block.
+func (m *Manager) describeBinding(meta DatabaseMeta) *DatabaseBinding {
+	describer, ok := m.factory.(BindingDescriber)
+	if !ok {
+		return nil
+	}
+	b, err := describer.DescribeBinding(configFromMeta(meta))
+	if err != nil {
+		m.logger.Debug("database binding not described",
+			slog.String("tenant", meta.TenantID),
+			slog.String("name", meta.Name),
+			slog.String("error", err.Error()))
+		return nil
+	}
+	if b.Kind == BindingRaft && b.Raft != nil && len(b.Raft.Nodes) == 0 {
+		b.Raft.Nodes = m.raftReplicaNodes(meta.TenantID, meta.Name)
+	}
+	return b.Describe(meta.OwnerNode, meta.Generation)
+}
+
+// raftReplicaNodes names the replica nodes of tenantID/db's own Raft group
+// through the installed reader, or none without one.
+func (m *Manager) raftReplicaNodes(tenantID, db string) []string {
+	nodes := m.raftReplicas.Load()
+	if nodes == nil {
+		return nil
+	}
+	return (*nodes)(tenantID, db)
+}
+
+// bindingNodesFor is the reader Info names a raft binding's replicas with,
+// or nil for any other binding.
+func (m *Manager) bindingNodesFor(meta DatabaseMeta, b *DatabaseBinding) func() []string {
+	if b == nil || b.Kind != BindingRaft {
+		return nil
+	}
+	tenantID, name := meta.TenantID, meta.Name
+	return func() []string { return m.raftReplicaNodes(tenantID, name) }
+}
+
+// RaftReplicaNodes names the replica nodes of the Raft group a backend:
+// raft database runs on, or none when it is not placed.
+type RaftReplicaNodes func(tenantID, db string) []string
+
+// SetRaftReplicaNodes installs the reader the binding block of a backend:
+// raft database takes its replica nodes from (the replicated placement
+// table on a raft-mode node). A nil reader removes it.
+func (m *Manager) SetRaftReplicaNodes(nodes RaftReplicaNodes) {
+	if nodes == nil {
+		m.raftReplicas.Store(nil)
+		return
+	}
+	m.raftReplicas.Store(&nodes)
+}
+
+// RecordBindings returns the binding of every catalog record (ListRecords)
+// that the backend factory materializes in a store of its own, opened on
+// this node or not. A factory that materializes nothing returns none. A
+// record whose binding cannot be resolved fails the listing: a caller
+// that rewrites every database's store must not miss one.
+func (m *Manager) RecordBindings(ctx context.Context) ([]*Binding, error) {
+	resolver, ok := m.factory.(RecordBindingResolver)
+	if !ok {
+		return nil, nil
+	}
+	metas, err := m.ListRecords(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []*Binding
+	for _, meta := range metas {
+		b, err := resolver.RecordBinding(configFromMeta(meta))
+		if err != nil {
+			return nil, &RecordRootUnresolvedError{Name: meta.Name, TenantID: meta.TenantID, With: meta.Name, Err: err}
+		}
+		if b != nil {
+			out = append(out, b)
+		}
+	}
+	return out, nil
+}
+
+// RecordRootUnresolvedError is returned when the store root of a recorded
+// database -- TenantID's With -- cannot be resolved while Name's root is
+// checked against it. The check fails closed: the create is refused, and a
+// drop removes nothing.
+type RecordRootUnresolvedError struct {
+	Name     string
+	TenantID string
+	With     string
+	Err      error
+}
+
+func (e *RecordRootUnresolvedError) Error() string {
+	if e.With == "" {
+		return fmt.Sprintf("database %q: the catalog records' store roots cannot be checked: %v", e.Name, e.Err)
+	}
+	return fmt.Sprintf("database %q: the store root of database %q (tenant %q) cannot be resolved: %v", e.Name, e.With, e.TenantID, e.Err)
+}
+
+func (e *RecordRootUnresolvedError) Unwrap() error { return e.Err }
+
+// configFromMeta is the DatabaseConfig a catalog record opens with.
+func configFromMeta(meta DatabaseMeta) DatabaseConfig {
+	mode := meta.Mode
+	if mode == "" {
+		mode = ModeEmbedded
+	}
+	return DatabaseConfig{
+		TenantID:     meta.TenantID,
+		Name:         meta.Name,
+		Backend:      meta.Backend,
+		Protocol:     meta.Protocol,
+		DataDir:      meta.DataDir,
+		Mode:         mode,
+		StorageCodec: meta.StorageCodec,
+		Replicas:     meta.Replicas,
+		DedicatedWAL: meta.DedicatedWAL,
+		Raft:         meta.Raft,
+		Barrier:      meta.Barrier,
+		SQL:          meta.SQL,
+	}
+}
+
+// recordRootConflict checks root -- a data_dir being created or a store root
+// being created or removed -- against the roots of every OTHER database in
+// the catalog, of every tenant, whether or not this node has it open: its
+// explicit data_dir and the store root the factory resolves for it
+// (RecordRootResolver), the way the open path would. A root that equals,
+// contains or lies inside one of them is a *DataDirConflictError. A root
+// that cannot be resolved, or a catalog that cannot be listed, fails closed
+// with *RecordRootUnresolvedError. An empty root owns nothing and passes.
+func (m *Manager) recordRootConflict(ctx context.Context, self dbKey, name, root string) error {
+	if strings.TrimSpace(root) == "" {
+		return nil
+	}
+	resolved, err := resolveDataDir(root)
+	if err != nil {
+		return &InvalidDataDirError{Name: name, DataDir: root, Err: err}
+	}
+	cat, err := m.catalog("check store roots")
+	if err != nil {
+		return err
+	}
+	// Every tenant's records, an isolated tenant's in its home store
+	// included, opened on this node or not: List sees the system store only.
+	// A sealed tenant's roots come from its root claims in the system
+	// store, so a sealed tenant neither blocks this check nor escapes it.
+	var metas []DatabaseMeta
+	if roots, ok := cat.(RootListingCatalog); ok {
+		metas, err = roots.ListRoots(ctx)
+	} else if all, ok := cat.(AllTenantsCatalog); ok {
+		metas, err = all.ListAll(ctx)
+	} else {
+		metas, err = cat.List(ctx)
+	}
+	if err != nil {
+		return &RecordRootUnresolvedError{Name: name, Err: err}
+	}
+	resolver, _ := m.factory.(RecordRootResolver)
+	for _, meta := range metas {
+		if keyFor(meta.TenantID, meta.Name) == self {
+			continue
+		}
+		roots := []string{meta.DataDir}
+		if resolver != nil {
+			r, rerr := resolver.RecordRoot(configFromMeta(meta))
+			if rerr != nil {
+				return &RecordRootUnresolvedError{Name: name, TenantID: meta.TenantID, With: meta.Name, Err: rerr}
+			}
+			roots = append(roots, r)
+		}
+		for _, r := range roots {
+			if strings.TrimSpace(r) == "" {
+				continue
+			}
+			otherRoot, rerr := resolveDataDir(r)
+			if rerr != nil {
+				return &RecordRootUnresolvedError{Name: name, TenantID: meta.TenantID, With: meta.Name, Err: rerr}
+			}
+			if pathContains(resolved, otherRoot) || pathContains(otherRoot, resolved) {
+				return &DataDirConflictError{Name: name, DataDir: root, With: meta.Name}
+			}
+		}
+	}
+	// No database may claim a root under another tenant's tenants/<id>/
+	// subtree, whether or not a record of that tenant is listed: a drop of
+	// a database that owns its root removes it.
+	return m.foreignTenantRootConflict(self, name, root, resolved)
+}
+
+// foreignTenantRootConflict refuses resolved, the root name claims, when it
+// lies under another tenant's <dataDir>/tenants/<id>/ subtree: the default
+// home of that tenant's stores, which a record listing may not show (an
+// isolated tenant's records are in its home store, sealed or not opened
+// here).
+func (m *Manager) foreignTenantRootConflict(self dbKey, name, root, resolved string) error {
+	if strings.TrimSpace(m.dataDir) == "" {
+		return nil
+	}
+	tenantsDir, err := resolveDataDir(filepath.Join(m.dataDir, "tenants"))
+	if err != nil {
+		return &RecordRootUnresolvedError{Name: name, Err: err}
+	}
+	rel, err := filepath.Rel(tenantsDir, resolved)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil
+	}
+	owner := strings.SplitN(rel, string(filepath.Separator), 2)[0]
+	if tenantid.Normalize(owner) == tenantid.Normalize(self.tenant) {
+		return nil
+	}
+	return &DataDirConflictError{Name: name, DataDir: root, With: "tenant " + owner}
+}
+
+// ownedRecordRootConflict is recordRootConflict for the store root backend
+// owns (DataRootOwner); a backend that owns none passes.
+func (m *Manager) ownedRecordRootConflict(ctx context.Context, self dbKey, name string, backend Backend) error {
+	owner, ok := backend.(DataRootOwner)
+	if !ok {
+		return nil
+	}
+	return m.recordRootConflict(ctx, self, name, owner.DataRoot())
+}
+
 func pathContains(base, candidate string) bool {
 	if base == candidate {
 		return true
@@ -1862,6 +2374,130 @@ func pathContains(base, candidate string) bool {
 		return false
 	}
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// createRootsFor returns the canonical data roots a create of cfg claims:
+// its catalog directory, its data directory (the explicit data_dir or the
+// default under the catalog directory) and the root the factory resolves
+// for it. A root the factory cannot resolve is left to create's own check,
+// which returns that error.
+func (m *Manager) createRootsFor(cfg DatabaseConfig) ([]string, error) {
+	dbDir := m.dbDir(cfg.TenantID, cfg.Name)
+	candidates := []string{dbDir, filepath.Join(dbDir, dataSubDir)}
+	if strings.TrimSpace(cfg.DataDir) != "" {
+		candidates = append(candidates, cfg.DataDir)
+	}
+	if resolver, ok := m.factory.(RecordRootResolver); ok {
+		if root, err := resolver.RecordRoot(cfg); err == nil && strings.TrimSpace(root) != "" {
+			candidates = append(candidates, root)
+		}
+	}
+	roots := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		resolved, err := resolveDataDir(c)
+		if err != nil {
+			return nil, &InvalidDataDirError{Name: cfg.Name, DataDir: c, Err: err}
+		}
+		roots = append(roots, resolved)
+	}
+	return roots, nil
+}
+
+// reserveCreateRoots reserves cfg's data roots for the whole create,
+// rollback included: a create of another name whose root equals, contains
+// or is contained by a held root is refused with *DataDirConflictError
+// until release runs. A create of the same name is admitted here; the name
+// claim (tryClaim) serializes it.
+func (m *Manager) reserveCreateRoots(cfg DatabaseConfig) (release func(), err error) {
+	roots, err := m.createRootsFor(cfg)
+	if err != nil {
+		return nil, err
+	}
+	key := keyFor(cfg.TenantID, cfg.Name)
+	m.createRootsMu.Lock()
+	defer m.createRootsMu.Unlock()
+	for held := range m.createRoots {
+		if held.key == key {
+			continue
+		}
+		for _, h := range held.roots {
+			for _, r := range roots {
+				if pathContains(h, r) || pathContains(r, h) {
+					dataDir := cfg.DataDir
+					if dataDir == "" {
+						dataDir = r
+					}
+					return nil, &DataDirConflictError{Name: cfg.Name, DataDir: dataDir, With: held.key.name}
+				}
+			}
+		}
+	}
+	res := &createRootReservation{key: key, roots: roots}
+	if m.createRoots == nil {
+		m.createRoots = make(map[*createRootReservation]struct{})
+	}
+	m.createRoots[res] = struct{}{}
+	return func() {
+		m.createRootsMu.Lock()
+		delete(m.createRoots, res)
+		m.createRootsMu.Unlock()
+	}, nil
+}
+
+// heldByOtherCreate reports whether dir is, or holds, a root reserved by an
+// in-flight create of a name other than self.
+func (m *Manager) heldByOtherCreate(self dbKey, dir string) bool {
+	resolved, err := resolveDataDir(dir)
+	if err != nil {
+		return true
+	}
+	m.createRootsMu.Lock()
+	defer m.createRootsMu.Unlock()
+	for held := range m.createRoots {
+		if held.key == self {
+			continue
+		}
+		for _, h := range held.roots {
+			if pathContains(resolved, h) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ownedByAnother reports whether removing dir would remove a store another
+// database owns: a root an in-flight create of another name holds, another
+// registered database's catalog or data directory, or a root another
+// catalog record names. A failed create's rollback keeps such a directory.
+func (m *Manager) ownedByAnother(ctx context.Context, self dbKey, dir string) bool {
+	if m.heldByOtherCreate(self, dir) {
+		return true
+	}
+	resolved, err := resolveDataDir(dir)
+	if err != nil {
+		return true
+	}
+	owned := false
+	m.databases.Range(func(key, value any) bool {
+		other, _ := key.(dbKey)
+		if other == self {
+			return true
+		}
+		db := value.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
+		for _, r := range []string{m.dbDir(other.tenant, other.name), db.DataDir()} {
+			if otherRoot, rerr := resolveDataDir(r); rerr == nil && pathContains(resolved, otherRoot) {
+				owned = true
+				return false
+			}
+		}
+		return true
+	})
+	if owned {
+		return true
+	}
+	var conflict *DataDirConflictError
+	return errors.As(m.recordRootConflict(ctx, self, self.name, dir), &conflict)
 }
 
 // validateDataDir enforces that a caller-supplied per-database DataDir
@@ -1891,27 +2527,14 @@ func (m *Manager) validateDataDir(tenantID, name, dataDir string) error {
 		return &InvalidDataDirError{Name: name, DataDir: dataDir, Err: err}
 	}
 
-	// Never the manager's own data root, and never an ancestor of it: both
-	// would fold every other database's barrier metadata and default
-	// storage inside this one
-	// database's view.
-	if pathContains(resolved, root) {
-		return &DataDirReservedPathError{Name: name, DataDir: dataDir, Reserved: root}
+	// Never equal to, inside or above another registered database's store
+	// root, its materialized binding root included (the root Drop removes).
+	if err := m.ownedRootConflict(keyFor(tenantID, name), name, dataDir, resolved); err != nil {
+		return err
 	}
 
-	// Never the shared catalog directory itself.
-	catalog := filepath.Join(root, databasesDir)
-	if resolved == catalog {
-		return &DataDirReservedPathError{Name: name, DataDir: dataDir, Reserved: catalog}
-	}
-
-	// Never a node-internal reserved subtree (see reservedDataSubdirs), in
-	// either nesting direction.
-	for _, sub := range reservedDataSubdirs {
-		reserved := filepath.Join(root, sub)
-		if pathContains(reserved, resolved) || pathContains(resolved, reserved) {
-			return &DataDirReservedPathError{Name: name, DataDir: dataDir, Reserved: reserved}
-		}
+	if err := m.reservedPathConflict(name, dataDir, resolved, root); err != nil {
+		return err
 	}
 
 	// Never inside -- or the parent of -- this database's own catalog
@@ -1953,6 +2576,81 @@ func (m *Manager) validateDataDir(tenantID, name, dataDir string) error {
 		return true
 	})
 	return conflict
+}
+
+// reservedPathConflict refuses a resolved path that overlaps a node store:
+// the manager's data root or an ancestor of it, the shared catalog
+// directory, a node-internal reserved subtree (reservedDataSubdirs, the
+// control-plane engine stores included) in either nesting direction, or a
+// store the backend factory reports outside the root (ReservedRootsReporter).
+// root is the resolved manager data root.
+func (m *Manager) reservedPathConflict(name, dataDir, resolved, root string) error {
+	// Never the manager's own data root, and never an ancestor of it: both
+	// would fold every other database's barrier metadata and default
+	// storage inside this one database's view.
+	if pathContains(resolved, root) {
+		return &DataDirReservedPathError{Name: name, DataDir: dataDir, Reserved: root}
+	}
+
+	// Never the shared catalog directory itself. The catalog and every
+	// built-in reserved subtree are resolved as the requested directory is,
+	// so a symlinked node store (root/pebble -> /mnt/control) is compared
+	// at its target, not at its link.
+	catalog, err := resolveDataDir(filepath.Join(root, databasesDir))
+	if err != nil {
+		return &InvalidDataDirError{Name: name, DataDir: dataDir, Err: err}
+	}
+	if resolved == catalog {
+		return &DataDirReservedPathError{Name: name, DataDir: dataDir, Reserved: catalog}
+	}
+
+	reserved := make([]string, 0, len(reservedDataSubdirs))
+	for _, sub := range reservedDataSubdirs {
+		rp, err := resolveDataDir(filepath.Join(root, sub))
+		if err != nil {
+			return &InvalidDataDirError{Name: name, DataDir: dataDir, Err: err}
+		}
+		reserved = append(reserved, rp)
+	}
+	if r, ok := m.factory.(ReservedRootsReporter); ok {
+		roots, err := r.ReservedRoots()
+		if err != nil {
+			// A node store whose location cannot be resolved cannot be
+			// protected: refuse the data directory rather than risk it.
+			return &InvalidDataDirError{Name: name, DataDir: dataDir, Err: err}
+		}
+		for _, p := range roots {
+			if strings.TrimSpace(p) == "" {
+				continue
+			}
+			rp, err := resolveDataDir(p)
+			if err != nil {
+				return &InvalidDataDirError{Name: name, DataDir: dataDir, Err: err}
+			}
+			reserved = append(reserved, rp)
+		}
+	}
+	for _, rp := range reserved {
+		if pathContains(rp, resolved) || pathContains(resolved, rp) {
+			return &DataDirReservedPathError{Name: name, DataDir: dataDir, Reserved: rp}
+		}
+	}
+	return nil
+}
+
+// removableRoot refuses to remove a database's owned store root that
+// overlaps a node store (reservedPathConflict): a record written before a
+// reservation existed must not take the control plane with it on drop.
+func (m *Manager) removableRoot(name, dataRoot string) error {
+	resolved, err := resolveDataDir(dataRoot)
+	if err != nil {
+		return &InvalidDataDirError{Name: name, DataDir: dataRoot, Err: err}
+	}
+	root, err := resolveDataDir(m.dataDir)
+	if err != nil {
+		return &InvalidDataDirError{Name: name, DataDir: dataRoot, Err: err}
+	}
+	return m.reservedPathConflict(name, dataRoot, resolved, root)
 }
 
 // writeFileAtomic writes data to dir/name through a temp-file, fsync, rename

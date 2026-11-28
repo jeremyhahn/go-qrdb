@@ -17,10 +17,13 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,10 +38,12 @@ import (
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/syncwatch"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -146,6 +151,13 @@ type raftShard struct {
 	lessor    *lease.Lessor
 	services  *DatabaseServices
 	cancel    context.CancelFunc
+	// vector is the shard's own vector service, built on the first
+	// resolution once the shard serves reads; closeVector stops it.
+	vectorMu      sync.Mutex
+	vector        service.VectorServicer
+	vectorBundle  *DatabaseServices
+	closeVector   func() error
+	vectorStopped bool
 
 	// dedicatedWAL is the per-tenant-KEY WAL store registered in the shared
 	// host's multiplex for this shard (4d Option C), or nil when the shard uses
@@ -208,7 +220,15 @@ type raftDatabaseInfoSource interface {
 	// per-tenant-KEY WAL (4d Option C). Meta-derived sources read the persisted
 	// DatabaseInfo flag; the placement source reads the replicated entry so a
 	// follower honors the same WAL routing the leader chose at create time.
-	dedicatedWAL(tenantID, db string) bool
+	// A placement table that cannot be read is an error, never "no entry".
+	dedicatedWAL(tenantID, db string) (bool, error)
+
+	// stateStorage returns the store the (tenant, db) database records for
+	// its group's state machine, or empty when it records none. The
+	// placement source falls back to the catalog only when no placement
+	// entry exists; a placement read failure is an error, so a transient
+	// fault never starts the group on another state store.
+	stateStorage(tenantID, db string) (database.BackendType, error)
 
 	// recordedIncarnation returns the incarnation the replicated catalog
 	// records for the (tenant, db) database, or ok=false when it records
@@ -216,6 +236,12 @@ type raftDatabaseInfoSource interface {
 	// that is not the dropping incarnation's. A catalog that cannot be read
 	// is an error, never "no record".
 	recordedIncarnation(ctx context.Context, tenantID, db string) (incarnation string, ok bool, err error)
+
+	// recordedDataDir returns the explicit data_dir the replicated catalog
+	// records for the (tenant, db) database, or ok=false when it records
+	// none. A placed group starts there. A catalog that cannot be read is
+	// an error, never "no record".
+	recordedDataDir(ctx context.Context, tenantID, db string) (dataDir string, ok bool, err error)
 }
 
 // RaftBackendFactory manages the lifecycle of dedicated per-database raft groups
@@ -229,16 +255,23 @@ type raftDatabaseInfoSource interface {
 // RaftBackendFactory is safe for concurrent use.
 type RaftBackendFactory struct {
 	host *quicraft.Host
+	// nodeGroupRoot is {nodeDataDir}/tenants (WithNodeGroupRoot); empty
+	// means a purge accepts only a local volume pool path.
+	nodeGroupRoot string
 	// leaderOf reads a shard's current leader replica. It is the host's
 	// LeaderID; LeadsShard reads leadership through it alone.
-	leaderOf       func(shardID uint64) (replicaID uint64, known bool, err error)
-	adapter        *raftbackend.HostAdapter
-	featureGate    *featuregate.Gate
-	localReplicaID uint64
-	localRaftAddr  string
-	barrierReg     *seal.BarrierRegistry
-	dbInfo         raftDatabaseInfoSource
-	logger         *slog.Logger
+	leaderOf    func(shardID uint64) (replicaID uint64, known bool, err error)
+	adapter     *raftbackend.HostAdapter
+	featureGate *featuregate.Gate
+	// isolationPolicy is the live cluster isolation policy every database
+	// group's vector service enforces (strict isolation refuses a
+	// system-tenant namespace); without it no vector service is built.
+	isolationPolicy tenant.ClusterIsolationPolicyReader
+	localReplicaID  uint64
+	localRaftAddr   string
+	barrierReg      *seal.BarrierRegistry
+	dbInfo          raftDatabaseInfoSource
+	logger          *slog.Logger
 
 	// walMux, when non-nil, is the shared host's multiplex LogDB into which a
 	// dedicated per-tenant-KEY WAL is registered for a shard that opted into
@@ -261,6 +294,10 @@ type RaftBackendFactory struct {
 	// OnSealing observer, so each barrier gets exactly one however many of
 	// its shards start. Guarded by mu.
 	sealWatched map[*seal.StorageBarrier]struct{}
+	// isolation reports a tenant's isolation, so a prefix tenant's group
+	// (which has no tenant barrier) runs under the node barrier. Nil means
+	// every tenant must have a tenant barrier.
+	isolation TenantIsolationLookup
 	// sealing records the watched barriers that have begun to seal and not
 	// been unsealed since: no shard of theirs starts while one is listed, so
 	// nothing opens a tenant's WAL between the seal's drain of its shards and
@@ -273,6 +310,23 @@ type RaftBackendFactory struct {
 	// instead (awaitStartsLocked), so what each caller observes is what it
 	// observed when the start held mu throughout.
 	starting map[raftShardKey]*startingShard
+
+	// purging holds the purges in flight: a database whose shard has been
+	// forgotten and is being stopped and removed from disk. A recreate of
+	// the same name starts its group under the same parent directory, so no
+	// start of the key begins until the purge closes the channel
+	// (reservePurgeLocked); otherwise the purge's RemoveAll would delete
+	// the successor's files. Guarded by mu.
+	purging map[raftShardKey]chan struct{}
+
+	// purgeHook, when non-nil, runs at the start of a purge, after the key
+	// is forgotten and reserved and before the shard stops. It is a
+	// TEST-ONLY seam, used to hold a purge open while a recreate starts.
+	// Production leaves it nil.
+	purgeHook func(key raftShardKey)
+	// purgeWaitHook, when non-nil, runs when a resolve of key begins to
+	// wait for a purge in flight. TEST-ONLY, like purgeHook.
+	purgeWaitHook func(key raftShardKey)
 
 	// generation counts the shards removed from shards (forgetLocked,
 	// CloseAll) and the purges of a database, cached or not (CloseAndPurge).
@@ -361,8 +415,126 @@ type RaftBackendOption func(*RaftBackendFactory)
 // Host has a transport: without it such a Host's shards are never sent a
 // command an older replica could not apply (see raftbackend.HostAdapter.
 // FeatureEnabled).
+// TenantIsolationLookup reports a tenant's isolation mode.
+type TenantIsolationLookup func(ctx context.Context, tenantID string) (tenant.IsolationType, error)
+
+// WithTenantIsolation sets the tenant isolation lookup. With it, a backend:
+// raft database of a prefix tenant runs its own group under the node barrier
+// (the node encryptor); without it, every tenant needs a tenant barrier.
+func WithTenantIsolation(lookup TenantIsolationLookup) RaftBackendOption {
+	return func(f *RaftBackendFactory) { f.isolation = lookup }
+}
+
+// WithNodeGroupRoot names the node-dir root, {nodeDataDir}/tenants, under
+// which IsolationRootResolver places a prefix or barrier tenant's groups. A
+// purge accepts a shard directory inside it as well as one inside a local
+// volume pool; without it, only a volume pool path is purged.
+func WithNodeGroupRoot(nodeDataDir string) RaftBackendOption {
+	return func(f *RaftBackendFactory) {
+		if nodeDataDir != "" {
+			f.nodeGroupRoot = filepath.Join(nodeDataDir, "tenants")
+		}
+	}
+}
+
+// requirePurgeablePath fails unless dir is strictly inside the node group
+// root or inside one of this node's local volume pools.
+func (f *RaftBackendFactory) requirePurgeablePath(dir string) error {
+	if f.nodeGroupRoot != "" {
+		if rel, err := filepath.Rel(f.nodeGroupRoot, filepath.Clean(dir)); err == nil &&
+			rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
+			return nil
+		}
+	}
+	return f.barrierReg.RequirePathInsideLocalPools(context.Background(), dir)
+}
+
+// groupBarrier returns the barrier a tenant's database groups run under: the
+// tenant barrier for a barrier, volume or raft tenant, the node barrier for a
+// prefix tenant (nodeScoped). Anything else fails closed.
+func (f *RaftBackendFactory) groupBarrier(ctx context.Context, tenantID string) (tb *seal.TenantBarrier, nodeScoped bool, err error) {
+	tb, err = f.barrierReg.GetTenant(tenantID)
+	if err == nil {
+		return tb, false, nil
+	}
+	if !errors.Is(err, seal.ErrTenantNotFound) || f.isolation == nil {
+		return nil, false, err
+	}
+	iso, lerr := f.isolation(ctx, tenantID)
+	if lerr != nil {
+		return nil, false, lerr
+	}
+	if iso != tenant.IsolationPrefix {
+		return nil, false, err
+	}
+	sys := f.barrierReg.SystemBarrier()
+	if sys == nil {
+		return nil, false, err
+	}
+	return seal.WrapTenantBarrier(tenantID, sys), true, nil
+}
+
+// GroupBarrierReady reports whether the barrier tenantID's groups run under is
+// present and unsealed; a prefix tenant resolves to the node barrier.
+func (f *RaftBackendFactory) GroupBarrierReady(ctx context.Context, tenantID string) (bool, error) {
+	tb, _, err := f.groupBarrier(ctx, tenantID)
+	if err != nil {
+		return false, err
+	}
+	return tb != nil && !tb.IsSealed(), nil
+}
+
+// HostsShard reports whether this factory has started the (tenant, db) group.
+func (f *RaftBackendFactory) HostsShard(tenantID, db string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.shards[raftShardKey{tenantID: tenantID, database: db}]
+	return ok
+}
+
+// HostsDatabase reports whether (tenant, db) is a backend: raft database
+// this factory serves: its group is started here, or its info source knows
+// its shard.
+func (f *RaftBackendFactory) HostsDatabase(tenantID, db string) (bool, error) {
+	if f == nil {
+		return false, nil
+	}
+	if f.HostsShard(tenantID, db) {
+		return true, nil
+	}
+	if src, ok := f.dbInfo.(*placementRaftInfoSource); ok && src != nil {
+		// A placement that names only other nodes (*placement.NotAReplicaError)
+		// or cannot be read is returned, never answered "not a group": the
+		// caller would then serve the database from the shared store, which
+		// the real replicas never see. The refusal is what forwards the
+		// request to a replica.
+		_, _, _, found, err := src.databaseAndPlacementInfo(tenantID, db)
+		if err != nil {
+			return false, err
+		}
+		if found {
+			return true, nil
+		}
+		// No placement: a dropping database still routes here, so its fence
+		// refuses requests.
+		_, _, ok := src.fallback.databaseInfo(tenantID, db, true)
+		return ok, nil
+	}
+	// A dropping database still routes here, so its fence refuses requests.
+	_, _, ok := f.dbInfo.databaseInfo(tenantID, db, true)
+	return ok, nil
+}
+
 func WithFeatureGate(gate *featuregate.Gate) RaftBackendOption {
 	return func(f *RaftBackendFactory) { f.featureGate = gate }
+}
+
+// WithClusterIsolationPolicy wires the live cluster isolation policy into
+// every database group's vector service -- the same reader lifecycle wires
+// into the shared vector service. A factory without one builds no vector
+// service rather than one that skips the strict-isolation check.
+func WithClusterIsolationPolicy(r tenant.ClusterIsolationPolicyReader) RaftBackendOption {
+	return func(f *RaftBackendFactory) { f.isolationPolicy = r }
 }
 
 // WithImportSessionConfig bounds a chunked import session on every shard
@@ -430,6 +602,56 @@ func WithMultiplexLogDB(mux *database.MultiplexLogDB) RaftBackendOption {
 // (*seal.BarrierRegistry).LocalTenantDataRoot.
 type LocalRootResolver func(ctx context.Context, tenantID string) (string, error)
 
+// TenantServiceIsolation adapts a tenant service to a TenantIsolationLookup.
+func TenantServiceIsolation(svc tenant.TenantServicer) TenantIsolationLookup {
+	return func(ctx context.Context, tenantID string) (tenant.IsolationType, error) {
+		info, err := svc.GetTenant(ctx, tenantID)
+		if err != nil {
+			return "", err
+		}
+		return info.IsolationType, nil
+	}
+}
+
+// IsolationRootResolver resolves the root a tenant's database groups live
+// under (OD-1 A): a volume or raft tenant's own data root (tenantRoot), and
+// for a prefix or barrier tenant, which has no data root of its own,
+// {nodeDataDir}/tenants/<tenant> on the node's data dir. A group's data then
+// sits at {root}/databases/<db>/shard-<N>.
+func IsolationRootResolver(lookup TenantIsolationLookup, nodeDataDir string, tenantRoot LocalRootResolver) LocalRootResolver {
+	return func(ctx context.Context, tenantID string) (string, error) {
+		iso, err := lookup(ctx, tenantID)
+		if err != nil {
+			return "", err
+		}
+		switch iso {
+		case tenant.IsolationPrefix, tenant.IsolationBarrier:
+			if nodeDataDir == "" {
+				return "", fmt.Errorf("server: no node data dir for the raft groups of %s tenant %q", iso, tenantID)
+			}
+			return filepath.Join(nodeDataDir, "tenants", tenantID), nil
+		default:
+			if tenantRoot == nil {
+				return "", &RaftGroupVolumePoolRequiredError{TenantID: tenantID, Isolation: iso}
+			}
+			return tenantRoot(ctx, tenantID)
+		}
+	}
+}
+
+// RaftGroupVolumePoolRequiredError refuses a raft database group of a
+// tenant whose isolation roots it in a volume pool (IsolationVolume,
+// IsolationRaft) on a node that has no volume pool configured. Prefix and
+// barrier tenants' groups root on the node data dir and need no pool.
+type RaftGroupVolumePoolRequiredError struct {
+	TenantID  string
+	Isolation tenant.IsolationType
+}
+
+func (e *RaftGroupVolumePoolRequiredError) Error() string {
+	return fmt.Sprintf("server: %s tenant %q: its raft database groups need a volume pool, and none is configured on this node", e.Isolation, e.TenantID)
+}
+
 // WithPlacementInfoSource makes the replicated placement table the source of
 // truth for resolving a dedicated-raft database's shard. When a placement entry
 // for (tenant, db) exists and assigns a replica to localNodeID, that entry's
@@ -458,8 +680,32 @@ func WithPlacementInfoSource(store *placement.Store, localNodeID string, resolve
 			fallback:          f.dbInfo,
 			timeout:           placementResolveTimeout,
 			localRootResolver: res,
+			isolation:         f.isolation,
 			logger:            f.logger,
 		}
+	}
+}
+
+// PlacementReplicaNodes reads the replica nodes of a backend: raft
+// database's own Raft group from the replicated placement table, for the
+// binding block database info reports. A database without a placement entry,
+// or one the table cannot be read for, names none.
+func PlacementReplicaNodes(store *placement.Store) database.RaftReplicaNodes {
+	return func(tenantID, db string) []string {
+		if store == nil {
+			return nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), placementResolveTimeout)
+		defer cancel()
+		p, err := store.Get(ctx, tenantID, db)
+		if err != nil || p == nil {
+			return nil
+		}
+		nodes := make([]string, 0, len(p.Replicas))
+		for _, r := range p.Replicas {
+			nodes = append(nodes, r.NodeID)
+		}
+		return nodes
 	}
 }
 
@@ -545,12 +791,11 @@ func NewRaftBackendFactoryFromManager(
 // only ever compare the cache's latest entry against itself, which can
 // never observe a mismatch no matter how stale the ORIGINAL caller's
 // resolution was. The comparison was briefly added for this reason before
-// the review that caught it, and the real reason it is unneeded is simpler:
-// a dedicated-raft database's DatabaseServices never carries a Vector field
-// (RaftBackendFactory.services builds none), so the stale-vector-handle
-// scenario RefuseIfDropping was written to guard against cannot occur on
-// this path at all. See the analogous, and reachable, fix on the
-// shared-store side instead (restServiceRegistry.refuseIfDropping).
+// the review that caught it, and it is unneeded for a further reason: a
+// dedicated-raft database's vector service is bound to its own shard ID, so
+// a vector handle resolved before a drop proposes into that shard, never
+// into a successor's. See the shared-store side instead
+// (restServiceRegistry.refuseIfDropping).
 func refusalForCached(db string, rs *raftShard, pInfo *placement.Placement, infoOK bool) error {
 	if infoOK {
 		return refusalFromPlacement(db, pInfo)
@@ -622,7 +867,7 @@ func (f *RaftBackendFactory) cachedServices(key raftShardKey, rs *raftShard, hon
 			return nil, false, err
 		}
 	}
-	return rs.services, false, nil
+	return f.withVector(rs), false, nil
 }
 
 // forgetLocked drops key's shard, if cached, from the cache and advances
@@ -736,11 +981,9 @@ func (f *RaftBackendFactory) retireShard(rs *raftShard) {
 // fence guard into the database's own shard, which refuses them at apply
 // time. It exists for the vector view's check-before-write fence
 // (databaseFence), built unconditionally by resolve's IsolationRaft branch
-// for symmetry with every other branch -- but RaftBackendFactory.services
-// never populates DatabaseServices.Vector, so no dedicated-raft database
-// ever actually resolves a vector handle for this check to run against.
-// This function is kept for that symmetry and because a future Vector field
-// on this path is plausible, not because it is reachable today.
+// for every branch: a dedicated-raft database's bundle carries its own
+// vector service (newRaftShardVector), and this check runs before each of
+// its writes.
 //
 // A database this factory has never resolved at all reports no refusal:
 // there is nothing cached to check staleness against, and the NEXT
@@ -829,10 +1072,24 @@ func (f *RaftBackendFactory) services(ctx context.Context, tenantID, db string, 
 		f.mu.Lock()
 		rs, cached := f.shards[key]
 		inFlight := f.starting[key]
+		purge := f.purging[key]
 		generation := f.generation
 		f.mu.Unlock()
 
 		switch {
+		case purge != nil && !cached:
+			// A purge of this name's previous shard is stopping it and
+			// removing its directory, which a successor's group shares: no
+			// start of the name begins until the purge is done.
+			if hook := f.purgeWaitHook; hook != nil {
+				hook(key)
+			}
+			select {
+			case <-purge:
+			case <-ctx.Done():
+				return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "resolve", Err: ctx.Err()}
+			}
+			continue
 		case cached:
 			services, again, err := f.cachedServices(key, rs, honorFence)
 			if !again {
@@ -863,7 +1120,7 @@ func (f *RaftBackendFactory) services(ctx context.Context, tenantID, db string, 
 			switch {
 			case again:
 			case err == nil:
-				return rs.services, nil
+				return f.withVector(rs), nil
 			case !forceJoin && plan.isObserver && !plan.join && errors.Is(err, quicraft.ErrNonVotingRoleInMembers):
 				// An ObserverReady replica with NO persisted shard state: its
 				// prior join bootstrap was wiped (demotion purge racing a
@@ -907,6 +1164,9 @@ type shardStartPlan struct {
 	identities   map[uint64]string
 	dedicatedWAL bool
 	hadPlacement bool
+	// stateStorage is the store the database records for its group's
+	// state machine; empty runs it over the default.
+	stateStorage database.BackendType
 }
 
 // planStart resolves everything starting (tenantID, db)'s shard needs. The
@@ -914,7 +1174,7 @@ type shardStartPlan struct {
 // shard, so the caller MUST NOT hold f.mu. forceJoin re-enters the join
 // bootstrap window for an ObserverReady replica that has no persisted state.
 func (f *RaftBackendFactory) planStart(ctx context.Context, tenantID, db string, honorFence, forceJoin bool) (*shardStartPlan, error) {
-	tb, err := f.barrierReg.GetTenant(tenantID)
+	tb, nodeScoped, err := f.groupBarrier(ctx, tenantID)
 	if err != nil {
 		return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "barrier-lookup", Err: err}
 	}
@@ -922,9 +1182,13 @@ func (f *RaftBackendFactory) planStart(ctx context.Context, tenantID, db string,
 		return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "resolve", Err: seal.ErrSealed}
 	}
 	// The observer is registered under f.mu, which guards sealWatched; it is
-	// released before the Raft reads below.
+	// released before the Raft reads below. A prefix tenant's group runs
+	// under the node barrier, whose seal pauses every shard of the node, so
+	// it registers no per-tenant observer.
 	f.mu.Lock()
-	f.watchSealLocked(tenantID, tb)
+	if !nodeScoped {
+		f.watchSealLocked(tenantID, tb)
+	}
 	f.mu.Unlock()
 
 	// M2: single store.Get covers both the shard info and the placement entry.
@@ -1020,11 +1284,34 @@ func (f *RaftBackendFactory) planStart(ctx context.Context, tenantID, db string,
 	// 4d Option C: resolve whether this shard opted into a per-tenant-KEY WAL.
 	// The placement entry is authoritative cluster-wide (so followers agree with
 	// the leader); the meta-derived source covers Phase-4b single-node databases.
+	// The group's state storage comes from the same one placement read: a
+	// second read that failed must never swap in another store.
 	dedicatedWAL := false
+	var stateStorage database.BackendType
 	if pInfo != nil {
 		dedicatedWAL = pInfo.DedicatedWAL
+		stateStorage = database.BackendType(pInfo.StateStorage)
 	} else {
-		dedicatedWAL = f.dbInfo.dedicatedWAL(tenantID, db)
+		var werr, serr error
+		dedicatedWAL, werr = f.dbInfo.dedicatedWAL(tenantID, db)
+		stateStorage, serr = f.dbInfo.stateStorage(tenantID, db)
+		if err := errors.Join(werr, serr); err != nil {
+			return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "placement-lookup", Err: err}
+		}
+	}
+	if nodeScoped {
+		// The per-tenant-KEY WAL needs a tenant key; a prefix tenant has none.
+		dedicatedWAL = false
+	}
+	if !nodeScoped && f.isolation != nil {
+		// A volume tenant's group log always lives under its own key and root.
+		iso, ierr := f.isolation(ctx, tenantID)
+		if ierr != nil {
+			return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "isolation-lookup", Err: ierr}
+		}
+		if iso == tenant.IsolationVolume {
+			dedicatedWAL = true
+		}
 	}
 
 	local := map[uint64]string{f.localReplicaID: f.localRaftAddr}
@@ -1038,6 +1325,7 @@ func (f *RaftBackendFactory) planStart(ctx context.Context, tenantID, db string,
 		members:      local,
 		peers:        local,
 		dedicatedWAL: dedicatedWAL,
+		stateStorage: stateStorage,
 	}
 	if pInfo != nil {
 		if localReplica, rOK := pInfo.ReplicaForNode(f.localRaftAddr); rOK {
@@ -1114,7 +1402,7 @@ type startingShard struct {
 // cannot answer, and a failed start leaves nothing behind.
 func (f *RaftBackendFactory) startPlanned(ctx context.Context, key raftShardKey, plan *shardStartPlan, generation uint64) (rs *raftShard, again bool, err error) {
 	f.mu.Lock()
-	if _, cached := f.shards[key]; cached || f.starting[key] != nil || f.generation != generation {
+	if _, cached := f.shards[key]; cached || f.starting[key] != nil || f.purging[key] != nil || f.generation != generation {
 		f.mu.Unlock()
 		return nil, true, nil
 	}
@@ -1266,6 +1554,16 @@ type StartedShard struct {
 	TenantID string
 	// Database is the database name.
 	Database string
+	// Placed reports that the shard was started from a placement table
+	// entry (a dedicated group, OD-1 A) rather than opened from the
+	// database catalog. Only a placed shard whose entry is gone is purged
+	// by the reconciler's catch-up for a missed delete event.
+	Placed bool
+	// shard is the start this entry lists, nil for a start still in
+	// flight: CloseAndPurgeStarted acts only while the cache holds it, so
+	// a successor started under the same name since the listing is left
+	// alone.
+	shard *raftShard
 }
 
 // ListStarted returns a snapshot of every (TenantID, Database) pair whose
@@ -1279,8 +1577,8 @@ func (f *RaftBackendFactory) ListStarted() []StartedShard {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]StartedShard, 0, len(f.shards))
-	for k := range f.shards {
-		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database})
+	for k, rs := range f.shards {
+		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database, Placed: rs.hadPlacement, shard: rs})
 	}
 	return out
 }
@@ -1296,8 +1594,8 @@ func (f *RaftBackendFactory) ListOnHost() []StartedShard {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]StartedShard, 0, len(f.shards)+len(f.starting))
-	for k := range f.shards {
-		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database})
+	for k, rs := range f.shards {
+		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database, Placed: rs.hadPlacement, shard: rs})
 	}
 	for k := range f.starting {
 		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database})
@@ -1358,7 +1656,11 @@ func (f *RaftBackendFactory) startShardAsMember(plan *shardStartPlan) (*raftShar
 
 	lessor := lease.NewLessor()
 	hub := watch.NewHub(f.watchHubOpts...)
-	createFn := newDataPlaneCreateFunc(tb, lessor, hub)
+	createFn, err := newDataPlaneCreateFunc(tb, lessor, hub, plan.stateStorage)
+	if err != nil {
+		hub.Close()
+		return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "state-storage", Err: err}
+	}
 
 	// 4d Option C: when the database opted into a per-tenant-KEY WAL and the
 	// shared host carries a multiplex LogDB, open a dedicated single-barrier WAL
@@ -1409,7 +1711,7 @@ func (f *RaftBackendFactory) startShardAsMember(plan *shardStartPlan) (*raftShar
 		dataDir:      absDir,
 		hub:          hub,
 		lessor:       lessor,
-		services:     buildDataPlaneServices(f.adapter, shardID, hub, f.importSessionCfg, f.indexCfg, f.tsCfg, service.WithDedicatedKeyspace()),
+		services:     buildDataPlaneServices(f.adapter, shardID, tenantID, hub, f.importSessionCfg, f.indexCfg, f.tsCfg, service.WithDedicatedKeyspace()),
 		cancel:       cancel,
 		dedicatedWAL: registeredWAL,
 
@@ -1540,11 +1842,21 @@ func (f *RaftBackendFactory) Close(tenantID, db string) error {
 // encrypted-at-rest retention gap: a demoted replica's ciphertext previously
 // remained on disk indefinitely after RebalanceService MOVE, scale-down, or
 // DropForTenant. It is a no-op for an unknown (tenant, db) pair.
-func (f *RaftBackendFactory) CloseAndPurge(tenantID, db string) error {
+//
+// shardID binds the purge to the incarnation the caller read (the shard the
+// deleted or demoting placement named): a delete event delivered after the
+// database was created again under the same name finds a shard with another
+// ID cached and leaves it, and its data, alone.
+func (f *RaftBackendFactory) CloseAndPurge(tenantID, db string, shardID uint64) error {
 	f.mu.Lock()
 	key := raftShardKey{tenantID: tenantID, database: db}
 	f.awaitStartsLocked(func(k raftShardKey, _ *startingShard) bool { return k == key })
+	f.awaitPurgeLocked(key)
 	rs, ok := f.shards[key]
+	if ok && rs.shardID != shardID {
+		f.mu.Unlock()
+		return nil
+	}
 	// Forget the key even when no shard is cached: a start planned with mu
 	// released may have read the placement this purge follows, and holds
 	// neither a cached shard nor a start in flight for the purge to find.
@@ -1552,17 +1864,97 @@ func (f *RaftBackendFactory) CloseAndPurge(tenantID, db string) error {
 	// again, which no longer names the database; the delete event that
 	// called this is consumed, so nothing would stop a shard it started.
 	f.forgetLocked(key)
-	f.mu.Unlock()
 	if !ok {
+		f.mu.Unlock()
 		return nil
+	}
+	release := f.reservePurgeLocked(key)
+	f.mu.Unlock()
+	defer release()
+	return f.purgeShard(key, rs)
+}
+
+// CloseAndPurgeStarted is CloseAndPurge for the one start s names (a
+// ListStarted or ListOnHost entry): it stops and purges the shard only if
+// the cache still holds that start, compared under the factory lock, and is
+// a no-op otherwise. A caller that decided on a listing -- the reconciler's
+// purge of a shard whose placement is gone -- uses it so a drop and
+// recreate in between never stops or purges the successor.
+func (f *RaftBackendFactory) CloseAndPurgeStarted(s StartedShard) error {
+	f.mu.Lock()
+	key := raftShardKey{tenantID: s.TenantID, database: s.Database}
+	f.awaitStartsLocked(func(k raftShardKey, _ *startingShard) bool { return k == key })
+	f.awaitPurgeLocked(key)
+	rs, ok := f.shards[key]
+	if !ok || s.shard == nil || rs != s.shard {
+		f.mu.Unlock()
+		return nil
+	}
+	f.forgetLocked(key)
+	release := f.reservePurgeLocked(key)
+	f.mu.Unlock()
+	defer release()
+	return f.purgeShard(key, rs)
+}
+
+// reservePurgeLocked marks key as being purged, so no start of it begins
+// (services waits, startPlanned plans again) until the returned release
+// runs once the shard is stopped and its directory removed. A drop and
+// recreate of the same name start the successor's group under the same
+// parent directory the purge removes. Called with f.mu held; release takes
+// it itself.
+func (f *RaftBackendFactory) reservePurgeLocked(key raftShardKey) (release func()) {
+	done := make(chan struct{})
+	if f.purging == nil {
+		f.purging = make(map[raftShardKey]chan struct{})
+	}
+	f.purging[key] = done
+	return func() {
+		f.mu.Lock()
+		if f.purging[key] == done {
+			delete(f.purging, key)
+		}
+		close(done)
+		f.mu.Unlock()
+	}
+}
+
+// awaitPurgeLocked waits, with f.mu released, until no purge of key is in
+// flight. Called and returns with f.mu held.
+func (f *RaftBackendFactory) awaitPurgeLocked(key raftShardKey) {
+	for {
+		done := f.purging[key]
+		if done == nil {
+			return
+		}
+		f.mu.Unlock()
+		<-done
+		f.mu.Lock()
+	}
+}
+
+// purgeShard stops rs, already forgotten by the cache, and removes its data
+// directory.
+func (f *RaftBackendFactory) purgeShard(key raftShardKey, rs *raftShard) error {
+	tenantID, db := rs.tenantID, rs.database
+	if hook := f.purgeHook; hook != nil {
+		hook(key)
 	}
 	if err := f.stopShard(rs); err != nil {
 		return err
 	}
-	// Delete only inside this node's own volume pool: a shard directory is
-	// resolved locally, so anything else is a path this node does not own,
-	// and is refused however the shard came to name it.
-	if err := f.barrierReg.RequirePathInsideLocalPools(context.Background(), rs.dataDir); err != nil {
+	// The replica's log entries, raft state and bootstrap record live in
+	// the host's LogDB, not under rs.dataDir: remove them, which also retires
+	// the replica ID (a re-added node rejoins under a new one, as Raft
+	// requires). A dedicated WAL is unregistered by stopShard and lives under
+	// rs.dataDir, so the RemoveAll below takes it.
+	if err := f.host.RemoveData(rs.shardID, rs.replicaID); err != nil {
+		return &RaftBackendError{TenantID: tenantID, Database: db, Op: "purge-log", Err: err}
+	}
+	// Delete only inside this node's own volume pool or its node group root:
+	// a shard directory is resolved locally, so anything else is a path this
+	// node does not own, and is refused however the shard came to name it.
+	if err := f.requirePurgeablePath(rs.dataDir); err != nil {
 		return &RaftBackendError{TenantID: tenantID, Database: db, Op: "purge-data-dir", Err: err}
 	}
 	if err := os.RemoveAll(rs.dataDir); err != nil {
@@ -1622,6 +2014,12 @@ func (f *RaftBackendFactory) stopShard(rs *raftShard) error {
 	if err := f.host.StopShard(rs.shardID); err != nil {
 		return &RaftBackendError{TenantID: rs.tenantID, Database: rs.database, Op: "stop-shard", Err: err}
 	}
+	rs.vectorMu.Lock()
+	if rs.closeVector != nil {
+		_ = rs.closeVector()
+	}
+	rs.vector, rs.vectorBundle, rs.closeVector, rs.vectorStopped = nil, nil, nil, true
+	rs.vectorMu.Unlock()
 	if rs.dedicatedWAL != nil && f.walMux != nil {
 		if detached, ok := f.walMux.Unregister(rs.shardID); ok && detached != nil {
 			if err := detached.Close(); err != nil {
@@ -1637,6 +2035,71 @@ func (f *RaftBackendFactory) stopShard(rs *raftShard) error {
 		slog.Uint64("shard_id", rs.shardID),
 		slog.Bool("dedicated_wal", rs.dedicatedWAL != nil))
 	return nil
+}
+
+// newRaftShardVector builds a raft database's own vector service: every
+// write is an OpVector* proposal into the database's group and every read an
+// engine lookup through host, as a local binding's vector service does over
+// its binding store. The returned close stops the service.
+func newRaftShardVector(host service.Host, shardID uint64, policy tenant.ClusterIsolationPolicyReader) (service.VectorServicer, func() error, error) {
+	if policy == nil {
+		// A vector service without the policy reader skips the
+		// strict-isolation check on namespace create: refuse to build one.
+		return nil, nil, errRaftVectorNoIsolationPolicy
+	}
+	l, err := logger.New(logger.LogConfig{Level: "warn", Format: "json", Output: "stderr"})
+	if err != nil {
+		return nil, nil, err
+	}
+	svc, err := service.NewVectorService(nil, logger.NewAdapter(l), service.WithVectorApplyHost(host, shardID),
+		service.WithClusterIsolationPolicyReader(policy))
+	if err != nil {
+		return nil, nil, err
+	}
+	closeFn := func() error {
+		if c, ok := svc.(io.Closer); ok {
+			return c.Close()
+		}
+		return nil
+	}
+	return svc, closeFn, nil
+}
+
+// errRaftVectorNoIsolationPolicy refuses a database group vector service
+// built without the cluster isolation policy reader.
+var errRaftVectorNoIsolationPolicy = errors.New("raft database vector service: no cluster isolation policy reader wired")
+
+// withVector returns rs's services with its own vector service, building
+// that service on the first call. A build that fails leaves the bundle
+// without one and is retried on the next call.
+func (f *RaftBackendFactory) withVector(rs *raftShard) *DatabaseServices {
+	// No host wired (a test double factory, as IsShardJoining treats it):
+	// the shard serves its own services. A nil *HostAdapter must never be
+	// wrapped in a non-nil service.Host, whose first read would dereference it.
+	if f.adapter == nil {
+		return rs.services
+	}
+	rs.vectorMu.Lock()
+	defer rs.vectorMu.Unlock()
+	if rs.vector == nil && !rs.vectorStopped {
+		vec, closeVec, err := newRaftShardVector(f.adapter, rs.shardID, f.isolationPolicy)
+		if err != nil {
+			f.logger.Warn("dedicated raft database vector service unavailable",
+				slog.String("tenant", rs.tenantID), slog.String("database", rs.database),
+				slog.Uint64("shard_id", rs.shardID), slog.Any("error", err))
+			return rs.services
+		}
+		rs.vector, rs.closeVector = vec, closeVec
+	}
+	if rs.vector == nil {
+		return rs.services
+	}
+	if rs.vectorBundle == nil {
+		out := *rs.services
+		out.Vector = rs.vector
+		rs.vectorBundle = &out
+	}
+	return rs.vectorBundle
 }
 
 // shardOwner returns the (tenantID, database) pair owning the locally started
@@ -1754,15 +2217,30 @@ func (s *managerRaftInfoSource) placementInfo(_ string, _ string) (*placement.Pl
 }
 
 // dedicatedWAL reports the persisted per-tenant-KEY WAL opt-in for the database.
-func (s *managerRaftInfoSource) dedicatedWAL(tenantID, db string) bool {
+func (s *managerRaftInfoSource) dedicatedWAL(tenantID, db string) (bool, error) {
 	if s.manager == nil {
-		return false
+		return false, nil
 	}
 	dbase, ok := s.manager.Local(db, tenantID)
 	if !ok || dbase.Dropping() {
-		return false
+		return false, nil
 	}
-	return dbase.Info().DedicatedWAL
+	return dbase.Info().DedicatedWAL, nil
+}
+
+func (s *managerRaftInfoSource) stateStorage(tenantID, db string) (database.BackendType, error) {
+	if s.manager == nil {
+		return "", nil
+	}
+	dbase, ok := s.manager.Local(db, tenantID)
+	if !ok {
+		return "", nil
+	}
+	info := dbase.Info()
+	if info.Raft != nil {
+		return info.Raft.StateStorage, nil
+	}
+	return "", nil
 }
 
 func (s *managerRaftInfoSource) recordedIncarnation(ctx context.Context, tenantID, db string) (string, bool, error) {
@@ -1770,6 +2248,13 @@ func (s *managerRaftInfoSource) recordedIncarnation(ctx context.Context, tenantI
 		return "", false, ErrRaftBackendUnavailable
 	}
 	return s.manager.RecordedIncarnation(ctx, tenantID, db)
+}
+
+func (s *managerRaftInfoSource) recordedDataDir(ctx context.Context, tenantID, db string) (string, bool, error) {
+	if s.manager == nil {
+		return "", false, ErrRaftBackendUnavailable
+	}
+	return s.manager.RecordedDataDir(ctx, tenantID, db)
 }
 
 // compile-time check that managerRaftInfoSource satisfies the interface.
@@ -1787,6 +2272,10 @@ type placementRaftInfoSource struct {
 	fallback          raftDatabaseInfoSource
 	timeout           time.Duration
 	localRootResolver LocalRootResolver
+	// isolation reports a tenant's isolation mode, which decides whether an
+	// explicit data_dir must lie under the tenant root. Nil checks every
+	// explicit data_dir against the root.
+	isolation TenantIsolationLookup
 	// logger records the refusals databaseInfo cannot return. Nil is
 	// slog.Default().
 	logger *slog.Logger
@@ -1873,7 +2362,53 @@ func (s *placementRaftInfoSource) databaseAndPlacementInfo(tenantID, db string) 
 	if rerr != nil {
 		return 0, "", nil, false, rerr
 	}
+	// A database created with an explicit data_dir runs its group there:
+	// the catalog record names it (the placement names no path), and the
+	// data_dir root claims and the drop guard protect that directory. It
+	// must lie strictly under this node's tenant root. A catalog that
+	// cannot be read fails the lookup rather than start at the default.
+	explicit, hasExplicit, derr := s.recordedDataDir(resolveCtx, tenantID, db)
+	if derr != nil {
+		return 0, "", nil, false, derr
+	}
+	if hasExplicit {
+		// Only a volume or raft tenant has a data root of its own that an
+		// explicit data_dir must lie under (docs/databases/architecture.md);
+		// a prefix or barrier tenant's data_dir is honored as created, the
+		// rule database.ResolveBinding applies at create.
+		ownsRoot, oerr := s.tenantOwnsRoot(resolveCtx, tenantID)
+		if oerr != nil {
+			return 0, "", nil, false, oerr
+		}
+		if ownsRoot {
+			if err := database.CheckDataDirUnderTenantRoot(db, explicit, tenantRoot); err != nil {
+				return 0, "", nil, false, err
+			}
+		}
+		return p.ShardID, filepath.Clean(explicit), p, true, nil
+	}
 	return p.ShardID, filepath.Join(tenantRoot, "databases", db), p, true, nil
+}
+
+// tenantOwnsRoot reports whether the tenant has a data root of its own
+// (volume, raft isolation) that an explicit data_dir must lie under. A
+// prefix or barrier tenant's group root is a node directory, not the
+// tenant's. Without an isolation lookup every tenant is treated as owning
+// its root, so an explicit data_dir is always checked.
+func (s *placementRaftInfoSource) tenantOwnsRoot(ctx context.Context, tenantID string) (bool, error) {
+	if s.isolation == nil {
+		return true, nil
+	}
+	iso, err := s.isolation(ctx, tenantID)
+	if err != nil {
+		return false, err
+	}
+	switch iso {
+	case tenant.IsolationPrefix, tenant.IsolationBarrier:
+		return false, nil
+	default:
+		return true, nil
+	}
 }
 
 // placementInfo returns the full Placement for (tenantID, db) when an entry
@@ -1887,17 +2422,39 @@ func (s *placementRaftInfoSource) placementInfo(tenantID, db string) (*placement
 // dedicatedWAL reads the per-tenant-KEY WAL opt-in from the replicated placement
 // entry (authoritative cluster-wide) and falls back to the meta-derived source
 // for databases without a placement entry.
-func (s *placementRaftInfoSource) dedicatedWAL(tenantID, db string) bool {
-	if _, _, p, ok, err := s.databaseAndPlacementInfo(tenantID, db); err == nil && ok && p != nil {
-		return p.DedicatedWAL
+func (s *placementRaftInfoSource) dedicatedWAL(tenantID, db string) (bool, error) {
+	_, _, p, ok, err := s.databaseAndPlacementInfo(tenantID, db)
+	if err != nil {
+		return false, err
+	}
+	if ok && p != nil {
+		return p.DedicatedWAL, nil
 	}
 	return s.fallback.dedicatedWAL(tenantID, db)
+}
+
+// stateStorage reads the store the placement recorded for the group, as
+// dedicatedWAL does: a replica placed on a node that never opened the
+// database has no local catalog record to read it from.
+func (s *placementRaftInfoSource) stateStorage(tenantID, db string) (database.BackendType, error) {
+	_, _, p, ok, err := s.databaseAndPlacementInfo(tenantID, db)
+	if err != nil {
+		return "", err
+	}
+	if ok && p != nil {
+		return database.BackendType(p.StateStorage), nil
+	}
+	return s.fallback.stateStorage(tenantID, db)
 }
 
 // recordedIncarnation reads the catalog through the fallback: a placement
 // entry names a shard, never the incarnation it belongs to.
 func (s *placementRaftInfoSource) recordedIncarnation(ctx context.Context, tenantID, db string) (string, bool, error) {
 	return s.fallback.recordedIncarnation(ctx, tenantID, db)
+}
+
+func (s *placementRaftInfoSource) recordedDataDir(ctx context.Context, tenantID, db string) (string, bool, error) {
+	return s.fallback.recordedDataDir(ctx, tenantID, db)
 }
 
 // compile-time check that placementRaftInfoSource satisfies the interface.

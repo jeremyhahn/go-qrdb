@@ -50,6 +50,14 @@ func WithMaxOpenFiles(n int) Option {
 	}
 }
 
+// WithMemFS runs the Pebble instance over a fresh in-memory filesystem, so
+// the state machine keeps nothing on disk. Pass it before WithEncryptor.
+func WithMemFS() Option {
+	return func(o *pebble.Options) {
+		o.FS = pebblestore.NewMemFS()
+	}
+}
+
 // WithEncryptor applies enc to the Pebble options, wrapping their FS with
 // barrier-driven AES-256-GCM encryption through pkg/storage/pebble's
 // adapter. A nil enc or an enc whose barrier is nil is a no-op, so

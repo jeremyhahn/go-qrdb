@@ -31,7 +31,6 @@
   import StepDatabaseName from "./StepDatabaseName.svelte";
   import StepDatabaseStorage from "./StepDatabaseStorage.svelte";
   import StepDatabaseRaft from "./StepDatabaseRaft.svelte";
-  import StepDatabaseConnection from "./StepDatabaseConnection.svelte";
   import StepDatabaseSQL from "./StepDatabaseSQL.svelte";
   import StepDatabaseBarrier from "./StepDatabaseBarrier.svelte";
   import StepDatabaseSummary from "./StepDatabaseSummary.svelte";
@@ -55,10 +54,8 @@
   /** Human-readable labels for each step, keyed by step ID. */
   const stepLabels: Readonly<Record<DatabaseWizardStep, string>> = {
     name: "Name",
-    mode: "Mode", // retained for type compatibility, not shown in steps
     storage: "Storage",
     raft: "Raft",
-    connection: "Connection",
     sql: "Protocols",
     barrier: "Barrier",
     summary: "Summary",
@@ -146,8 +143,6 @@
           <StepDatabaseStorage onNext={handleNext} onBack={handleBack} />
         {:else if dbWizardStore.currentStep === "raft"}
           <StepDatabaseRaft onNext={handleNext} onBack={handleBack} />
-        {:else if dbWizardStore.currentStep === "connection"}
-          <StepDatabaseConnection onNext={handleNext} onBack={handleBack} />
         {:else if dbWizardStore.currentStep === "sql"}
           <StepDatabaseSQL onNext={handleNext} onBack={handleBack} />
         {:else if dbWizardStore.currentStep === "barrier"}

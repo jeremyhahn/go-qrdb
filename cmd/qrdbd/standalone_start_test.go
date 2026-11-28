@@ -23,8 +23,6 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
-	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
-	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 )
 
@@ -34,7 +32,7 @@ func standaloneStartFlags(dir string, p daemonPorts, backend string) *startFlags
 	f := fullStartFlags(dir, p)
 	f.mode = capabilities.ModeStandalone
 	if backend != "" {
-		f.databases = []qrdbconfig.DatabaseConfig{{Name: "app", Backend: backend}}
+		f.storageConfig.Backend = backend
 	}
 	return f
 }
@@ -103,22 +101,14 @@ func TestRunStart_Standalone_RefusedBackends(t *testing.T) {
 		check   func(t *testing.T, err error)
 	}{
 		{
-			name:    "raft backend",
-			backend: "raft",
-			check: func(t *testing.T, err error) {
-				var target *StandaloneRaftBackendError
-				if !errors.As(err, &target) {
-					t.Fatalf("runStart = %v (%T), want *StandaloneRaftBackendError", err, err)
-				}
-			},
-		},
-		{
 			name:    "unsupported backend",
 			backend: "tape",
 			check: func(t *testing.T, err error) {
-				var target *database.InvalidBackendError
+				// storage.backend picks the standalone store; an engine
+				// the local composition does not know is refused there.
+				var target *lifecycle.UnsupportedLocalBackendError
 				if !errors.As(err, &target) {
-					t.Fatalf("runStart = %v (%T), want *database.InvalidBackendError", err, err)
+					t.Fatalf("runStart = %v (%T), want *lifecycle.UnsupportedLocalBackendError", err, err)
 				}
 			},
 		},

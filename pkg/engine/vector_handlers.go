@@ -15,6 +15,7 @@
 package engine
 
 import (
+	"maps"
 	"math"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
@@ -551,9 +552,25 @@ func applyVectorUpdateMetadata(batch storage.Batch, payload []byte) (sm.Result, 
 		return sm.Result{}, err
 	}
 
+	// The merge runs here, against the record this batch reads, so a
+	// metadata update never re-sends (and so never reverts) an embedding or
+	// metadata another writer committed after the caller read the vector.
+	metadata := p.Metadata
+	if p.Merge {
+		metadata = make(map[string]string, len(old.Metadata)+len(p.Metadata))
+		maps.Copy(metadata, old.Metadata)
+		maps.Copy(metadata, p.Metadata)
+		for _, k := range p.DeleteKeys {
+			delete(metadata, k)
+		}
+		if len(metadata) == 0 {
+			metadata = nil
+		}
+	}
+
 	record := vector.VectorRecord{
 		Embedding:         old.Embedding,
-		Metadata:          p.Metadata,
+		Metadata:          metadata,
 		CreatedAtUnixNano: old.CreatedAtUnixNano,
 		UpdatedAtUnixNano: p.TimestampUnixNano,
 	}
@@ -564,7 +581,7 @@ func applyVectorUpdateMetadata(batch storage.Batch, payload []byte) (sm.Result, 
 	if err := batch.Set(vector.VectorKey(p.Name, p.ID), data); err != nil {
 		return sm.Result{}, err
 	}
-	if err := replaceMetadataIndex(batch, p.Name, p.ID, old.Metadata, p.Metadata); err != nil {
+	if err := replaceMetadataIndex(batch, p.Name, p.ID, old.Metadata, metadata); err != nil {
 		return sm.Result{}, err
 	}
 	if err := appendMutationLog(batch, p.Name, rec, vector.MutationUpdate, p.ID); err != nil {
@@ -577,12 +594,10 @@ func applyVectorUpdateMetadata(batch storage.Batch, payload []byte) (sm.Result, 
 }
 
 // applyVectorIndexReconfigure applies protocol.OpVectorIndexReconfigure: it
-// records new index parameters and advances the namespace's training
-// generation. It has no index to rebuild yet -- the in-memory ANN index and
-// its post-commit apply hook are a later phase of this program
-// (docs/vectors/engineering.md "Target: the vector engine", "Apply and the
-// index") -- so today it only updates the record every replica will rebuild
-// its own index from once that hook exists.
+// sets the index type, merges the payload's index parameters into the
+// stored ones (a patch: keys it does not name keep their committed value)
+// and advances the namespace's training generation. The engine's vector
+// index rebuilds from the resulting record (effectsReconfigure).
 func applyVectorIndexReconfigure(batch storage.Batch, payload []byte) (sm.Result, error) {
 	p, err := protocol.DecodeVectorIndexReconfigure(payload)
 	if err != nil {
@@ -601,8 +616,17 @@ func applyVectorIndexReconfigure(batch storage.Batch, payload []byte) (sm.Result
 	if !vector.ValidIndexType(p.IndexType) {
 		return sm.Result{}, &vector.InvalidIndexTypeError{Namespace: p.Name, IndexType: p.IndexType}
 	}
+	// p.IndexParams is a patch merged into the record this batch reads, so
+	// two writers patching different keys from the same stale read both
+	// keep their change.
+	merged := make(map[string]string, len(rec.IndexParams)+len(p.IndexParams))
+	maps.Copy(merged, rec.IndexParams)
+	maps.Copy(merged, p.IndexParams)
+	if len(merged) == 0 {
+		merged = nil
+	}
 	rec.IndexType = p.IndexType
-	rec.IndexParams = p.IndexParams
+	rec.IndexParams = merged
 	rec.TrainingGeneration++
 	if err := putNamespaceRecord(batch, p.Name, *rec); err != nil {
 		return sm.Result{}, err

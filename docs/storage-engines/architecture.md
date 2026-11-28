@@ -698,8 +698,9 @@ already absorbs the common case (repeated reads of the same block range).
 
 **OS-7 — Lifting "objstore is refused as a hot apply path."**
 Today [engineering.md](engineering.md)'s error table refuses objstore as
-`raft.sm_storage` outright, and a database's `backend: objstore` is refused
-when the database opens. With Pebble's native atomic batch and WAL, an
+`raft.sm_storage` outright. A database's `backend: objstore` now opens
+(phase 2), under an encrypting barrier with its key, and is refused while the
+tenant's barrier is sealed. With Pebble's native atomic batch and WAL, an
 `objstore`-backed store is the `pebble` engine, so the per-database refusal
 has nothing left to protect. Whether to also allow it as a Raft
 `sm_storage`/`state_storage` choice is a separate question with its own blast

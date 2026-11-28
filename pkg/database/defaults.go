@@ -62,17 +62,12 @@ func WithDefaults(d Defaults) ManagerOption {
 // block nor the node names is none, for a supplied block (one naming only
 // its state storage) exactly as for a synthesized one. The record then holds every resolved value, and opening it never
 // re-resolves one from node config.
+//
+// A raft database the request gave no raft block gets one, on every create
+// path (API and boot provisioning alike): the block records the dedicated
+// group the manager issues a shard for, so no database runs on the node's
+// control-plane group.
 func (d Defaults) fill(cfg *DatabaseConfig) {
-	d.fillFor(cfg, true)
-}
-
-// fillFor is fill, with synthesize selecting whether a raft database the
-// request gave no raft block gets one. A create through the API does: the
-// block records the dedicated group the manager issues a shard for. Boot
-// provisioning does not: a configured raft database without a block runs
-// on the node's shared group, as it always has, and no shard is allocated
-// before the cluster's feature gate has started.
-func (d Defaults) fillFor(cfg *DatabaseConfig, synthesize bool) {
 	if cfg.Backend == "" {
 		cfg.Backend = d.Backend
 	}
@@ -84,9 +79,6 @@ func (d Defaults) fillFor(cfg *DatabaseConfig, synthesize bool) {
 	}
 	if cfg.Replicas == 0 {
 		cfg.Replicas = d.Replicas
-	}
-	if cfg.Raft == nil && !synthesize {
-		return
 	}
 	// A raft database always records its raft block, so the manager issues
 	// it a shard ID exactly as for a block the request carried.
