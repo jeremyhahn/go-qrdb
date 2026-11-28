@@ -149,6 +149,7 @@ var expectedMethods = []string{
 	"user.Delete",
 	"user.List",
 	"user.Enable",
+	"user.ActivatePending",
 	"user.Disable",
 	"user.Suspend",
 	"user.Unsuspend",
@@ -385,7 +386,8 @@ func TestBuildHandlers_MethodCount(t *testing.T) {
 	// kv.CompareAndDelete, kv.CompareAndSwap — go-qrdb#124), and the 161 was
 	// 160 plus user.GetByEmail, the canonical login-key lookup (go-qrdb#190).
 	// The 2 watch methods remain on the streaming path, not the unary table.
-	const wantCount = 219
+	// 220 = 219 + user.ActivatePending (go-qrdb#1765).
+	const wantCount = 220
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}
@@ -485,7 +487,7 @@ func TestBuildHandlers_CategoryCounts(t *testing.T) {
 		"index":    5,
 		"ts":       10,
 		"vector":   21,
-		"user":     14,
+		"user":     15,
 		"role":     15,
 		"cert":     8,
 		"barrier":  22,

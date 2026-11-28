@@ -1034,6 +1034,7 @@ func TestUserTools_Registration(t *testing.T) {
 		"qrdb_user_delete",
 		"qrdb_user_list",
 		"qrdb_user_enable",
+		"qrdb_user_activate_pending",
 		"qrdb_user_disable",
 		"qrdb_user_suspend",
 		"qrdb_user_unsuspend",

@@ -305,6 +305,21 @@ func (t *Transport) EnableUser(ctx context.Context, id uint64) error {
 	return nil
 }
 
+// ActivatePending moves a pending account to active via the qrdb
+// ActivatePending RPC.
+func (t *Transport) ActivatePending(ctx context.Context, userID uint64) (*transport.User, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	resp, err := t.client.ActivatePending(ctx, &pb.ActivatePendingRequest{UserId: userID})
+	if err != nil {
+		return nil, mapUserNotFound("ActivatePending", userID, err)
+	}
+
+	return protoToUser(resp), nil
+}
+
 // DisableUser deactivates a user account.
 func (t *Transport) DisableUser(ctx context.Context, id uint64) error {
 	if t.closed.Load() {

@@ -106,6 +106,9 @@ var refusalErrors = map[string]func(md map[string]string) error{
 	ReasonUserConcurrentUpdate: func(md map[string]string) error {
 		return UserConcurrentUpdateFromMetadata(md)
 	},
+	ReasonAccountNotPending: func(md map[string]string) error {
+		return AccountNotPendingFromMetadata(md)
+	},
 	wireconflict.Reason: func(md map[string]string) error {
 		return &commandConflictError{message: wireconflict.Message(md)}
 	},

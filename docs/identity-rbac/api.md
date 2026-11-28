@@ -21,6 +21,7 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 | Delete | `DELETE /users/{id}` | `DeleteUser` | `user.Delete` | `qrdb_user_delete` | `DeleteUser` | `users:delete` |
 | List | `GET /users/list` | `ListUsers` | `user.List` | `qrdb_user_list` | `ListUsers` | `users:list` |
 | Enable | `POST /users/{id}/enable` | `EnableUser` | `user.Enable` | `qrdb_user_enable` | `EnableUser` | `users:enable` |
+| Activate pending | `POST /users/{id}/activate` | `ActivatePending` | `user.ActivatePending` | `qrdb_user_activate_pending` | `ActivatePending` | `users:enable` |
 | Disable | `POST /users/{id}/disable` | `DisableUser` | `user.Disable` | `qrdb_user_disable` | `DisableUser` | `users:disable` |
 | Suspend | `POST /users/{id}/suspend` | `SuspendUser` | `user.Suspend` | `qrdb_user_suspend` | `SuspendUser` | `users:suspend` |
 | Unsuspend | `POST /users/{id}/unsuspend` | `UnsuspendUser` | `user.Unsuspend` | `qrdb_user_unsuspend` | `UnsuspendUser` | `users:unsuspend` |
@@ -835,7 +836,7 @@ allowed. Only `pending`, `active` and `disabled` may be created directly.
 **Pending TTL.** A pending create may carry a time-to-live; an account still
 `pending` when it lapses is deleted by the leader's reaper, together with its
 role assignments and enrolled factors, and each deletion is audited
-(`pending_reaped`). Activating the account (`EnableUser`) clears the expiry; an
+(`pending_reaped`). Activating the account (`EnableUser` or `ActivatePending`) clears the expiry; an
 `active` account is never reaped, and nothing moves an account back to
 `pending`. A TTL on a non-pending create, or a negative TTL, is refused; zero
 or absent means the account never expires. The expiry is read back on the
@@ -855,7 +856,16 @@ created. gRPC and unix carry whole seconds, so the Go SDK refuses a positive
 on those transports before the request is sent.
 
 `EnableUser` and `DisableUser` are the transitions to `active` and `disabled`;
-they are refused on an account already marked `deleting`. `SuspendUser` and
+they are refused on an account already marked `deleting`. `ActivatePending`
+moves only a `pending` account to `active`, in one commit conditional on the
+record it read, for credential-first flows that must not revive an account
+disabled or deleted in the meantime: any other state — `active`, `disabled`,
+`deleting`, or one committed between its read and its write — is refused with
+`AccountNotPendingError` (`ID`, `Lifecycle`; the structured refusal reason
+`ACCOUNT_NOT_PENDING` on every transport, rebuilt by the Go SDK as
+`*transport.AccountNotPendingError` for `errors.As`) and nothing is written. Of
+concurrent activations of one pending account exactly one succeeds. It is
+authorized as `users:enable`, like `EnableUser`. `SuspendUser` and
 `UnsuspendUser` move only between `active` and `suspended`: each is a no-op on
 an account already in its target state and a `LifecycleTransitionError` from
 any other state. A suspended account is refused on every request, including

@@ -508,6 +508,33 @@ func (s *Server) handleListUsers(ctx context.Context, payload []byte) ([]byte, e
 	return out, nil
 }
 
+// activatePendingWireRequest is the user.ActivatePending payload.
+type activatePendingWireRequest struct {
+	UserID uint64 `json:"user_id"`
+}
+
+// handleActivatePending unmarshals an activate-pending request and moves the
+// PENDING account to active in one conditional commit. It is the lifecycle
+// transition to active, so dispatch gives it users:enable; any other
+// lifecycle is refused with the ACCOUNT_NOT_PENDING refusal.
+func (s *Server) handleActivatePending(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.userSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "user"}
+	}
+
+	var req activatePendingWireRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	u, err := user.ActivatePendingOn(ctx, s.userSvc, req.UserID)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.marshalUser(ctx, u)
+}
+
 // handleEnableUser unmarshals a JSON enable user request, activates the
 // user account via the service layer, and returns a serialized status
 // response.

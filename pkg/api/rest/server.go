@@ -2312,6 +2312,7 @@ func (s *Server) registerRoutes() {
 	s.route(http.MethodPut, "/users/{id}", permission.UsersUpdate, s.handleUser)
 	s.route(http.MethodDelete, "/users/{id}", permission.UsersDelete, s.handleUser)
 	s.route(http.MethodPost, "/users/{id}/enable", permission.UsersEnable, s.handleUser)
+	s.route(http.MethodPost, "/users/{id}/activate", permission.UsersEnable, s.handleUser)
 	s.route(http.MethodPost, "/users/{id}/disable", permission.UsersDisable, s.handleUser)
 	s.route(http.MethodPost, "/users/{id}/suspend", permission.UsersSuspend, s.handleUser)
 	s.route(http.MethodPost, "/users/{id}/unsuspend", permission.UsersUnsuspend, s.handleUser)

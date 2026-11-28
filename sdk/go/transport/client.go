@@ -766,6 +766,16 @@ type UserClient interface {
 	// EnableUser activates a user account.
 	EnableUser(ctx context.Context, id uint64) error
 
+	// ActivatePending moves a PENDING account to active in one conditional
+	// commit, for flows that establish the account's credential first. Any
+	// other lifecycle -- active, disabled or deleting, including one
+	// committed between the call's read and its write -- is refused with
+	// *AccountNotPendingError (match it with errors.As) and nothing is
+	// written, so of concurrent activations of one account exactly one
+	// succeeds. It is the lifecycle transition to active, so it is authorized
+	// exactly as EnableUser: the users:enable permission.
+	ActivatePending(ctx context.Context, userID uint64) (*User, error)
+
 	// DisableUser deactivates a user account.
 	DisableUser(ctx context.Context, id uint64) error
 

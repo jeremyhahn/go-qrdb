@@ -707,6 +707,15 @@ service QRDBService {
         option (qrdb.v1.permission) = "users:enable";
     }
 
+    // ActivatePending moves a PENDING account to active in one conditional
+    // commit, for flows that establish the credential first. Any other
+    // lifecycle is refused with the ACCOUNT_NOT_PENDING refusal
+    // (FAILED_PRECONDITION) and nothing is written. It is the lifecycle
+    // transition to active, so it takes EnableUser's permission.
+    rpc ActivatePending(ActivatePendingRequest) returns (UserResponse) {
+        option (qrdb.v1.permission) = "users:enable";
+    }
+
     // DisableUser deactivates a user account.
     rpc DisableUser(DisableUserRequest) returns (google.protobuf.Empty) {
         option (qrdb.v1.permission) = "users:disable";
@@ -3458,6 +3467,11 @@ message ListUsersResponse {
 // EnableUserRequest activates a user account.
 message EnableUserRequest {
     uint64 id = 1;
+}
+
+// ActivatePendingRequest activates a pending account.
+message ActivatePendingRequest {
+    uint64 user_id = 1;
 }
 
 // DisableUserRequest deactivates a user account.

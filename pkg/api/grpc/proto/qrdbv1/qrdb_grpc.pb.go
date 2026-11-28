@@ -148,6 +148,7 @@ const (
 	QRDBService_DeleteUser_FullMethodName                         = "/qrdb.v1.QRDBService/DeleteUser"
 	QRDBService_ListUsers_FullMethodName                          = "/qrdb.v1.QRDBService/ListUsers"
 	QRDBService_EnableUser_FullMethodName                         = "/qrdb.v1.QRDBService/EnableUser"
+	QRDBService_ActivatePending_FullMethodName                    = "/qrdb.v1.QRDBService/ActivatePending"
 	QRDBService_DisableUser_FullMethodName                        = "/qrdb.v1.QRDBService/DisableUser"
 	QRDBService_SuspendUser_FullMethodName                        = "/qrdb.v1.QRDBService/SuspendUser"
 	QRDBService_UnsuspendUser_FullMethodName                      = "/qrdb.v1.QRDBService/UnsuspendUser"
@@ -606,6 +607,12 @@ type QRDBServiceClient interface {
 	ListUsers(ctx context.Context, in *ListUsersRequest, opts ...grpc.CallOption) (*ListUsersResponse, error)
 	// EnableUser activates a user account.
 	EnableUser(ctx context.Context, in *EnableUserRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// ActivatePending moves a PENDING account to active in one conditional
+	// commit, for flows that establish the credential first. Any other
+	// lifecycle is refused with the ACCOUNT_NOT_PENDING refusal
+	// (FAILED_PRECONDITION) and nothing is written. It is the lifecycle
+	// transition to active, so it takes EnableUser's permission.
+	ActivatePending(ctx context.Context, in *ActivatePendingRequest, opts ...grpc.CallOption) (*UserResponse, error)
 	// DisableUser deactivates a user account.
 	DisableUser(ctx context.Context, in *DisableUserRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// SuspendUser moves an active user account to suspended.
@@ -2203,6 +2210,16 @@ func (c *qRDBServiceClient) EnableUser(ctx context.Context, in *EnableUserReques
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(emptypb.Empty)
 	err := c.cc.Invoke(ctx, QRDBService_EnableUser_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) ActivatePending(ctx context.Context, in *ActivatePendingRequest, opts ...grpc.CallOption) (*UserResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UserResponse)
+	err := c.cc.Invoke(ctx, QRDBService_ActivatePending_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -4105,6 +4122,12 @@ type QRDBServiceServer interface {
 	ListUsers(context.Context, *ListUsersRequest) (*ListUsersResponse, error)
 	// EnableUser activates a user account.
 	EnableUser(context.Context, *EnableUserRequest) (*emptypb.Empty, error)
+	// ActivatePending moves a PENDING account to active in one conditional
+	// commit, for flows that establish the credential first. Any other
+	// lifecycle is refused with the ACCOUNT_NOT_PENDING refusal
+	// (FAILED_PRECONDITION) and nothing is written. It is the lifecycle
+	// transition to active, so it takes EnableUser's permission.
+	ActivatePending(context.Context, *ActivatePendingRequest) (*UserResponse, error)
 	// DisableUser deactivates a user account.
 	DisableUser(context.Context, *DisableUserRequest) (*emptypb.Empty, error)
 	// SuspendUser moves an active user account to suspended.
@@ -4900,6 +4923,9 @@ func (UnimplementedQRDBServiceServer) ListUsers(context.Context, *ListUsersReque
 }
 func (UnimplementedQRDBServiceServer) EnableUser(context.Context, *EnableUserRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method EnableUser not implemented")
+}
+func (UnimplementedQRDBServiceServer) ActivatePending(context.Context, *ActivatePendingRequest) (*UserResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ActivatePending not implemented")
 }
 func (UnimplementedQRDBServiceServer) DisableUser(context.Context, *DisableUserRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method DisableUser not implemented")
@@ -7443,6 +7469,24 @@ func _QRDBService_EnableUser_Handler(srv interface{}, ctx context.Context, dec f
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QRDBServiceServer).EnableUser(ctx, req.(*EnableUserRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_ActivatePending_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ActivatePendingRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).ActivatePending(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_ActivatePending_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).ActivatePending(ctx, req.(*ActivatePendingRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -10785,6 +10829,10 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "EnableUser",
 			Handler:    _QRDBService_EnableUser_Handler,
+		},
+		{
+			MethodName: "ActivatePending",
+			Handler:    _QRDBService_ActivatePending_Handler,
 		},
 		{
 			MethodName: "DisableUser",

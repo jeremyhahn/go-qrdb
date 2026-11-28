@@ -270,6 +270,13 @@ func userTools(svc user.UserServicer, factorSvc user.FactorLister, authMW *authm
 			Handler: handleUserEnable(svc),
 		},
 		{
+			// Activation is the lifecycle transition to active, so it takes
+			// enable's permission.
+			Tool:    toolUserActivatePending(),
+			Perm:    permission.UsersEnable,
+			Handler: handleUserActivatePending(svc, factorSvc),
+		},
+		{
 			Tool:    toolUserDisable(),
 			Perm:    permission.UsersDisable,
 			Handler: handleUserDisable(svc),
@@ -861,6 +868,46 @@ func handleUserList(svc user.UserServicer, factorSvc user.FactorLister) mcpserve
 		})
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_user_list", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolUserActivatePending defines the qrdb_user_activate_pending tool schema.
+func toolUserActivatePending() mcp.Tool {
+	return mcp.NewTool("qrdb_user_activate_pending",
+		mcp.WithDescription("Move a PENDING account to active in one commit. Any other lifecycle is refused with ACCOUNT_NOT_PENDING and nothing is written."),
+		mcp.WithString("user_id",
+			mcp.Required(),
+			mcp.Description("The ID of the pending user to activate."),
+		),
+	)
+}
+
+// handleUserActivatePending returns a tool handler that delegates to
+// user.ActivatePendingOn.
+func handleUserActivatePending(svc user.UserServicer, factorSvc user.FactorLister) mcpserver.ToolHandlerFunc {
+	const tool = "qrdb_user_activate_pending"
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		userIDStr := mcp.ParseString(req, "user_id", "")
+		if userIDStr == "" {
+			return mcp.NewToolResultError("user_id is required"), nil
+		}
+
+		userID, parseErr := parseUint64(userIDStr)
+		if parseErr != nil {
+			return mcp.NewToolResultError("user_id must be a uint64: " + parseErr.Error()), nil
+		}
+
+		u, err := user.ActivatePendingOn(ctx, svc, userID)
+		if err != nil {
+			return nil, &ToolError{Tool: tool, Err: err}
+		}
+
+		data, err := marshalUserRecord(ctx, factorSvc, u)
+		if err != nil {
+			return nil, &ToolError{Tool: tool, Err: err}
 		}
 
 		return mcp.NewToolResultText(string(data)), nil
