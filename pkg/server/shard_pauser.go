@@ -18,11 +18,14 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
+	backendraft "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -157,6 +160,11 @@ func (p *ShardPauser) PauseShards(ctx context.Context) error {
 	p.setSealed(true)
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	// A proposal the pause catches already submitted is neither applied
+	// nor refused until the resume, so it would end at its caller's
+	// deadline as a propose timeout: refuse new proposals and wait for the
+	// submitted ones to reach their result before any shard pauses.
+	p.drainProposals()
 	targets := p.targets()
 	errs := make(chan error, len(targets))
 	var wg sync.WaitGroup
@@ -199,6 +207,63 @@ func (p *ShardPauser) targets() map[pauseKey]string {
 	return out
 }
 
+// proposalHosts lists the raft hosts whose proposals a pause drains: the
+// node's own host and each volume tenant's host.
+func (p *ShardPauser) proposalHosts() []*quicraft.Host {
+	var out []*quicraft.Host
+	add := func(host shardHost) {
+		if h, ok := host.(*quicraft.Host); ok && h != nil && !slices.Contains(out, h) {
+			out = append(out, h)
+		}
+	}
+	add(p.host)
+	if t := p.tenants.Load(); t != nil && t.hosts != nil {
+		for _, host := range t.hosts.shardHosts() {
+			add(host)
+		}
+	}
+	return out
+}
+
+// drainProposals closes every proposal host's gate and waits, within the
+// node's seal.drain_timeout, for the proposals already submitted to commit
+// or fail. A drain that runs out does not stop the seal, as the barrier's
+// store drain does not: the proposals still in flight are logged, and the
+// pause catches them.
+func (p *ShardPauser) drainProposals() {
+	timeout := p.drainTimeout()
+	var wg sync.WaitGroup
+	for _, h := range p.proposalHosts() {
+		wg.Go(func() {
+			if err := backendraft.DrainProposals(h, timeout); err != nil {
+				p.logger.Error("seal: pausing shards with raft proposals still in flight",
+					slog.Duration("timeout", timeout), slog.Any("error", err))
+			}
+		})
+	}
+	wg.Wait()
+}
+
+// reopenProposals admits proposals again on every host drainProposals closed.
+func (p *ShardPauser) reopenProposals() {
+	for _, h := range p.proposalHosts() {
+		backendraft.ReopenProposals(h)
+	}
+}
+
+// drainTimeout is the node's seal.drain_timeout, which the system barrier
+// carries; the default when the node has no system barrier yet.
+func (p *ShardPauser) drainTimeout() time.Duration {
+	if p.barriers != nil {
+		if system := p.barriers.SystemBarrier(); system != nil {
+			if d := system.Config().SealDrainTimeout; d != 0 {
+				return d
+			}
+		}
+	}
+	return seal.DefaultSealDrainTimeout
+}
+
 // resume runs once the node barrier is unsealed: it closes a still-sealed
 // tenant's shards and host and resumes every other shard PauseShards paused,
 // then lets shards start again. It runs inside the unseal, so it outlives a
@@ -208,6 +273,7 @@ func (p *ShardPauser) resume(ctx context.Context) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	defer p.setSealed(false)
+	defer p.reopenProposals()
 	if len(p.paused) == 0 {
 		return
 	}
