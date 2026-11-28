@@ -266,25 +266,29 @@ func (s *hostVectorStorage) CreateNamespace(ctx context.Context, info *vector.Na
 	return s.propose(ctx, cmd, encErr)
 }
 
-// UpdateNamespace proposes OpVectorIndexReconfigure with the record's own
-// index type and the rebuilt parameters.
+// UpdateNamespace proposes the update's index config and metadata as a
+// patch (PatchNamespace).
 func (s *hostVectorStorage) UpdateNamespace(ctx context.Context, namespace string, update *vector.NamespaceUpdate) error {
 	if update == nil {
 		return vector.ErrInvalidNamespace
 	}
+	return s.PatchNamespace(ctx, namespace, update.IndexConfig, update.Metadata, update.UpdatedAt)
+}
+
+// PatchNamespace proposes OpVectorIndexReconfigure carrying only the
+// patch: the index-config and metadata keys the caller sets and the update
+// time. The apply handler merges it into the namespace record it reads, so
+// two patches of different keys from the same stale read both survive. The
+// reserved keys (name, tenant, owner, metric, index type) are never part of
+// a patch: hostParams refuses an index-config key with the reserved prefix.
+func (s *hostVectorStorage) PatchNamespace(ctx context.Context, namespace string, indexConfig, metadata map[string]string, updatedAt int64) error {
 	a, err := s.namespaceAnswer(ctx, namespace)
 	if err != nil {
 		return err
 	}
-	old := infoFromAnswer(*a)
-	params, err := hostParams(update.IndexConfig, map[string]string{
-		hostParamName:      old.Name,
-		hostParamTenant:    old.TenantID,
-		hostParamOwner:     old.OwnerUserID,
-		hostParamMetric:    old.DistanceMetric,
-		hostParamIndexType: old.IndexType,
-		hostParamUpdatedAt: strconv.FormatInt(update.UpdatedAt, 10),
-	}, update.Metadata, old.Labels)
+	params, err := hostParams(indexConfig, map[string]string{
+		hostParamUpdatedAt: strconv.FormatInt(updatedAt, 10),
+	}, metadata, nil)
 	if err != nil {
 		return err
 	}

@@ -72,8 +72,10 @@ const (
 	// [metaCount:2 LE]([keyLen:2 LE][key][valLen:2 LE][val])*.
 	OpVectorUpdateMetadata byte = 76
 
-	// OpVectorIndexReconfigure records new index parameters and advances the
-	// namespace's training generation; each replica rebuilds its own index
+	// OpVectorIndexReconfigure sets the index type, merges its parameters
+	// into the namespace's stored ones (a patch: unnamed keys keep their
+	// committed value) and advances the namespace's training generation;
+	// each replica rebuilds its own index
 	// locally from the result. Payload: [nameLen:2 LE][name][indexType:1]
 	// [paramCount:2 LE]([keyLen:2 LE][key][valLen:2 LE][val])*.
 	OpVectorIndexReconfigure byte = 77

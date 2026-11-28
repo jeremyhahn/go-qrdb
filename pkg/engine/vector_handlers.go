@@ -594,12 +594,10 @@ func applyVectorUpdateMetadata(batch storage.Batch, payload []byte) (sm.Result, 
 }
 
 // applyVectorIndexReconfigure applies protocol.OpVectorIndexReconfigure: it
-// records new index parameters and advances the namespace's training
-// generation. It has no index to rebuild yet -- the in-memory ANN index and
-// its post-commit apply hook are a later phase of this program
-// (docs/vectors/engineering.md "Target: the vector engine", "Apply and the
-// index") -- so today it only updates the record every replica will rebuild
-// its own index from once that hook exists.
+// sets the index type, merges the payload's index parameters into the
+// stored ones (a patch: keys it does not name keep their committed value)
+// and advances the namespace's training generation. The engine's vector
+// index rebuilds from the resulting record (effectsReconfigure).
 func applyVectorIndexReconfigure(batch storage.Batch, payload []byte) (sm.Result, error) {
 	p, err := protocol.DecodeVectorIndexReconfigure(payload)
 	if err != nil {
@@ -618,8 +616,17 @@ func applyVectorIndexReconfigure(batch storage.Batch, payload []byte) (sm.Result
 	if !vector.ValidIndexType(p.IndexType) {
 		return sm.Result{}, &vector.InvalidIndexTypeError{Namespace: p.Name, IndexType: p.IndexType}
 	}
+	// p.IndexParams is a patch merged into the record this batch reads, so
+	// two writers patching different keys from the same stale read both
+	// keep their change.
+	merged := make(map[string]string, len(rec.IndexParams)+len(p.IndexParams))
+	maps.Copy(merged, rec.IndexParams)
+	maps.Copy(merged, p.IndexParams)
+	if len(merged) == 0 {
+		merged = nil
+	}
 	rec.IndexType = p.IndexType
-	rec.IndexParams = p.IndexParams
+	rec.IndexParams = merged
 	rec.TrainingGeneration++
 	if err := putNamespaceRecord(batch, p.Name, *rec); err != nil {
 		return sm.Result{}, err

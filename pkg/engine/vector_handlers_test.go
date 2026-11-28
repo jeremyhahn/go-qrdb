@@ -719,6 +719,27 @@ func TestVectorIndexReconfigure_AdvancesTrainingGeneration(t *testing.T) {
 	})
 }
 
+func TestVectorIndexReconfigure_MergesPatchesOnDifferentKeys(t *testing.T) {
+	forEachVectorEngine(t, func(t *testing.T, eng Engine, stg storage.Storage) {
+		createNamespace(t, eng, "ns", 1)
+		for _, patch := range []map[string]string{{"a": "1", "b": "1"}, {"b": "2"}, {"c": "3"}} {
+			result := applyVectorCmd(t, eng, mustEncodeVector(protocol.EncodeVectorIndexReconfigure(protocol.VectorIndexReconfigureParams{
+				Name: "ns", IndexType: vector.IndexFlat, IndexParams: patch,
+			})))
+			if _, refused := protocol.DecodeAppError(result.Data); refused {
+				t.Fatalf("index reconfigure refused: %+v", result)
+			}
+		}
+		rec, err := readNamespaceRecord(stg, "ns")
+		if err != nil {
+			t.Fatalf("readNamespaceRecord: %v", err)
+		}
+		if want := map[string]string{"a": "1", "b": "2", "c": "3"}; !maps.Equal(rec.IndexParams, want) {
+			t.Fatalf("IndexParams = %v, want %v", rec.IndexParams, want)
+		}
+	})
+}
+
 func TestVectorIndexReconfigure_UnknownIndexTypeIsRefused(t *testing.T) {
 	forEachVectorEngine(t, func(t *testing.T, eng Engine, stg storage.Storage) {
 		createNamespace(t, eng, "ns", 1)

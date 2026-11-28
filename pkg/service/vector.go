@@ -1223,6 +1223,15 @@ func (v *vectorService) UpdateNamespace(ctx context.Context, req *UpdateNamespac
 			}
 			return nil, err
 		}
+	} else if patcher, ok := v.storage.(vectorNamespacePatcher); ok {
+		// A replicated store merges the request's keys at apply time, so
+		// a concurrent patch of other keys from another instance survives.
+		if err := patcher.PatchNamespace(ctx, scoped, req.IndexConfig, metadata, now); err != nil {
+			if v.metrics != nil {
+				v.metrics.operationErrors.With("update_namespace", "storage_error").Inc()
+			}
+			return nil, vectorStorageError("update namespace", req.Namespace, 0, err)
+		}
 	} else if err := v.storage.UpdateNamespace(ctx, scoped, update); err != nil {
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("update_namespace", "storage_error").Inc()
@@ -3455,6 +3464,14 @@ func (v *vectorService) ListVectors(ctx context.Context, req *ListVectorsRequest
 		TotalCount: namespaceInfo.VectorCount,
 		Timestamp:  time.Now().UnixNano(),
 	}, nil
+}
+
+// vectorNamespacePatcher is a vector store that merges a namespace patch
+// (the index-config and metadata keys a request sets) into the committed
+// namespace record at apply time (hostVectorStorage). UpdateNamespace uses
+// it instead of writing the whole merged record.
+type vectorNamespacePatcher interface {
+	PatchNamespace(ctx context.Context, namespace string, indexConfig, metadata map[string]string, updatedAt int64) error
 }
 
 // vectorMetadataUpdater is a vector store that applies a metadata-only

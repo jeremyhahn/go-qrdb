@@ -352,3 +352,41 @@ func TestHostVectorStorage_MetadataUpdateDoesNotUndoAConcurrentDelete(t *testing
 		t.Fatal("UpdateMetadata re-created a deleted vector")
 	}
 }
+
+func TestHostVectorStorage_ConcurrentNamespacePatchesBothSurvive(t *testing.T) {
+	ctx := context.Background()
+	a, b := newTwoHostVectorServices(t)
+	if _, err := a.CreateNamespace(ctx, &service.CreateNamespaceRequest{
+		Namespace: "ns", Dimension: 2, IndexConfig: map[string]string{"m": "16"},
+		Metadata: map[string]interface{}{"owner": "team"},
+	}); err != nil {
+		t.Fatalf("CreateNamespace: %v", err)
+	}
+	// Both instances read the same record before either patch lands.
+	for _, svc := range []service.VectorService{a, b} {
+		if _, err := svc.GetNamespaceInfo(ctx, &service.GetNamespaceInfoRequest{Namespace: "ns"}); err != nil {
+			t.Fatalf("GetNamespaceInfo: %v", err)
+		}
+	}
+	if _, err := a.UpdateNamespace(ctx, &service.UpdateNamespaceRequest{
+		Namespace: "ns", IndexConfig: map[string]string{"ef_search": "64"}, Metadata: map[string]interface{}{"a": "1"},
+	}); err != nil {
+		t.Fatalf("UpdateNamespace(A): %v", err)
+	}
+	if _, err := b.UpdateNamespace(ctx, &service.UpdateNamespaceRequest{
+		Namespace: "ns", IndexConfig: map[string]string{"ef_construction": "100"}, Metadata: map[string]interface{}{"b": "2"},
+	}); err != nil {
+		t.Fatalf("UpdateNamespace(B): %v", err)
+	}
+
+	info, err := a.GetNamespaceInfo(ctx, &service.GetNamespaceInfoRequest{Namespace: "ns"})
+	if err != nil {
+		t.Fatalf("GetNamespaceInfo: %v", err)
+	}
+	if info.IndexConfig["m"] != "16" || info.IndexConfig["ef_search"] != "64" || info.IndexConfig["ef_construction"] != "100" {
+		t.Fatalf("IndexConfig = %v, want m=16 ef_search=64 ef_construction=100", info.IndexConfig)
+	}
+	if info.Metadata["owner"] != "team" || info.Metadata["a"] != "1" || info.Metadata["b"] != "2" {
+		t.Fatalf("Metadata = %v, want owner=team a=1 b=2", info.Metadata)
+	}
+}
