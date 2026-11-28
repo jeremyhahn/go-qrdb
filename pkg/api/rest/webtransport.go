@@ -103,6 +103,11 @@ func (s *Server) serveWebTransport(w http.ResponseWriter, r *http.Request) {
 			rejectWebTransportRequest(w, http3.ErrCodeRequestRejected)
 			return
 		}
+		// The connection is closed with H3_SETTINGS_ERROR: there is no
+		// stream left to answer on.
+		if errors.Is(err, errWebTransportSettingsError) {
+			return
+		}
 		// A CONNECT from a client that did not send SETTINGS_WT_ENABLED,
 		// SETTINGS_H3_DATAGRAM or the reset_stream_at transport parameter
 		// is malformed
@@ -182,6 +187,15 @@ func webTransportClientRequirementsMet(w http.ResponseWriter, r *http.Request, d
 		return r.Context().Err()
 	}
 	settings, state := settingser.Settings(), conn.ConnectionState()
+	if settings.EnableDatagrams && !state.SupportsDatagrams.Remote {
+		// quic-go's http3 publishes the client's SETTINGS before it closes a
+		// connection whose SETTINGS_H3_DATAGRAM lacks the
+		// max_datagram_frame_size transport parameter (RFC 9297 section
+		// 2.1.1), so this request can see them first. Close the connection
+		// with the same H3_SETTINGS_ERROR here, so it never opens a session.
+		_ = conn.CloseWithError(quic.ApplicationErrorCode(http3.ErrCodeSettingsError), "missing QUIC Datagram support")
+		return errWebTransportSettingsError
+	}
 	for _, req := range webTransportClientRequirements {
 		if !req.met(settings, state) {
 			return &WebTransportClientRequirementError{Requirement: req.name}
@@ -193,6 +207,11 @@ func webTransportClientRequirementsMet(w http.ResponseWriter, r *http.Request, d
 // errWebTransportSettingsTimeout reports that the client's SETTINGS did not
 // arrive within webTransportHandshakeTimeout.
 var errWebTransportSettingsTimeout = errors.New("rest: the client's HTTP/3 SETTINGS did not arrive within the WebTransport handshake timeout")
+
+// errWebTransportSettingsError reports that the client sent
+// SETTINGS_H3_DATAGRAM without the max_datagram_frame_size transport
+// parameter, and the connection was closed with H3_SETTINGS_ERROR.
+var errWebTransportSettingsError = errors.New("rest: the client's SETTINGS_H3_DATAGRAM lacks QUIC datagram support")
 
 // rejectWebTransportRequest refuses a CONNECT before Upgrade: both directions
 // of the request stream are reset with code, and no session handler runs. code

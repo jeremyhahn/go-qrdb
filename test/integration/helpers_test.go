@@ -803,7 +803,16 @@ func waitForHealthy(t *testing.T, dataDir string, timeout time.Duration) {
 // A 30-second timeout prevents tests from hanging if the binary doesn't exit.
 func runCLI(t *testing.T, binary string, args ...string) (string, error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), cliStepTimeout)
+	return runCLIWithin(t, cliStepTimeout, binary, args...)
+}
+
+// runCLIWithin is runCLI with the step bound limit: a CLI call whose own
+// documented server deadline is longer than cliStepTimeout (a raft tenant
+// create, tenantCreateResponseBound) must not be killed before the server
+// answers.
+func runCLIWithin(t *testing.T, limit time.Duration, binary string, args ...string) (string, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binary, args...)
 	// A killed CLI whose output pipe is still held open must not stall the
@@ -811,7 +820,7 @@ func runCLI(t *testing.T, binary string, args ...string) (string, error) {
 	cmd.WaitDelay = cliWaitDelay
 	out, err := cmd.CombinedOutput()
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return string(out), &cliStepTimeoutError{args: args, limit: cliStepTimeout, err: err}
+		return string(out), &cliStepTimeoutError{args: args, limit: limit, err: err}
 	}
 	return string(out), err
 }
