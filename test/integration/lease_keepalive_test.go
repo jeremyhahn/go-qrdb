@@ -38,9 +38,16 @@ import (
 // The keep-alive lands failoverRenewAfter into it, so the followers' copies
 // would lapse failoverLeaseTTL-failoverRenewAfter seconds after it -- well
 // before the deadline the keep-alive reported -- if a new leader trusted them.
+// The TTL is long enough that leaseRestartedCheck's threshold stays well
+// above zero, where the lessor clamps an expired lease's TTL, for the whole
+// failoverRestartWindow after an election: a clamped-to-zero stale copy can
+// never pass for a restarted lease.
 const (
-	failoverLeaseTTL   = 10
+	failoverLeaseTTL   = 60
 	failoverRenewAfter = 6 * time.Second
+	// failoverRestartWindow is how long the new leader has to show the
+	// restarted lease: its first sweep plus failoverSealReconfirm.
+	failoverRestartWindow = 5*time.Second + failoverSealReconfirm
 	// failoverSealReconfirm bounds how long a survivor refuses with
 	// SEAL_STATE_UNCONFIRMED after the leader dies: the cluster seal monitor
 	// serves for one lease past its last good records scan and scans every
@@ -113,10 +120,16 @@ func TestLease_ThreeNode_KeepAliveSurvivesLeaderFailure(t *testing.T) {
 	// retryable SEAL_STATE_UNCONFIRMED until its next records scan
 	// succeeds, so the window adds failoverSealReconfirm to the sweep's,
 	// and leaseRestartedCheck allows for the lease aging meanwhile.
-	awaitClusterCondition(t, 5*time.Second+failoverSealReconfirm, "new leader restarting the lease at its full TTL",
-		leaseRestartedCheck(killed, time.Now, func() (leaseResult, error) {
-			return httpLeaseTTLOrUnconfirmed(t, c.ca, newLeader, lease.ID)
-		}))
+	restarted := leaseRestartedCheck(killed, time.Now, func() (leaseResult, error) {
+		return httpLeaseTTLOrUnconfirmed(t, c.ca, newLeader, lease.ID)
+	})
+	awaitClusterCondition(t, failoverRestartWindow, "new leader restarting the lease at its full TTL", func() error {
+		err := restarted()
+		if spent := (*leaseRestartWindowSpentError)(nil); errors.As(err, &spent) {
+			t.Fatalf("new leader restarting the lease: %v", err)
+		}
+		return err
+	})
 
 	// No survivor may delete the key before the deadline the client was told.
 	watch := time.NewTicker(250 * time.Millisecond)
@@ -163,7 +176,11 @@ func leaseRestartedCheck(killed time.Time, now func() time.Time, read func() (le
 		if err != nil {
 			return err
 		}
-		need := float64(failoverLeaseTTL-1) - now().Sub(killed).Seconds()
+		elapsed := now().Sub(killed)
+		need := float64(failoverLeaseTTL-1) - elapsed.Seconds()
+		if need <= 1 {
+			return &leaseRestartWindowSpentError{Elapsed: elapsed}
+		}
 		if float64(got.RemainingTTL) < need {
 			return &leaseNotAgedError{Remaining: got.RemainingTTL}
 		}
@@ -171,12 +188,25 @@ func leaseRestartedCheck(killed time.Time, now func() time.Time, read func() (le
 	}
 }
 
+// leaseRestartWindowSpentError reports that so long has passed since the
+// kill that leaseRestartedCheck's threshold would no longer tell a restarted
+// lease from a stale one the lessor reports as 0: the test must fail.
+type leaseRestartWindowSpentError struct {
+	Elapsed time.Duration
+}
+
+func (e *leaseRestartWindowSpentError) Error() string {
+	return "restart threshold spent " + e.Elapsed.Round(time.Millisecond).String() +
+		" after the kill of a " + strconv.Itoa(failoverLeaseTTL) + "s lease"
+}
+
 // TestLease_RestartCheck_SlowSealReconfirm drives leaseRestartedCheck
 // through a failover whose new leader keeps refusing with
 // SEAL_STATE_UNCONFIRMED for 8 s after promotion, past the 6 s a fixed
 // failoverLeaseTTL-1 threshold allowed, on a simulated clock: the restarted
-// lease must pass on the first read after reconfirmation, and the stale
-// follower copy must never pass.
+// lease must pass on the first read after reconfirmation, and neither the
+// stale follower copy nor a stale lease the lessor reports as 0 may pass at
+// any point in failoverRestartWindow.
 func TestLease_RestartCheck_SlowSealReconfirm(t *testing.T) {
 	const (
 		election  = 3 * time.Second
@@ -187,8 +217,14 @@ func TestLease_RestartCheck_SlowSealReconfirm(t *testing.T) {
 	killed := time.Unix(1_000_000, 0)
 	promoted := killed.Add(election)
 	confirmed := promoted.Add(reconfirm)
+	windowEnd := promoted.Add(failoverRestartWindow)
+	// remaining is the lessor's report (pkg/lease remainingTTLLocked):
+	// whole seconds left, clamped at zero once the lease has expired.
 	remaining := func(expiry, at time.Time) int64 {
-		return int64(expiry.Sub(at) / time.Second)
+		if left := expiry.Sub(at).Seconds(); left > 0 {
+			return int64(left)
+		}
+		return 0
 	}
 
 	cases := []struct {
@@ -198,6 +234,7 @@ func TestLease_RestartCheck_SlowSealReconfirm(t *testing.T) {
 	}{
 		{"restarted at promotion", promoted.Add(failoverLeaseTTL*time.Second + grace), true},
 		{"stale follower copy", killed.Add(failoverLeaseTTL*time.Second - failoverRenewAfter), false},
+		{"stale copy clamped to zero", killed, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -209,15 +246,27 @@ func TestLease_RestartCheck_SlowSealReconfirm(t *testing.T) {
 				return leaseResult{RemainingTTL: remaining(tc.expiry, clock)}, nil
 			})
 			var passedAt time.Time
-			for ; clock.Before(confirmed.Add(5 * time.Second)); clock = clock.Add(step) {
+			for ; !clock.After(windowEnd); clock = clock.Add(step) {
 				err := check()
-				var unconfirmed *sealUnconfirmedError
-				if clock.Before(confirmed) && !errors.As(err, &unconfirmed) {
-					t.Fatalf("at %v before reconfirmation: err = %v, want the unconfirmed refusal", clock.Sub(killed), err)
+				var (
+					unconfirmed *sealUnconfirmedError
+					notAged     *leaseNotAgedError
+				)
+				switch {
+				case clock.Before(confirmed):
+					if !errors.As(err, &unconfirmed) {
+						t.Fatalf("at %v before reconfirmation: err = %v, want the unconfirmed refusal", clock.Sub(killed), err)
+					}
+				case err == nil:
+					if passedAt.IsZero() {
+						passedAt = clock
+					}
+				case !errors.As(err, &notAged):
+					t.Fatalf("at %v: err = %v, want a positive restart threshold for the whole window", clock.Sub(killed), err)
 				}
-				if err == nil {
-					passedAt = clock
-					break
+				if !tc.wantPass && err == nil {
+					t.Fatalf("stale lease reporting %ds passed the check at %v",
+						remaining(tc.expiry, clock), clock.Sub(killed))
 				}
 			}
 			switch {
@@ -226,9 +275,18 @@ func TestLease_RestartCheck_SlowSealReconfirm(t *testing.T) {
 			case tc.wantPass && passedAt.Sub(confirmed) > step:
 				t.Fatalf("restarted lease passed at %v, want the first read after reconfirmation at %v",
 					passedAt.Sub(killed), confirmed.Sub(killed))
-			case !tc.wantPass && !passedAt.IsZero():
-				t.Fatalf("stale follower copy passed the check at %v", passedAt.Sub(killed))
 			}
 		})
+	}
+
+	// Once the threshold would drop to 1 s or below, the check fails rather
+	// than accept any reported TTL.
+	clock := killed.Add((failoverLeaseTTL - 2) * time.Second)
+	check := leaseRestartedCheck(killed, func() time.Time { return clock }, func() (leaseResult, error) {
+		return leaseResult{RemainingTTL: 0}, nil
+	})
+	var spent *leaseRestartWindowSpentError
+	if err := check(); !errors.As(err, &spent) {
+		t.Fatalf("check %v after the kill = %v, want the spent-window error", clock.Sub(killed), err)
 	}
 }
