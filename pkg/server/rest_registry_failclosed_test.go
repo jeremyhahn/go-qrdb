@@ -53,6 +53,10 @@ func (s *isolationTenantServicer) IsolationEpochs(context.Context, string) (map[
 	return map[string][]byte{}, nil
 }
 
+func (s *isolationTenantServicer) IsolationTightening(context.Context, string) (bool, error) {
+	return false, nil
+}
+
 func TestRESTServiceRegistry_FailsClosedWhenIsolationBackendUnwired(t *testing.T) {
 	cases := []struct {
 		name      string

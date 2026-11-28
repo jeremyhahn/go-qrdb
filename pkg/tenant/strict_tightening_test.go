@@ -586,6 +586,53 @@ func TestTightenToStrict_WritesIsolationEpochBeforeProbe(t *testing.T) {
 	}
 }
 
+// TestTightenToStrict_NewEpochImpliesLiveMarker: the shared-store write
+// guard refuses on a live marker (ErrIsolationTighteningInFlight) after it
+// reads the epochs. That closes the race only if every point at which the
+// new epoch is readable but the strict policy is not committed has the
+// marker up: paused after its probe, inside the commit, the new epoch is
+// readable and isolationTightening reports the tightening; after it returns
+// the marker is gone.
+func TestTightenToStrict_NewEpochImpliesLiveMarker(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name, prefix, key string
+	}{
+		{"tenant", tighteningPrefix + "acme/", isolationEpochPrefix + "acme"},
+		{"floor", clusterTighteningPrefix, clusterEpochKey},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMemMarkerStore()
+			before := []byte("earlier-epoch")
+			_ = store.Put(ctx, tc.key, before)
+			var g isolationChangeGuard
+			g.SetNodeKeyLogProbe(&fixedProbe{})
+			g.SetAuditRouteProbe(noSystemAuditRoute{})
+			paused := false
+			err := g.tightenToStrict(ctx, store, tc.prefix, true,
+				func(context.Context) ([]string, error) { return []string{"acme"}, nil },
+				func(context.Context) error {
+					paused = true
+					epochs, err := isolationEpochs(ctx, store, "acme")
+					if err != nil || string(epochs[tc.key]) == string(before) {
+						t.Fatalf("paused tightening: epochs = (%q, %v), want a fresh %s", epochs, err, tc.key)
+					}
+					live, err := isolationTightening(ctx, store, "acme")
+					if err != nil || !live {
+						t.Fatalf("paused tightening with the new epoch: isolationTightening = (%v, %v), want true", live, err)
+					}
+					return nil
+				})
+			if err != nil || !paused {
+				t.Fatalf("tightenToStrict = %v (paused %v), want a commit", err, paused)
+			}
+			if live, err := isolationTightening(ctx, store, "acme"); err != nil || live {
+				t.Fatalf("after the tightening: isolationTightening = (%v, %v), want false", live, err)
+			}
+		})
+	}
+}
+
 // TestIsolationEpochs_AbsentKeysAreOmitted: a key no tightening wrote is
 // absent from the map IsolationEpochs returns; a written one is present.
 func TestIsolationEpochs_AbsentKeysAreOmitted(t *testing.T) {

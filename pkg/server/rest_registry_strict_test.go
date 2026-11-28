@@ -347,6 +347,13 @@ type epochTenantSvc struct {
 	system service.KVServicer
 	// beforeRead, when set, runs once before the next epoch read.
 	beforeRead func()
+	// tightening is the marker state IsolationTightening reports: a
+	// tightening to strict in flight (marker up, policy not committed).
+	tightening bool
+}
+
+func (s *epochTenantSvc) IsolationTightening(context.Context, string) (bool, error) {
+	return s.tightening, nil
 }
 
 func (s *epochTenantSvc) IsolationEpochs(ctx context.Context, tenantID string) (map[string][]byte, error) {
@@ -480,6 +487,67 @@ func TestRestRegistry_WriteGuardRefusesTighteningBeforeEpochRead(t *testing.T) {
 	}
 	if _, err := raw.KV.Get(ctx, "bt/system/late"); err == nil {
 		t.Fatal("the write across the tightening reached the shared node-keyed store")
+	}
+}
+
+// TestRestRegistry_WriteGuardRefusesWhileTighteningInFlight: a tightening
+// paused after its probe has its marker up and its new epoch written, but
+// the strict policy is not committed yet. A write that reads the new epoch
+// then would pass the policy recheck and its apply-time epoch compare, and
+// land on the node-keyed log after the commit; the guard refuses it on the
+// live marker instead (retryable), and once the tightening commits strict
+// and removes its marker the write is refused as strict.
+func TestRestRegistry_WriteGuardRefusesWhileTighteningInFlight(t *testing.T) {
+	ctx := context.Background()
+	eng, err := engine.NewMVCCEngine(memory.NewStorage())
+	if err != nil {
+		t.Fatalf("NewMVCCEngine: %v", err)
+	}
+	lb := backend.NewLocalBackend(eng)
+	t.Cleanup(func() { _ = lb.Close() })
+	raw := rawServices(lb)
+
+	rr, _ := newStrictSharedRegistry(t, tenant.TenantIsolationPolicyInherit, tenant.ClusterIsolationPolicyOperatorAccess, nil)
+	rr.dbReg.Register("system", raw)
+	floor := rr.tenantSvc.(*floorTenantSvc)
+	epochs := &epochTenantSvc{floorTenantSvc: floor, system: raw.KV}
+	rr.tenantSvc = epochs
+	kv, err := rr.KVService("bt", "system")
+	if err != nil {
+		t.Fatalf("KVService(operator-access): %v", err)
+	}
+	floorEpoch := tenant.IsolationEpochKeys("bt")[1]
+
+	// The tightening: marker up, then its epoch, then its probe -- paused.
+	epochs.tightening = true
+	if err := raw.KV.Put(ctx, floorEpoch, []byte("epoch-1")); err != nil {
+		t.Fatalf("epoch write: %v", err)
+	}
+	err = kv.Put(ctx, "racer", []byte("v"))
+	if !errors.Is(err, tenant.ErrIsolationTighteningInFlight) {
+		t.Fatalf("write during an in-flight tightening: err = %v, want tenant.ErrIsolationTighteningInFlight", err)
+	}
+	if _, err := raw.KV.Get(ctx, "bt/system/racer"); err == nil {
+		t.Fatal("a write during the in-flight tightening reached the shared node-keyed store")
+	}
+
+	// The tightening commits strict, then removes its marker.
+	floor.floor = tenant.ClusterIsolationPolicyStrict
+	epochs.tightening = false
+	err = kv.Put(ctx, "racer", []byte("v"))
+	var strictErr *rest.StrictTenantSharedStoreError
+	if !errors.As(err, &strictErr) {
+		t.Fatalf("write after the strict commit: err = %v, want *rest.StrictTenantSharedStoreError", err)
+	}
+	if _, err := raw.KV.Get(ctx, "bt/system/racer"); err == nil {
+		t.Fatal("a write after the strict commit reached the shared node-keyed store")
+	}
+
+	// An abandoned tightening (marker removed, nothing committed): the
+	// retry succeeds.
+	floor.floor = tenant.ClusterIsolationPolicyOperatorAccess
+	if err := kv.Put(ctx, "racer", []byte("v")); err != nil {
+		t.Fatalf("retry after an abandoned tightening: %v", err)
 	}
 }
 

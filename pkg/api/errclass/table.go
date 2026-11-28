@@ -1237,6 +1237,9 @@ var tenantRules = []rule{
 	// No probe is wired to read the tenant's audit route: the tightening
 	// to strict fails closed.
 	is(tenant.ErrAuditRouteUnverifiable, Unavailable),
+	// A shared-store write raced a tightening to strict still in flight:
+	// retryable once the tightening commits or is abandoned.
+	is(tenant.ErrIsolationTighteningInFlight, Unavailable),
 	is(tenant.ErrTenantNotFound, NotFound),
 	as(&tenant.InvalidTenantIDError{}, InvalidArgument),
 	// A tenant ID no SPIFFE ID could carry as its trust domain.

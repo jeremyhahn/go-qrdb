@@ -268,6 +268,13 @@ var tighteningNow = time.Now
 // expired marker. Retrying is safe.
 var ErrTighteningLeaseExpired = errors.New("tenant: the tightening to strict outlasted its marker's lease; retry")
 
+// ErrIsolationTighteningInFlight refuses a write to the shared, node-keyed
+// store while a tightening to strict that governs the writer's tenant is in
+// flight. Its epoch is written after its marker, so a writer that read the
+// new epoch sees the marker -- or, once the marker is removed, the strict
+// policy the tightening committed first. Retrying is safe.
+var ErrIsolationTighteningInFlight = errors.New("tenant: a tightening to strict isolation is in flight; the shared-store write is refused, retry")
+
 // ErrTighteningNotAtomic refuses a tightening to strict on a store that
 // cannot write the policy in one batch guarded on the tightening marker
 // (kvstore.MultiGuardedBatchKVStore): without it a create that reaped the

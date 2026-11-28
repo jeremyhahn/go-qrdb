@@ -526,11 +526,26 @@ func (r *restServiceRegistry) strictWriteGuard(tenantID string, recheck func(con
 		if !ok {
 			return service.WriteGuard{}, errIsolationEpochUnreadable
 		}
+		markers, ok := r.tenantSvc.(tenant.IsolationTighteningReader)
+		if !ok {
+			return service.WriteGuard{}, errIsolationEpochUnreadable
+		}
 		lookupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
 		epochs, err := reader.IsolationEpochs(lookupCtx, tenantID)
-		cancel()
 		if err != nil {
 			return service.WriteGuard{}, err
+		}
+		// The marker is read AFTER the epoch: a tightening writes its
+		// marker before its epoch and removes it only after its strict
+		// commit, so a writer that read the new epoch sees the marker here
+		// or the strict policy in the recheck below.
+		tightening, err := markers.IsolationTightening(lookupCtx, tenantID)
+		if err != nil {
+			return service.WriteGuard{}, err
+		}
+		if tightening {
+			return service.WriteGuard{}, tenant.ErrIsolationTighteningInFlight
 		}
 		// A tightening committed before this epoch read is refused here; one after it fails the guard.
 		if err := recheck(ctx); err != nil {
