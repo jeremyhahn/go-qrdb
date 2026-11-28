@@ -1005,7 +1005,9 @@ func TestWebTransport_NegotiationFailureOpensNoSession(t *testing.T) {
 		"no reset_stream_at":  {broken(func(hs *wtHandshake) { hs.resetStreamAt = false }), malformed},
 		// quic-go's http3.Server closes the connection: SETTINGS_H3_DATAGRAM
 		// without the max_datagram_frame_size transport parameter is
-		// H3_SETTINGS_ERROR (RFC 9297 section 2.1.1).
+		// H3_SETTINGS_ERROR (RFC 9297 section 2.1.1). It publishes the
+		// SETTINGS first, so serveWebTransport closes it with the same code
+		// itself rather than open a session (the handler count below).
 		"no QUIC datagrams": {broken(func(hs *wtHandshake) { hs.quicDatagram = false }), func(t *testing.T, status int, body string, err error) {
 			var appErr *quic.ApplicationError
 			if !errors.As(err, &appErr) || appErr.ErrorCode != quic.ApplicationErrorCode(http3.ErrCodeSettingsError) || !appErr.Remote {

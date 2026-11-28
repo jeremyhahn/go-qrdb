@@ -34,6 +34,12 @@ also fails a case whose curl command line carries the token.
      this repository (a fork, or one since deleted) gets the hosted default
      with a ::notice and no call, even when self-hosted would win; a
      same-repository pull request and a push still balance.
+  O. ci-template v1.62 overflow (Tenant Agent ruling 13:41Z 11-27): a public
+     repository whose oldest queued bigdisk or bigdisk-docker job waited
+     more than WAIT_LIMIT (600 s) goes hosted when the hosted pool has a
+     free slot, even where self-hosted would win on use; a shorter wait, a
+     private repository (or none read), a full hosted pool, and old jobs
+     that are in progress rather than queued keep the v1.60 choice.
 
 Run: python3 -I software/templates/github-actions/testdata/runner-select-tests.py
 """
@@ -120,7 +126,7 @@ def jobs(*js, total=None):
     return json.dumps({"total_count": len(js) if total is None else total, "jobs": list(js)})
 
 
-def run(resp, server="https://github.com", hs="10", c1="10", c2="10", event="push", head="", ref="refs/heads/main"):
+def run(resp, server="https://github.com", hs="10", c1="10", c2="10", event="push", head="", ref="refs/heads/main", private="false"):
     with tempfile.TemporaryDirectory() as d:
         d = pathlib.Path(d)
         (d / "bin").mkdir()
@@ -139,6 +145,7 @@ def run(resp, server="https://github.com", hs="10", c1="10", c2="10", event="pus
             "SERVER": server, "API": "https://api.github.com/repos/o/r/actions", "RUN_ID": "100",
             "JOB_TOKEN": TOKEN, "HS": hs, "C1": c1, "C2": c2,
             "EVENT": event, "HEAD_REPO": head, "REPO": "o/r", "REF": ref,
+            "PRIVATE": private, "WAIT_LIMIT": "600",
         }
         p = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", str(d / "step.sh")],
                            env=env, capture_output=True, text=True, timeout=60)
@@ -325,6 +332,29 @@ for label, event, ref in (("a schedule", "schedule", "refs/heads/main"),
 case("G2 a quiet schedule run (a tie at 0) stays hosted", pool(), HOSTED, HOSTED,
      ["self-hosted runners refuse"], calls=0, event="schedule")
 case("G3 a push to main still balances", WIN, SELF, SELF_D, ["run on the Dells"], ref="refs/heads/main")
+
+# O. v1.62 overflow: base pool(h=5, s2=2) picks self-hosted on use.
+OLD_D = [jobj(101, "queued", SH, age=900)]
+OLD_1 = [jobj(101, "queued", B1, age=900)]
+case("O1 public, a bigdisk-docker job queued 900 s, hosted 5 of 10: hosted",
+     pool(h=5, s2=2, extra=OLD_D), HOSTED, HOSTED,
+     ["overflow: the oldest queued self-hosted job waited past 600s", "bigdisk-docker 9", "(5 of 10)", "ci-template v1.62"], ["::warning::"])
+case("O2 public, a bigdisk job queued 900 s: hosted",
+     pool(h=5, s2=2, extra=OLD_1), HOSTED, HOSTED, ["overflow:", "oldest queued bigdisk 9"])
+case("O3 public, the oldest queued job waited 500 s: self-hosted",
+     pool(h=5, s2=2, extra=[jobj(101, "queued", SH, age=500)]), SELF, SELF_D, ["run on the Dells"], ["overflow:"])
+case("O4 private repository, 900 s wait: self-hosted (no spend)",
+     pool(h=5, s2=2, extra=OLD_D), SELF, SELF_D, ["run on the Dells"], ["overflow:"], private="true")
+case("O5 visibility not read (PRIVATE empty), 900 s wait: self-hosted",
+     pool(h=5, s2=2, extra=OLD_D), SELF, SELF_D, ["run on the Dells"], ["overflow:"], private="")
+case("O6 hosted full (10 of 10), 900 s wait: self-hosted",
+     pool(h=10, s2=2, extra=OLD_D), SELF, SELF_D, ["the hosted pool is full (10 of 10)"], ["overflow:"])
+case("O7 an old in-progress self-hosted job is no wait: self-hosted",
+     pool(h=5, s2=1, extra=[jobj(101, "in_progress", SH, age=3600)]), SELF, SELF_D, ["oldest queued bigdisk 0s, bigdisk-docker 0s"], ["overflow:"])
+case("O8 an old queued hosted job is no self-hosted wait: self-hosted",
+     pool(h=5, s2=2, extra=[jobj(101, "queued", U, age=3600)]), SELF, SELF_D, ["bigdisk-docker 0s"], ["overflow:"])
+case("O9 a created_at with fractional seconds is read",
+     pool(h=5, s2=2, extra=[dict(jobj(101, "queued", SH), created_at=iso(900)[:-1] + ".250Z")]), HOSTED, HOSTED, ["overflow:"])
 
 print(f"{'ALL PASS' if not FAILS else f'{FAILS} FAILED'}")
 sys.exit(1 if FAILS else 0)
