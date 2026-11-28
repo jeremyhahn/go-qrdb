@@ -90,6 +90,12 @@ import (
 // exemption.
 const InternalKeyPrefixSystem = kvstore.ReservedPrefixSystem
 
+// LeaseOwnerKeyPrefix roots the ownership records of namespaced leases:
+// LeaseOwnerKeyPrefix + "<tenant>/<db>/" + lease ID, written with the lease
+// by the server's namespaced lease view. A database holding only a live
+// lease holds this record, so the shared-namespace probe scans it.
+const LeaseOwnerKeyPrefix = InternalKeyPrefixSystem + "lease-owner/"
+
 // internalKeyPrefix is one reserved prefix together with the single property
 // that varies between them: whether the subsystem owning the namespace reads
 // its own records back through the user-facing enumeration calls this guard

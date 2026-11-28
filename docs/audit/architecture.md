@@ -341,8 +341,9 @@ that cannot be opened stops the start. No composer is left without one.
 
 The barriers record on the same trail, not a second one: the system barrier,
 every tenant barrier and every database barrier, through the adapter
-`seal.NewComplianceAuditLogger`, keyed by the owning tenant and naming the
-barrier. A Shamir unseal therefore leaves the holders' submissions and the
+`seal.NewComplianceAuditLogger`, naming the barrier. The system barrier's and
+every tenant barrier's records are platform events, keyed by the system
+tenant; a database barrier's are keyed by the database's tenant. A Shamir unseal therefore leaves the holders' submissions and the
 barrier's `quorum-complete` and `unseal` side by side. **Each event has one
 emitter:** a submission and a rekey opening are the holder engine's records,
 and the barrier emits no copy. The list is in
@@ -448,6 +449,23 @@ tenant:
   and `vlog:proof` on its own tenant reads the instance as `--database system
   --log audit`: its head, its entries (each a marshaled audit event) and
   inclusion and consistency proofs that verify against the head.
+- **Append-once onboarding events** (`featuregate.AuditAppendOnce`). An
+  onboarding event carrying the append-once marker is appended once per
+  identity (request id and timestamp, `vlog.Chain.AppendOnce`), its
+  once-record written beside it. An unmarked proposal is appended as before
+  activation, the event, head and tree records and nothing else, so a
+  rolling upgrade leaves the same raw state on every replica. Only marked
+  appends write once-records; an unmarked one consults them read-only
+  (`vlog.Chain.HasOnce`) and appends nothing when a marked append of the
+  same identity has applied, so a pre-activation unmarked proposal that
+  applies after its marked retry leaves one event (before activation no
+  once-record exists, so its apply and replay are unchanged). In the other
+  order, a marked append first looks up an earlier event of its identity in
+  the tenant's event records (`vlog.Chain.RecordOnceIfPresent`, reading
+  through the apply batch) and, finding one, records its once-record and
+  appends nothing, so an unmarked proposal and its marked retry leave one
+  event in either apply order, on live and restored replicas; unmarked
+  commands still write nothing new ([../multi-tenancy/architecture.md](../multi-tenancy/architecture.md)).
 - Both state-machine families (`pkg/store.PebbleStateMachine`,
   `pkg/engine.MVCCEngine`) dispatch the opcode to `Chain`, restore it on open
   and on snapshot recovery, and resync it after a failed apply, as the lease
@@ -480,12 +498,54 @@ What proposes `OpAuditAppend`, and how a caller reads back what it proposed:
 - `tenant.TenantService.ReplicatedAuditEnabled` — resolves that entitlement,
   with the system tenant handled separately (see "Platform events" below).
 - `service.SystemShardAuditResolver` — names the `(Host, shardID)` that
-  serves a tenant's chain. Every tenant that is not dedicated-isolation, and
-  an unregistered tenant id, resolves to the system shard; a
-  dedicated-isolation tenant (volume/raft) is refused with
-  `*service.DedicatedTenantAuditNotSupportedError` rather than silently
-  guessing, because that tenant's chain belongs on its own dedicated host,
-  which this resolver does not reach.
+  serves a tenant's chain. A shared-isolation tenant, and an unregistered
+  tenant id, resolves to the system shard. In cluster mode (once
+  `AttachTenantHomes` has wired the tenant home groups) a dedicated-isolation
+  tenant (volume/raft) resolves to its home group, and a barrier tenant
+  follows its audit route: a recorded fact (`__sys:audit/route/<tenant>`,
+  first writer wins) that is `system` when the tenant already has a chain on
+  the system shard or `verifiable-log-audit` is off, and `home` otherwise.
+  The route never changes after it is recorded and no record ever moves, so an
+  existing chain is never split. The route is picked before proposing; apply
+  is unchanged. A system route is under the node key, so a barrier tenant
+  whose effective isolation policy is strict (its own policy or the cluster
+  floor) gets no append there: the append is refused with
+  `*tenant.SystemAuditRouteError` (failed precondition) before a fresh system
+  route is recorded, and checked again against the route that won the
+  record, so an append that loses the race to another writer's system route
+  is refused too. The append is fenced against an in-flight tightening by the
+  tightening's marker, and a marker read that fails refuses the append. Reads
+  stay allowed; and tightening such a tenant to strict
+  (its policy or the floor) is refused with the same error, read through
+  `SystemShardAuditResolver.SystemAuditRoute` (a recorded `system` route, or
+  none recorded and a chain on the system shard). A `system` route refused
+  this way with no chain behind it is retired (compare-and-delete), so the
+  tenant is not stranded on an empty system route; but a zero committed head
+  does not prove no append is in flight, so `ReplicatedLogger.Emit` holds the
+  route it resolved (`SystemShardAuditResolver.HoldAuditAppend`) from
+  resolution until its proposal returns, re-reading the route after it counts
+  itself, and a refusal retires no route while one is held: the tightening's
+  probe still sees it and refuses. Only a `home` route, which is never
+  retired, is cached; a `system` route is read from the route store on every
+  call, so another node or resolver sees a retired and re-recorded route.
+  The hold is per resolver, so a system-routed append also carries a guard
+  on the tenant's and the floor's isolation epochs, read before its strict
+  check: an append in flight across a tightening (a refusal on another node
+  or on this node's separate log resolver, or a proposal that returned on a
+  timeout) is refused at apply time on every replica, reported as
+  `*tenant.SystemAuditRouteError` when the tenant is now strict, else as the
+  retryable `*service.WriteGuardRefusedError`. The guard is never dropped:
+  a cluster refuses the isolation-policy verbs until `guarded-writes` is
+  active as well as `strict-isolation`, and activation is permanent, so no
+  group proposes the guard unguarded once a tenant can be strict.
+  A home-group write while `verifiable-log-audit` is not active
+  on every replica is refused as unavailable with
+  `*service.AuditHomeNotActiveError`. Without home groups (standalone) a
+  barrier tenant stays on the system shard, unguarded: it cannot be tightened
+  to strict, because the tightening's probe reports a system route for it, so
+  its appends need no epoch guard; a dedicated-isolation tenant is
+  refused with `*service.DedicatedTenantAuditNotSupportedError` rather than
+  silently guessing.
 - `service.ReplicatedLogger` — the `audit.AuditLogger` that actually encodes
   and proposes `protocol.OpAuditAppend` from an ordinary `Emit` call (and
   answers `Query`/`VerifyTenantChain` by reading back through

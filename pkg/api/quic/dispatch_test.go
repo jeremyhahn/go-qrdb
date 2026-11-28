@@ -266,6 +266,8 @@ var expectedMethods = []string{
 	"tenant.Get",
 	"tenant.List",
 	"tenant.Update",
+	"cluster.IsolationPolicyGet",
+	"cluster.IsolationPolicySet",
 	"tenant.Delete",
 	"tenant.UpdateQuotas",
 	"tenant.UpdateEntitlements",
@@ -300,6 +302,8 @@ func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
 func TestBuildHandlers_MethodCount(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 
+	// 218 = 216 + cluster.IsolationPolicyGet and cluster.IsolationPolicySet, the
+	// cluster isolation floor (tenants:read, tenants:update:cross).
 	// 216 = 207 + the nine group.* IAM group methods (go-qrdb#1651).
 	// 207 = 206 + role.ListPermissionCatalog (docs/18 V12).
 	// 206 = 203 + cert.DelegationPolicyPut, cert.DelegationPolicyList and
@@ -385,7 +389,7 @@ func TestBuildHandlers_MethodCount(t *testing.T) {
 	// kv.CompareAndDelete, kv.CompareAndSwap — go-qrdb#124), and the 161 was
 	// 160 plus user.GetByEmail, the canonical login-key lookup (go-qrdb#190).
 	// The 2 watch methods remain on the streaming path, not the unary table.
-	const wantCount = 219
+	const wantCount = 221
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}

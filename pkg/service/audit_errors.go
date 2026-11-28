@@ -34,14 +34,21 @@ func (e *AuditFeatureNotActiveError) Error() string {
 		"audit-append on every replica of this shard"
 }
 
-// DedicatedTenantAuditNotSupportedError is returned when a replicated audit
-// write or query names a dedicated-isolation tenant (volume or raft): such
-// a tenant runs its own separate Raft host, built lazily after its barrier
-// unseals, and SystemShardAuditResolver does not yet route to it. Refusing
-// explicitly is deliberate -- silently writing the tenant's events to the
-// system shard's chain under its own tenant segment would be a correctness
-// defect (the wrong replica set, the wrong barrier), not merely a missing
-// feature, so this is refused rather than guessed.
+// AuditHomeNotActiveError is returned when an isolated tenant's audit trail
+// belongs in its home group but featuregate.VerifiableLogAudit is not yet
+// active on the system shard: some replica does not advertise the audit
+// instance, so the event is refused rather than written to a home group in
+// a mixed-capability cluster or split onto the system shard. Nothing is
+// proposed; the caller retries once the gate activates.
+type AuditHomeNotActiveError struct {
+	TenantID string
+}
+
+func (e *AuditHomeNotActiveError) Error() string {
+	return "service: the home-group audit trail of tenant " + strconv.Quote(e.TenantID) +
+		" is not yet active: the cluster feature gate has not activated the audit instance on every replica"
+}
+
 // AuditInstanceRefusedError is returned when the state machine refuses an
 // audit event proposed to the tenant's audit instance (system/audit) with a
 // log refusal; Reason is the refusal's message.
@@ -54,6 +61,14 @@ func (e *AuditInstanceRefusedError) Error() string {
 	return "audit: the audit instance of tenant " + strconv.Quote(e.TenantID) + " refused the event: " + e.Reason
 }
 
+// DedicatedTenantAuditNotSupportedError is returned when a replicated audit
+// write or query names a dedicated-isolation tenant (volume or raft) on a
+// node without a home group: such a tenant's trail belongs in its own home
+// group, which SystemShardAuditResolver reaches only once one is attached.
+// Refusing explicitly is deliberate -- silently writing the tenant's events
+// to the system shard's chain under its own tenant segment would be a
+// correctness defect (the wrong replica set, the wrong barrier), not merely
+// a missing feature, so this is refused rather than guessed.
 type DedicatedTenantAuditNotSupportedError struct {
 	TenantID      string
 	IsolationType string

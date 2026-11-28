@@ -98,6 +98,7 @@ func newSearchTestService(t *testing.T, namespace string, dimension uint32, mock
 
 	svc, err := NewVectorService(storage, logger)
 	require.NoError(t, err)
+	attachPrefixHomes(t, svc)
 
 	vs := svc.(*vectorService)
 
@@ -891,6 +892,7 @@ func TestVectorSearchByID_TenantNamespaceIsolation(t *testing.T) {
 
 	svc, err := NewVectorService(storage, logger)
 	require.NoError(t, err)
+	attachPrefixHomes(t, svc)
 
 	vs := svc.(*vectorService)
 
@@ -1146,6 +1148,7 @@ func TestVectorHybridSearch_TenantNamespacesAreIsolated(t *testing.T) {
 
 	svc, err := NewVectorService(storage, logger)
 	require.NoError(t, err)
+	attachPrefixHomes(t, svc)
 
 	// Owner can search their own namespace.
 	ownerReq := &HybridSearchRequest{

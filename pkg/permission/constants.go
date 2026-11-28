@@ -1328,6 +1328,7 @@ var categories = []Category{
 			TenantsSetIsolation, TenantsSetEntitlements, TenantsSetQuotas, TenantsSetStatus,
 			TenantsListCross, TenantsCreateCross, TenantsApprove,
 			TenantsReadCross, TenantsDeleteCross, TenantsUpdateCross,
+			UsersReadTenant, UsersWriteTenant, RolesReadTenant, RolesWriteTenant,
 			TenantsListDeleted, TenantsReconcileDeleted,
 			TenantBarrierInit, TenantBarrierUnseal, TenantBarrierSeal, TenantBarrierStatus,
 			TenantBarrierOfficerRegister, TenantBarrierOfficerList,

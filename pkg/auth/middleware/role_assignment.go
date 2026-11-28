@@ -165,8 +165,12 @@ func (m *AuthMiddleware) AuthorizeRoleUnassignment(ctx context.Context, userSvc 
 		return err
 	}
 	target := tenantid.Normalize(existing.TenantID)
-	if err := m.AuthorizeTenant(ctx, target, permission.RolesUnassign); err != nil {
-		return err
+	// roles:unassign is ScopeSelf like roles:assign: an operator admitted
+	// to target for a tenant-qualified identity write holds that instead.
+	if !operatorAdmittedWrite(ctx, target) {
+		if err := m.AuthorizeTenant(ctx, target, permission.RolesUnassign); err != nil {
+			return err
+		}
 	}
 	// UnassignRole removes the role from RoleIDs alone; a binding naming it
 	// still grants it afterwards.
@@ -370,6 +374,12 @@ func (m *AuthMiddleware) SORoleGuard(ctx context.Context) user.UpdateGuard {
 // AuthMiddleware gate does when no RBAC is configured.
 func (m *AuthMiddleware) authorizeRolesAssign(ctx context.Context, target string) error {
 	if m == nil {
+		return nil
+	}
+	// An operator admitted to target for a tenant-qualified identity write
+	// holds that permission in place of roles:assign, which is ScopeSelf and
+	// so never matches an identity outside target.
+	if operatorAdmittedWrite(ctx, target) {
 		return nil
 	}
 	return m.AuthorizeTenant(ctx, target, permission.RolesAssign)

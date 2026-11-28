@@ -237,6 +237,25 @@ func WithMembershipSettler(s Settler) MembershipOption {
 	}
 }
 
+// MemberChangeHook is called when a peer joins or leaves the cluster.
+// joined is true for a join (a replacement node arrives as a join), false
+// for a leave. ctx is the manager's run context, cancelled on Close.
+type MemberChangeHook func(ctx context.Context, m Member, joined bool)
+
+// WithMemberChangeHook registers a hook fired once per new peer join and
+// once per peer leave; never for the local node or a re-registration of a
+// known member. The hook runs on its own goroutine so it never blocks the
+// membership event loop; Close waits for running hooks to return. With a
+// Reconfigurer, a join's hook runs once the join is in the group (the
+// leader's after its AddMember change commits), so it sees the new member,
+// and a leave's hook runs once the removal is in the group (the leader's
+// after its RemoveMember attempt), so it no longer sees the departed one.
+func WithMemberChangeHook(h MemberChangeHook) MembershipOption {
+	return func(m *MembershipManager) {
+		m.onChange = h
+	}
+}
+
 // MembershipManager maintains a node's cluster membership registration and,
 // when a Reconfigurer is supplied and the local node is the leader, reconciles
 // the Raft group as members join and leave. It is built on a MembershipStore
@@ -255,6 +274,7 @@ type MembershipManager struct {
 	logger   *slog.Logger
 	seal     SealProbe
 	settle   Settler
+	onChange MemberChangeHook
 
 	// advertiser owns the local node's registration: writing the Member
 	// descriptor (Raft address + advertised API endpoints) and refreshing its
@@ -509,9 +529,95 @@ func (m *MembershipManager) handleJoin(member Member) {
 		return
 	}
 	m.logger.Info("member joined", "node_id", member.NodeID, "address", member.Address)
+	// With reconfiguration on, the join hook fires from the reconfiguration
+	// worker once the AddMember change has committed (applyReconfig), so a
+	// hook reading the shard's roster sees the joined member.
 	if m.reconfig != nil {
 		m.enqueueReconfig(reconfigIntent{member: member, remove: false})
+		return
 	}
+	m.fireChange(member, true)
+}
+
+// fireChange runs the member-change hook on its own goroutine, bounded by
+// the manager's run context and tracked by its WaitGroup.
+func (m *MembershipManager) fireChange(member Member, joined bool) {
+	if m.onChange == nil {
+		return
+	}
+	m.mu.Lock()
+	ctx := m.runCtx
+	if m.closed || ctx == nil || ctx.Err() != nil {
+		m.mu.Unlock()
+		return
+	}
+	m.wg.Add(1)
+	m.mu.Unlock()
+	go func() {
+		defer m.wg.Done()
+		m.onChange(ctx, member, joined)
+	}()
+}
+
+// followerJoinWait bounds how long a follower waits for a joiner to reach
+// its committed roster before it fires the join hook regardless.
+const followerJoinWait = 2 * time.Minute
+
+// fireChangeWhenMember fires a member-change hook on a follower once the
+// change is in the follower's committed roster: for a join (joined true)
+// once the joiner is in it, for a leave once the departed member is gone
+// from it (the leader's AddMember or RemoveMember has committed and been
+// applied here). It polls the roster on its own goroutine, bounded by the
+// manager's run context; it stops without firing once the event is
+// superseded (the joiner left, or the departed member rejoined), and fires with a warning after
+// followerJoinWait, since the hook's reconcile re-reads the roster.
+func (m *MembershipManager) fireChangeWhenMember(member Member, joined bool) {
+	if m.onChange == nil {
+		return
+	}
+	m.mu.Lock()
+	ctx := m.runCtx
+	if m.closed || ctx == nil || ctx.Err() != nil {
+		m.mu.Unlock()
+		return
+	}
+	m.wg.Add(1)
+	m.mu.Unlock()
+	go func() {
+		defer m.wg.Done()
+		interval := m.cfg.RetryBaseDelay
+		if interval <= 0 {
+			interval = 100 * time.Millisecond
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		giveUp := time.NewTimer(followerJoinWait)
+		defer giveUp.Stop()
+		for {
+			if present, err := m.reconfig.IsMember(m.shardID, member.NodeID); err == nil && present == joined {
+				m.onChange(ctx, member, joined)
+				return
+			}
+			// The event was superseded: a joined member left again, or a
+			// departed member rejoined.
+			m.membersMu.RLock()
+			_, listed := m.members[member.NodeID]
+			m.membersMu.RUnlock()
+			if listed != joined {
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-giveUp.C:
+				m.logger.Warn("member change not in the committed roster; firing the member-change hook regardless",
+					"node_id", member.NodeID, "joined", joined)
+				m.onChange(ctx, member, joined)
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
 }
 
 // handleLeave records a departing member and enqueues a removal intent.
@@ -525,8 +631,13 @@ func (m *MembershipManager) handleLeave(member Member) {
 	}
 	m.logger.Info("member left", "node_id", member.NodeID)
 	if m.reconfig != nil {
+		// With reconfiguration on, the leave hook fires from the
+		// reconfiguration worker once the removal is committed, so a hook
+		// reading the shard's roster no longer sees the departed member.
 		m.enqueueReconfig(reconfigIntent{member: member, remove: true})
+		return
 	}
+	m.fireChange(member, false)
 }
 
 // enqueueReconfig records the latest desired reconfiguration for a replica and
@@ -588,9 +699,24 @@ func (m *MembershipManager) reconfigWorker(runCtx context.Context) {
 // applyReconfig validates and applies a single reconfiguration intent. All
 // leader/membership/quorum checks happen here, at execution time, so a stale
 // queued intent re-validates against current state before mutating the group.
+//
+// A join's member-change hook fires here, after the join is in the group:
+// once AddMember has committed, or at once when the member is already
+// present. A follower does not reconfigure: it fires the hook once the
+// leader's AddMember has committed and reached its own roster
+// (fireChangeWhenMember), so a follower that leads a tenant home group
+// reconciles against a roster holding the joiner. An add that does not
+// commit fires no hook: the member is not in the group.
+//
+// A leave's hook fires the same way, after the removal: the leader's once
+// its RemoveMember attempt returns, a follower's once the departed member
+// is gone from its own roster, so the reconcile the hook runs (a tenant
+// home group shedding the departed node) reads a roster without it.
 func (m *MembershipManager) applyReconfig(intent reconfigIntent) {
 	if !m.isLeader() {
-		return // only the leader reconfigures; nothing to do as a follower
+		// Only the leader reconfigures; a follower waits for its commit.
+		m.fireChangeWhenMember(intent.member, !intent.remove)
+		return
 	}
 	member := intent.member
 
@@ -598,12 +724,16 @@ func (m *MembershipManager) applyReconfig(intent reconfigIntent) {
 	if err != nil {
 		m.logger.Warn("membership probe failed; deferring reconfiguration",
 			"node_id", member.NodeID, "error", err)
+		// The group's state is unknown: fire the hook rather than lose
+		// it; its reconcile re-reads the roster.
+		m.fireChange(member, !intent.remove)
 		return
 	}
 
 	if intent.remove {
 		if !present {
-			return // already gone
+			m.fireChange(member, false) // already gone
+			return
 		}
 		// Quorum guard: refuse to shrink below MinQuorum so a transient blip
 		// cannot destroy quorum.
@@ -613,20 +743,29 @@ func (m *MembershipManager) applyReconfig(intent reconfigIntent) {
 		if m.cfg.MinQuorum > 0 && remaining < m.cfg.MinQuorum {
 			m.logger.Warn("skipping auto-removal: would drop below quorum",
 				"node_id", member.NodeID, "remaining", remaining, "min_quorum", m.cfg.MinQuorum)
+			m.fireChange(member, false)
 			return
 		}
+		// The hook fires after the removal attempt, never before it: a
+		// committed removal is in the roster the hook's reconcile reads,
+		// and a failed one leaves that reconcile to keep the member.
 		m.reconfigWithRetry("remove", member, func(ctx context.Context) error {
 			return m.reconfig.RemoveMember(ctx, m.shardID, member.NodeID)
 		})
+		m.fireChange(member, false)
 		return
 	}
 
 	if present {
-		return // already in the group (e.g. initial bootstrap members)
+		// Already in the group (e.g. initial bootstrap members).
+		m.fireChange(member, true)
+		return
 	}
-	m.reconfigWithRetry("add", member, func(ctx context.Context) error {
+	if m.reconfigWithRetry("add", member, func(ctx context.Context) error {
 		return m.reconfig.AddMember(ctx, m.shardID, member.NodeID, member.Address)
-	})
+	}) {
+		m.fireChange(member, true)
+	}
 }
 
 // isLeader reports whether the local node is the shard leader.
@@ -641,7 +780,9 @@ func (m *MembershipManager) isLeader() bool {
 // reconfigWithRetry runs op up to MaxRetries times with capped exponential
 // backoff, aborting if the manager closes. It runs only on the worker
 // goroutine, so reconfiguration is never concurrent.
-func (m *MembershipManager) reconfigWithRetry(kind string, member Member, op func(context.Context) error) {
+//
+// It reports whether op succeeded.
+func (m *MembershipManager) reconfigWithRetry(kind string, member Member, op func(context.Context) error) bool {
 	for attempt := 1; attempt <= m.cfg.MaxRetries; attempt++ {
 		// Derive the op context from runCtx so Close aborts an in-flight
 		// reconfiguration instead of blocking up to the full timeout.
@@ -651,7 +792,7 @@ func (m *MembershipManager) reconfigWithRetry(kind string, member Member, op fun
 		if err == nil {
 			m.logger.Info("raft reconfiguration succeeded",
 				"op", kind, "node_id", member.NodeID, "shard_id", m.shardID)
-			return
+			return true
 		}
 
 		m.logger.Warn("raft reconfiguration failed",
@@ -659,7 +800,7 @@ func (m *MembershipManager) reconfigWithRetry(kind string, member Member, op fun
 		if attempt >= m.cfg.MaxRetries {
 			m.logger.Error("raft reconfiguration exhausted retries",
 				"op", kind, "node_id", member.NodeID, "shard_id", m.shardID)
-			return
+			return false
 		}
 
 		delay := m.cfg.RetryBaseDelay * time.Duration(1<<uint(attempt-1))
@@ -669,9 +810,10 @@ func (m *MembershipManager) reconfigWithRetry(kind string, member Member, op fun
 		select {
 		case <-time.After(delay):
 		case <-m.runCtx.Done():
-			return
+			return false
 		}
 	}
+	return false
 }
 
 // Members returns a snapshot of the currently tracked members.

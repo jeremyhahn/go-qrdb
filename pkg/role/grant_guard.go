@@ -111,7 +111,9 @@ func ValidateGrantable(ctx context.Context, authz auth.Authorizer, tenantID stri
 	if authz == nil || identity == nil || len(perms) == 0 {
 		return nil
 	}
-	targetCtx := tenant.WithTenantID(ctx, tenantID)
+	// An operator admitted to write tenantID's identity records is judged by
+	// what it holds in its own tenant (auth.GrantAuthorityTenant).
+	targetCtx := tenant.WithTenantID(ctx, auth.GrantAuthorityTenant(ctx, tenantID))
 	for _, p := range permission.ExpandAll(perms) {
 		err := authz.Authorize(targetCtx, identity, permission.Resource(p), permission.Action(p))
 		if err == nil {

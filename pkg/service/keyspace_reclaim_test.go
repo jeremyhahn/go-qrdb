@@ -508,6 +508,9 @@ func TestKeyspaceReclaim_ReclaimsVectorNamespaces(t *testing.T) {
 	}, vec.remaining())
 }
 
+// TestKeyspaceReclaim_IsolatedTenantDropLeavesNoHomeVectorKey drops a
+// database of a tenant whose vectors live in its home store and checks the
+// home store keeps no vector key of it while a sibling database survives.
 // ---------------------------------------------------------------------------
 // Name reuse
 // ---------------------------------------------------------------------------

@@ -147,7 +147,12 @@ func (r *logRoute) barrierDatabase(id vlog.LogID) bool {
 // is read and written there, so the audit reader and writer always use one
 // group: for a barrier tenant that is the system shard, as on main.
 func (r *logRoute) auditGroup(ctx context.Context, tenantID string) (logTarget, error) {
-	host, shardID, err := r.audit.ResolveAuditShard(ctx, tenantID)
+	resolve := r.audit.ResolveAuditShard
+	// The audit instance follows the audit chain's route when the resolver records one.
+	if instance, ok := r.audit.(auditInstanceResolver); ok {
+		resolve = instance.ResolveAuditInstance
+	}
+	host, shardID, err := resolve(ctx, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -209,6 +214,11 @@ func (r *logRoute) barrierStore(ctx context.Context, src LogBarrierStoreSource, 
 // with no database record carries no isolation of its own and routes with
 // its tenant, the fall-through the tenant resolver gives a tenant without
 // metadata; a failed lookup refuses.
+// auditInstanceResolver resolves a tenant's audit instance by its audit chain's route.
+type auditInstanceResolver interface {
+	ResolveAuditInstance(ctx context.Context, tenantID string) (Host, uint64, error)
+}
+
 type logRoute struct {
 	resolver  AuditShardResolver
 	audit     AuditShardResolver

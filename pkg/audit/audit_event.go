@@ -50,6 +50,14 @@ type AuditEvent struct {
 	// RequestID is a trace correlation ID for cross-log correlation.
 	RequestID string `json:"request_id,omitempty"`
 
+	// AppendOnce marks a tenant.onboard event the chain appends at most once
+	// per identity (Chain.Append). It rides on the proposed command only: the
+	// replicated logger sets it once featuregate.AuditAppendOnce is enabled
+	// on the shard, and the chain clears it before the event is linked, so
+	// the stored record never carries it. An event without it is appended
+	// every time it is applied, as every binary before the feature did.
+	AppendOnce bool `json:"append_once,omitempty"`
+
 	// PrevHash is the SHA-256 hex digest of the previous AuditEvent in the chain.
 	// Format: hex-encoded SHA-256, empty for the first event.
 	PrevHash string `json:"prev_hash,omitempty"`

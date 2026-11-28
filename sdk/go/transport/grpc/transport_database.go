@@ -42,10 +42,11 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 	}
 
 	pbReq := &pb.DatabaseCreateRequest{
-		Name:     req.Name,
-		Backend:  req.Backend,
-		DataDir:  req.DataDir,
-		Replicas: uint32(req.Replicas),
+		Name:         req.Name,
+		Backend:      req.Backend,
+		DataDir:      req.DataDir,
+		Replicas:     uint32(req.Replicas),
+		DedicatedWal: req.DedicatedWAL,
 	}
 
 	if req.Protocol.MySQL || req.Protocol.PostgreSQL || req.Protocol.Etcd != nil {

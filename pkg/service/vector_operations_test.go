@@ -77,6 +77,7 @@ func newVecSvcWithNamespace(t *testing.T, namespace string, dimension uint32) (V
 
 	svc, err := NewVectorService(storage, logger)
 	require.NoError(t, err)
+	attachPrefixHomes(t, svc)
 	return svc, storage
 }
 
@@ -1412,6 +1413,7 @@ func TestVecTenantAccess_ScopedNamespacesAreIsolated(t *testing.T) {
 
 	svc, err := NewVectorService(storage, logger)
 	require.NoError(t, err)
+	attachPrefixHomes(t, svc)
 
 	// Tenant-A's lookup succeeds and returns tenant-A's namespace.
 	ctxA := tenant.WithTenantID(context.Background(), "tenant-a")

@@ -1696,6 +1696,10 @@ func (s *Server) wireTenantDataProbe() {
 	if reg := s.buildServiceRegistry(); reg != nil {
 		w.SetTenantDataProbe(service.NewTenantDataProbe(reg))
 	}
+	// The probe a tightening to strict consults (tenant.StrictTighteningWiring)
+	// is not wired here: lifecycle.BuildServices wires it where the tenant
+	// service and the database manager are built, before any composer
+	// writes the FIPS strict floor.
 }
 
 // wireTenantStatusAudit gives the tenant service the auditor every status

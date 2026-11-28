@@ -73,8 +73,8 @@ func routingTenant(tenantID string) string {
 	return tenantID
 }
 
-// Emit implements audit.AuditLogger. It resolves ev's tenant to a shard,
-// refuses with *AuditFeatureNotActiveError before proposing when
+// Emit implements audit.AuditLogger. It resolves ev's tenant to a shard --
+// through ResolveAuditAppend when the resolver records routes -- refuses with *AuditFeatureNotActiveError before proposing when
 // featuregate.AuditAppend is not yet active there, and otherwise proposes
 // protocol.OpAuditAppend and reports whether the record is durable.
 //
@@ -84,7 +84,30 @@ func routingTenant(tenantID string) string {
 // pkg/audit.Chain.Append's doc comment).
 func (l *ReplicatedLogger) Emit(ctx context.Context, ev audit.AuditEvent) error {
 	target := routingTenant(ev.TenantID)
-	host, shardID, err := l.resolver.ResolveAuditShard(ctx, target)
+	resolve := l.resolver.ResolveAuditShard
+	if appends, ok := l.resolver.(AuditAppendResolver); ok {
+		resolve = appends.ResolveAuditAppend
+	}
+	release := func() {}
+	var guard WriteGuard
+	if holds, ok := l.resolver.(AuditAppendHolder); ok {
+		// The route stays held until the proposal returns, so a refused
+		// append cannot retire the system route this one is proposing by.
+		// The guard backs the hold at apply time: on a system route it
+		// compares the tenant's isolation epochs, so an append that applies
+		// after a strict tightening wrote its epoch is refused on every
+		// replica, whichever node or resolver released the route.
+		resolve = func(ctx context.Context, tenantID string) (Host, uint64, error) {
+			host, shardID, held, g, err := holds.HoldAuditAppend(ctx, tenantID)
+			if held != nil {
+				release = held
+			}
+			guard = g
+			return host, shardID, err
+		}
+	}
+	host, shardID, err := resolve(ctx, target)
+	defer release()
 	if err != nil {
 		return err
 	}
@@ -95,6 +118,11 @@ func (l *ReplicatedLogger) Emit(ctx context.Context, ev audit.AuditEvent) error 
 	if ev.Timestamp.IsZero() {
 		ev.Timestamp = time.Now().UTC()
 	}
+	// The append-once marker changes how apply treats a retried onboarding
+	// event, so it rides on the command only once every replica of the group
+	// applies it (featuregate.AuditAppendOnce). A caller's marker is never
+	// trusted: the gate alone decides.
+	ev.AppendOnce = ev.Action == audit.ActionTenantOnboard && (!isGated || gated.FeatureEnabled(shardID, featuregate.AuditAppendOnce))
 	// Once the group enables featuregate.VerifiableLogAudit, every event is
 	// an AuditAppend to the tenant's audit instance, the log system/audit
 	// (docs/databases/architecture.md §7); before, it is OpAuditAppend, and
@@ -122,9 +150,22 @@ func (l *ReplicatedLogger) Emit(ctx context.Context, ev audit.AuditEvent) error 
 	if err != nil {
 		return &EncodeRequestError{Err: err}
 	}
+	if !guard.IsZero() {
+		ctx = WithWriteGuard(ctx, guard)
+		if mapper, ok := l.resolver.(auditGuardRefusalMapper); ok {
+			ctx = WithGuardRefusal(ctx, func(ctx context.Context, e *WriteGuardRefusedError) error {
+				return mapper.auditGuardRefusal(ctx, target, e)
+			})
+		}
+	}
 	result, err := propose(ctx, host, shardID, cmd)
 	if err != nil {
 		return translateProposeError(err)
+	}
+	// A refused guard stored nothing: it is reported as the retryable
+	// *WriteGuardRefusedError, never as an appended event.
+	if key, refused := protocol.DecodeGuardRefusal(result.Data); refused {
+		return guardRefusalError(key)
 	}
 	if _, _, msg, refused := protocol.DecodeLogRefusal(result.Data); refused {
 		return &ProposeError{Err: &AuditInstanceRefusedError{TenantID: target, Reason: msg}}
@@ -133,6 +174,31 @@ func (l *ReplicatedLogger) Emit(ctx context.Context, ev audit.AuditEvent) error 
 		return &ProposeError{Err: resultErr}
 	}
 	return nil
+}
+
+// auditGuardRefusalMapper is a resolver that names an append's refused
+// isolation epoch guard (SystemShardAuditResolver.auditGuardRefusal).
+type auditGuardRefusalMapper interface {
+	auditGuardRefusal(ctx context.Context, tenantID string, e *WriteGuardRefusedError) error
+}
+
+// AppendOnceEnabled reports whether an onboarding event Emit proposes for
+// tenantID carries the append-once marker: featuregate.AuditAppendOnce is
+// enabled on the group the event routes to, or the host gates nothing. A
+// retry of an onboarding append whose outcome was unknown waits for it, so
+// the retry cannot append the event twice (TenantOnboardingService).
+func (l *ReplicatedLogger) AppendOnceEnabled(ctx context.Context, tenantID string) (bool, error) {
+	target := routingTenant(tenantID)
+	resolve := l.resolver.ResolveAuditShard
+	if appends, ok := l.resolver.(AuditAppendResolver); ok {
+		resolve = appends.ResolveAuditAppend
+	}
+	host, shardID, err := resolve(ctx, target)
+	if err != nil {
+		return false, err
+	}
+	gated, isGated := host.(FeatureGatedHost)
+	return !isGated || gated.FeatureEnabled(shardID, featuregate.AuditAppendOnce), nil
 }
 
 // Query implements audit.AuditLogger. The caller is responsible for

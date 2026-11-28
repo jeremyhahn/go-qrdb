@@ -249,6 +249,74 @@ func TestMembershipManager_JoinAsLeaderAddsToRaft(t *testing.T) {
 	}
 }
 
+// TestMembershipManager_JoinHookRunsAfterTheAddCommits proves the
+// member-change hook of a join runs only once the AddMember change has
+// committed, so a hook that reads the shard's roster sees the joined member
+// -- even when the first add attempt fails and is retried.
+func TestMembershipManager_JoinHookRunsAfterTheAddCommits(t *testing.T) {
+	store := newFakeStore()
+	reconf := newFakeReconfigurer(1) // self (node 1) is leader
+	reconf.addFails = 1
+	type seen struct {
+		id     uint64
+		member bool
+	}
+	hookCh := make(chan seen, 4)
+	hook := func(_ context.Context, member Member, joined bool) {
+		if !joined {
+			return
+		}
+		present, _ := reconf.IsMember(100, member.NodeID)
+		hookCh <- seen{id: member.NodeID, member: present}
+	}
+	cfg := MembershipConfig{LeaseTTL: time.Second, KeepAliveInterval: time.Hour,
+		RetryBaseDelay: 20 * time.Millisecond, MaxRetries: 3, MinQuorum: 1}
+	m, err := NewMembershipManager(store, selfMember(), 100, cfg,
+		WithReconfigurer(reconf), WithMemberChangeHook(hook))
+	if err != nil {
+		t.Fatalf("NewMembershipManager: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := m.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = m.Close() }()
+
+	store.events <- MemberEvent{Type: MemberJoined, Member: Member{NodeID: 2, Address: "node-2:5000"}}
+
+	deadline := time.After(5 * time.Second)
+	added := false
+	for {
+		select {
+		case id := <-reconf.addCh:
+			if id != 2 {
+				t.Fatalf("AddMember replicaID = %d, want 2", id)
+			}
+			added = true
+		case s := <-hookCh:
+			if s.id != 2 {
+				t.Fatalf("join hook member = %d, want 2", s.id)
+			}
+			if !s.member {
+				t.Fatal("join hook ran before the AddMember change committed")
+			}
+			if !added {
+				// The hook saw the member; the add's notification is
+				// still in flight.
+				select {
+				case <-reconf.addCh:
+				case <-deadline:
+					t.Fatal("timed out waiting for AddMember")
+				}
+			}
+			return
+		case <-deadline:
+			t.Fatalf("timed out waiting for the join hook (added %v)", added)
+		}
+	}
+}
+
 func TestMembershipManager_JoinAsFollowerSkipsRaft(t *testing.T) {
 	store := newFakeStore()
 	reconf := newFakeReconfigurer(99) // someone else is leader
@@ -263,6 +331,189 @@ func TestMembershipManager_JoinAsFollowerSkipsRaft(t *testing.T) {
 		t.Fatal("AddMember should not be called on a follower")
 	case <-time.After(300 * time.Millisecond):
 		// expected: no reconfiguration
+	}
+}
+
+// probingReconfigurer signals probed on each roster probe the manager makes.
+type probingReconfigurer struct {
+	*fakeReconfigurer
+	probed chan struct{}
+}
+
+func (r *probingReconfigurer) IsMember(shardID, replicaID uint64) (bool, error) {
+	select {
+	case r.probed <- struct{}{}:
+	default:
+	}
+	return r.fakeReconfigurer.IsMember(shardID, replicaID)
+}
+
+// TestMembershipManager_FollowerJoinHookRunsAfterTheAddCommits is the
+// regression for a follower's join hook firing before the leader's
+// AddMember committed: a follower that leads a tenant home group then
+// reconciled against a roster without the joiner and never added it. The
+// follower now fires the hook once the joiner is in its committed roster.
+func TestMembershipManager_FollowerJoinHookRunsAfterTheAddCommits(t *testing.T) {
+	store := newFakeStore()
+	reconf := &probingReconfigurer{fakeReconfigurer: newFakeReconfigurer(99), probed: make(chan struct{}, 1)}
+	hookCh := make(chan bool, 4)
+	hook := func(_ context.Context, member Member, joined bool) {
+		if !joined || member.NodeID != 2 {
+			return
+		}
+		present, _ := reconf.fakeReconfigurer.IsMember(100, member.NodeID)
+		hookCh <- present
+	}
+	cfg := MembershipConfig{LeaseTTL: time.Second, KeepAliveInterval: time.Hour,
+		RetryBaseDelay: 10 * time.Millisecond, MaxRetries: 3, MinQuorum: 1}
+	m, err := NewMembershipManager(store, selfMember(), 100, cfg,
+		WithReconfigurer(reconf), WithMemberChangeHook(hook))
+	if err != nil {
+		t.Fatalf("NewMembershipManager: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := m.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = m.Close() }()
+
+	store.events <- MemberEvent{Type: MemberJoined, Member: Member{NodeID: 2, Address: "node-2:5000"}}
+
+	deadline := time.After(5 * time.Second)
+	select {
+	case present := <-hookCh:
+		if !present {
+			t.Fatal("follower join hook ran before the leader's AddMember committed")
+		}
+		t.Fatal("follower join hook ran though the joiner was never committed")
+	case <-reconf.probed:
+	case <-deadline:
+		t.Fatal("timed out waiting for the follower to probe its roster")
+	}
+
+	// The leader's AddMember commits and reaches the follower's roster.
+	reconf.mu.Lock()
+	reconf.added = append(reconf.added, 2)
+	reconf.mu.Unlock()
+
+	select {
+	case present := <-hookCh:
+		if !present {
+			t.Fatal("follower join hook saw a roster without the joiner")
+		}
+	case <-deadline:
+		t.Fatal("timed out waiting for the follower's join hook after the commit")
+	}
+}
+
+// TestMembershipManager_FollowerLeaveHookRunsAfterTheRemovalCommits pins
+// that a follower fires a leave's member-change hook only once the leader's
+// RemoveMember has reached its own roster, so the hook's reconcile (a
+// tenant home group shedding the departed node) never reads a roster that
+// still lists it.
+func TestMembershipManager_FollowerLeaveHookRunsAfterTheRemovalCommits(t *testing.T) {
+	store := newFakeStore()
+	reconf := &probingReconfigurer{fakeReconfigurer: newFakeReconfigurer(99), probed: make(chan struct{}, 1)}
+	reconf.added = []uint64{2}
+	hookCh := make(chan bool, 4)
+	hook := func(_ context.Context, member Member, joined bool) {
+		if joined || member.NodeID != 2 {
+			return
+		}
+		present, _ := reconf.fakeReconfigurer.IsMember(100, member.NodeID)
+		hookCh <- present
+	}
+	cfg := MembershipConfig{LeaseTTL: time.Second, KeepAliveInterval: time.Hour,
+		RetryBaseDelay: 10 * time.Millisecond, MaxRetries: 3, MinQuorum: 1}
+	m, err := NewMembershipManager(store, selfMember(), 100, cfg,
+		WithReconfigurer(reconf), WithMemberChangeHook(hook))
+	if err != nil {
+		t.Fatalf("NewMembershipManager: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := m.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = m.Close() }()
+
+	store.events <- MemberEvent{Type: MemberLeft, Member: Member{NodeID: 2, Address: "node-2:5000"}}
+
+	deadline := time.After(5 * time.Second)
+	select {
+	case present := <-hookCh:
+		if present {
+			t.Fatal("follower leave hook ran before the leader's RemoveMember committed")
+		}
+		t.Fatal("follower leave hook ran though the removal was never committed")
+	case <-reconf.probed:
+	case <-deadline:
+		t.Fatal("timed out waiting for the follower to probe its roster")
+	}
+
+	// The leader's RemoveMember commits and reaches the follower's roster.
+	reconf.mu.Lock()
+	reconf.removed = append(reconf.removed, 2)
+	reconf.mu.Unlock()
+
+	select {
+	case present := <-hookCh:
+		if present {
+			t.Fatal("follower leave hook saw a roster still holding the departed member")
+		}
+	case <-deadline:
+		t.Fatal("timed out waiting for the follower's leave hook after the commit")
+	}
+}
+
+// TestMembershipManager_LeaveHookRunsAfterTheRemovalCommits pins that the
+// leader fires a leave's member-change hook after its RemoveMember, so the
+// hook reads a roster without the departed member.
+func TestMembershipManager_LeaveHookRunsAfterTheRemovalCommits(t *testing.T) {
+	store := newFakeStore()
+	reconf := newFakeReconfigurer(1) // self (node 1) is leader
+	reconf.added = []uint64{2}
+	hookCh := make(chan bool, 4)
+	hook := func(_ context.Context, member Member, joined bool) {
+		if joined || member.NodeID != 2 {
+			return
+		}
+		present, _ := reconf.IsMember(100, member.NodeID)
+		hookCh <- present
+	}
+	cfg := MembershipConfig{LeaseTTL: time.Second, KeepAliveInterval: time.Hour,
+		RetryBaseDelay: 10 * time.Millisecond, MaxRetries: 3, MinQuorum: 1}
+	m, err := NewMembershipManager(store, selfMember(), 100, cfg,
+		WithReconfigurer(reconf), WithMemberChangeHook(hook))
+	if err != nil {
+		t.Fatalf("NewMembershipManager: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := m.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = m.Close() }()
+
+	store.events <- MemberEvent{Type: MemberLeft, Member: Member{NodeID: 2, Address: "node-2:5000"}}
+
+	deadline := time.After(5 * time.Second)
+	select {
+	case present := <-hookCh:
+		if present {
+			t.Fatal("leave hook ran before the RemoveMember change committed")
+		}
+	case <-deadline:
+		t.Fatal("timed out waiting for the leave hook")
+	}
+	select {
+	case id := <-reconf.rmCh:
+		if id != 2 {
+			t.Fatalf("RemoveMember replicaID = %d, want 2", id)
+		}
+	case <-deadline:
+		t.Fatal("timed out waiting for RemoveMember")
 	}
 }
 

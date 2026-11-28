@@ -100,10 +100,19 @@ func (r *clusterOwnerResolver) Owners(ctx context.Context, tenantID, database st
 		owners, oerr := r.tenantOwners(ctx, tenantID)
 		return 0, owners, oerr
 	}
-	p, err := r.placements.Get(ctx, tenantID, database)
+	p, err := r.placements.GetByName(ctx, tenantID, database)
 	if err != nil {
-		// No placement entry → meta-managed single-node database. Migrate locally.
+		// No placement entry → meta-managed single-node database. Migrate
+		// locally -- but only when the miss is genuine: GetByName matches by
+		// name, and an entry whose name the catalog could not resolve
+		// (sealed, or a cold name cache) reads with an empty Database. That
+		// entry may be this database's, replicated on peers, so its absence
+		// from the match proves nothing: fail closed rather than migrate this
+		// node alone and let the coordinator report the cluster done.
 		if errors.Is(err, placement.ErrPlacementNotFound) {
+			if uerr := r.unresolvedNames(ctx, tenantID); uerr != nil {
+				return 0, nil, &OwnerResolveError{TenantID: tenantID, Database: database, Err: uerr}
+			}
 			return 0, r.localOnly(), nil
 		}
 		return 0, nil, err
@@ -146,6 +155,28 @@ func (r *clusterOwnerResolver) tenantOwners(ctx context.Context, tenantID string
 		return nil, &OwnerResolveError{TenantID: tenantID, Err: ErrEmptyOwnerSet}
 	}
 	return owners, nil
+}
+
+// ErrPlacementNameUnresolved refuses to resolve a database's owners as
+// local-only while some placement of its tenant has a name the catalog
+// could not resolve: that entry may be the database's. Retrying once the
+// catalog is readable resolves it.
+var ErrPlacementNameUnresolved = errors.New("server: a placement of the tenant has an unresolved database name; the migration owner set cannot be proven local-only")
+
+// unresolvedNames reports ErrPlacementNameUnresolved when a placement of
+// tenantID reads with an empty database name, and a listing failure as
+// itself; nil when every placement's name is resolved.
+func (r *clusterOwnerResolver) unresolvedNames(ctx context.Context, tenantID string) error {
+	placements, err := r.placements.ListForTenant(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	for _, p := range placements {
+		if p != nil && p.Database == "" {
+			return ErrPlacementNameUnresolved
+		}
+	}
+	return nil
 }
 
 // replicaNodeIDs extracts the NodeIDs from a replica slice.

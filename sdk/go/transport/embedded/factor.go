@@ -189,7 +189,7 @@ func (c *factorClient) Enroll(ctx context.Context, userID uint64, factor transpo
 	if err != nil {
 		return err
 	}
-	if err := c.transport.authorizeUserTarget(ctx, userID, permission.UserAuthFactorsAdd); err != nil {
+	if ctx, err = c.transport.authorizeUserTarget(ctx, userID, permission.UserAuthFactorsAdd); err != nil {
 		return err
 	}
 	if c.transport.userAuthFactorSvc == nil {
@@ -214,7 +214,7 @@ func (c *factorClient) List(ctx context.Context, userID uint64) ([]transport.Fac
 	if err != nil {
 		return nil, err
 	}
-	if err := c.transport.authorizeUserTarget(ctx, userID, permission.UserAuthFactorsList); err != nil {
+	if ctx, err = c.transport.authorizeUserTarget(ctx, userID, permission.UserAuthFactorsList); err != nil {
 		return nil, err
 	}
 	if c.transport.userAuthFactorSvc == nil {
@@ -243,7 +243,7 @@ func (c *factorClient) Remove(ctx context.Context, userID uint64, factorID strin
 	if err != nil {
 		return err
 	}
-	if err := c.transport.authorizeUserTarget(ctx, userID, permission.UserAuthFactorsRemove); err != nil {
+	if ctx, err = c.transport.authorizeUserTarget(ctx, userID, permission.UserAuthFactorsRemove); err != nil {
 		return err
 	}
 	if c.transport.userAuthFactorSvc == nil {
@@ -271,7 +271,7 @@ func (c *factorClient) Verify(ctx context.Context, userID uint64, challenge tran
 	// Verify is the challenge-response check a login flow performs against an
 	// already-enrolled factor -- the same action user_authfactors:login
 	// gates on every network transport's userauthfactor.Login route.
-	if err := c.transport.authorizeUserTarget(ctx, userID, permission.UserAuthFactorsLogin); err != nil {
+	if ctx, err = c.transport.authorizeUserTarget(ctx, userID, permission.UserAuthFactorsLogin); err != nil {
 		return nil, err
 	}
 	if c.transport.userAuthFactorSvc == nil {

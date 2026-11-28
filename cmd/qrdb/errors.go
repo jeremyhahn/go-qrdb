@@ -215,6 +215,24 @@ func (e *TenantUnsealInputError) Error() string {
 	return "qrdb: tenant barrier-unseal: provide --key (a shamir tenant barrier is unsealed by its holders with 'tenant barrier-quorum submit')"
 }
 
+// TenantServingNodesUnknownError is returned by tenant barrier-init and
+// barrier-unseal when the server reports that it could not read the nodes
+// serving the tenant's barrier: each serving node holds its own key, so
+// acting on --server's node alone could leave the others sealed or
+// uninitialized while the command reports success.
+type TenantServingNodesUnknownError struct {
+	// Command is the subcommand refusing, e.g. "barrier-unseal".
+	Command string
+	// TenantID is the tenant whose serving set is unknown.
+	TenantID string
+}
+
+// Error returns a human-readable description.
+func (e *TenantServingNodesUnknownError) Error() string {
+	return "qrdb: tenant " + e.Command + ": tenant " + strconv.Quote(e.TenantID) +
+		": the nodes serving its barrier could not be listed, so the serving set is unknown; retry when the server can read its placements"
+}
+
 // Base64DecodeError is returned when a base64-encoded flag value cannot
 // be decoded.
 type Base64DecodeError struct {

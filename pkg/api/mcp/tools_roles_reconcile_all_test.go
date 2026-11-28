@@ -106,10 +106,56 @@ func TestRoleReconcileAllTenantsTool_ReportsEveryTenant(t *testing.T) {
 	}
 }
 
+// TestRoleReconcileAllTenantsTool_StrictTenantRefusedAndRecorded pins that
+// the all-tenant reconcile passes each target through the operator-access
+// decision: a strict tenant whose roles need repair is neither read nor
+// rewritten, it is skipped as refused, and the refusal is in its trail.
+func TestRoleReconcileAllTenantsTool_StrictTenantRefusedAndRecorded(t *testing.T) {
+	sink := &operatorAuditSink{trails: map[string]bool{}}
+	roles := authtest.BuiltInRoles(t, tenantid.System, "acme")
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles),
+		authmw.WithAuditLogger(sink), authmw.WithOperatorAccessTenantTrail(sink),
+		authmw.WithIsolationPolicyReader(&operatorPolicy{acme: tenant.TenantIsolationPolicyStrict}))
+	var reconciled []string
+	svc := &mockRoleService{
+		reconcileFn: func(_ context.Context, tenantID string) (*role.ReconcileReport, error) {
+			reconciled = append(reconciled, tenantID)
+			return &role.ReconcileReport{TenantID: tenantID}, nil
+		},
+	}
+	tools := roleReconcileAllTools(mw, svc, liveMCPTenants(t, "acme"))
+	ctx := auth.WithIdentity(tenant.WithTenantID(context.Background(), tenantid.System),
+		authtest.AdminIdentity(tenantid.System, "operator"))
+	result, err := tools[0].Handler(ctx, mcp.CallToolRequest{})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	for _, id := range reconciled {
+		if id == "acme" {
+			t.Fatal("the strict tenant's built-in roles were reconciled by the platform operator")
+		}
+	}
+	var body struct {
+		Skipped []struct {
+			TenantID string `json:"tenantID"`
+			Reason   string `json:"reason"`
+		} `json:"skipped"`
+	}
+	if err := json.Unmarshal([]byte(resultText(t, result)), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Skipped) != 1 || body.Skipped[0].TenantID != "acme" || body.Skipped[0].Reason != role.SkipReasonOperatorAccessRefused {
+		t.Fatalf("skipped = %+v; want acme refused by operator access", body.Skipped)
+	}
+	if !sink.trails["acme"] {
+		t.Fatal("the refusal is not in acme's trail")
+	}
+}
+
 // TestRoleReconcileAllTenantsTool_RefusesTenantCaller: a tenant's caller gets
 // a ToolError carrying the platform-operator refusal.
 func TestRoleReconcileAllTenantsTool_RefusesTenantCaller(t *testing.T) {
-	handler := handleRoleReconcileAllTenants(nil, &mockRoleService{}, liveMCPTenants(t, "acme"))
+	handler := handleRoleReconcileAllTenants(nil, &mockRoleService{}, liveMCPTenants(t, "acme"), (*authmw.AuthMiddleware)(nil).OperatorAccessGate(permission.RolesReconcileAll))
 
 	_, err := handler(tenant.WithTenantID(context.Background(), "acme"), mcp.CallToolRequest{})
 	var toolErr *ToolError
@@ -140,7 +186,7 @@ func TestRoleReconcileAllTenantsTool_StrictSeparationIsSOExclusive(t *testing.T)
 	caller := func(roleID string) context.Context {
 		return auth.WithIdentity(sysCtx, &auth.Identity{Subject: "system-caller", TenantID: tenantid.System, Roles: []string{roleID}})
 	}
-	handler := handleRoleReconcileAllTenants(mw, &mockRoleService{}, liveMCPTenants(t, "acme"))
+	handler := handleRoleReconcileAllTenants(mw, &mockRoleService{}, liveMCPTenants(t, "acme"), mw.OperatorAccessGate(permission.RolesReconcileAll))
 
 	_, err := handler(caller(roleID(role.RoleNameAdmin)), mcp.CallToolRequest{})
 	var toolErr *ToolError
@@ -185,7 +231,7 @@ func TestRoleTools_SOExclusivePostureGate(t *testing.T) {
 		}},
 		{name: "reconcile every tenant", h: func(mw *authmw.AuthMiddleware, roles role.RoleServicer) func(context.Context) error {
 			return func(ctx context.Context) error {
-				_, err := handleRoleReconcileAllTenants(mw, roles, liveMCPTenants(t, "acme"))(ctx, mcp.CallToolRequest{})
+				_, err := handleRoleReconcileAllTenants(mw, roles, liveMCPTenants(t, "acme"), mw.OperatorAccessGate(permission.RolesReconcileAll))(ctx, mcp.CallToolRequest{})
 				return err
 			}
 		}},

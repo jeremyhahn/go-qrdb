@@ -104,6 +104,27 @@ func (l *OptInAuditLogger) Query(ctx context.Context, f audit.Filter) (*audit.Pa
 // Close implements audit.AuditLogger, delegating to inner.
 func (l *OptInAuditLogger) Close() error { return l.inner.Close() }
 
+// AppendOnceEnabled forwards the wrapped trail's append-once capability
+// (ReplicatedLogger.AppendOnceEnabled), so a retried onboarding append behind
+// the opt-in gate waits for audit-append-once exactly as it would on the bare
+// trail. A tenant whose entitlement is off has nothing proposed (Emit drops
+// the event), so a retry cannot chain anything twice and is let through, as
+// is a wrapped trail that gates nothing.
+func (l *OptInAuditLogger) AppendOnceEnabled(ctx context.Context, tenantID string) (bool, error) {
+	on, err := l.allowed(ctx, routingTenant(tenantID))
+	if err != nil {
+		return false, err
+	}
+	if !on {
+		return true, nil
+	}
+	reporter, ok := l.inner.(appendOnceReporter)
+	if !ok {
+		return true, nil
+	}
+	return reporter.AppendOnceEnabled(ctx, tenantID)
+}
+
 // TenantChainVerifier is implemented by an audit.AuditLogger that can also
 // verify one tenant's replicated hash-chain continuity. *ReplicatedLogger
 // satisfies it directly.

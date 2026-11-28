@@ -139,7 +139,7 @@ func openLegacyVault(t *testing.T) (*database.Manager, *database.Database) {
 	t.Cleanup(func() { _ = mgr.Close() })
 
 	var meta database.DatabaseMeta
-	if err := json.Unmarshal([]byte(`{"name":"legacyvault","backend":"raft","protocol":{"mysql":true,"postgresql":true},"raft":{"clusterMode":"local"},"barrier":{"enabled":true,"mode":"passphrase"}}`), &meta); err != nil {
+	if err := json.Unmarshal([]byte(`{"id":"legacyvault-id","name":"legacyvault","backend":"raft","protocol":{"mysql":true,"postgresql":true},"raft":{"clusterMode":"local"},"barrier":{"enabled":true,"mode":"passphrase"}}`), &meta); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 	if err := databasetest.Catalog(dataDir).Create(context.Background(), meta); err != nil {

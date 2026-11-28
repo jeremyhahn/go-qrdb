@@ -17,8 +17,14 @@ package server
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 )
 
 // recordingShellRegistrar is a ShellRegistrar that records each tenant it is
@@ -64,6 +70,123 @@ func TestTenantShardReconciler_RegistersShellForAPlacementWithoutABarrier(t *tes
 	}
 	if factory.attachCount() != 0 {
 		t.Fatalf("Attach called %d times for a tenant whose barrier is only a shell, want 0", factory.attachCount())
+	}
+}
+
+// homePlacement returns tenantID's home-group placement with one replica on node.
+func homePlacement(tenantID, node string, shardID uint64) *placement.Placement {
+	return &placement.Placement{
+		TenantID:        tenantID,
+		DatabaseID:      database.TenantHomeID,
+		Database:        database.TenantHomeName,
+		ShardID:         shardID,
+		RF:              1,
+		LeaderReplicaID: 1,
+		Replicas: []placement.Replica{
+			{ReplicaID: 1, NodeID: node, RaftAddr: node},
+		},
+	}
+}
+
+func TestTenantShardReconciler_NoShellOutsideTheServingSet(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	barriers := newFakeBarrierReadiness()
+	barriers.markMissing("acme")
+	r, _ := newTestReconciler(t, factory, barriers,
+		placement1("acme", "orders", 1001),
+		homePlacement("acme", "peer:2", 1002))
+	shells := &recordingShellRegistrar{}
+	r.SetShellRegistrar(shells)
+
+	r.ReconcileOnce(context.Background())
+
+	if got := shells.registered(); len(got) != 0 {
+		t.Fatalf("shells registered = %v on a node outside the serving set, want none", got)
+	}
+	if factory.attachCount() != 0 {
+		t.Fatalf("Attach called %d times, want 0", factory.attachCount())
+	}
+}
+
+func TestTenantShardReconciler_RegistersShellInsideTheServingSet(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	barriers := newFakeBarrierReadiness()
+	barriers.markMissing("acme")
+	r, _ := newTestReconciler(t, factory, barriers,
+		placement1("acme", "orders", 1001),
+		homePlacement("acme", "local:1", 1002))
+	shells := &recordingShellRegistrar{}
+	r.SetShellRegistrar(shells)
+
+	r.ReconcileOnce(context.Background())
+
+	got := shells.registered()
+	if len(got) == 0 {
+		t.Fatal("no shell registered on a node inside the serving set")
+	}
+	for _, id := range got {
+		if id != "acme" {
+			t.Fatalf("shells registered = %v, want only acme", got)
+		}
+	}
+	if factory.attachCount() != 0 {
+		t.Fatalf("Attach called %d times, want 0", factory.attachCount())
+	}
+}
+
+// getFailingKV fails Get on a tenant home placement key while fail is set.
+type getFailingKV struct {
+	*memKV
+	fail atomic.Bool
+}
+
+func (k *getFailingKV) Get(ctx context.Context, key string) ([]byte, error) {
+	if k.fail.Load() && strings.HasSuffix(key, "/"+database.TenantHomeID) {
+		return nil, errors.New("placement store unavailable")
+	}
+	return k.memKV.Get(ctx, key)
+}
+
+func TestTenantShardReconciler_NoShellWhenServingSetUnreadable(t *testing.T) {
+	kv := &getFailingKV{memKV: newMemKV()}
+	store, err := placement.NewStore(kv)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.Put(context.Background(), placement1("acme", "orders", 1001)); err != nil {
+		t.Fatalf("store.Put: %v", err)
+	}
+	factory := newFakeShardLifecycle()
+	factory.shardIDOf = shardIDFromStore(store, "local:1")
+	barriers := newFakeBarrierReadiness()
+	barriers.markMissing("acme")
+	r := NewTenantShardReconciler(store, factory, "local:1", nil,
+		WithReconcilerPollInterval(10*time.Millisecond),
+		WithBarrierReadiness(barriers))
+	shells := &recordingShellRegistrar{}
+	r.SetShellRegistrar(shells)
+
+	kv.fail.Store(true)
+	r.ReconcileOnce(context.Background())
+
+	if got := shells.registered(); len(got) != 0 {
+		t.Fatalf("shells registered = %v with the serving set unreadable, want none", got)
+	}
+	if factory.attachCount() != 0 {
+		t.Fatalf("Attach called %d times, want 0", factory.attachCount())
+	}
+
+	kv.fail.Store(false)
+	if err := store.Put(context.Background(), homePlacement("acme", "local:1", 1002)); err != nil {
+		t.Fatalf("store.Put: %v", err)
+	}
+	r.ReconcileOnce(context.Background())
+
+	if got := shells.registered(); len(got) != 2 || got[0] != "acme" || got[1] != "acme" {
+		t.Fatalf("shells registered = %v, want acme for the home and orders placements", got)
+	}
+	if factory.attachCount() != 0 {
+		t.Fatalf("Attach called %d times, want 0", factory.attachCount())
 	}
 }
 

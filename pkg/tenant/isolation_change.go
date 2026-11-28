@@ -65,7 +65,9 @@ var (
 // subsystem. The probe is held atomically so it can be wired or replaced
 // without racing an update in flight.
 type isolationChangeGuard struct {
-	dataProbe atomic.Pointer[dataProbeRef]
+	dataProbe    atomic.Pointer[dataProbeRef]
+	nodeKeyProbe atomic.Pointer[nodeKeyProbeRef]
+	auditProbe   atomic.Pointer[auditRouteProbeRef]
 }
 
 // dataProbeRef boxes a TenantDataProbe for atomic storage.

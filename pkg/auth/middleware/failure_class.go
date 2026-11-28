@@ -300,6 +300,24 @@ var authFailureRules = []struct {
 		var e *SORoleUnresolvedError
 		return AuthFailureUnavailable, errors.As(err, &e)
 	}},
+	// The operator identity-access gate could not read the target tenant's
+	// isolation policy or the cluster floor (no reader wired, no record, or
+	// the store read failed). It fails closed, and that is a statement about
+	// this node, not the operator's grant: a retry after the store recovers,
+	// or after wiring or replication catches up, may pass. A context that
+	// ended keeps its own class, and a tenant that does not exist keeps the
+	// NotFound the generic chain gives tenant.ErrTenantNotFound.
+	{"OperatorAccessUnresolvedError", func(err error) (AuthFailureClass, bool) {
+		var e *OperatorAccessUnresolvedError
+		if !errors.As(err, &e) {
+			return AuthFailureUnknown, false
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
+			errors.Is(err, tenant.ErrTenantNotFound) {
+			return AuthFailureUnknown, false
+		}
+		return AuthFailureUnavailable, true
+	}},
 	{"SOPINUnavailableError", func(err error) (AuthFailureClass, bool) {
 		var e *SOPINUnavailableError
 		if !errors.As(err, &e) {

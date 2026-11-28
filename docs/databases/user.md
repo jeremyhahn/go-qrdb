@@ -290,6 +290,12 @@ report success and does not remove anything. Fix what it reported — most often
 a store or a per-tenant volume that is unreachable, or a sealed barrier — and
 run the same command again.
 
+**A create was refused, and now the name is neither found nor creatable.**
+A refused create whose cleanup could not finish can leave a record behind:
+the database is not found, yet a new create says it already exists. Run
+`qrdb database drop <name>` once. It clears the leftover record, and the
+name can be created again.
+
 **A write failed with "database is being dropped".** The database was dropped
 while the write was on its way, and the write was refused so it could not
 reappear in the dropped database. Nothing was stored. If you meant to keep

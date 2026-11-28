@@ -185,7 +185,7 @@ func TestCreateForTenant_PersistsPlacement(t *testing.T) {
 		t.Fatalf("CreateForTenant: %v", err)
 	}
 
-	p, err := store.Get(ctx, "rt", "orders")
+	p, err := store.GetByName(ctx, "rt", "orders")
 	if err != nil {
 		t.Fatalf("placement Get: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestCreateForTenant_PersistsPlacementWithNoPathForAnyReplica(t *testing.T) 
 		t.Fatalf("CreateForTenant: %v", err)
 	}
 
-	p, err := store.Get(ctx, "rt", "bug1db")
+	p, err := store.GetByName(ctx, "rt", "bug1db")
 	if err != nil {
 		t.Fatalf("placement Get: %v", err)
 	}
@@ -289,14 +289,14 @@ func TestDropForTenant_RemovesPlacement(t *testing.T) {
 	if _, err := svc.CreateForTenant(ctx, cfg); err != nil {
 		t.Fatalf("CreateForTenant: %v", err)
 	}
-	if _, err := store.Get(ctx, "rt", "orders"); err != nil {
+	if _, err := store.GetByName(ctx, "rt", "orders"); err != nil {
 		t.Fatalf("placement should exist after create: %v", err)
 	}
 
 	if err := svc.DropForTenant(ctx, "orders"); err != nil {
 		t.Fatalf("DropForTenant: %v", err)
 	}
-	if _, err := store.Get(ctx, "rt", "orders"); !errors.Is(err, placement.ErrPlacementNotFound) {
+	if _, err := store.GetByName(ctx, "rt", "orders"); !errors.Is(err, placement.ErrPlacementNotFound) {
 		t.Fatalf("placement after drop error = %v, want ErrPlacementNotFound", err)
 	}
 }
@@ -321,7 +321,7 @@ func TestCreateForTenant_ClampsRFToClusterSize(t *testing.T) {
 	if f.incTotal != 2 {
 		t.Errorf("metered replicas = %d, want 2 (clamped)", f.incTotal)
 	}
-	p, err := store.Get(ctx, "rt", "orders")
+	p, err := store.GetByName(ctx, "rt", "orders")
 	if err != nil {
 		t.Fatalf("placement Get: %v", err)
 	}
@@ -352,7 +352,7 @@ func TestCreateForTenant_PlacementFailureRollsBack(t *testing.T) {
 		t.Errorf("database should have been dropped after placement failure")
 	}
 	// No placement entry persisted.
-	if _, gerr := store.Get(ctx, "rt", "orders"); !errors.Is(gerr, placement.ErrPlacementNotFound) {
+	if _, gerr := store.GetByName(ctx, "rt", "orders"); !errors.Is(gerr, placement.ErrPlacementNotFound) {
 		t.Errorf("no placement entry expected, got err = %v", gerr)
 	}
 	// Quota reservations released.
@@ -476,7 +476,7 @@ func TestDropForTenant_PlacementDeletionFailureLeavesDatabaseFenced(t *testing.T
 	// delete. This is the "fenced, not writable" state: still there,
 	// still marked dropping, so every node's own placement-based
 	// resolution keeps refusing new operations against it.
-	p, err := store.Get(ctx, "rt", "orders")
+	p, err := store.GetByName(ctx, "rt", "orders")
 	if err != nil {
 		t.Fatalf("placement entry should survive a failed delete, got: %v", err)
 	}
@@ -514,7 +514,7 @@ func TestDropForTenant_RetryAfterPlacementDeletionFailureCompletes(t *testing.T)
 	if err := svc.DropForTenant(ctx, "orders"); err != nil {
 		t.Fatalf("retry DropForTenant: %v", err)
 	}
-	if _, err := store.Get(ctx, "rt", "orders"); !errors.Is(err, placement.ErrPlacementNotFound) {
+	if _, err := store.GetByName(ctx, "rt", "orders"); !errors.Is(err, placement.ErrPlacementNotFound) {
 		t.Fatalf("placement after the completed retry error = %v, want ErrPlacementNotFound", err)
 	}
 	if kv.deleteCalls != 2 {
@@ -542,7 +542,7 @@ func TestDrop_CommitsAndRemovesPlacementFence(t *testing.T) {
 	if err := svc.Drop(context.Background(), "orders"); err != nil {
 		t.Fatalf("Drop: %v", err)
 	}
-	if _, err := store.Get(ctx, "rt", "orders"); !errors.Is(err, placement.ErrPlacementNotFound) {
+	if _, err := store.GetByName(ctx, "rt", "orders"); !errors.Is(err, placement.ErrPlacementNotFound) {
 		t.Fatalf("placement after Drop error = %v, want ErrPlacementNotFound", err)
 	}
 }
@@ -577,11 +577,12 @@ func TestDropRaftPlacement_ConcurrentCallsOnlyOneOwnsTheFence(t *testing.T) {
 
 	cfg := testDBConfig("orders")
 	cfg.Replicas = 1
-	if _, err := svc.CreateForTenant(ctx, cfg); err != nil {
+	info, err := svc.CreateForTenant(ctx, cfg)
+	if err != nil {
 		t.Fatalf("CreateForTenant: %v", err)
 	}
 
-	hadPlacementA, ownedA, errA := svc.dropRaftPlacement(ctx, "rt", "orders")
+	hadPlacementA, ownedA, errA := svc.dropRaftPlacement(ctx, "rt", info.ID)
 	if errA != nil {
 		t.Fatalf("first dropRaftPlacement: %v", errA)
 	}
@@ -589,7 +590,7 @@ func TestDropRaftPlacement_ConcurrentCallsOnlyOneOwnsTheFence(t *testing.T) {
 		t.Fatalf("first call: hadPlacement=%v owned=%v, want true/true (it must be the one to claim the fence)", hadPlacementA, ownedA)
 	}
 
-	hadPlacementB, ownedB, errB := svc.dropRaftPlacement(context.Background(), "rt", "orders")
+	hadPlacementB, ownedB, errB := svc.dropRaftPlacement(context.Background(), "rt", info.ID)
 	if errB != nil {
 		t.Fatalf("second dropRaftPlacement: %v", errB)
 	}
@@ -604,10 +605,10 @@ func TestDropRaftPlacement_ConcurrentCallsOnlyOneOwnsTheFence(t *testing.T) {
 	// *database.DropInProgressError, exactly what the finding describes.
 	// Its rollback is gated on ownedB, so it must never run.
 	if ownedB && isReclamationFailure(errors.New("simulated manager failure")) {
-		svc.clearRaftPlacementFence(ctx, "rt", "orders")
+		svc.clearRaftPlacementFence(ctx, "rt", info.ID)
 	}
 
-	p, err := store.Get(ctx, "rt", "orders")
+	p, err := store.GetByName(ctx, "rt", "orders")
 	if err != nil {
 		t.Fatalf("store.Get: %v", err)
 	}
@@ -672,7 +673,7 @@ func TestDropForTenant_NonCreatorReplica_NeverFinishesTeardownWithoutCommitting(
 	// actually reclaimed or released, and the fence was never claimed in
 	// the first place, so silently fencing (let alone deleting) it here
 	// would misrepresent a drop that never happened.
-	p, gerr := store.Get(ctx, "rt", "orders")
+	p, gerr := store.GetByName(ctx, "rt", "orders")
 	if gerr != nil {
 		t.Fatalf("placement entry should survive: %v", gerr)
 	}
@@ -688,7 +689,7 @@ func TestDropForTenant_NonCreatorReplica_NeverFinishesTeardownWithoutCommitting(
 	if err := creator.DropForTenant(ctx, "orders"); err != nil {
 		t.Fatalf("DropForTenant on the creator after the non-creator's failed attempt: %v", err)
 	}
-	if _, gerr := store.Get(ctx, "rt", "orders"); !errors.Is(gerr, placement.ErrPlacementNotFound) {
+	if _, gerr := store.GetByName(ctx, "rt", "orders"); !errors.Is(gerr, placement.ErrPlacementNotFound) {
 		t.Fatalf("placement after the creator's completed drop error = %v, want ErrPlacementNotFound", gerr)
 	}
 }
@@ -778,7 +779,7 @@ func TestDrop_ReclaimFailureClearsTheReplicatedFence(t *testing.T) {
 		t.Fatal("Drop with a failing reclaimer = nil error, want the reclaim failure")
 	}
 
-	p, err := store.Get(ctx, "rt", "orders")
+	p, err := store.GetByName(ctx, "rt", "orders")
 	if err != nil {
 		t.Fatalf("placement entry should survive a reclaim failure: %v", err)
 	}
@@ -825,7 +826,7 @@ func TestDrop_ResumesAfterRestartDespiteTheLocalFence(t *testing.T) {
 	if err := svc.Drop(context.Background(), "orders"); err != nil {
 		t.Fatalf("Drop after a simulated restart: %v", err)
 	}
-	if _, err := store.Get(ctx, "rt", "orders"); !errors.Is(err, placement.ErrPlacementNotFound) {
+	if _, err := store.GetByName(ctx, "rt", "orders"); !errors.Is(err, placement.ErrPlacementNotFound) {
 		t.Fatalf("placement after the resumed drop error = %v, want ErrPlacementNotFound (the retry must finish tearing down the replicated entry, not strand it)", err)
 	}
 }
@@ -865,7 +866,7 @@ func TestDropForTenant_ResumesAfterRestartAndReleasesQuota(t *testing.T) {
 	if err := svc.DropForTenant(ctx, "orders"); err != nil {
 		t.Fatalf("DropForTenant after a simulated restart: %v", err)
 	}
-	if _, err := store.Get(ctx, "rt", "orders"); !errors.Is(err, placement.ErrPlacementNotFound) {
+	if _, err := store.GetByName(ctx, "rt", "orders"); !errors.Is(err, placement.ErrPlacementNotFound) {
 		t.Fatalf("placement after the resumed drop error = %v, want ErrPlacementNotFound", err)
 	}
 	if f.decRaft != decRaftBefore+1 {
@@ -963,7 +964,7 @@ func TestDrop_MarkDropCommittedFailureFailsTheDrop(t *testing.T) {
 
 	// The placement entry must survive, still fenced and NOT DropCommitted:
 	// finishRaftPlacementTeardown must never have run.
-	p, gerr := store.Get(ctx, "rt", "orders")
+	p, gerr := store.GetByName(ctx, "rt", "orders")
 	if gerr != nil {
 		t.Fatalf("placement entry should survive: %v", gerr)
 	}
@@ -1028,7 +1029,7 @@ func TestClearRaftPlacementFence_RunsAfterTheRequestIsCancelled(t *testing.T) {
 	}
 	ctx := context.Background()
 	if err := store.Put(ctx, &placement.Placement{
-		TenantID: "rt", Database: "orders", ShardID: 7, RF: 1, Dropping: true,
+		TenantID: "rt", DatabaseID: "orders", Database: "orders", ShardID: 7, RF: 1, Dropping: true,
 		Replicas: []placement.Replica{{ReplicaID: 1, NodeID: "n1", RaftAddr: "n1"}},
 	}); err != nil {
 		t.Fatalf("Put: %v", err)
@@ -1039,7 +1040,7 @@ func TestClearRaftPlacementFence_RunsAfterTheRequestIsCancelled(t *testing.T) {
 	cancel()
 	svc.clearRaftPlacementFence(cancelled, "rt", "orders")
 
-	p, err := store.Get(ctx, "rt", "orders")
+	p, err := store.GetByName(ctx, "rt", "orders")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -1071,7 +1072,7 @@ func TestDrop_UnclearedStoreFenceKeepsThePlacementFence(t *testing.T) {
 	if err := svc.DropForTenant(ctx, "orders"); err == nil {
 		t.Fatal("DropForTenant with a failing reclaimer = nil error, want the reclaim failure")
 	}
-	p, err := store.Get(ctx, "rt", "orders")
+	p, err := store.GetByName(ctx, "rt", "orders")
 	if err != nil {
 		t.Fatalf("placement entry should survive a failed drop: %v", err)
 	}
@@ -1101,7 +1102,7 @@ func TestDrop_LocalFenceWriteFailureRollsBackThePlacementFence(t *testing.T) {
 	if err := svc.DropForTenant(ctx, "orders"); err == nil {
 		t.Fatal("DropForTenant = nil error, want the local fence write failure")
 	}
-	p, err := store.Get(ctx, "rt", "orders")
+	p, err := store.GetByName(ctx, "rt", "orders")
 	if err != nil {
 		t.Fatalf("placement entry should survive a failed drop: %v", err)
 	}

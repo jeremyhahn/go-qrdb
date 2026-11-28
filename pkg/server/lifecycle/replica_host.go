@@ -34,6 +34,8 @@ type replicaHost struct {
 
 var _ service.ReplicaAdmitter = (*replicaHost)(nil)
 
+var _ service.HomeGroupView = (*replicaHost)(nil)
+
 // AdmitReplica refuses to add a replica of shardID on raftAddr when the node
 // does not advertise every feature the group uses (see
 // featuregate.Gate.AdmitReplica). DatabaseService and RebalanceService ask it
@@ -127,6 +129,47 @@ func (a *replicaHost) RemoveFollowerNode(ctx context.Context, shardID, replicaID
 // replica-selection policy so the current leader is removed last.
 func (a *replicaHost) LeaderReplicaID(_ context.Context, shardID uint64) (uint64, bool, error) {
 	return a.host.LeaderID(shardID)
+}
+
+// IsLocalShardLeader reports whether this host's replica leads shardID. A
+// shard this host does not run is not led here.
+func (a *replicaHost) IsLocalShardLeader(shardID uint64) (bool, error) {
+	info, err := a.host.ShardInfo(shardID)
+	if err != nil {
+		return false, err
+	}
+	return info.IsLeader, nil
+}
+
+// ShardMembers returns shardID's committed members (voters, observers and
+// witnesses) by replica id.
+func (a *replicaHost) ShardMembers(ctx context.Context, shardID uint64) (map[uint64]string, error) {
+	m, err := a.host.SyncGetShardMembership(ctx, shardID)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[uint64]string, len(m.Nodes)+len(m.Observers)+len(m.Witnesses))
+	for _, set := range []map[uint64]string{m.Nodes, m.Observers, m.Witnesses} {
+		for id, addr := range set {
+			out[id] = addr
+		}
+	}
+	return out, nil
+}
+
+// RemovedReplicas reports the replica IDs the shard's committed membership
+// has removed. Raft records a removed ID permanently and refuses to admit
+// it again, so a caller finishes such a replica's removal instead.
+func (a *replicaHost) RemovedReplicas(ctx context.Context, shardID uint64) (map[uint64]struct{}, error) {
+	m, err := a.host.SyncGetShardMembership(ctx, shardID)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[uint64]struct{}, len(m.Removed))
+	for id := range m.Removed {
+		out[id] = struct{}{}
+	}
+	return out, nil
 }
 
 // RequestLeaderTransfer calls RequestLeaderTransfer on the shared Raft host.

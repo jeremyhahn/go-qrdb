@@ -58,3 +58,47 @@ func TestBuildServices_ReplicatedAuditAlwaysWired(t *testing.T) {
 		t.Fatalf("Total = %d, want -1 (not entitled)", page.Total)
 	}
 }
+
+// TestBuildServices_OperatorAccessTrailReachesNodeLocalTrail pins where an
+// operator's access to a tenant's identity records lands for that tenant: a
+// tenant that has not opted in to replicated audit reads only the node-local
+// trail, so OperatorAccessTrail must write it there as well as to the
+// replicated chain.
+func TestBuildServices_OperatorAccessTrailReachesNodeLocalTrail(t *testing.T) {
+	host := newLocalHost()
+	defer func() { _ = host.Close() }()
+
+	hub := watch.NewHub()
+	defer hub.Close()
+
+	local := audit.NewRingBuffer(16)
+	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+		Host:        host,
+		WatchHub:    hub,
+		DataDir:     t.TempDir(),
+		AuditLogger: local,
+	})
+	if err != nil {
+		t.Fatalf("BuildServices: %v", err)
+	}
+	defer func() { _ = node.Stop(context.Background()) }()
+
+	if node.OperatorAccessTrail == nil {
+		t.Fatal("OperatorAccessTrail is nil")
+	}
+	// The replicated leg may refuse on this bare host; the node-local leg
+	// is written regardless, and the refusal is still returned (fail-closed).
+	_ = node.OperatorAccessTrail.Emit(context.Background(), audit.AuditEvent{
+		Actor:    "operator",
+		TenantID: "acme",
+		Action:   "auth.operator_identity_access",
+		Outcome:  audit.ResultSuccess,
+	})
+	page, err := local.Query(context.Background(), audit.Filter{TenantID: "acme", Action: "auth.operator_identity_access"})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(page.Events) != 1 {
+		t.Fatalf("node-local trail holds %d operator access records for acme, want 1", len(page.Events))
+	}
+}

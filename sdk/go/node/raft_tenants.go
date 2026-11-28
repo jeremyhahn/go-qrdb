@@ -47,17 +47,10 @@ func (n *Node) raftTenantClusterOptions(svcNode *lifecycle.Node, cfg *qrdbconfig
 		Barriers:      n.barrierRegistry.Load(),
 		DedicatedRaft: n.raftBackend != nil,
 		RaftAddr:      cfg.Raft.RaftAddress,
-		PeerAdmin: lifecycle.NewPeerAdminRegistry(lifecycle.PeerAdminConfig{
-			RaftAddr:      cfg.Raft.RaftAddress,
-			AdvertiseHost: cfg.Server.AdvertiseHost,
-			AdminPort:     cfg.Server.AdminPort,
-			Peers:         lifecycle.PeerAdminURLMap(cfg.Auth.PeerAdminURLs),
-			Logger:        n.logger,
-		}),
-		TrustDomain: cfg.Auth.EffectiveClusterTrustDomain(),
-		Decrypter:   n.keyDecrypter,
-		Logger:      n.logger,
-		Clock:       n.clock,
+		TrustDomain:   cfg.Auth.EffectiveClusterTrustDomain(),
+		Decrypter:     n.keyDecrypter,
+		Logger:        n.logger,
+		Clock:         n.clock,
 	}
 	if id := n.clusterIdentity; id != nil {
 		identity, err := lifecycle.NodeIdentity(id)

@@ -198,7 +198,7 @@ func newFencedStore(t *testing.T, kv placement.KV) *placement.Store {
 }
 
 func fencePlacement(nodes ...string) *placement.Placement {
-	p := &placement.Placement{TenantID: "t1", Database: "db1", ShardID: 7, RF: len(nodes)}
+	p := &placement.Placement{TenantID: "t1", DatabaseID: "db1", Database: "db1", ShardID: 7, RF: len(nodes)}
 	for i, n := range nodes {
 		p.Replicas = append(p.Replicas, placement.Replica{ReplicaID: uint64(i + 1), NodeID: n, RaftAddr: n + ":1"})
 	}
@@ -218,11 +218,15 @@ func withReplica(p *placement.Placement, node string, state placement.ReplicaSta
 
 func seedPlacement(t *testing.T, kv *fenceGuardedKV, p *placement.Placement) {
 	t.Helper()
-	b, err := json.Marshal(p)
+	// The Store keeps a placement's database name out of the system KV, so
+	// the seeded entry is its stored form: the name cleared.
+	stored := *p
+	stored.Database = ""
+	b, err := json.Marshal(&stored)
 	if err != nil {
 		t.Fatal(err)
 	}
-	kv.set(placement.PlacementPrefix+p.TenantID+"/"+p.Database, b)
+	kv.set(placement.PlacementPrefix+p.TenantID+"/"+p.DatabaseID, b)
 }
 
 func placementRaw(kv *fenceGuardedKV, p *placement.Placement) []byte {

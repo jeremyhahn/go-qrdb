@@ -66,6 +66,14 @@ type strategyCapturingTenantService struct {
 	shamirCompleted bool
 }
 
+func (m *strategyCapturingTenantService) ClusterIsolationPolicy(context.Context) (tenant.ClusterIsolationPolicy, error) {
+	return tenant.ClusterIsolationPolicyOperatorAccess, nil
+}
+
+func (m *strategyCapturingTenantService) SetClusterIsolationPolicy(context.Context, tenant.ClusterIsolationPolicy) error {
+	return nil
+}
+
 // mockPreparedRoster and mockPreparedUnsealKeyCheck are the split the
 // strategy-capturing mock prepares on a Shamir init's first request.
 var (

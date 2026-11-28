@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
@@ -65,6 +66,10 @@ func nextPlacementEvent(t *testing.T, ch <-chan placement.Event) placement.Event
 // not.
 func TestPlacementKV_ChangesReachTheStoresWatch(t *testing.T) {
 	store, hub := newPlacementStoreOverHub(t)
+	// The value names no database: the feed resolves it from the catalog.
+	store.SetNameResolver(catalogNames{catalog: stubCatalog{metas: map[string][]database.DatabaseMeta{
+		"acme": {{ID: "orders", Name: "orders"}},
+	}}})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	events, err := store.Watch(ctx)
@@ -72,7 +77,7 @@ func TestPlacementKV_ChangesReachTheStoresWatch(t *testing.T) {
 		t.Fatalf("Watch = %v; want the node's change feed", err)
 	}
 
-	p := placement.Placement{TenantID: "acme", Database: "orders", ShardID: 7}
+	p := placement.Placement{TenantID: "acme", DatabaseID: "orders", Database: "orders", ShardID: 7}
 	raw, _ := json.Marshal(p)
 	key := []byte(placement.PlacementPrefix + "acme/orders")
 	hub.NotifyPut([]byte("__sys:other/key"), &kv.KeyValue{Key: []byte("__sys:other/key"), Value: []byte("x")}, nil)

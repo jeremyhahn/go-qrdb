@@ -34,6 +34,8 @@ var targetResolvedOperations = map[string]struct{}{
 	"CreateTenant":                    {},
 	"GetTenant":                       {},
 	"ListTenants":                     {},
+	"GetClusterIsolationPolicy":       {},
+	"SetClusterIsolationPolicy":       {},
 	"ListDeletedTenants":              {},
 	"ReconcileDeletedTenants":         {},
 	"DeleteTenant":                    {},

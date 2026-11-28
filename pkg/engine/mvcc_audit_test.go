@@ -26,6 +26,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
@@ -249,6 +250,66 @@ func TestMVCCEngine_AuditAppend_SurvivesEngineRestart(t *testing.T) {
 	if results[0].Value != 2 {
 		t.Fatalf("sequence after restart = %d, want 2 (continuing the chain)", results[0].Value)
 	}
+}
+
+// TestMVCCEngine_AuditAppend_MarkedOnboardRetryAfterUnmarkedAppendsOnce
+// applies an unmarked tenant.onboard OpAuditAppend and then its marked
+// retry, in separate Update calls and as two entries of one Update call:
+// either way the tenant's chain holds one event, because the marked retry
+// finds the unmarked event through the apply batch.
+func TestMVCCEngine_AuditAppend_MarkedOnboardRetryAfterUnmarkedAppendsOnce(t *testing.T) {
+	unmarked := tenantEvent("acme", "tenant", audit.ActionTenantOnboard)
+	unmarked.RequestID = "req-1"
+	marked := unmarked
+	marked.AppendOnce = true
+
+	for _, oneBatch := range []bool{false, true} {
+		name := map[bool]string{false: "separate applies", true: "one batch"}[oneBatch]
+		t.Run(name, func(t *testing.T) {
+			stg := memory.NewStorage()
+			eng, err := NewMVCCEngine(stg, WithMVCCLogs(vlog.NewChain()))
+			if err != nil {
+				t.Fatalf("NewMVCCEngine: %v", err)
+			}
+			entries := []sm.Entry{
+				auditAppendEntry(t, 1, "acme", unmarked),
+				auditAppendEntry(t, 2, "acme", marked),
+			}
+			results := make([]sm.Result, 2)
+			if oneBatch {
+				if err := eng.Update(context.Background(), entries, results); err != nil {
+					t.Fatalf("Update: %v", err)
+				}
+			} else {
+				for i := range entries {
+					if err := eng.Update(context.Background(), entries[i:i+1], results[i:i+1]); err != nil {
+						t.Fatalf("Update %d: %v", i, err)
+					}
+				}
+			}
+			if results[0].Value != 1 || results[1].Value != 1 {
+				t.Fatalf("results = %d, %d; want 1, 1", results[0].Value, results[1].Value)
+			}
+			if n := countAuditEvents(t, stg, "acme"); n != 1 {
+				t.Fatalf("events = %d, want 1", n)
+			}
+		})
+	}
+}
+
+// countAuditEvents returns how many of tenantID's audit event records r holds.
+func countAuditEvents(t *testing.T, r storage.Reader, tenantID string) int {
+	t.Helper()
+	it := r.NewIterator(&storage.IteratorOptions{
+		LowerBound: vlog.EventRangeStart(tenantID, 0),
+		UpperBound: vlog.EventRangeEnd(tenantID),
+	})
+	defer func() { _ = it.Close() }()
+	n := 0
+	for ok := it.SeekToFirst(); ok && it.Valid(); ok = it.Next() {
+		n++
+	}
+	return n
 }
 
 // TestMVCCEngine_AuditAppend_MissingTimestampIsARefusalNotAHalt is the

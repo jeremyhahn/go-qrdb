@@ -140,8 +140,17 @@ type Placement struct {
 	// TenantID owns the database.
 	TenantID string `json:"tenant_id"`
 
-	// Database is the database name, unique within the tenant.
-	Database string `json:"database"`
+	// DatabaseID is the database's opaque, never-reused id
+	// (database.DatabaseMeta.ID), allocated at create and recorded in the
+	// tenant's catalog. The table is keyed by it --
+	// __sys:placement/{tenant}/{dbid} -- so no database name appears in a
+	// placement key.
+	DatabaseID string `json:"database_id"`
+
+	// Database is the database name, unique within the tenant. It is never
+	// written to the system KV (decision S5): Store strips it from the value
+	// it writes and resolves it, from the tenant's own catalog, on read.
+	Database string `json:"database,omitempty"`
 
 	// ShardID is the Raft shard ID allocated for the database's dedicated
 	// group, shared by every replica.
@@ -157,6 +166,12 @@ type Placement struct {
 
 	// Replicas lists the placed voting replicas, one per distinct node.
 	Replicas []Replica `json:"replicas"`
+
+	// ReplicaIDHighWater is the highest replica ID the group has ever
+	// placed, kept after that replica is removed. Raft refuses a removed
+	// replica ID for good, so a new replica's ID must exceed every ID the
+	// group has used, not only the IDs still placed (MaxReplicaID).
+	ReplicaIDHighWater uint64 `json:"replica_id_high_water,omitempty"`
 
 	// DedicatedWAL records that the database opted into a per-tenant-KEY WAL
 	// (4d Option C): every replica must write this shard's Raft log to a
@@ -271,7 +286,7 @@ func (p *Placement) Members() map[uint64]string {
 // MaxReplicaID returns the largest ReplicaID across all replicas in p.
 // Returns 0 for an empty placement (the first replica will get ID 1).
 func MaxReplicaID(p *Placement) uint64 {
-	var max uint64
+	max := p.ReplicaIDHighWater
 	for _, r := range p.Replicas {
 		if r.ReplicaID > max {
 			max = r.ReplicaID

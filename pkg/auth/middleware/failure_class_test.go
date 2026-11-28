@@ -23,6 +23,7 @@ package middleware
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -57,6 +58,18 @@ var classCases = []struct {
 	{
 		name:  "StoreUnavailableError",
 		err:   &StoreUnavailableError{Err: errors.New("raft not ready")},
+		class: AuthFailureUnavailable, http: http.StatusServiceUnavailable, grpc: codes.Unavailable, retry: true,
+	},
+	{
+		// A store or I/O failure on the operator gate's tenant-policy or
+		// floor read: the gate fails closed, and the client retries.
+		name:  "OperatorAccessUnresolvedError -- the policy read failed",
+		err:   &OperatorAccessUnresolvedError{TenantID: "acme", Err: errors.New("store down")},
+		class: AuthFailureUnavailable, http: http.StatusServiceUnavailable, grpc: codes.Unavailable, retry: true,
+	},
+	{
+		name:  "OperatorAccessUnresolvedError -- no policy reader is wired",
+		err:   &OperatorAccessUnresolvedError{TenantID: "acme"},
 		class: AuthFailureUnavailable, http: http.StatusServiceUnavailable, grpc: codes.Unavailable, retry: true,
 	},
 	{
@@ -291,6 +304,39 @@ func TestGRPCError(t *testing.T) {
 			}
 			if st.Code() != tc.grpc {
 				t.Errorf("code = %v, want %v", st.Code(), tc.grpc)
+			}
+		})
+	}
+}
+
+// TestClassifyAuthError_OperatorAccessUnresolvedDeclines pins the two causes
+// the OperatorAccessUnresolvedError rule leaves to the generic chain: a
+// context that ended keeps its cancellation or deadline class, and a tenant
+// that does not exist keeps the NotFound errclass gives
+// tenant.ErrTenantNotFound. Neither may read as a retryable outage here.
+func TestClassifyAuthError_OperatorAccessUnresolvedDeclines(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		cause error
+	}{
+		{"deadline", context.DeadlineExceeded},
+		{"canceled", context.Canceled},
+		{"tenant not found", tenant.ErrTenantNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := &OperatorAccessUnresolvedError{TenantID: "acme", Err: fmt.Errorf("get tenant: %w", tc.cause)}
+			if got := ClassifyAuthError(err); got != AuthFailureUnknown {
+				t.Fatalf("ClassifyAuthError = %v, want AuthFailureUnknown (left to the generic chain)", got)
+			}
+			if !errors.Is(err, tc.cause) {
+				t.Fatalf("the cause %v is not reachable through the refusal", tc.cause)
+			}
+			if got := HTTPStatus(err, http.StatusTeapot); got != http.StatusTeapot {
+				t.Errorf("HTTPStatus = %d, want the caller's fallback 418", got)
+			}
+			st, _ := status.FromError(GRPCError(err, codes.Aborted))
+			if st.Code() != codes.Aborted {
+				t.Errorf("gRPC code = %v, want the caller's fallback Aborted", st.Code())
 			}
 		})
 	}

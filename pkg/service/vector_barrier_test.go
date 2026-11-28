@@ -41,6 +41,7 @@ func TestVectorStoreAdapter_EnsureNamespace_Idempotent(t *testing.T) {
 
 	svc, err := NewVectorService(storage, logger)
 	require.NoError(t, err)
+	attachPrefixHomes(t, svc)
 
 	adapter := NewVectorStoreAdapter(svc)
 	ctx := tenant.WithTenantID(context.Background(), "tenant-x")
@@ -63,6 +64,7 @@ func TestVectorStoreAdapter_EnsureNamespace_AlreadyExists(t *testing.T) {
 
 	svc, err := NewVectorService(storage, logger)
 	require.NoError(t, err)
+	attachPrefixHomes(t, svc)
 
 	adapter := NewVectorStoreAdapter(svc)
 	ctx := tenant.WithTenantID(context.Background(), "t1")
@@ -105,6 +107,7 @@ func TestVectorStoreAdapter_EnsureNamespace_DefaultMetric(t *testing.T) {
 
 	svc, err := NewVectorService(storage, logger)
 	require.NoError(t, err)
+	attachPrefixHomes(t, svc)
 
 	adapter := NewVectorStoreAdapter(svc)
 	ctx := tenant.WithTenantID(context.Background(), "t1")

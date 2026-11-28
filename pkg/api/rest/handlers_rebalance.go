@@ -64,6 +64,18 @@ type rebalancePlanResponse struct {
 	Moves               []rebalanceMoveResponse `json:"moves"`
 	EstimatedDurationMs int64                   `json:"estimated_duration_ms"`
 	CurrentImbalance    float64                 `json:"current_imbalance"`
+	// Skipped names the moves the planner refused, each with its reason.
+	Skipped []rebalanceSkippedMoveResponse `json:"skipped,omitempty"`
+}
+
+// rebalanceSkippedMoveResponse is a move the planner considered and
+// refused, with the reason.
+type rebalanceSkippedMoveResponse struct {
+	ShardID  uint64 `json:"shard_id"`
+	FromNode string `json:"from_node"`
+	ToNode   string `json:"to_node"`
+	Reason   string `json:"reason"`
+	Error    string `json:"error,omitempty"`
 }
 
 // rebalanceExecutionResponse is the JSON payload returned by
@@ -306,7 +318,24 @@ func rebalancePlanToResponse(plan *service.RebalancePlanResult) rebalancePlanRes
 		Moves:               moves,
 		EstimatedDurationMs: plan.EstimatedDuration.Milliseconds(),
 		CurrentImbalance:    plan.CurrentImbalance,
+		Skipped:             rebalanceSkippedToResponse(plan.Skipped),
 	}
+}
+
+// rebalanceSkippedToResponse carries the planner's refused moves and their
+// reasons into the response, so an operator sees why a plan is short.
+func rebalanceSkippedToResponse(skipped []service.RebalanceSkippedMove) []rebalanceSkippedMoveResponse {
+	if len(skipped) == 0 {
+		return nil
+	}
+	out := make([]rebalanceSkippedMoveResponse, len(skipped))
+	for i, s := range skipped {
+		out[i] = rebalanceSkippedMoveResponse{ShardID: s.ShardID, FromNode: s.FromNode, ToNode: s.ToNode, Reason: s.Reason}
+		if s.Err != nil {
+			out[i].Error = s.Err.Error()
+		}
+	}
+	return out
 }
 
 // responseToRebalancePlan converts a JSON rebalance plan back to its

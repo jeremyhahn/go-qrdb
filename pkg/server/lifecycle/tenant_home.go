@@ -25,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -49,6 +50,16 @@ type TenantHomeServices interface {
 	// IsShardJoining reports whether this node's replica of shardID is still
 	// in its join window: added after the group formed and not yet caught up.
 	IsShardJoining(shardID uint64) bool
+
+	// HomeGroup names the Raft propose target of tenantID's home group:
+	// the gated host and the shard of its database.TenantHomeName database.
+	HomeGroup(ctx context.Context, tenantID string) (service.Host, uint64, error)
+}
+
+// homeGroupRouter is a resolver that routes isolated tenants to their home
+// group once one is attached: *service.SystemShardAuditResolver.
+type homeGroupRouter interface {
+	SetHomeGroupSource(source service.AuditHomeGroupSource, routes service.AuditRouteStore)
 }
 
 // TenantHomeCatchingUpError is returned by HomeStore while this node's replica
@@ -142,12 +153,21 @@ func AttachTenantHomes(n *Node, services TenantHomeServices, served ...tenant.St
 	if !ok {
 		return false
 	}
-	if !attachHomeSource(n, NewTenantHomes(services, provisioner), served) {
+	homes := NewTenantHomes(services, provisioner)
+	if !attachHomeSource(n, homes, served) {
 		return false
 	}
 	// A barrier tenant's and a barrier database's verifiable logs are
 	// applied in the same barrier-sealed groups.
 	n.logGroups.attach(services)
+	// An isolated tenant's audit trail and verifiable logs apply in its
+	// home group (architecture.md decision S9). A barrier tenant's audit
+	// route is recorded on the system shard, so a chain already there stays
+	// there.
+	routes := newKVStoreAdapter(n.KV, nil)
+	for _, r := range n.homeGroupRouters {
+		r.SetHomeGroupSource(homes, routes)
+	}
 	// The home group's leader is the one node that completes a tenant's
 	// pending first admin.
 	if leader, ok := services.(databaseLeader); ok {
@@ -226,6 +246,28 @@ func attachHomeSource(n *Node, source tenant.HomeStoreSource, served []tenant.St
 	return true
 }
 
+// ErrStoreResolverLocatesNoHomes refuses a store resolver that cannot tell an isolated tenant from a prefix tenant.
+var ErrStoreResolverLocatesNoHomes = errors.New("lifecycle: the store resolver does not locate tenant homes")
+
+// attachVectorTenantHomes gives the vector service the node's store resolver so isolated tenants' vectors live in their homes.
+func attachVectorTenantHomes(n *Node) error {
+	if n.StoreResolver == nil {
+		return nil
+	}
+	v, ok := n.Vector.(interface {
+		SetTenantHomeResolver(service.TenantHomeResolver)
+	})
+	if !ok {
+		return nil
+	}
+	homes, ok := n.StoreResolver.(service.TenantHomeResolver)
+	if !ok {
+		return &VectorServiceError{Err: ErrStoreResolverLocatesNoHomes}
+	}
+	v.SetTenantHomeResolver(homes)
+	return nil
+}
+
 // tenantHomesSetter is the credential service's attach point for the tenant
 // home stores (service.CredentialService.SetTenantHomes).
 type tenantHomesSetter interface {
@@ -245,8 +287,8 @@ func (h *TenantHomes) HomeStore(ctx context.Context, tenantID string) (kvstore.K
 	if err != nil {
 		return nil, err
 	}
-	if h.services.IsShardJoining(svcs.ShardID) {
-		return nil, &TenantHomeCatchingUpError{TenantID: tenantID}
+	if err := h.caughtUp(tenantID, svcs.ShardID); err != nil {
+		return nil, err
 	}
 	if cached, ok := h.stores.Load(tenantID); ok {
 		if entry, ok := cached.(*homeStoreEntry); ok && entry.services == svcs {
@@ -259,6 +301,33 @@ func (h *TenantHomes) HomeStore(ctx context.Context, tenantID string) (kvstore.K
 	}
 	h.stores.Store(tenantID, &homeStoreEntry{services: svcs, store: store})
 	return store, nil
+}
+
+// HomeGroup returns the Raft propose target of tenantID's home group, the
+// group its audit trail and verifiable logs apply in. It refuses as
+// HomeStore does: a sealed tenant through the services lookup, and a home
+// replica still catching up with *TenantHomeCatchingUpError. Each refusal
+// is wrapped in *tenant.TenantHomeUnavailableError, the shape the HomeStore
+// path gives the same causes, so a transport answers a retryable
+// unavailable.
+func (h *TenantHomes) HomeGroup(ctx context.Context, tenantID string) (service.Host, uint64, error) {
+	host, shardID, err := h.services.HomeGroup(ctx, tenantID)
+	if err != nil {
+		return nil, 0, &tenant.TenantHomeUnavailableError{TenantID: tenantID, Err: err}
+	}
+	if err := h.caughtUp(tenantID, shardID); err != nil {
+		return nil, 0, &tenant.TenantHomeUnavailableError{TenantID: tenantID, Err: err}
+	}
+	return host, shardID, nil
+}
+
+// caughtUp refuses a home whose local replica of shardID is still in its
+// join window: reads there could miss writes the group already committed.
+func (h *TenantHomes) caughtUp(tenantID string, shardID uint64) error {
+	if h.services.IsShardJoining(shardID) {
+		return &TenantHomeCatchingUpError{TenantID: tenantID}
+	}
+	return nil
 }
 
 // EnsureHome implements tenant.HomeStoreSource. It places the home group

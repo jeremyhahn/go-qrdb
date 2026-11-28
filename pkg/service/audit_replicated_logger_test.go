@@ -15,9 +15,12 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,6 +30,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
@@ -407,5 +411,147 @@ func TestReplicatedLogger_Close_IsANoOp(t *testing.T) {
 	logger := NewReplicatedLogger(&fixedShardResolver{})
 	if err := logger.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
+	}
+}
+
+// guardedSystemShard is a system shard with guarded writes on whose
+// proposals apply an OpGuarded command's compares against kv, the state
+// standing in for the system KV the tenant's isolation epochs live in: a
+// compare that fails replies the guard refusal and applies nothing, as
+// every replica's state machine does. The first proposal waits on proceed
+// after closing proposing; applied holds the inner commands that applied.
+type guardedSystemShard struct {
+	*chainShard
+	mu        sync.Mutex
+	kv        map[string][]byte
+	applied   [][]byte
+	proposing chan struct{}
+	proceed   chan struct{}
+	paused    sync.Once
+}
+
+func newGuardedSystemShard(kv map[string][]byte) *guardedSystemShard {
+	on := maps.Clone(auditActive())
+	on[featuregate.GuardedWrites] = true
+	s := &guardedSystemShard{
+		chainShard: newChainShard(0, on),
+		kv:         kv,
+		proposing:  make(chan struct{}),
+		proceed:    make(chan struct{}),
+	}
+	s.host.syncProposeFn = func(_ context.Context, _ uint64, cmd []byte) (sm.Result, error) {
+		s.paused.Do(func() {
+			close(s.proposing)
+			<-s.proceed
+		})
+		return s.apply(cmd)
+	}
+	return s
+}
+
+func (s *guardedSystemShard) apply(cmd []byte) (sm.Result, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(cmd) > 0 && cmd[0] == protocol.OpGuarded {
+		compares, inner, err := protocol.DecodeGuarded(cmd[1:])
+		if err != nil {
+			return sm.Result{}, err
+		}
+		for _, c := range compares {
+			if c.Target != byte(CompareValue) || c.Result != byte(CompareEqual) {
+				return sm.Result{}, errors.New("unexpected compare")
+			}
+			if !bytes.Equal(s.kv[string(c.Key)], c.Value) {
+				return sm.Result{Data: protocol.EncodeGuardRefusal(c.Key)}, nil
+			}
+		}
+		cmd = inner
+	}
+	s.applied = append(s.applied, append([]byte(nil), cmd...))
+	return sm.Result{Value: 1}, nil
+}
+
+func (s *guardedSystemShard) set(key string, value []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.kv[key] = value
+}
+
+func (s *guardedSystemShard) appliedCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.applied)
+}
+
+// TestReplicatedLogger_Emit_SystemRouteAppendInFlightAcrossTighteningIsRefused:
+// an append resolved on a recorded system route whose proposal is still in
+// flight when a tightening writes the tenant's isolation epoch is refused
+// at apply time by its epoch guard: reported as the strict refusal once the
+// tenant is strict, else as the retryable guard refusal, which a retry
+// clears. An append no tightening overtakes applies.
+func TestReplicatedLogger_Emit_SystemRouteAppendInFlightAcrossTighteningIsRefused(t *testing.T) {
+	ctx := context.Background()
+	epochKey := tenant.IsolationEpochKeys("widgets")[0]
+	for name, tc := range map[string]struct {
+		tighten bool
+		strict  bool
+	}{
+		"tightened to strict":       {tighten: true, strict: true},
+		"epoch changed, not strict": {tighten: true},
+		"no tightening":             {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			system := newGuardedSystemShard(map[string][]byte{epochKey: []byte("epoch-1")})
+			lookup := newEpochIsolationLookup(tenant.TenantIsolationPolicyInherit, tenant.ClusterIsolationPolicyOperatorAccess,
+				map[string][]byte{epochKey: []byte("epoch-1")})
+			logger := NewReplicatedLogger(routedResolver(t, system.chainShard, lookup, AuditRouteSystem))
+
+			done := make(chan error, 1)
+			go func() { done <- logger.Emit(ctx, audit.AuditEvent{TenantID: "widgets", Action: "delete"}) }()
+			<-system.proposing
+			if tc.tighten {
+				// The tightening writes the tenant's epoch, then commits.
+				system.set(epochKey, []byte("epoch-2"))
+				lookup.setEpoch(epochKey, []byte("epoch-2"))
+			}
+			if tc.strict {
+				lookup.tenants["widgets"] = &tenant.TenantInfo{ID: "widgets", IsolationType: tenant.IsolationBarrier, IsolationPolicy: tenant.TenantIsolationPolicyStrict}
+			}
+			close(system.proceed)
+			err := <-done
+
+			switch {
+			case tc.strict:
+				var refused *tenant.SystemAuditRouteError
+				if !errors.As(err, &refused) || refused.TenantID != "widgets" {
+					t.Fatalf("Emit = %v, want *tenant.SystemAuditRouteError for widgets", err)
+				}
+			case tc.tighten:
+				var refused *WriteGuardRefusedError
+				if !errors.As(err, &refused) {
+					t.Fatalf("Emit = %v, want *WriteGuardRefusedError", err)
+				}
+			default:
+				if err != nil {
+					t.Fatalf("Emit: %v", err)
+				}
+			}
+			want := 0
+			if !tc.tighten {
+				want = 1
+			}
+			if got := system.appliedCount(); got != want {
+				t.Fatalf("applied %d audit commands, want %d", got, want)
+			}
+			if tc.tighten && !tc.strict {
+				// The retry reads the new epoch and applies.
+				if err := logger.Emit(ctx, audit.AuditEvent{TenantID: "widgets", Action: "delete"}); err != nil {
+					t.Fatalf("retried Emit: %v", err)
+				}
+				if got := system.appliedCount(); got != 1 {
+					t.Fatalf("applied %d audit commands after the retry, want 1", got)
+				}
+			}
+		})
 	}
 }

@@ -32,6 +32,14 @@ import (
 // mockTenantServicer is a minimal TenantServicer for option tests.
 type mockTenantServicer struct{}
 
+func (m *mockTenantServicer) ClusterIsolationPolicy(context.Context) (tenant.ClusterIsolationPolicy, error) {
+	return tenant.ClusterIsolationPolicyOperatorAccess, nil
+}
+
+func (m *mockTenantServicer) SetClusterIsolationPolicy(context.Context, tenant.ClusterIsolationPolicy) error {
+	return nil
+}
+
 func (m *mockTenantServicer) CreateTenant(_ context.Context, _, _ string, _ tenant.IsolationType, _ ...tenant.CreateTenantOption) (*tenant.TenantInfo, error) {
 	return &tenant.TenantInfo{ID: "test", Name: "test", IsolationType: tenant.IsolationBarrier, CreatedAt: time.Now(), UpdatedAt: time.Now()}, nil
 }

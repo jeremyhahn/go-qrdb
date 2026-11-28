@@ -40,20 +40,34 @@ import (
 // database scope -- a test, or a composition with nothing to drop -- gets.
 type dbGuard struct {
 	guard service.WriteGuard
+	// check, when set, is run before each write is proposed
+	// (service.WithWriteCheck): the shared-store view's recheck of the
+	// tenant's isolation policy (restServiceRegistry.strictWriteCheck).
+	check func(context.Context) error
+	// guardCheck, when set, is run before each write is proposed and
+	// returns a guard the write carries beside guard
+	// (service.WithGuardedWriteCheck): the shared-store view's isolation
+	// epoch guard (restServiceRegistry.strictWriteGuard), read at propose
+	// time and decided at apply time. refusal names its refusal
+	// (service.WithGuardRefusal).
+	guardCheck func(context.Context) (service.WriteGuard, error)
+	refusal    func(context.Context, *service.WriteGuardRefusedError) error
 }
 
-// scope returns ctx carrying the view's write guard.
+// scope returns ctx carrying the view's write guard, write check, guarded
+// write check and refusal mapper.
 func (g dbGuard) scope(ctx context.Context) context.Context {
-	return service.WithWriteGuard(ctx, g.guard)
+	ctx = service.WithWriteCheck(service.WithWriteGuard(ctx, g.guard), g.check)
+	return service.WithGuardRefusal(service.WithGuardedWriteCheck(ctx, g.guardCheck), g.refusal)
 }
 
 // dropFence is the check-then-write fence the vector view still uses.
 //
-// Vector writes are the one namespaced write that is not a Raft proposal:
-// the vector service stores embeddings in a node-local store, so there is no
-// replicated command for a guard to ride on, and the check here runs before
-// the write rather than inside it. See docs/databases/engineering.md for
-// what that leaves open.
+// Vector writes carry no write guard: a prefix tenant's go to the node-local
+// vector store and an isolated tenant's to its home store through the vector
+// storage interface, so the check here runs before the write rather than
+// inside it. See docs/databases/engineering.md for what that
+// leaves open.
 type dropFence struct {
 	// check reports whether the database the view is scoped to is being
 	// dropped. nil for a view with nothing to check.

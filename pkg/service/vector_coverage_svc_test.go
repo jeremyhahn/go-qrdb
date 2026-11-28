@@ -76,5 +76,6 @@ func newCoverageVecSvc(t *testing.T, namespace string, dimension uint32, storage
 
 	// Cast to concrete type for internal field access
 	concrete := svc.(*vectorService)
+	attachPrefixHomes(t, concrete)
 	return concrete, storage
 }
