@@ -1,4 +1,15 @@
-# ci-template: v1.62 pool overflow + v1.61 main-push group on v1.56 + v1.59 runner selection + go-qrdb CUSTOMIZE blocks — canonical CI for all first-party Go repos.
+# ci-template: v1.63 main-only runner label + v1.62 pool overflow + v1.61 main-push group on v1.56 + v1.59 runner selection + go-qrdb CUSTOMIZE blocks — canonical CI for all first-party Go repos.
+# v1.63 (2026-11-28, the Tenant Agent's order at 02:48Z): a push to main no
+# longer queues behind pull request runs on the self-hosted pools. Two
+# repository variables name main-only runner labels:
+# CI_MAIN_RUNNER_LABEL (the non-docker class) and
+# CI_MAIN_RUNNER_LABEL_DOCKER (the docker class). The Infra Department sets
+# both and registers the runner units that carry them. When both are set
+# and match ^[a-z0-9][a-z0-9-]{0,38}$, a push to refs/heads/main on
+# github.com runs preflight on [self-hosted, linux, x64,
+# CI_MAIN_RUNNER_LABEL], and `Balanced runner pool (ruling 1137)` makes no
+# API call and outputs that list as `runner` and the CI_MAIN_RUNNER_LABEL_DOCKER
+# list as `runner_docker`, with a ::notice. Either unset or empty gives the
 # v1.62 (2026-11-27, Tenant Agent order 18:13Z): `Balanced runner pool (ruling 1137)`
 # is the handbook v1.62 step; a public repository whose oldest queued self-hosted
 # job waited past WAIT_LIMIT (600 s) goes hosted when hosted has a free slot.
@@ -286,7 +297,7 @@ jobs:
     # v1.52 (Tenant Agent order): a pull request from a fork (its head
     # repository is not this one) takes ubuntu-latest whatever the variable
     # holds; a fork never reaches a self-hosted runner.
-    runs-on: ${{ github.server_url == 'https://github.com' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(vars.CI_PREFLIGHT_RUNS_ON || '["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}   # v1.52
+    runs-on: ${{ github.server_url == 'https://github.com' && github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.CI_MAIN_RUNNER_LABEL && vars.CI_MAIN_RUNNER_LABEL_DOCKER && fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.CI_MAIN_RUNNER_LABEL)) || github.server_url == 'https://github.com' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON(vars.CI_PREFLIGHT_RUNS_ON || '["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}   # v1.63
     timeout-minutes: 15   # CUSTOMIZE (go-qrdb): the template's 10, plus the full-tree gates
     # v1.48 (ruling 1024): actions: read lets the selection step count this
     # repository's hosted jobs with the job token.
@@ -351,6 +362,12 @@ jobs:
       # it makes no call and outputs the hosted default with a ::notice: a
       # fork never reaches a self-hosted runner. Its tests:
       # .github/workflows/testdata/runner-select-tests.py, run by the preflight step "Runner select tests".
+      # v1.63 (Tenant Agent order, 2026-11-28 02:48Z): on a push to
+      # refs/heads/main with CI_MAIN_RUNNER_LABEL and
+      # CI_MAIN_RUNNER_LABEL_DOCKER both set and valid, it makes no call and
+      # outputs [self-hosted, linux, x64, <each label>] with a ::notice.
+      # Unset or empty is v1.62; an invalid value is v1.62 with a ::warning.
+      # Every other event is unchanged. Tests: runner-select-tests.py part F.
       - name: Balanced runner pool (ruling 1137)
         id: runner
         env:
@@ -367,6 +384,8 @@ jobs:
           WAIT_LIMIT: 600
           C1: ${{ vars.CI_SELF_HOSTED_BIGDISK }}
           C2: ${{ vars.CI_SELF_HOSTED_BIGDISK_DOCKER }}
+          ML: ${{ vars.CI_MAIN_RUNNER_LABEL }}                # v1.63
+          MLD: ${{ vars.CI_MAIN_RUNNER_LABEL_DOCKER }}        # v1.63
         run: |
           set -uo pipefail
           HOSTED='"ubuntu-latest"'
@@ -403,6 +422,29 @@ jobs:
               emit "$HOSTED" "$HOSTED"
               exit 0 ;;
           esac
+          # v1.63: a push to main takes the main-only runner units when both
+          # CI_MAIN_RUNNER_LABEL (ML) and CI_MAIN_RUNNER_LABEL_DOCKER (MLD)
+          # are set and valid: no count and no API call. Either unset or
+          # empty: the v1.62 balance below, silently; an invalid value: the
+          # same, with a ::warning naming it. No other event reads them.
+          if [ "$EVENT:$REF" = push:refs/heads/main ]; then
+            mainok=1
+            for v in "CI_MAIN_RUNNER_LABEL=${ML:-}" "CI_MAIN_RUNNER_LABEL_DOCKER=${MLD:-}"; do
+              val=${v#*=}
+              if [ -z "$val" ]; then
+                mainok=0
+              elif ! [[ "$val" =~ ^[a-z0-9][a-z0-9-]{0,38}$ ]]; then
+                mainok=0
+                shown=$(printf '%s' "$val" | tr -c 'A-Za-z0-9._-' '?' | cut -c1-60)
+                echo "::warning::runner selection: ${v%%=*}='$shown' is not a runner label (^[a-z0-9][a-z0-9-]{0,38}\$); this push to main does not use the main-only runners and balances as in v1.62 (ci-template v1.63)"
+              fi
+            done
+            if [ "$mainok" = 1 ]; then
+              echo "::notice::runner selection: a push to main with CI_MAIN_RUNNER_LABEL=$ML and CI_MAIN_RUNNER_LABEL_DOCKER=$MLD set; this run's jobs run on the main-only runners, which no pull request job can take, and no count is made (ci-template v1.63)"
+              emit "$(selfhosted "$ML")" "$(selfhosted "$MLD")"
+              exit 0
+            fi
+          fi
           # whole <value>: a whole number above 0, at most 6 digits.
           whole() { [[ "$1" =~ ^[0-9]{1,6}$ ]] && [ "$((10#$1))" -gt 0 ]; }
           whole "$C1" || hosted "CI_SELF_HOSTED_BIGDISK='$C1' is unset, 0 or not a whole number, so no bigdisk job can be placed (the Infra Department sets it)"
@@ -612,6 +654,10 @@ jobs:
       # An incomplete review is not a finding (code-review v5.12.15).
       - name: Code review incomplete-review tests
         run: python3 -I .github/workflows/testdata/code-review-v51215-tests.py .github/workflows/code-review.yml
+      # v1.63 (Tenant Agent order): preflight's runs-on, when it reads
+      # vars.CI_MAIN_RUNNER_LABEL, is also checked with both main-only labels
+      # set; [self-hosted, linux, x64, <CI_MAIN_RUNNER_LABEL>] passes there on
+      # a push to refs/heads/main alone, never under a pull request.
       - name: Runner labels (ruling 633)
         run: |
           python3 -I - <<'PY'
@@ -956,6 +1002,17 @@ jobs:
           PRE_JOB = "preflight"
           PRE_VAR = "vars.ci_preflight_runs_on"
           PRE_READ = re.compile(r"(?<![\w.])vars\.CI_PREFLIGHT_RUNS_ON(?![\w-])", re.I)
+          # v1.63 (Tenant Agent order): ci.yml's preflight alone may also read
+          # vars.CI_MAIN_RUNNER_LABEL and vars.CI_MAIN_RUNNER_LABEL_DOCKER. Its runs-on
+          # is then checked in two more states, both set (to MAIN_SET's values) with
+          # CI_PREFLIGHT_RUNS_ON unset (main) and set (main-set); in the v1.49 states
+          # both are unset. Exactly [self-hosted, linux, x64, <CI_MAIN_RUNNER_LABEL>]
+          # passes there on a push to refs/heads/main only: under a pull request, or
+          # any other event, the main label is (c). Another job reads an unknown.
+          MAIN_SET = {"vars.ci_main_runner_label": "main-label", "vars.ci_main_runner_label_docker": "main-label-docker"}
+          MAIN_READ = re.compile(r"(?<![\w.])vars\.CI_MAIN_RUNNER_LABEL(_DOCKER)?(?![\w-])", re.I)
+          MAIN_ONLY = ["self-hosted", "linux", "x64", MAIN_SET["vars.ci_main_runner_label"]]
+          PRE_SELS = ("unset", "set", "main", "main-set")
           HOSTED_CTX = [  # (event, ref, head repo) on github.com; o/r is this repository
               ("push", "refs/heads/main", None), ("push", "refs/heads/feature", None),
               ("pull_request", "refs/pull/1/merge", "o/r"), ("pull_request", "refs/pull/1/merge", "fork/r"),
@@ -972,8 +1029,10 @@ jobs:
                       # v1.52: the step outputs the hosted default for a fork's head under pull_request.
                       fork_pr = ev == "pull_request" and head == "fork/r"
                       return json.dumps("ubuntu-latest" if sel == "default" or fork_pr else ["self-hosted", "linux", "x64", SEL_OUT[p]])
-                  if sel in ("unset", "set") and p == PRE_VAR:  # v1.49: unset, or the fallback switch
-                      return None if sel == "unset" else json.dumps("ubuntu-latest")
+                  if sel in PRE_SELS and p == PRE_VAR:  # v1.49: unset, or the fallback switch
+                      return None if sel in ("unset", "main") else json.dumps("ubuntu-latest")
+                  if sel in PRE_SELS and p in MAIN_SET:  # v1.63: both set, or both unset
+                      return MAIN_SET[p] if sel.startswith("main") else None
                   if p == "github.server_url":
                       return GH
                   if p == "github.repository":
@@ -1150,6 +1209,8 @@ jobs:
                               sels = ("default", "overflow") if path.replace("\\", "/").rsplit("/", 1)[-1] in SEL_FILES else (None,)
                               if sels[0] is not None and job == PRE_JOB and PRE_READ.search(ro):
                                   sels = ("unset", "set")  # v1.49: its own two states, no selection output
+                                  if MAIN_READ.search(ro):
+                                      sels += ("main", "main-set")  # v1.63: the main-only labels set
                               for ev, ref, head in HOSTED_CTX:
                                   # v1.51: under pull_request_target, a fork's head never
                                   # reaches a self-hosted runner, overflow or not.
@@ -1163,7 +1224,9 @@ jobs:
                                           continue
                                       if got is not None and sel == "overflow" and got in OVERFLOW and not fork_target:
                                           continue
-                                      if sel == "unset" and got == OVERFLOW[0] and not fork_target:
+                                      if sel in ("main", "main-set") and got == MAIN_ONLY and (ev, ref) == ("push", "refs/heads/main"):
+                                          continue  # v1.63: a push to main alone takes the main-only label
+                                      if sel in ("unset", "main") and got == OVERFLOW[0] and not fork_target:
                                           continue
                                       if (sel is None and got == OVERFLOW[0] and ev in PR and head == "o/r"
                                               and path.replace("\\", "/").rsplit("/", 1)[-1] in REVIEW_FILES):
@@ -1171,8 +1234,10 @@ jobs:
                                       if got is None or len(got) != 1 or not STANDARD.fullmatch(got[0]):
                                           what = "an unknown label" if got is None else ", ".join(got)
                                           note = ", runner selection overflow" if sel == "overflow" else ""
-                                          if sel in ("unset", "set"):
-                                              note = ", CI_PREFLIGHT_RUNS_ON " + ("unset" if sel == "unset" else 'set to "ubuntu-latest"')
+                                          if sel in PRE_SELS:
+                                              note = ", CI_PREFLIGHT_RUNS_ON " + ("unset" if sel in ("unset", "main") else 'set to "ubuntu-latest"')
+                                              if sel.startswith("main"):
+                                                  note = ", CI_MAIN_RUNNER_LABEL and CI_MAIN_RUNNER_LABEL_DOCKER set" + note
                                           if fork_target and got is not None:
                                               note += f", {ev}: a fork never reaches a self-hosted runner"
                                           off.append(f"{ev} ({ref}{', fork' if head == 'fork/r' else ''}{note}): {what}")
