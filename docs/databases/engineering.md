@@ -604,6 +604,30 @@ Invariants:
     never-cached dedicated-raft database stays droppable: the factory's
     fence-ignoring resolution reads the catalog through
     `Manager.GetIgnoringFence`.
+  - **A created catalog record is provisional until its create guard
+    accepts it.** `Manager.create` writes an API-created database's catalog
+    record with `DatabaseMeta.Provisional` set, so no opener on any node
+    serves it (`Manager.Open`, `GetOwned` and `OpenAll` skip it, and
+    `RecordedIdentity` does not resolve it): no request can write to a
+    database the guard may still refuse. Once the strict create guard
+    accepts the database, the record is promoted (`Provisional` cleared)
+    and every node may serve it. A refused create whose cleanup could not
+    remove the record leaves it provisional and never opened. A drop of the
+    name (`Manager.DropForTenant`, `DropIncarnationForTenant`, and the
+    service drop with or without a placement store) reclaims it
+    (`Manager.reclaimProvisional`): it claims the record with a fresh
+    `DropClaim`, swapped in on its incarnation only while the record is
+    still provisional, then deletes it on both, never serving it. A claimed
+    record is never promoted: a create that has not promoted yet refuses the
+    promotion, while a create already promoted wins and the normal drop
+    applies. A record of another database id or incarnation is refused with
+    `DropSupersededError`. The name can then be created again. A
+    provisioned (shared) database created at node boot under the one
+    shared incarnation is written serving (`Provisional` false) and skips
+    the promote: there is no API create to guard, and a peer provisioning
+    the same name, or this node's next boot, must find it serving rather
+    than a record it can neither open (`NotFoundError`) nor create
+    (`AlreadyExistsError`).
   - **The marker is claimed, never overwritten.** `UnfenceDatabaseKeyspace`
     marks an incarnation live with `PutIfAbsent`, then
     `CompareAndSwap(tombstone -> incarnation)`, then a read: the incarnation
@@ -697,7 +721,15 @@ Invariants:
     the database's OWN shard (resolved through
     `RaftBackendFactory.FenceServices`, the one resolution that ignores the
     marker, because the drop sets the marker first), is what refuses the
-    writes of handles already resolved.
+    writes of handles already resolved. `FenceServices` reads the placement
+    entry keyed by the catalog record's database id
+    (`placement.Store.GetBound`), never one found by the name: after a drop
+    whose placement delete failed, the name created again and dropped in turn
+    leaves two dropping entries under one name, and a lookup by name would
+    retire the successor's cached shard and fence the predecessor's. An entry
+    under the id that names another database is refused with
+    `placement.IdentityMismatchError` (FailedPrecondition) and the cached
+    shard is left alone.
   - **A failed placement-entry removal is not swallowed.** Deleting the
     placement entry is what removes the replicated fence, so a failure
     there is surfaced rather than logged and ignored: the fence survives
@@ -726,8 +758,10 @@ Invariants:
     guard. The collection services the registry caches per database are
     keyed by that guard too, so a name dropped and created again never
     reuses a collection service built for the earlier incarnation.
-  - **Two writes are not Raft proposals.** Vector writes go to a node-local
-    vector store and are refused by a check made before the write, which
+  - **Two writes are not Raft proposals.** Vector writes go through the
+    vector storage interface (the node-local vector store for a prefix
+    tenant, the home store's `__vector/` range for an isolated tenant), carry
+    no write guard, and are refused by a check made before the write, which
     leaves a window between check and write. A database with a dedicated
     local store (an explicit data directory) is written directly; its drop
     closes and removes the whole store, so a late write has no keyspace to
@@ -1340,7 +1374,7 @@ by an operator command with a conflict policy.
 |---|---|---|
 | The shared system shard (raft mode) or the node's single local store (standalone), under `<tenant>/<db>/` and inside the `ts:` / `idx:metric:` / `retention:` prefixes | KV, MVCC, SQL catalog and rows, sequences and generation keys, collections, secondary index entries, time-series points and metric index and retention | relocated per database into its binding |
 | A volume tenant's shared shard, under `<tenant>/<db>/` | the same | relocated per database into its binding |
-| The node-local vector store at `{DataDir}/vector` | every tenant's vector namespaces, records and metadata | imported per `(tenant, database)` |
+| The node-local vector store at `{DataDir}/vector` | every prefix tenant's vector namespaces, records and metadata, and those an isolated tenant wrote before its vectors moved to its home store | imported per `(tenant, database)` |
 
 **Relocation of one database**:
 

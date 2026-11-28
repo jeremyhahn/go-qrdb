@@ -86,6 +86,9 @@ func TestTenantBarrierStatus_ServingNodesUnreadableOrUnwired(t *testing.T) {
 	if st.Nodes != nil {
 		t.Fatalf("unwired Nodes = %+v, want none", st.Nodes)
 	}
+	if st.NodesUnreadable {
+		t.Fatal("unwired source reported NodesUnreadable; a standalone barrier has a known serving set")
+	}
 
 	svc.SetBarrierNodeSource(&fixedBarrierNodes{nodes: threeBarrierNodes, err: errors.New("placements unreadable")})
 	st, err = svc.TenantBarrierStatus(ownerCtx("acme"), "acme")
@@ -94,5 +97,8 @@ func TestTenantBarrierStatus_ServingNodesUnreadableOrUnwired(t *testing.T) {
 	}
 	if st.Nodes != nil {
 		t.Fatalf("Nodes = %+v from a failing source, want none", st.Nodes)
+	}
+	if !st.NodesUnreadable {
+		t.Fatal("NodesUnreadable = false from a failing source, want true")
 	}
 }

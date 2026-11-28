@@ -89,7 +89,7 @@ func TestMoveReplicaNodeSource(t *testing.T) {
 	}
 	for _, db := range []string{"a", "b"} {
 		if err := store.Put(ctx, &placement.Placement{
-			TenantID: "acme", Database: db, ShardID: 100, RF: 2, LeaderReplicaID: 1,
+			TenantID: "acme", DatabaseID: db, Database: db, ShardID: 100, RF: 2, LeaderReplicaID: 1,
 			Replicas: []placement.Replica{
 				{ReplicaID: 1, NodeID: "127.0.0.1:7003", RaftAddr: "127.0.0.1:7003"},
 				{ReplicaID: 2, NodeID: "127.0.0.1:7002", RaftAddr: "127.0.0.1:7002"},
@@ -129,7 +129,7 @@ func TestLocalMoveReplicas(t *testing.T) {
 	}
 	put := func(tenant, db string, addrs ...string) {
 		t.Helper()
-		p := &placement.Placement{TenantID: tenant, Database: db, ShardID: 100, RF: len(addrs), LeaderReplicaID: 1}
+		p := &placement.Placement{TenantID: tenant, DatabaseID: db, Database: db, ShardID: 100, RF: len(addrs), LeaderReplicaID: 1}
 		for i, a := range addrs {
 			p.Replicas = append(p.Replicas, placement.Replica{ReplicaID: uint64(i + 1), NodeID: a, RaftAddr: a})
 		}
@@ -183,7 +183,7 @@ func TestReadIndexCaughtUp(t *testing.T) {
 		t.Fatalf("no placement = %v, %v; want caught up", ok, err)
 	}
 	if err := store.Put(ctx, &placement.Placement{
-		TenantID: "acme", Database: "a", ShardID: 42, RF: 1, LeaderReplicaID: 1,
+		TenantID: "acme", DatabaseID: "a", Database: "a", ShardID: 42, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{{ReplicaID: 1, NodeID: "127.0.0.1:7001", RaftAddr: "127.0.0.1:7001"}},
 	}); err != nil {
 		t.Fatalf("Put: %v", err)
@@ -207,7 +207,7 @@ func TestReadIndexCaughtUp_PermanentShardFailureIsAnError(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	if err := store.Put(ctx, &placement.Placement{
-		TenantID: "acme", Database: "a", ShardID: 42, RF: 1, LeaderReplicaID: 1,
+		TenantID: "acme", DatabaseID: "a", Database: "a", ShardID: 42, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{{ReplicaID: 1, NodeID: "127.0.0.1:7001", RaftAddr: "127.0.0.1:7001"}},
 	}); err != nil {
 		t.Fatalf("Put: %v", err)

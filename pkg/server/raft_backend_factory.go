@@ -17,6 +17,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -210,12 +211,13 @@ type raftDatabaseInfoSource interface {
 	// follower honors the same WAL routing the leader chose at create time.
 	dedicatedWAL(tenantID, db string) bool
 
-	// recordedIncarnation returns the incarnation the replicated catalog
-	// records for the (tenant, db) database, or ok=false when it records
-	// none. FenceServices reads it to refuse a shard the name resolves to
-	// that is not the dropping incarnation's. A catalog that cannot be read
-	// is an error, never "no record".
-	recordedIncarnation(ctx context.Context, tenantID, db string) (incarnation string, ok bool, err error)
+	// recordedIdentity returns the database id and incarnation the
+	// replicated catalog records for the (tenant, db) database, or ok=false
+	// when it records none. FenceServices reads it to refuse a shard the name
+	// resolves to that is not the dropping incarnation's, and keys the
+	// placement it fences by the id, never by the name. A catalog that cannot
+	// be read is an error, never "no record".
+	recordedIdentity(ctx context.Context, tenantID, db string) (databaseID, incarnation string, ok bool, err error)
 }
 
 // RaftBackendFactory manages the lifecycle of dedicated per-database raft groups
@@ -273,6 +275,27 @@ type RaftBackendFactory struct {
 	// instead (awaitStartsLocked), so what each caller observes is what it
 	// observed when the start held mu throughout.
 	starting map[raftShardKey]*startingShard
+
+	// purging holds the teardowns removing a stopped shard's data
+	// directory: each channel closes once its purge ends. A database's
+	// directory is named by the database, not by its placement, so a
+	// successor recreated under the name would share the directory the
+	// predecessor's purge removes; no shard of a listed name starts until
+	// its purge ends. Guarded by mu.
+	purging map[raftShardKey]chan struct{}
+
+	// purgeHook, when non-nil, runs in a purge between the shard's stop
+	// and the removal of its directory. It is a TEST-ONLY seam, used to
+	// hold a purge there; purgeWaitHook runs when a resolve waits on a
+	// purge of its name. Production leaves both nil.
+	purgeHook     func()
+	purgeWaitHook func()
+
+	// fenceResolveHook, when non-nil, runs in FenceServices between the
+	// first catalog read and the shard's resolution. It is a TEST-ONLY
+	// seam, used to finish a drop and create the name again there.
+	// Production leaves it nil.
+	fenceResolveHook func()
 
 	// generation counts the shards removed from shards (forgetLocked,
 	// CloseAll) and the purges of a database, cached or not (CloseAndPurge).
@@ -599,14 +622,40 @@ func refusalForCached(db string, rs *raftShard, pInfo *placement.Placement, info
 //   - otherwise the cached services are served, after Services re-consults
 //     the replicated drop marker (a drop that started after the shard was
 //     cached).
-func (f *RaftBackendFactory) cachedServices(key raftShardKey, rs *raftShard, honorFence bool) (svcs *DatabaseServices, again bool, err error) {
+//
+// A drop's fence pins databaseID, the catalog record's database id: the
+// placement is then the entry keyed by that id, never one the name finds,
+// which can be a dropped predecessor's entry that outlived its drop. An entry
+// under the id that names another database is an error, so the cached shard is
+// left alone rather than retired on another database's word.
+//
+// A fence retires a cached shard only on the word of a catalog record read
+// after the shard was snapshotted and its placement read: the record must
+// still name the fence's id and incarnation. A drop that resumes after
+// another drop finished it and the name was created again would otherwise
+// read its own outlived placement entry, find the successor's live shard
+// cached under the name, and retire it; the successor's shard is cached
+// only once its record replaced the fence's, so a record still naming the
+// fence's incarnation means the cached shard is not a successor's. A record
+// that no longer does refuses with *database.DropSupersededError, leaving
+// the cached shard alone.
+func (f *RaftBackendFactory) cachedServices(ctx context.Context, key raftShardKey, rs *raftShard, honorFence bool, pin fencePin) (svcs *DatabaseServices, again bool, err error) {
 	tenantID, db := key.tenantID, key.database
-	pInfo, infoOK, err := f.dbInfo.placementInfo(tenantID, db)
+	pInfo, infoOK, err := f.placementFor(tenantID, db, pin.databaseID)
 	if err != nil {
 		return nil, false, &RaftBackendError{TenantID: tenantID, Database: db, Op: "placement-lookup", Err: err}
 	}
 	switch {
 	case infoOK && pInfo.ShardID != rs.shardID:
+		if !honorFence {
+			current, err := f.recordedFenceTarget(ctx, tenantID, db, pin.incarnation)
+			if err != nil {
+				return nil, false, err
+			}
+			if current != pin.databaseID {
+				return nil, false, &database.DropSupersededError{Name: db, TenantID: tenantID}
+			}
+		}
 		if f.forgetIfCached(key, rs) {
 			f.logger.Info("evicting a dropped incarnation's shard; the database was created again on a new shard",
 				slog.String("tenant", tenantID), slog.String("database", db),
@@ -623,6 +672,19 @@ func (f *RaftBackendFactory) cachedServices(key raftShardKey, rs *raftShard, hon
 		}
 	}
 	return rs.services, false, nil
+}
+
+// placementFor reads the placement entry the factory acts on for (tenantID,
+// db). With databaseID empty it is the entry the name resolves to. With it
+// set -- a drop's fence, pinned to the catalog record -- a placement-table
+// source reads the entry keyed by that id (placement.Store.GetBound), never
+// one found by the name.
+func (f *RaftBackendFactory) placementFor(tenantID, db, databaseID string) (*placement.Placement, bool, error) {
+	if src, ok := f.dbInfo.(*placementRaftInfoSource); ok && databaseID != "" {
+		_, _, p, resolved, err := src.boundDatabaseAndPlacementInfo(tenantID, db, databaseID)
+		return p, resolved, err
+	}
+	return f.dbInfo.placementInfo(tenantID, db)
 }
 
 // forgetLocked drops key's shard, if cached, from the cache and advances
@@ -775,7 +837,22 @@ func (f *RaftBackendFactory) RefuseIfDropping(tenantID, db string) error {
 // creation and restart re-attach. If no placement is found the existing
 // single-node path is used unchanged (Phase-4b compatibility).
 func (f *RaftBackendFactory) Services(ctx context.Context, tenantID, db string) (*DatabaseServices, error) {
-	return f.services(ctx, tenantID, db, true)
+	return f.services(ctx, tenantID, db, true, fencePin{})
+}
+
+// HomeGroup names the Raft propose target of tenantID's home group: the
+// factory's feature-gated host adapter and the shard of the tenant's home
+// database (database.TenantHomeName). The services lookup carries the
+// sealed-barrier refusal, so a sealed tenant's home group is never named.
+func (f *RaftBackendFactory) HomeGroup(ctx context.Context, tenantID string) (service.Host, uint64, error) {
+	svcs, err := f.Services(ctx, tenantID, database.TenantHomeName)
+	if err != nil {
+		return nil, 0, err
+	}
+	if f.adapter == nil {
+		return nil, 0, fmt.Errorf("server: tenant %q home group: raft host not started", tenantID)
+	}
+	return f.adapter, svcs.ShardID, nil
 }
 
 // FenceServices returns the same service set Services does, WITHOUT
@@ -797,24 +874,67 @@ func (f *RaftBackendFactory) Services(ctx context.Context, tenantID, db string) 
 // incarnation's record is gone; so a record of incarnation read here means
 // the shard resolved is not a successor's. Anything else is refused with
 // *database.DropSupersededError (go-qrdb#893).
+//
+// The placement the shard is resolved from is pinned to the database id the
+// same catalog record holds, read before the shard is resolved: a dropped
+// predecessor whose placement entry outlived a failed delete shares the name,
+// and GetByName can return its entry, which would retire the database's own
+// cached shard and fence the predecessor's. The entry is read by the id
+// instead, and one under it that names another database is refused with
+// *placement.IdentityMismatchError, leaving the cached shard alone. The
+// record is read again once the shard is resolved and must still name the
+// same id and incarnation. A record with no id (written before ids existed)
+// resolves by name, as it always did.
 func (f *RaftBackendFactory) FenceServices(ctx context.Context, tenantID, db, incarnation string) (*DatabaseServices, error) {
-	svcs, err := f.services(ctx, tenantID, db, false)
+	databaseID, err := f.recordedFenceTarget(ctx, tenantID, db, incarnation)
 	if err != nil {
 		return nil, err
 	}
-	recorded, ok, err := f.dbInfo.recordedIncarnation(ctx, tenantID, db)
-	if err != nil {
-		return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "incarnation-lookup", Err: err}
+	if f.fenceResolveHook != nil {
+		f.fenceResolveHook()
 	}
-	if !ok || recorded != incarnation {
+	svcs, err := f.services(ctx, tenantID, db, false, fencePin{databaseID: databaseID, incarnation: incarnation})
+	if err != nil {
+		return nil, err
+	}
+	again, err := f.recordedFenceTarget(ctx, tenantID, db, incarnation)
+	if err != nil {
+		return nil, err
+	}
+	if again != databaseID {
 		return nil, &database.DropSupersededError{Name: db, TenantID: tenantID}
 	}
 	return svcs, nil
 }
 
+// recordedFenceTarget returns the database id the catalog records for
+// (tenantID, db) while it records incarnation for the name, and
+// *database.DropSupersededError otherwise.
+func (f *RaftBackendFactory) recordedFenceTarget(ctx context.Context, tenantID, db, incarnation string) (string, error) {
+	if f == nil || f.dbInfo == nil {
+		return "", &RaftBackendError{TenantID: tenantID, Database: db, Op: "resolve", Err: ErrRaftBackendUnavailable}
+	}
+	databaseID, recorded, ok, err := f.dbInfo.recordedIdentity(ctx, tenantID, db)
+	if err != nil {
+		return "", &RaftBackendError{TenantID: tenantID, Database: db, Op: "incarnation-lookup", Err: err}
+	}
+	if !ok || recorded != incarnation {
+		return "", &database.DropSupersededError{Name: db, TenantID: tenantID}
+	}
+	return databaseID, nil
+}
+
+// fencePin is what a drop's fence is bound to: the catalog record's database
+// id and incarnation. Services passes the zero value.
+type fencePin struct {
+	databaseID  string
+	incarnation string
+}
+
 // services is Services and FenceServices. honorFence selects whether the
 // replicated placement drop marker refuses the resolution.
-func (f *RaftBackendFactory) services(ctx context.Context, tenantID, db string, honorFence bool) (*DatabaseServices, error) {
+func (f *RaftBackendFactory) services(ctx context.Context, tenantID, db string, honorFence bool, pin fencePin) (*DatabaseServices, error) {
+	databaseID := pin.databaseID
 	if f == nil || f.host == nil || f.barrierReg == nil || f.dbInfo == nil {
 		return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "resolve", Err: ErrRaftBackendUnavailable}
 	}
@@ -829,12 +949,21 @@ func (f *RaftBackendFactory) services(ctx context.Context, tenantID, db string, 
 		f.mu.Lock()
 		rs, cached := f.shards[key]
 		inFlight := f.starting[key]
+		purge := f.purging[key]
 		generation := f.generation
 		f.mu.Unlock()
 
 		switch {
+		case purge != nil:
+			// A predecessor under this name is still removing the
+			// directory a start here would open: wait for it to end.
+			if f.purgeWaitHook != nil {
+				f.purgeWaitHook()
+			}
+			<-purge
+			continue
 		case cached:
-			services, again, err := f.cachedServices(key, rs, honorFence)
+			services, again, err := f.cachedServices(ctx, key, rs, honorFence, pin)
 			if !again {
 				return services, err
 			}
@@ -855,7 +984,7 @@ func (f *RaftBackendFactory) services(ctx context.Context, tenantID, db string, 
 			if _, migrating := f.migrating.Load(tenantID); migrating {
 				return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "resolve", Err: ErrShardMigrationInProgress}
 			}
-			plan, err := f.planStart(ctx, tenantID, db, honorFence, forceJoin)
+			plan, err := f.planStart(ctx, tenantID, db, honorFence, forceJoin, databaseID)
 			if err != nil {
 				return nil, err
 			}
@@ -913,7 +1042,7 @@ type shardStartPlan struct {
 // placement entry and the members' identities are Raft reads of the system
 // shard, so the caller MUST NOT hold f.mu. forceJoin re-enters the join
 // bootstrap window for an ObserverReady replica that has no persisted state.
-func (f *RaftBackendFactory) planStart(ctx context.Context, tenantID, db string, honorFence, forceJoin bool) (*shardStartPlan, error) {
+func (f *RaftBackendFactory) planStart(ctx context.Context, tenantID, db string, honorFence, forceJoin bool, databaseID string) (*shardStartPlan, error) {
 	tb, err := f.barrierReg.GetTenant(tenantID)
 	if err != nil {
 		return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "barrier-lookup", Err: err}
@@ -940,7 +1069,13 @@ func (f *RaftBackendFactory) planStart(ctx context.Context, tenantID, db string,
 			resolved bool
 			perr     error
 		)
-		shardID, dataDir, pInfo, resolved, perr = src.databaseAndPlacementInfo(tenantID, db)
+		if databaseID != "" {
+			// A drop's fence: the entry keyed by the catalog record's id,
+			// never a dropped predecessor's the name also finds.
+			shardID, dataDir, pInfo, resolved, perr = src.boundDatabaseAndPlacementInfo(tenantID, db, databaseID)
+		} else {
+			shardID, dataDir, pInfo, resolved, perr = src.databaseAndPlacementInfo(tenantID, db)
+		}
 		if perr != nil {
 			return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "placement-lookup", Err: perr}
 		}
@@ -1114,7 +1249,7 @@ type startingShard struct {
 // cannot answer, and a failed start leaves nothing behind.
 func (f *RaftBackendFactory) startPlanned(ctx context.Context, key raftShardKey, plan *shardStartPlan, generation uint64) (rs *raftShard, again bool, err error) {
 	f.mu.Lock()
-	if _, cached := f.shards[key]; cached || f.starting[key] != nil || f.generation != generation {
+	if _, cached := f.shards[key]; cached || f.starting[key] != nil || f.purging[key] != nil || f.generation != generation {
 		f.mu.Unlock()
 		return nil, true, nil
 	}
@@ -1266,6 +1401,10 @@ type StartedShard struct {
 	TenantID string
 	// Database is the database name.
 	Database string
+	// ShardID is the raft shard the started replica serves: its identity,
+	// which a recreated database of the same name never shares. A start
+	// in flight that has no shard id yet reports 0.
+	ShardID uint64
 }
 
 // ListStarted returns a snapshot of every (TenantID, Database) pair whose
@@ -1279,8 +1418,8 @@ func (f *RaftBackendFactory) ListStarted() []StartedShard {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]StartedShard, 0, len(f.shards))
-	for k := range f.shards {
-		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database})
+	for k, s := range f.shards {
+		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database, ShardID: s.shardID})
 	}
 	return out
 }
@@ -1296,11 +1435,11 @@ func (f *RaftBackendFactory) ListOnHost() []StartedShard {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]StartedShard, 0, len(f.shards)+len(f.starting))
-	for k := range f.shards {
-		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database})
+	for k, s := range f.shards {
+		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database, ShardID: s.shardID})
 	}
-	for k := range f.starting {
-		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database})
+	for k, s := range f.starting {
+		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database, ShardID: s.shardID})
 	}
 	return out
 }
@@ -1552,12 +1691,82 @@ func (f *RaftBackendFactory) CloseAndPurge(tenantID, db string) error {
 	// again, which no longer names the database; the delete event that
 	// called this is consumed, so nothing would stop a shard it started.
 	f.forgetLocked(key)
-	f.mu.Unlock()
 	if !ok {
+		f.mu.Unlock()
 		return nil
 	}
+	done := f.beginPurgeLocked(key)
+	f.mu.Unlock()
+	defer f.endPurge(key, done)
+	return f.stopAndPurge(tenantID, db, rs)
+}
+
+// CloseShardIfOwned stops the shard for (tenantID, db), and with purge
+// removes its data directory, only when the shard under that name on this
+// host is shardID. The comparison, the invalidation of any start still
+// being planned and the cache eviction run in one critical section, so a
+// successor recreated under the same name between a check and the
+// teardown is never stopped or purged. When no shard is started under the
+// name the generation still moves, so a start still in planStart re-reads
+// a placement that no longer names the predecessor. It reports whether a
+// shard of another placement was left running.
+func (f *RaftBackendFactory) CloseShardIfOwned(tenantID, db string, shardID uint64, purge bool) (otherShard uint64, err error) {
+	f.mu.Lock()
+	key := raftShardKey{tenantID: tenantID, database: db}
+	f.awaitStartsLocked(func(k raftShardKey, _ *startingShard) bool { return k == key })
+	rs, ok := f.shards[key]
+	if ok && rs.shardID != shardID {
+		f.mu.Unlock()
+		return rs.shardID, nil
+	}
+	f.forgetLocked(key)
+	if !ok {
+		f.mu.Unlock()
+		return 0, nil
+	}
+	if !purge {
+		f.mu.Unlock()
+		return 0, f.stopShard(rs)
+	}
+	// The eviction and the purge's registration are one critical section,
+	// so no start under the name runs between the stop and the removal of
+	// the directory a successor would share.
+	done := f.beginPurgeLocked(key)
+	f.mu.Unlock()
+	defer f.endPurge(key, done)
+	return 0, f.stopAndPurge(tenantID, db, rs)
+}
+
+// beginPurgeLocked lists key as purging and returns the channel endPurge
+// closes. The caller MUST hold f.mu.
+func (f *RaftBackendFactory) beginPurgeLocked(key raftShardKey) chan struct{} {
+	if f.purging == nil {
+		f.purging = make(map[raftShardKey]chan struct{})
+	}
+	done := make(chan struct{})
+	f.purging[key] = done
+	return done
+}
+
+// endPurge ends the purge beginPurgeLocked listed, releasing the starts
+// waiting on it.
+func (f *RaftBackendFactory) endPurge(key raftShardKey, done chan struct{}) {
+	f.mu.Lock()
+	if f.purging[key] == done {
+		delete(f.purging, key)
+	}
+	close(done)
+	f.mu.Unlock()
+}
+
+// stopAndPurge stops rs, already evicted from the cache, and removes its
+// data directory.
+func (f *RaftBackendFactory) stopAndPurge(tenantID, db string, rs *raftShard) error {
 	if err := f.stopShard(rs); err != nil {
 		return err
+	}
+	if f.purgeHook != nil {
+		f.purgeHook()
 	}
 	// Delete only inside this node's own volume pool: a shard directory is
 	// resolved locally, so anything else is a path this node does not own,
@@ -1765,11 +1974,11 @@ func (s *managerRaftInfoSource) dedicatedWAL(tenantID, db string) bool {
 	return dbase.Info().DedicatedWAL
 }
 
-func (s *managerRaftInfoSource) recordedIncarnation(ctx context.Context, tenantID, db string) (string, bool, error) {
+func (s *managerRaftInfoSource) recordedIdentity(ctx context.Context, tenantID, db string) (string, string, bool, error) {
 	if s.manager == nil {
-		return "", false, ErrRaftBackendUnavailable
+		return "", "", false, ErrRaftBackendUnavailable
 	}
-	return s.manager.RecordedIncarnation(ctx, tenantID, db)
+	return s.manager.RecordedIdentity(ctx, tenantID, db)
 }
 
 // compile-time check that managerRaftInfoSource satisfies the interface.
@@ -1839,7 +2048,28 @@ func (s *placementRaftInfoSource) databaseInfo(tenantID, db string, ignoreFence 
 func (s *placementRaftInfoSource) databaseAndPlacementInfo(tenantID, db string) (shardID uint64, dataDir string, p *placement.Placement, ok bool, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
 	defer cancel()
-	p, err = s.store.Get(ctx, tenantID, db)
+	// A follower holds no catalog record for db, so it has no id to key by:
+	// the entry is the tenant's one that names the database.
+	p, err = s.store.GetByName(ctx, tenantID, db)
+	return s.localPlacementInfo(tenantID, db, p, err)
+}
+
+// boundDatabaseAndPlacementInfo is databaseAndPlacementInfo for the
+// placement entry keyed by databaseID, the catalog record's database id
+// (placement.Store.GetBound): a drop's fence acts on exactly the database the
+// catalog names, never on a dropped predecessor's entry that shares the name.
+// An entry under the id that names another database is
+// *placement.IdentityMismatchError.
+func (s *placementRaftInfoSource) boundDatabaseAndPlacementInfo(tenantID, db, databaseID string) (shardID uint64, dataDir string, p *placement.Placement, ok bool, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
+	defer cancel()
+	p, err = s.store.GetBound(ctx, tenantID, databaseID, db)
+	return s.localPlacementInfo(tenantID, db, p, err)
+}
+
+// localPlacementInfo resolves this node's replica of the placement entry p
+// that a lookup returned with err.
+func (s *placementRaftInfoSource) localPlacementInfo(tenantID, db string, p *placement.Placement, err error) (uint64, string, *placement.Placement, bool, error) {
 	if err != nil {
 		if errors.Is(err, placement.ErrPlacementNotFound) {
 			return 0, "", nil, false, nil
@@ -1894,10 +2124,10 @@ func (s *placementRaftInfoSource) dedicatedWAL(tenantID, db string) bool {
 	return s.fallback.dedicatedWAL(tenantID, db)
 }
 
-// recordedIncarnation reads the catalog through the fallback: a placement
+// recordedIdentity reads the catalog through the fallback: a placement
 // entry names a shard, never the incarnation it belongs to.
-func (s *placementRaftInfoSource) recordedIncarnation(ctx context.Context, tenantID, db string) (string, bool, error) {
-	return s.fallback.recordedIncarnation(ctx, tenantID, db)
+func (s *placementRaftInfoSource) recordedIdentity(ctx context.Context, tenantID, db string) (string, string, bool, error) {
+	return s.fallback.recordedIdentity(ctx, tenantID, db)
 }
 
 // compile-time check that placementRaftInfoSource satisfies the interface.

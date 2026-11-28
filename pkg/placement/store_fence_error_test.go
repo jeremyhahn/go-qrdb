@@ -69,7 +69,7 @@ func (k *faultyFenceKV) PutAllIfAllUnchanged(ctx context.Context, guards []kvsto
 }
 
 func placementKeyOf(p *placement.Placement) string {
-	return placement.PlacementPrefix + p.TenantID + "/" + p.Database
+	return placement.PlacementPrefix + p.TenantID + "/" + p.DatabaseID
 }
 
 func requireStoreErr(t *testing.T, err error, target error) {

@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -150,6 +151,56 @@ func (m *Manager) dropEntry(tenantID, name string) string {
 	return tenantScopedPath(filepath.Join(m.dataDir, droppedDir), tenantID, name)
 }
 
+// keptFenceDir holds one file per database whose drop fence a failed drop
+// pinned on this node (KeepFenceOnFailure) without the catalog recording it:
+// the claim that would have marked the record dropping is the write that
+// failed. The file holds the fenced incarnation, so a restart reopens that
+// incarnation fenced and a database created later under the name is not.
+const keptFenceDir = "fence-kept"
+
+// recordKeptFence durably records that db's drop fence is pinned on this
+// node until a retried drop removes it.
+func (m *Manager) recordKeptFence(db *Database) error {
+	path := m.keptFenceEntry(db.TenantID(), db.Name())
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return &MetaWriteError{Path: dir, Err: err}
+	}
+	return writeFileAtomic(dir, filepath.Base(path), []byte(db.Incarnation()))
+}
+
+// keptFenceHolds reports whether a kept-fence record pins the fence of
+// tenantID's database name at incarnation. A record that cannot be read
+// pins it: the fence fails closed.
+func (m *Manager) keptFenceHolds(tenantID, name, incarnation string) bool {
+	path := m.keptFenceEntry(tenantID, name)
+	raw, err := os.ReadFile(path) //nolint:gosec // path is built from the data dir and a tenant-scoped name
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false
+		}
+		m.logger.Warn("kept drop fence record unreadable: the database stays fenced",
+			slog.String("name", name), slog.Any("error", err))
+		return true
+	}
+	return string(raw) == incarnation
+}
+
+// forgetKeptFence removes the kept-fence record of tenantID's database name
+// once its drop has landed.
+func (m *Manager) forgetKeptFence(tenantID, name string) error {
+	path := m.keptFenceEntry(tenantID, name)
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return &MetaWriteError{Path: path, Err: err}
+	}
+	return nil
+}
+
+// keptFenceEntry is the kept-fence record file for tenantID's database name.
+func (m *Manager) keptFenceEntry(tenantID, name string) string {
+	return tenantScopedPath(filepath.Join(m.dataDir, keptFenceDir), tenantID, name)
+}
+
 // createUndo removes what a failed Create made, and nothing it did not.
 type createUndo struct {
 	m        *Manager
@@ -222,7 +273,13 @@ func (u *createUndo) run(ctx context.Context, cause error) error {
 		err := u.catalog.Delete(undoCtx, u.tenantID, u.name, u.incarnation, "")
 		cancel()
 		var notFound *NotFoundError
-		if err != nil && !errors.As(err, &notFound) {
+		if errors.As(err, &notFound) {
+			// The record of this incarnation is gone: a drop reclaimed it,
+			// and a successor that re-created the name may now own the
+			// directories, so they are left in place.
+			return cause
+		}
+		if err != nil {
 			return &CatalogOrphanError{Name: u.name, TenantID: u.tenantID, Err: cause, Cleanup: err}
 		}
 	}

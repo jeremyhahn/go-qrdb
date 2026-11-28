@@ -39,6 +39,10 @@ var (
 	// ErrEmptyDatabase is returned when a database name is empty.
 	ErrEmptyDatabase = errors.New("placement: database name must not be empty")
 
+	// ErrEmptyDatabaseID is returned when a placement entry names no
+	// database id: the table is keyed by the id, never by the name.
+	ErrEmptyDatabaseID = errors.New("placement: database id must not be empty")
+
 	// ErrZeroShard is returned by Place when the requested shard ID is zero.
 	ErrZeroShard = errors.New("placement: shard id must not be zero")
 
@@ -49,6 +53,12 @@ var (
 	// ErrPlacementNotFound is returned by Store.Get when no placement exists
 	// for the requested (tenant, database).
 	ErrPlacementNotFound = errors.New("placement: placement not found")
+
+	// ErrAmbiguousPlacement is returned by Store.GetByName when more than one
+	// live (not Dropping) placement entry names the same database: the name
+	// no longer identifies one database, so the lookup fails closed rather
+	// than pick one.
+	ErrAmbiguousPlacement = errors.New("placement: more than one live placement names the database")
 
 	// ErrWatchUnsupported is returned by Store.Watch when the backing KV does
 	// not implement Watcher.
@@ -106,8 +116,8 @@ type StoreError struct {
 	// TenantID owns the placement entry.
 	TenantID string
 
-	// Database is the database name.
-	Database string
+	// DatabaseID is the database name.
+	DatabaseID string
 
 	// Op is the failing operation (e.g. "put", "get", "delete", "list").
 	Op string
@@ -118,8 +128,8 @@ type StoreError struct {
 
 // Error implements the error interface.
 func (e *StoreError) Error() string {
-	target := e.TenantID + "/" + e.Database
-	if e.Database == "" {
+	target := e.TenantID + "/" + e.DatabaseID
+	if e.DatabaseID == "" {
 		target = e.TenantID
 	}
 	return "placement: " + e.Op + " " + target + ": " + e.Err.Error()
@@ -146,6 +156,27 @@ func (e *ReplicaDataRootError) Error() string {
 	return "placement: replica " + e.NodeID + " of " + e.TenantID + "/" + e.Database + " names the path " + e.DataRoot +
 		"; a replica's directory is resolved on each node from the tenant's volume pool, so the record is refused" +
 		" -- drop and re-create the database"
+}
+
+// IdentityMismatchError reports that the placement entry stored under a
+// catalog record's database id does not name that database: its recorded
+// database id or name differs. A drop fences only the entry the catalog
+// record names, so it is refused rather than acting on another database's
+// shard -- a dropped predecessor of the same name above all.
+type IdentityMismatchError struct {
+	TenantID string
+	Database string
+	// DatabaseID is the id the catalog record holds; GotDatabaseID and
+	// GotDatabase are what the placement entry under it records.
+	DatabaseID    string
+	GotDatabaseID string
+	GotDatabase   string
+}
+
+// Error implements the error interface.
+func (e *IdentityMismatchError) Error() string {
+	return "placement: the entry under database id " + e.DatabaseID + " of " + e.TenantID + "/" + e.Database +
+		" records database " + e.GotDatabase + " (id " + e.GotDatabaseID + "); refusing to act on another database's shard"
 }
 
 // NotAReplicaError refuses serving a dedicated-raft database on a node its

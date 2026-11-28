@@ -60,6 +60,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -128,7 +129,15 @@ func start3NodeMultiProtocolCluster(t *testing.T) (nodes [3]*multiProtoNode, spa
 // that stops one.
 func startMultiProtocolCluster(t *testing.T, spareCount int) (nodes [3]*multiProtoNode, spares []adminClusterSpareReplica) {
 	t.Helper()
-	return startMultiProtocolClusterWithNodeConfig(t, spareCount, nil)
+	return startMultiProtocolClusterWithConfig(t, spareCount, nil)
+}
+
+// multiProtoClusterNodeConfig is one genesis node's addition to
+// startMultiProtocolClusterWithConfig's cluster: YAML appended to its config
+// file after the peer admin URLs, and a writer its log is copied to.
+type multiProtoClusterNodeConfig struct {
+	yaml string
+	log  io.Writer
 }
 
 // startMultiProtocolClusterWithNodeConfig is startMultiProtocolCluster with
@@ -138,6 +147,18 @@ func startMultiProtocolCluster(t *testing.T, spareCount int) (nodes [3]*multiPro
 // volume pool directories. Every returned node keeps bin, startArgs, proc
 // and configPath, so multiProtoNode.restart can restart it.
 func startMultiProtocolClusterWithNodeConfig(t *testing.T, spareCount int, nodeYAML func(i int) string) (nodes [3]*multiProtoNode, spares []adminClusterSpareReplica) {
+	t.Helper()
+	if nodeYAML == nil {
+		return startMultiProtocolClusterWithConfig(t, spareCount, nil)
+	}
+	return startMultiProtocolClusterWithConfig(t, spareCount, func(i int) multiProtoClusterNodeConfig {
+		return multiProtoClusterNodeConfig{yaml: nodeYAML(i)}
+	})
+}
+
+// startMultiProtocolClusterWithConfig is startMultiProtocolCluster whose
+// genesis node i takes nodeConfig(i); a nil nodeConfig adds nothing.
+func startMultiProtocolClusterWithConfig(t *testing.T, spareCount int, nodeConfig func(i int) multiProtoClusterNodeConfig) (nodes [3]*multiProtoNode, spares []adminClusterSpareReplica) {
 	t.Helper()
 
 	n := 3 + spareCount
@@ -160,19 +181,13 @@ func startMultiProtocolClusterWithNodeConfig(t *testing.T, spareCount int, nodeY
 	// Every node shares one host on its own admin port, so REST's leader
 	// forwarding needs each peer's admin URL spelled out: its fallback --
 	// the leader's Raft host on THIS node's admin port -- names this node.
-	sharedYAML := peerAdminURLsYAML(peerAdminURLs)
-	cfgPaths := make([]string, n)
-	for i := range n {
-		if nodeYAML == nil {
-			if i == 0 {
-				cfgPaths[0] = writeMultiProtocolSealConfig(t, sharedYAML)
-			} else {
-				cfgPaths[i] = cfgPaths[0]
-			}
-			continue
+	configFor := func(i int) multiProtoClusterNodeConfig {
+		if nodeConfig == nil {
+			return multiProtoClusterNodeConfig{}
 		}
-		cfgPaths[i] = writeMultiProtocolSealConfig(t, sharedYAML+nodeYAML(i))
+		return nodeConfig(i)
 	}
+	cfgPaths := make([]string, n)
 	nodeArgs := make([][]string, n)
 	// Node certificates carry the SPIFFE node ID a follower signs its
 	// on-behalf caller assertion with when it forwards a membership change
@@ -186,6 +201,8 @@ func startMultiProtocolClusterWithNodeConfig(t *testing.T, spareCount int, nodeY
 
 	for i := range n {
 		dataDirs[i] = t.TempDir()
+		config := configFor(i)
+		cfgPaths[i] = writeMultiProtocolSealConfig(t, peerAdminURLsYAML(peerAdminURLs)+config.yaml)
 
 		// Unix socket paths are limited to ~108 bytes by the kernel and
 		// t.TempDir() can exceed that -- see startMultiProtocolNode's
@@ -221,7 +238,11 @@ func startMultiProtocolClusterWithNodeConfig(t *testing.T, spareCount int, nodeY
 		args = append(args, nodeTLS[i]...)
 		nodeArgs[i] = args
 
-		cmds[i] = startNode(t, bin, args, fmt.Sprintf("[admincluster-node%d] ", i+1))
+		var tee []io.Writer
+		if config.log != nil {
+			tee = append(tee, config.log)
+		}
+		cmds[i] = startNode(t, bin, args, fmt.Sprintf("[admincluster-node%d] ", i+1), tee...)
 	}
 
 	// "qrdb init" is the only system bootstrap (go-qrdb#548): each node's

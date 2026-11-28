@@ -920,7 +920,7 @@ func TestManager_Drop_SupersededLocallyLeavesTheNameAlone(t *testing.T) {
 		meta, err := cat.Get(ctx, "tenant-a", "orders")
 		require.NoError(t, err)
 		require.NoError(t, cat.Delete(ctx, "tenant-a", "orders", meta.Incarnation, meta.DropClaim))
-		require.NoError(t, cat.Create(ctx, DatabaseMeta{TenantID: "tenant-a", Name: "orders", Backend: BackendMemory, Incarnation: "successor"}))
+		require.NoError(t, cat.Create(ctx, DatabaseMeta{ID: "test-id", TenantID: "tenant-a", Name: "orders", Backend: BackendMemory, Incarnation: "successor"}))
 	}
 
 	var superseded *DropSupersededError

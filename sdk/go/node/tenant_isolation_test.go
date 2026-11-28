@@ -27,6 +27,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -200,6 +201,14 @@ func TestNode_TenantIsolation_RestartSurvival(t *testing.T) {
 	require.Equal(t, "alive", string(got))
 }
 
+// strictRaftEntitlements is raftEntitlements plus the dedicated WAL: a
+// strict-isolation tenant's databases must each have their own WAL.
+func strictRaftEntitlements() *quota.Entitlements {
+	e := raftEntitlements()
+	e.AllowDedicatedWAL = true
+	return e
+}
+
 // TestNode_ClusteredIsolationRaft_KV verifies the end-to-end IsolationRaft path
 // on an embedded single-node clustered node: create a raft-isolation tenant,
 // create a dedicated-raft database through the lifecycle-built DatabaseService,
@@ -213,7 +222,7 @@ func TestNode_ClusteredIsolationRaft_KV(t *testing.T) {
 
 	n, err := NewClusteredNode(ctx, cfg, raftMembers(), nil,
 		WithTenantIsolation(),
-		WithDefaultTenantEntitlements(raftEntitlements()),
+		WithDefaultTenantEntitlements(strictRaftEntitlements()),
 		WithNoSyncWrites(),
 	)
 	require.NoError(t, err)
@@ -235,7 +244,7 @@ func TestNode_ClusteredIsolationRaft_KV(t *testing.T) {
 	// the tenant record without requiring explicit backend flags in the call.
 	_, err = n.Services().Database.CreateForTenant(
 		tenant.WithTenantID(ctx, "acme"),
-		database.DatabaseConfig{Name: "orders"},
+		database.DatabaseConfig{Name: "orders", DedicatedWAL: true},
 	)
 	require.NoError(t, err, "CreateForTenant(orders) must succeed for IsolationRaft tenant")
 
@@ -285,7 +294,7 @@ func TestNode_ClusteredIsolationRaft_EnableEncryption(t *testing.T) {
 
 	n, err := NewClusteredNode(ctx, cfg, raftMembers(), nil,
 		WithTenantIsolation(),
-		WithDefaultTenantEntitlements(raftEntitlements()),
+		WithDefaultTenantEntitlements(strictRaftEntitlements()),
 		WithNoSyncWrites(),
 	)
 	require.NoError(t, err)
@@ -301,7 +310,7 @@ func TestNode_ClusteredIsolationRaft_EnableEncryption(t *testing.T) {
 
 	_, err = n.Services().Database.CreateForTenant(
 		tenant.WithTenantID(ctx, "beta"),
-		database.DatabaseConfig{Name: "sales"},
+		database.DatabaseConfig{Name: "sales", DedicatedWAL: true},
 	)
 	require.NoError(t, err)
 

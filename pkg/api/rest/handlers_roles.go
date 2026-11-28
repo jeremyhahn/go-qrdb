@@ -56,6 +56,10 @@ type updateRoleRequest struct {
 type assignRoleRequest struct {
 	UserID uint64 `json:"user_id,string"`
 	RoleID string `json:"role_id"`
+	// TenantID names the tenant whose user and role these are, for the
+	// platform operator's access to another tenant's identity records.
+	// Empty is the caller's own tenant.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // roleResponse is the JSON representation of a role entity.
@@ -154,6 +158,10 @@ func (s *Server) handleCreateRole(w http.ResponseWriter, r *http.Request) {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
+	ctx, ok := s.operatorTenantContext(ctx, w, req.TenantID, permission.RolesWriteTenant)
+	if !ok {
+		return
+	}
 
 	rl, err := s.roleSvc.CreateRole(ctx, &role.CreateRoleRequest{
 		ID:          req.ID,
@@ -203,7 +211,11 @@ func (s *Server) handleListRoles(w http.ResponseWriter, r *http.Request) {
 		listReq.PageSize = pageSize
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	ctx, ok := s.operatorTenantContext(r.Context(), w, listReq.TenantID, permission.RolesReadTenant)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, apiRequestTimeout)
 	defer cancel()
 
 	resp, err := s.roleSvc.ListRoles(ctx, listReq)
@@ -269,6 +281,11 @@ func (s *Server) handleGetRole(w http.ResponseWriter, r *http.Request, id string
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
 
+	ctx, ok := s.operatorTenantContext(ctx, w, r.URL.Query().Get("tenantID"), permission.RolesReadTenant)
+	if !ok {
+		return
+	}
+
 	rl, err := s.roleSvc.GetRole(ctx, id)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -290,6 +307,11 @@ func (s *Server) handleUpdateRole(w http.ResponseWriter, r *http.Request, id str
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
 
+	ctx, ok := s.operatorTenantContext(ctx, w, r.URL.Query().Get("tenantID"), permission.RolesWriteTenant)
+	if !ok {
+		return
+	}
+
 	rl, err := s.roleSvc.UpdateRole(ctx, &role.UpdateRoleRequest{
 		ID:          id,
 		Name:        req.Name,
@@ -307,6 +329,11 @@ func (s *Server) handleUpdateRole(w http.ResponseWriter, r *http.Request, id str
 func (s *Server) handleDeleteRole(w http.ResponseWriter, r *http.Request, id string) {
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
+
+	ctx, ok := s.operatorTenantContext(ctx, w, r.URL.Query().Get("tenantID"), permission.RolesWriteTenant)
+	if !ok {
+		return
+	}
 
 	if err := s.roleSvc.DeleteRole(ctx, id); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -335,6 +362,11 @@ func (s *Server) handleAssignRole(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
+
+	ctx, ok := s.operatorTenantContext(ctx, w, req.TenantID, permission.RolesWriteTenant)
+	if !ok {
+		return
+	}
 
 	// The same gate every role-assignment write passes: roles:assign in the
 	// user's tenant, and the role must exist there.
@@ -391,6 +423,11 @@ func (s *Server) handleUnassignRole(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
+
+	ctx, ok := s.operatorTenantContext(ctx, w, req.TenantID, permission.RolesWriteTenant)
+	if !ok {
+		return
+	}
 
 	if err := s.authMW.AuthorizeRoleUnassignment(ctx, s.userSvc, req.UserID, req.RoleID); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -474,6 +511,11 @@ func (s *Server) handleGetRoleByName(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
+
+	ctx, ok := s.operatorTenantContext(ctx, w, q.Get("tenant_id"), permission.RolesReadTenant)
+	if !ok {
+		return
+	}
 
 	rl, err := s.roleSvc.GetRoleByName(ctx, q.Get("tenant_id"), name)
 	if err != nil {
@@ -681,7 +723,7 @@ func (s *Server) handleReconcileRolesAllTenants(w http.ResponseWriter, r *http.R
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
-	report, err := role.ReconcileAllTenants(ctx, s.roleSvc, s.tenantSvc)
+	report, err := role.ReconcileAllTenants(ctx, s.roleSvc, s.tenantSvc, s.authMW.OperatorAccessGate(permission.RolesReconcileAll))
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return

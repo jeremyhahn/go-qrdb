@@ -382,6 +382,7 @@ func (s *tenantBarrierServer) Status(ctx context.Context, req *pb.TenantBarrierS
 		ClusterSeal:     ClusterSealToProto(st.ClusterSeal),
 		KeyFingerprint:  st.KeyFingerprint,
 		Nodes:           tenantBarrierNodesToProto(st.Nodes),
+		NodesUnreadable: st.NodesUnreadable,
 	}, nil
 }
 

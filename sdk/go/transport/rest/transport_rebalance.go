@@ -48,6 +48,9 @@ type restRebalancePlan struct {
 	Moves               []restRebalanceMove `json:"moves"`
 	EstimatedDurationMs int64               `json:"estimated_duration_ms"`
 	CurrentImbalance    float64             `json:"current_imbalance"`
+	// Skipped has the server's skipped-move shape, which the transport
+	// type shares field for field.
+	Skipped []transport.RebalanceSkippedMove `json:"skipped,omitempty"`
 }
 
 // restRebalancePlanRequest is the on-wire JSON for POST /v1/rebalance/plan.
@@ -181,6 +184,7 @@ func (r *restRebalancePlan) toRebalancePlan() *transport.RebalancePlan {
 		Moves:             moves,
 		EstimatedDuration: time.Duration(r.EstimatedDurationMs) * time.Millisecond,
 		CurrentImbalance:  r.CurrentImbalance,
+		Skipped:           r.Skipped,
 	}
 }
 

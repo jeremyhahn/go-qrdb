@@ -498,6 +498,10 @@ tenant's sealed error. On a standalone node they are in the tenant's own
 standalone barrier store. A node with neither refuses with
 `BarrierStoreUnavailableError`, `Unavailable` on every transport:
 `503 Service Unavailable` over REST, `UNAVAILABLE` over gRPC.
+An audit-instance write to a home group while `verifiable-log-audit` is not
+yet active on every replica is refused as unavailable
+(`AuditHomeNotActiveError`): `503 Service Unavailable` over REST,
+`UNAVAILABLE` over gRPC.
 
 A log in a barrier-enabled database lives where its tenant's logs do: in the
 Raft group the tenant resolves to, or the node's local store on a standalone

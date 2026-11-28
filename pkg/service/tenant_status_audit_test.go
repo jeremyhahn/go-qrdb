@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // auditedTenants returns a tenant service holding tenant "acme" (active),
@@ -62,7 +63,7 @@ func TestTenantStatusAudit_RecordsTheChange(t *testing.T) {
 		if ev.Action != ActionTenantStatusChange || ev.Outcome != want {
 			t.Fatalf("event %d = %s/%s, want %s/%s", i, ev.Action, ev.Outcome, ActionTenantStatusChange, want)
 		}
-		if ev.TenantID != "acme" || ev.Resource != "tenant" || ev.Actor != "root" {
+		if ev.TenantID != tenantid.System || ev.Resource != "tenant:acme" || ev.Actor != "root" {
 			t.Fatalf("event %d = %+v, want TenantID=acme Resource=tenant Actor=root", i, ev)
 		}
 		if ev.Attributes["from"] != string(tenant.StatusActive) || ev.Attributes["to"] != string(tenant.StatusSuspended) {
@@ -74,6 +75,46 @@ func TestTenantStatusAudit_RecordsTheChange(t *testing.T) {
 	}
 	if n := len(ring.Snapshot()); n != 2 {
 		t.Fatalf("a rename recorded %d more events, want none", n-2)
+	}
+}
+
+// A status change made by a tenant's own principal names no actor on the
+// platform trail: the platform trail holds no tenant username, and the
+// principal is recorded on the tenant's own trail instead.
+func TestTenantStatusAudit_TenantCallerStaysOnItsOwnTrail(t *testing.T) {
+	ring := audit.NewRingBuffer(16)
+	svc := auditedTenants(t, ring, audit.FailClosed)
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "alice", TenantID: "acme"})
+	if _, err := svc.UpdateTenant(ctx, "acme", setStatus(tenant.StatusSuspended)); err != nil {
+		t.Fatalf("suspend: %v", err)
+	}
+	var platform, own []audit.AuditEvent
+	for _, ev := range ring.Snapshot() {
+		switch ev.TenantID {
+		case tenantid.System:
+			platform = append(platform, ev)
+		case "acme":
+			own = append(own, ev)
+		default:
+			t.Fatalf("event on tenant %q, want system or acme: %+v", ev.TenantID, ev)
+		}
+	}
+	if len(platform) != 2 {
+		t.Fatalf("recorded %d platform events, want the permitted record and its outcome", len(platform))
+	}
+	for i, ev := range platform {
+		if ev.Actor != "" {
+			t.Fatalf("platform event %d Actor = %q, want none for a tenant principal", i, ev.Actor)
+		}
+		for k, v := range ev.Attributes {
+			if v == "alice" {
+				t.Fatalf("platform event %d attribute %s names the tenant principal", i, k)
+			}
+		}
+	}
+	if len(own) != 1 || own[0].Action != ActionTenantStatusChange || own[0].Actor != "alice" ||
+		own[0].Outcome != audit.OutcomeSuccess || own[0].Attributes["to"] != string(tenant.StatusSuspended) {
+		t.Fatalf("tenant-trail events = %+v, want one status-change success by alice", own)
 	}
 }
 

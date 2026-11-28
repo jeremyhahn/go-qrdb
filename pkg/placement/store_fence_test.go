@@ -198,7 +198,7 @@ func newFencedStore(t *testing.T, kv placement.KV) *placement.Store {
 }
 
 func fencePlacement(nodes ...string) *placement.Placement {
-	p := &placement.Placement{TenantID: "t1", Database: "db1", ShardID: 7, RF: len(nodes)}
+	p := &placement.Placement{TenantID: "t1", Database: "db1", DatabaseID: "db1", ShardID: 7, RF: len(nodes)}
 	for i, n := range nodes {
 		p.Replicas = append(p.Replicas, placement.Replica{ReplicaID: uint64(i + 1), NodeID: n, RaftAddr: n + ":1"})
 	}
@@ -218,15 +218,20 @@ func withReplica(p *placement.Placement, node string, state placement.ReplicaSta
 
 func seedPlacement(t *testing.T, kv *fenceGuardedKV, p *placement.Placement) {
 	t.Helper()
-	b, err := json.Marshal(p)
+	// The store keeps the database name out of the stored value (it is
+	// resolved through the catalog), so the seed must encode the same way
+	// for compare-and-swap's byte comparison to match.
+	stored := *p
+	stored.Database = ""
+	b, err := json.Marshal(&stored)
 	if err != nil {
 		t.Fatal(err)
 	}
-	kv.set(placement.PlacementPrefix+p.TenantID+"/"+p.Database, b)
+	kv.set(placement.PlacementPrefix+p.TenantID+"/"+p.DatabaseID, b)
 }
 
 func placementRaw(kv *fenceGuardedKV, p *placement.Placement) []byte {
-	return kv.raw(placement.PlacementPrefix + p.TenantID + "/" + p.Database)
+	return kv.raw(placement.PlacementPrefix + p.TenantID + "/" + p.DatabaseID)
 }
 
 func requireFenceRefusal(t *testing.T, err error) {

@@ -55,6 +55,7 @@ func newUsersCertBindingAddCmd() *cobra.Command {
 	var (
 		certFile string
 		notAfter string
+		opTenant string
 	)
 
 	cmd := &cobra.Command{
@@ -112,7 +113,7 @@ func newUsersCertBindingAddCmd() *cobra.Command {
 				}
 			}
 
-			u, err := client.Users().AddCertBinding(cmd.Context(), id, thumbprint, notAfterUnix)
+			u, err := client.Users().AddCertBinding(transport.WithTenantQualifier(cmd.Context(), opTenant), id, thumbprint, notAfterUnix)
 			if err != nil {
 				return err
 			}
@@ -122,6 +123,7 @@ func newUsersCertBindingAddCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&certFile, "cert", "", "PEM certificate whose SPKI thumbprint and expiry to enrol, instead of a thumbprint argument")
 	cmd.Flags().StringVar(&notAfter, "not-after", "", "When the binding stops authenticating, RFC 3339. Defaults to the --cert expiry; without --cert the binding never expires")
+	addOperatorTenantFlag(cmd, &opTenant)
 
 	return cmd
 }
@@ -129,7 +131,8 @@ func newUsersCertBindingAddCmd() *cobra.Command {
 // newUsersCertBindingListCmd lists a user's certificate bindings, expired
 // ones included.
 func newUsersCertBindingListCmd() *cobra.Command {
-	return &cobra.Command{
+	var opTenant string
+	cmd := &cobra.Command{
 		Use:   "list <user-id>",
 		Short: "List a user's certificate bindings",
 		Args:  cobra.ExactArgs(1),
@@ -139,18 +142,21 @@ func newUsersCertBindingListCmd() *cobra.Command {
 				return err
 			}
 
-			u, err := client.Users().GetUser(cmd.Context(), id)
+			u, err := client.Users().GetUser(transport.WithTenantQualifier(cmd.Context(), opTenant), id)
 			if err != nil {
 				return err
 			}
 			return printCertBindings(u)
 		},
 	}
+	addOperatorTenantFlag(cmd, &opTenant)
+	return cmd
 }
 
 // newUsersCertBindingRemoveCmd withdraws a certificate binding from a user.
 func newUsersCertBindingRemoveCmd() *cobra.Command {
-	return &cobra.Command{
+	var opTenant string
+	cmd := &cobra.Command{
 		Use:   "remove <user-id> <thumbprint>",
 		Short: "Withdraw a certificate binding from a user",
 		Long: "Withdraw a certificate binding from a user, so a certificate for that " +
@@ -168,13 +174,15 @@ func newUsersCertBindingRemoveCmd() *cobra.Command {
 				return err
 			}
 
-			u, err := client.Users().RemoveCertBinding(cmd.Context(), id, args[1])
+			u, err := client.Users().RemoveCertBinding(transport.WithTenantQualifier(cmd.Context(), opTenant), id, args[1])
 			if err != nil {
 				return err
 			}
 			return printCertBindings(u)
 		},
 	}
+	addOperatorTenantFlag(cmd, &opTenant)
+	return cmd
 }
 
 // printCertBindings prints the certificate bindings of a user in the

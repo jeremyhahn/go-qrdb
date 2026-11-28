@@ -123,6 +123,20 @@ func checkStoredGeometry(scoped string, info *vector.NamespaceInfo) error {
 	return nil
 }
 
+// checkUpsertNamespace is the namespace check an upsert of a dims-long
+// vector passes: a supported stored geometry and, on a namespace with a
+// fixed dimension, that dimension.
+func checkUpsertNamespace(scoped string, info *vector.NamespaceInfo, dims int) error {
+	if err := checkStoredGeometry(scoped, info); err != nil {
+		return err
+	}
+	// #nosec G115 -- vector dimension bounded by practical limits
+	if info.Dimension > 0 && uint32(dims) != info.Dimension {
+		return &DimensionMismatchError{Expected: int(info.Dimension), Actual: dims}
+	}
+	return nil
+}
+
 // newLiveNamespaceIndex builds a FLAT or IVF namespace index through
 // vectorindex.NewLiveIndex, the path the replicated engine replays, so the
 // index a namespace answers from is the one its record names.

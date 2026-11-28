@@ -488,6 +488,14 @@ tenant:
 // tenantKeys go to writeTenantEntitlementConfig.
 func startTenantEntitlementNode(t *testing.T, tenantKeys ...string) *multiProtoNode {
 	t.Helper()
+	return startTenantEntitlementNodeWithArgs(t, nil, tenantKeys...)
+}
+
+// startTenantEntitlementNodeWithArgs is startTenantEntitlementNode with
+// extraArgs appended to the qrdbd start flags (before the TLS flags), for a
+// test that needs a daemon flag the tenant config keys cannot express.
+func startTenantEntitlementNodeWithArgs(t *testing.T, extraArgs []string, tenantKeys ...string) *multiProtoNode {
+	t.Helper()
 
 	bin := buildBinary(t)
 	cli := buildCLIBinary(t)
@@ -538,6 +546,7 @@ func startTenantEntitlementNode(t *testing.T, tenantKeys ...string) *multiProtoN
 		"--enable-mcp", "--mcp-port", fmt.Sprintf("%d", mcpPort),
 		"--enable-unix", "--unix-socket-path", unixSocket,
 	}
+	args = append(args, extraArgs...)
 	args = append(args, ca.tlsFlags(t)...)
 
 	proc := startNode(t, bin, args, "[tenant-entitlement] ")

@@ -85,6 +85,7 @@ func TestTwoTenantsCreateSameLogicalNamespace(t *testing.T) {
 
 	svc, err := NewVectorService(storage, logger)
 	require.NoError(t, err)
+	attachPrefixHomes(t, svc)
 
 	ctxA := tenant.WithTenantID(context.Background(), "tenant-a")
 	ctxB := tenant.WithTenantID(context.Background(), "tenant-b")
@@ -149,6 +150,7 @@ func TestListNamespacesReturnsOnlyCallersTenant(t *testing.T) {
 
 	svc, err := NewVectorService(storage, logger)
 	require.NoError(t, err)
+	attachPrefixHomes(t, svc)
 
 	ctxA := tenant.WithTenantID(context.Background(), "tenant-a")
 	respA, err := svc.ListNamespaces(ctxA, &ListNamespacesRequest{})
@@ -202,6 +204,7 @@ func TestStrictTenantIsolation_AllowsExplicitTenant(t *testing.T) {
 	svc, err := NewVectorService(storage, logger, WithClusterIsolationPolicyReader(
 		fixedClusterIsolationPolicyReader{policy: tenant.ClusterIsolationPolicyStrict}))
 	require.NoError(t, err)
+	attachPrefixHomes(t, svc)
 
 	ctx := tenant.WithTenantID(context.Background(), "acme-corp")
 	resp, err := svc.CreateNamespace(ctx, &CreateNamespaceRequest{
@@ -243,6 +246,7 @@ func TestCreateNamespaceStampsTenantID(t *testing.T) {
 
 	svc, err := NewVectorService(storage, logger)
 	require.NoError(t, err)
+	attachPrefixHomes(t, svc)
 
 	ctx := tenant.WithTenantID(context.Background(), "my-tenant")
 	_, err = svc.CreateNamespace(ctx, &CreateNamespaceRequest{

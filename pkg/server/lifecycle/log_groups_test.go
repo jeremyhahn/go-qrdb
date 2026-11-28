@@ -50,6 +50,14 @@ func (f *fakeGroupServices) Services(_ context.Context, tenantID, db string) (*s
 
 func (f *fakeGroupServices) IsShardJoining(shardID uint64) bool { return f.joining[shardID] }
 
+func (f *fakeGroupServices) HomeGroup(ctx context.Context, tenantID string) (service.Host, uint64, error) {
+	svcs, err := f.Services(ctx, tenantID, database.TenantHomeName)
+	if err != nil {
+		return nil, 0, err
+	}
+	return nil, svcs.ShardID, nil
+}
+
 // groupHost is the node's host as the groups hand it out; only its identity
 // is checked.
 type groupHost struct{ service.Host }

@@ -15,8 +15,11 @@
 package service
 
 import (
+	"context"
 	"log/slog"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
@@ -44,3 +47,31 @@ func claimingManager(t *testing.T, logger *slog.Logger, dir string) *database.Ma
 	m.SetShardIDClaimer(testShardClaimer(t))
 	return m
 }
+
+// requireErrorAs asserts that err's chain carries a T and returns it.
+//
+// It is the assertion the vector tests make about the service's typed error
+// vocabulary (go-qrdb#331): the TYPE is the contract every transport
+// classifies, so it is what a test pins — never a code field or a message.
+// Untagged, because callers in every build-tag variant use it.
+func requireErrorAs[T error](t *testing.T, err error) T {
+	t.Helper()
+	var target T
+	require.ErrorAs(t, err, &target)
+	return target
+}
+
+// putRefusingCatalog is a catalog whose every Update fails: a database record
+// that cannot be written.
+type putRefusingCatalog struct{ database.Catalog }
+
+var _ database.Catalog = putRefusingCatalog{}
+
+func (putRefusingCatalog) Update(context.Context, string, string, string, func(*database.DatabaseMeta) error) error {
+	return catalogPutRefusedError{}
+}
+
+// catalogPutRefusedError is putRefusingCatalog's refusal.
+type catalogPutRefusedError struct{}
+
+func (catalogPutRefusedError) Error() string { return "catalog put refused" }

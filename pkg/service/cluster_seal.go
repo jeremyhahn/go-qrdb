@@ -205,7 +205,7 @@ func (s *DatabaseService) clearPredecessorSeal(ctx context.Context, db *database
 
 // rollBackCreate seals and drops a database whose create cannot complete, so
 // it is never served and a failed create leaves nothing behind.
-func (s *DatabaseService) rollBackCreate(ctx context.Context, db *database.Database, cause error) {
+func (s *DatabaseService) rollBackCreate(ctx context.Context, db *database.Database, cause error) error {
 	name := db.Name()
 	if s.barrierMgr != nil {
 		if _, err := s.barrierMgr.BarrierStatus(name, db.TenantID()); err == nil {
@@ -220,7 +220,9 @@ func (s *DatabaseService) rollBackCreate(ctx context.Context, db *database.Datab
 	if err := s.manager.DropForTenant(tenant.WithTenantID(ctx, db.TenantID()), name); err != nil {
 		s.logger.Error("failed to roll back database create",
 			"database", name, "cause", cause, "error", err)
+		return err
 	}
+	return nil
 }
 
 // clearDatabaseSeal ends a cluster seal of db after this node has unsealed

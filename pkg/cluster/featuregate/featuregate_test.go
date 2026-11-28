@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -382,6 +383,85 @@ func TestGate_SingleNodeActivatesImmediately(t *testing.T) {
 	assert.True(t, g.Enabled(systemShard, GuardedWrites), "Enabled follows Activated once Start runs it")
 }
 
+// orderKV records the order in which the gate writes activation records and,
+// at the moment it writes each one, which features the gate already reports
+// activated.
+type orderKV struct {
+	*memKV
+	gate    *Gate
+	mu      sync.Mutex
+	order   []feature.Feature
+	before  map[feature.Feature]map[feature.Feature]bool
+	tracked []feature.Feature
+}
+
+func (k *orderKV) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	f := feature.Feature(strings.TrimPrefix(key, ActivationPrefix))
+	k.mu.Lock()
+	k.order = append(k.order, f)
+	seen := map[feature.Feature]bool{}
+	for _, t := range k.tracked {
+		seen[t] = k.gate.Activated(t)
+	}
+	k.before[f] = seen
+	k.mu.Unlock()
+	return k.memKV.PutIfAbsent(ctx, key, value)
+}
+
+func (k *orderKV) index(f feature.Feature) int {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return slices.Index(k.order, f)
+}
+
+// TestGate_FirstBootActivationOrder pins the order in which a new cluster's
+// features activate on first boot (docs/clustering/engineering.md):
+// the activating node writes one activation record per feature in the order
+// of Supported(), and marks each active as its record is written. So
+// guarded-writes is active before strict-isolation's record is written, on a
+// single node (activated inside Start) and on a three-node cluster (activated
+// once the last member advertises), and every supported feature activates.
+func TestGate_FirstBootActivationOrder(t *testing.T) {
+	gw, si := slices.Index(Supported(), GuardedWrites), slices.Index(Supported(), StrictIsolation)
+	require.GreaterOrEqual(t, gw, 0)
+	require.Greater(t, si, gw, "guarded-writes must precede strict-isolation in Supported()")
+
+	check := func(t *testing.T, kv *orderKV) {
+		t.Helper()
+		for _, f := range Supported() {
+			assert.True(t, kv.gate.Activated(f), "feature %s not activated on first boot", f)
+		}
+		require.Less(t, kv.index(GuardedWrites), kv.index(StrictIsolation))
+		kv.mu.Lock()
+		assert.Equal(t, Supported(), kv.order, "activation records are written in Supported() order")
+		defer kv.mu.Unlock()
+		assert.True(t, kv.before[StrictIsolation][GuardedWrites], "guarded-writes was not active when strict-isolation's record was written")
+		assert.False(t, kv.before[GuardedWrites][StrictIsolation], "strict-isolation was active before guarded-writes' record was written")
+	}
+
+	t.Run("single node activates in Start", func(t *testing.T) {
+		m := &fakeMembers{groups: map[uint64]GroupMembership{}}
+		m.set(systemShard, 1, map[uint64]string{1: "n1:7000"})
+		g := newGate(t, m)
+		kv := &orderKV{memKV: newMemKV(), gate: g, before: map[feature.Feature]map[feature.Feature]bool{}, tracked: []feature.Feature{GuardedWrites, StrictIsolation}}
+		require.NoError(t, g.Start(context.Background(), kv, newLeaseStore()))
+		check(t, kv)
+	})
+
+	t.Run("three nodes activate once every member advertises", func(t *testing.T) {
+		store := newLeaseStore()
+		store.advertise(t, 2, "n2:7000", SupportedNames()...)
+		g := newGate(t, threeNodes())
+		kv := &orderKV{memKV: newMemKV(), gate: g, before: map[feature.Feature]map[feature.Feature]bool{}, tracked: []feature.Feature{GuardedWrites, StrictIsolation}}
+		require.NoError(t, g.Start(context.Background(), kv, store))
+		require.False(t, g.Activated(GuardedWrites))
+		require.False(t, g.Activated(StrictIsolation))
+		store.advertise(t, 3, "n3:7000", SupportedNames()...)
+		eventually(t, func() bool { return g.Activated(IndexRescope) }, "the last supported feature was not activated once every node advertised")
+		check(t, kv)
+	})
+}
+
 // Enabled reads no membership at all -- it is one atomic load of the
 // cluster-wide activation flag. AdmitReplica's per-group decide check is the
 // one that reads membership, and it reads it fresh on every call, so a
@@ -548,8 +628,8 @@ func TestNew_Validates(t *testing.T) {
 
 // The advertised names are exactly this binary's features.
 func TestSupported(t *testing.T) {
-	assert.Equal(t, []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads, VerifiableLogAudit, PendingUserTTL, VerifiableLogDrop, VerifiableLogSealed, OrderedUniqueCheck, IndexRescope}, Supported())
-	assert.Equal(t, []string{string(GuardedWrites), string(ClusterShardIDs), string(PrefixCompaction), string(NodeCompaction), string(ClusterSeal), string(ImportStaging), string(RangeDelete), string(AuditAppend), string(VectorEngine), string(TimeSeriesRetention), string(LeaseCheckpoint), string(PerNodeBarrierKeys), string(VerifiableLog), string(RollingMigration), string(TenantUndo), string(VerifiableLogKeys), string(VectorManhattan), string(CommandCaps), string(LockCreateRevisionToken), string(TransactionReads), string(VerifiableLogAudit), string(PendingUserTTL), string(VerifiableLogDrop), string(VerifiableLogSealed), string(OrderedUniqueCheck), string(IndexRescope)}, SupportedNames())
+	assert.Equal(t, []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads, VerifiableLogAudit, StrictIsolation, PendingUserTTL, VerifiableLogDrop, VerifiableLogSealed, VectorStoredCount, AuditAppendOnce, OrderedUniqueCheck, IndexRescope}, Supported())
+	assert.Equal(t, []string{string(GuardedWrites), string(ClusterShardIDs), string(PrefixCompaction), string(NodeCompaction), string(ClusterSeal), string(ImportStaging), string(RangeDelete), string(AuditAppend), string(VectorEngine), string(TimeSeriesRetention), string(LeaseCheckpoint), string(PerNodeBarrierKeys), string(VerifiableLog), string(RollingMigration), string(TenantUndo), string(VerifiableLogKeys), string(VectorManhattan), string(CommandCaps), string(LockCreateRevisionToken), string(TransactionReads), string(VerifiableLogAudit), string(StrictIsolation), string(PendingUserTTL), string(VerifiableLogDrop), string(VerifiableLogSealed), string(VectorStoredCount), string(AuditAppendOnce), string(OrderedUniqueCheck), string(IndexRescope)}, SupportedNames())
 }
 
 // TestCheckActivated_AdoptsTenantUndoActivation pins that this binary

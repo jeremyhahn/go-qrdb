@@ -33,6 +33,10 @@ func namespaceUpdateStores(t *testing.T) map[string]Storage {
 	}
 }
 
+// updateErr drops UpdateNamespace's requiresRebuild for a test that checks
+// only its error.
+func updateErr(_ bool, err error) error { return err }
+
 func createUpdateNamespace(t *testing.T, s Storage) {
 	t.Helper()
 	require.NoError(t, s.CreateNamespace(context.Background(), &NamespaceInfo{
@@ -50,7 +54,7 @@ func createUpdateNamespace(t *testing.T, s Storage) {
 	}))
 }
 
-func TestUpdateNamespace_replacesMutableFieldsOnly(t *testing.T) {
+func TestUpdateNamespace_patchesMutableFieldsOnly(t *testing.T) {
 	for name, s := range namespaceUpdateStores(t) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
@@ -61,7 +65,9 @@ func TestUpdateNamespace_replacesMutableFieldsOnly(t *testing.T) {
 				Metadata:    map[string]string{"team": "b"},
 				UpdatedAt:   99,
 			}
-			require.NoError(t, s.UpdateNamespace(ctx, "docs", update))
+			rebuild, err := s.UpdateNamespace(ctx, "docs", update)
+			require.NoError(t, err)
+			require.True(t, rebuild, "an index parameter changed")
 
 			// The stored maps are copies: the caller's later writes do not leak in.
 			update.IndexConfig["m"] = "64"
@@ -70,7 +76,7 @@ func TestUpdateNamespace_replacesMutableFieldsOnly(t *testing.T) {
 			info, err := s.GetNamespaceInfo(ctx, "docs")
 			require.NoError(t, err)
 			require.Equal(t, map[string]string{"m": "32", "ef": "200"}, info.IndexConfig)
-			require.Equal(t, map[string]string{"team": "b"}, info.Metadata)
+			require.Equal(t, map[string]string{"owner": "a", "team": "b"}, info.Metadata, "keys the patch does not name are kept")
 			require.Equal(t, int64(99), info.UpdatedAt)
 			require.Equal(t, uint32(3), info.Dimension)
 			require.Equal(t, int64(10), info.CreatedAt)
@@ -80,22 +86,29 @@ func TestUpdateNamespace_replacesMutableFieldsOnly(t *testing.T) {
 			vec, err := s.GetVector(ctx, "docs", 1)
 			require.NoError(t, err)
 			require.Equal(t, []float32{1, 2, 3}, vec.Embedding)
+
+			// A patch that sets the stored index parameters again needs no rebuild.
+			rebuild, err = s.UpdateNamespace(ctx, "docs", &NamespaceUpdate{IndexConfig: map[string]string{"m": "32"}, UpdatedAt: 100})
+			require.NoError(t, err)
+			require.False(t, rebuild)
 		})
 	}
 }
 
-func TestUpdateNamespace_emptyMapsClearFields(t *testing.T) {
+func TestUpdateNamespace_emptyPatchKeepsFields(t *testing.T) {
 	for name, s := range namespaceUpdateStores(t) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			createUpdateNamespace(t, s)
 
-			require.NoError(t, s.UpdateNamespace(ctx, "docs", &NamespaceUpdate{UpdatedAt: 20}))
+			rebuild, err := s.UpdateNamespace(ctx, "docs", &NamespaceUpdate{UpdatedAt: 20})
+			require.NoError(t, err)
+			require.False(t, rebuild)
 
 			info, err := s.GetNamespaceInfo(ctx, "docs")
 			require.NoError(t, err)
-			require.Empty(t, info.IndexConfig)
-			require.Empty(t, info.Metadata)
+			require.Equal(t, map[string]string{"m": "16"}, info.IndexConfig)
+			require.Equal(t, map[string]string{"owner": "a"}, info.Metadata)
 			require.Equal(t, int64(20), info.UpdatedAt)
 		})
 	}
@@ -117,7 +130,7 @@ func TestUpdateNamespace_refusals(t *testing.T) {
 			createUpdateNamespace(t, s)
 			for _, tt := range tests {
 				t.Run(tt.name, func(t *testing.T) {
-					err := s.UpdateNamespace(context.Background(), tt.namespace, tt.update)
+					err := updateErr(s.UpdateNamespace(context.Background(), tt.namespace, tt.update))
 					require.ErrorIs(t, err, tt.want)
 				})
 			}
@@ -135,7 +148,7 @@ func TestUpdateNamespace_closedStore(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			createUpdateNamespace(t, s)
 			require.NoError(t, s.Close())
-			err := s.UpdateNamespace(context.Background(), "docs", &NamespaceUpdate{})
+			err := updateErr(s.UpdateNamespace(context.Background(), "docs", &NamespaceUpdate{}))
 			require.ErrorIs(t, err, ErrStorageClosed)
 		})
 	}
@@ -148,11 +161,11 @@ func TestPebbleVectorStorage_UpdateNamespaceSurvivesReopen(t *testing.T) {
 	s, err := NewPebbleVectorStorage(DefaultConfig(dir), &testLogger{})
 	require.NoError(t, err)
 	createUpdateNamespace(t, s)
-	require.NoError(t, s.UpdateNamespace(ctx, "docs", &NamespaceUpdate{
+	require.NoError(t, updateErr(s.UpdateNamespace(ctx, "docs", &NamespaceUpdate{
 		IndexConfig: map[string]string{"ef": "400"},
 		Metadata:    map[string]string{"tier": "gold"},
 		UpdatedAt:   55,
-	}))
+	})))
 	require.NoError(t, s.Close())
 
 	reopened, err := NewPebbleVectorStorage(DefaultConfig(dir), &testLogger{})
@@ -161,8 +174,8 @@ func TestPebbleVectorStorage_UpdateNamespaceSurvivesReopen(t *testing.T) {
 
 	info, err := reopened.GetNamespaceInfo(ctx, "docs")
 	require.NoError(t, err)
-	require.Equal(t, map[string]string{"ef": "400"}, info.IndexConfig)
-	require.Equal(t, map[string]string{"tier": "gold"}, info.Metadata)
+	require.Equal(t, map[string]string{"m": "16", "ef": "400"}, info.IndexConfig)
+	require.Equal(t, map[string]string{"owner": "a", "tier": "gold"}, info.Metadata)
 	require.Equal(t, int64(55), info.UpdatedAt)
 	require.Equal(t, uint32(3), info.Dimension)
 
@@ -179,15 +192,15 @@ func TestPebbleVectorStorage_UpdateNamespaceKeepsReaderCopy(t *testing.T) {
 
 	before, err := s.GetNamespaceInfo(ctx, "docs")
 	require.NoError(t, err)
-	require.NoError(t, s.UpdateNamespace(ctx, "docs", &NamespaceUpdate{
+	require.NoError(t, updateErr(s.UpdateNamespace(ctx, "docs", &NamespaceUpdate{
 		IndexConfig: map[string]string{"m": "48"},
 		UpdatedAt:   77,
-	}))
+	})))
 	require.Equal(t, map[string]string{"m": "16"}, before.IndexConfig)
 	require.Equal(t, int64(10), before.UpdatedAt)
 }
 
-func TestMergeNamespaceUpdate(t *testing.T) {
+func TestApplyNamespaceUpdate(t *testing.T) {
 	stored := &NamespaceInfo{
 		IndexConfig: map[string]string{"m": "16", "ef": "100"},
 		Metadata:    map[string]string{"owner": "a", "tier": "silver"},
@@ -243,7 +256,7 @@ func TestMergeNamespaceUpdate(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			update, rebuild := MergeNamespaceUpdate(tt.info, tt.indexConfig, tt.metadata, 42)
+			update, rebuild := ApplyNamespaceUpdate(tt.info, &NamespaceUpdate{IndexConfig: tt.indexConfig, Metadata: tt.metadata, UpdatedAt: 42})
 			require.Equal(t, tt.wantRebuild, rebuild)
 			require.Equal(t, tt.wantIndex, update.IndexConfig)
 			require.Equal(t, tt.wantMeta, update.Metadata)
@@ -252,15 +265,18 @@ func TestMergeNamespaceUpdate(t *testing.T) {
 	}
 }
 
-func TestMergeNamespaceUpdate_leavesInputsUntouched(t *testing.T) {
+func TestApplyNamespaceUpdate_leavesInputsUntouched(t *testing.T) {
 	info := &NamespaceInfo{
 		IndexConfig: map[string]string{"m": "16"},
 		Metadata:    map[string]string{"owner": "a"},
 	}
-	update, _ := MergeNamespaceUpdate(info, map[string]string{"m": "32"}, map[string]string{"owner": "b"}, 1)
-	update.IndexConfig["x"] = "y"
-	update.Metadata["x"] = "y"
+	patch := &NamespaceUpdate{IndexConfig: map[string]string{"m": "32"}, Metadata: map[string]string{"owner": "b"}, UpdatedAt: 1}
+	merged, _ := ApplyNamespaceUpdate(info, patch)
+	merged.IndexConfig["x"] = "y"
+	merged.Metadata["x"] = "y"
 
 	require.Equal(t, map[string]string{"m": "16"}, info.IndexConfig)
 	require.Equal(t, map[string]string{"owner": "a"}, info.Metadata)
+	require.Equal(t, map[string]string{"m": "32"}, patch.IndexConfig)
+	require.Equal(t, map[string]string{"owner": "b"}, patch.Metadata)
 }

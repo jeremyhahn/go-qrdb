@@ -61,7 +61,20 @@ const TablePrefix = "\x00qrdb.audit/"
 const (
 	headPrefix  = TablePrefix + "h/"
 	eventPrefix = TablePrefix + "e/"
+
+	// requestPrefix keys the identity of every event appended once
+	// (Chain.AppendOnce): TablePrefix + "r/" + tenantID + "/" + token.
+	requestPrefix = TablePrefix + "r/"
 )
+
+// requestKey returns the marker key of tenantID's event identity token.
+func requestKey(tenantID, token string) []byte {
+	k := make([]byte, 0, len(requestPrefix)+len(tenantID)+1+len(token))
+	k = append(k, requestPrefix...)
+	k = append(k, tenantID...)
+	k = append(k, '/')
+	return append(k, token...)
+}
 
 // headRecordSize is the encoded width of a head record: an 8-byte
 // big-endian sequence number, an 8-byte big-endian low-watermark, and a

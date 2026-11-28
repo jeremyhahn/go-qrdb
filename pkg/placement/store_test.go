@@ -23,6 +23,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // fakeKV is an in-memory KV harness modeled on the membership-store test fake:
@@ -140,6 +142,7 @@ func (a *atomicKV) PutIfAbsent(_ context.Context, key string, value []byte) (boo
 func samplePlacement(tenant, db string, shardID uint64) *Placement {
 	return &Placement{
 		TenantID:        tenant,
+		DatabaseID:      db,
 		Database:        db,
 		ShardID:         shardID,
 		RF:              2,
@@ -396,15 +399,15 @@ func TestStore_CompareAndSwapPlacement_Validation(t *testing.T) {
 		}
 	})
 	t.Run("empty tenant", func(t *testing.T) {
-		_, err := s.CompareAndSwapPlacement(ctx, nil, &Placement{Database: "orders"})
+		_, err := s.CompareAndSwapPlacement(ctx, nil, &Placement{DatabaseID: "orders", Database: "orders"})
 		if !errors.Is(err, ErrEmptyTenant) {
 			t.Fatalf("error = %v, want ErrEmptyTenant", err)
 		}
 	})
 	t.Run("empty database", func(t *testing.T) {
 		_, err := s.CompareAndSwapPlacement(ctx, nil, &Placement{TenantID: "acme"})
-		if !errors.Is(err, ErrEmptyDatabase) {
-			t.Fatalf("error = %v, want ErrEmptyDatabase", err)
+		if !errors.Is(err, ErrEmptyDatabaseID) {
+			t.Fatalf("error = %v, want ErrEmptyDatabaseID", err)
 		}
 	})
 }
@@ -430,7 +433,7 @@ func TestStore_CompareAndSwapPlacement_BackendError(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	ctx := context.Background()
-	p := &Placement{TenantID: "acme", Database: "orders", ShardID: 1000, RF: 1}
+	p := &Placement{TenantID: "acme", DatabaseID: "orders", Database: "orders", ShardID: 1000, RF: 1}
 
 	_, err = s.CompareAndSwapPlacement(ctx, nil, p)
 	if !errors.Is(err, boom) {
@@ -447,7 +450,7 @@ func TestStore_ClaimPlacement_CreatesWhenAbsent(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	ctx := context.Background()
-	p := &Placement{TenantID: "acme", Database: "orders", Backend: BackendFile, ShardID: 1000, RF: 1}
+	p := &Placement{TenantID: "acme", DatabaseID: "orders", Database: "orders", Backend: BackendFile, ShardID: 1000, RF: 1}
 
 	claimed, existing, err := s.ClaimPlacement(ctx, p)
 	if err != nil {
@@ -481,14 +484,14 @@ func TestStore_ClaimPlacement_DeclinesAndReturnsExistingOnConflict(t *testing.T)
 		t.Fatalf("NewStore: %v", err)
 	}
 	ctx := context.Background()
-	first := &Placement{TenantID: "acme", Database: "orders", Backend: BackendFile, ShardID: 1000, RF: 1,
+	first := &Placement{TenantID: "acme", DatabaseID: "orders", Database: "orders", Backend: BackendFile, ShardID: 1000, RF: 1,
 		Replicas: []Replica{{ReplicaID: 1, NodeID: "n1", RaftAddr: "n1:1"}}, LeaderReplicaID: 1}
 	claimed, _, err := s.ClaimPlacement(ctx, first)
 	if err != nil || !claimed {
 		t.Fatalf("first ClaimPlacement: claimed=%v err=%v", claimed, err)
 	}
 
-	second := &Placement{TenantID: "acme", Database: "orders", Backend: BackendFile, ShardID: 2000, RF: 1,
+	second := &Placement{TenantID: "acme", DatabaseID: "orders", Database: "orders", Backend: BackendFile, ShardID: 2000, RF: 1,
 		Replicas: []Replica{{ReplicaID: 1, NodeID: "n2", RaftAddr: "n2:1"}}, LeaderReplicaID: 1}
 	claimed, existing, err := s.ClaimPlacement(ctx, second)
 	if err != nil {
@@ -510,7 +513,7 @@ func TestStore_ClaimPlacement_UnsupportedWithoutPutIfAbsentKV(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	p := &Placement{TenantID: "acme", Database: "orders", Backend: BackendFile, ShardID: 1000, RF: 1}
+	p := &Placement{TenantID: "acme", DatabaseID: "orders", Database: "orders", Backend: BackendFile, ShardID: 1000, RF: 1}
 
 	_, _, err = s.ClaimPlacement(context.Background(), p)
 	if uerr := (*AtomicWriteUnsupportedError)(nil); !errors.As(err, &uerr) {
@@ -530,11 +533,11 @@ func TestStore_ClaimPlacement_Validation(t *testing.T) {
 	if _, _, err := s.ClaimPlacement(ctx, nil); !errors.Is(err, ErrPlacementNotFound) {
 		t.Fatalf("nil placement error = %v, want ErrPlacementNotFound", err)
 	}
-	if _, _, err := s.ClaimPlacement(ctx, &Placement{Database: "orders"}); !errors.Is(err, ErrEmptyTenant) {
+	if _, _, err := s.ClaimPlacement(ctx, &Placement{DatabaseID: "orders", Database: "orders"}); !errors.Is(err, ErrEmptyTenant) {
 		t.Fatalf("empty tenant error = %v, want ErrEmptyTenant", err)
 	}
-	if _, _, err := s.ClaimPlacement(ctx, &Placement{TenantID: "acme"}); !errors.Is(err, ErrEmptyDatabase) {
-		t.Fatalf("empty database error = %v, want ErrEmptyDatabase", err)
+	if _, _, err := s.ClaimPlacement(ctx, &Placement{TenantID: "acme"}); !errors.Is(err, ErrEmptyDatabaseID) {
+		t.Fatalf("empty database error = %v, want ErrEmptyDatabaseID", err)
 	}
 }
 
@@ -558,7 +561,7 @@ func TestStore_ClaimPlacement_BackendError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	p := &Placement{TenantID: "acme", Database: "orders", Backend: BackendFile, ShardID: 1000, RF: 1}
+	p := &Placement{TenantID: "acme", DatabaseID: "orders", Database: "orders", Backend: BackendFile, ShardID: 1000, RF: 1}
 
 	_, _, err = s.ClaimPlacement(context.Background(), p)
 	if !errors.Is(err, boom) {
@@ -577,7 +580,7 @@ func TestStore_ClaimPlacement_GetErrorOnConflict(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	ctx := context.Background()
-	first := &Placement{TenantID: "acme", Database: "orders", Backend: BackendFile, ShardID: 1000, RF: 1}
+	first := &Placement{TenantID: "acme", DatabaseID: "orders", Database: "orders", Backend: BackendFile, ShardID: 1000, RF: 1}
 	if claimed, _, err := s.ClaimPlacement(ctx, first); err != nil || !claimed {
 		t.Fatalf("first ClaimPlacement: claimed=%v err=%v", claimed, err)
 	}
@@ -586,7 +589,7 @@ func TestStore_ClaimPlacement_GetErrorOnConflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	second := &Placement{TenantID: "acme", Database: "orders", Backend: BackendFile, ShardID: 2000, RF: 1}
+	second := &Placement{TenantID: "acme", DatabaseID: "orders", Database: "orders", Backend: BackendFile, ShardID: 2000, RF: 1}
 	_, _, err = s2.ClaimPlacement(ctx, second)
 	if !errors.Is(err, boom) {
 		t.Fatalf("error = %v, want to wrap %v", err, boom)
@@ -1307,11 +1310,11 @@ func TestStore_List(t *testing.T) {
 func TestStore_PutValidation(t *testing.T) {
 	s, _ := NewStore(newFakeKV())
 	ctx := context.Background()
-	if err := s.Put(ctx, &Placement{Database: "db"}); !errors.Is(err, ErrEmptyTenant) {
+	if err := s.Put(ctx, &Placement{DatabaseID: "db", Database: "db"}); !errors.Is(err, ErrEmptyTenant) {
 		t.Errorf("Put without tenant error = %v, want ErrEmptyTenant", err)
 	}
-	if err := s.Put(ctx, &Placement{TenantID: "t"}); !errors.Is(err, ErrEmptyDatabase) {
-		t.Errorf("Put without database error = %v, want ErrEmptyDatabase", err)
+	if err := s.Put(ctx, &Placement{TenantID: "t"}); !errors.Is(err, ErrEmptyDatabaseID) {
+		t.Errorf("Put without database error = %v, want ErrEmptyDatabaseID", err)
 	}
 }
 
@@ -1328,6 +1331,9 @@ func TestStore_WatchUnsupported(t *testing.T) {
 func TestStore_Watch(t *testing.T) {
 	kv := newWatchKV()
 	s, _ := NewStore(kv)
+	// The writer is another store: the watcher learns the name from the
+	// tenant's catalog, never from the value.
+	s.SetNameResolver(staticNames{"acme": {"orders": "orders"}})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -1354,6 +1360,171 @@ func TestStore_Watch(t *testing.T) {
 	if ev.Type != EventDelete || ev.TenantID != "acme" || ev.Database != "orders" {
 		t.Fatalf("delete event = %+v, want EventDelete acme/orders", ev)
 	}
+	// The prior value's immutable shard identity rides on the delete, so a
+	// consumer that never saw the entry can still tear its shard down.
+	if ev.ShardID != 1000 {
+		t.Fatalf("delete event shard = %d, want the prior value's 1000", ev.ShardID)
+	}
+}
+
+// staticNames is a NameResolver over a fixed tenant -> id -> name table.
+type staticNames map[string]map[string]string
+
+func (n staticNames) DatabaseNames(_ context.Context, tenantID string) map[string]string {
+	return n[tenantID]
+}
+
+// countingNames counts the resolver's catalog reads.
+type countingNames struct {
+	staticNames
+	calls int
+}
+
+func (n *countingNames) DatabaseNames(ctx context.Context, tenantID string) map[string]string {
+	n.calls++
+	return n.staticNames.DatabaseNames(ctx, tenantID)
+}
+
+// The system KV value of a placement never carries the database name
+// (decision S5), whichever write put it there; a store that did not write it
+// resolves the name from the tenant's catalog, and leaves it empty when the
+// catalog does not know the id.
+func TestStore_NameNeverInSystemKV(t *testing.T) {
+	ctx := context.Background()
+	kv := newAtomicKV()
+	writer, _ := NewStore(kv)
+	const secret = "payroll-secret-db"
+	p := samplePlacement("acme", "db-1", 1000)
+	p.Database = secret
+	if err := writer.Put(ctx, p); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	claim := samplePlacement("acme", "db-2", 1001)
+	claim.Database = secret + "-2"
+	if ok, _, err := writer.ClaimPlacement(ctx, claim); err != nil || !ok {
+		t.Fatalf("ClaimPlacement = %v, %v", ok, err)
+	}
+	next := *p
+	next.Dropping = true
+	if ok, err := writer.CompareAndSwapPlacement(ctx, p, &next); err != nil || !ok {
+		t.Fatalf("CompareAndSwapPlacement = %v, %v", ok, err)
+	}
+	for _, id := range []string{"db-1", "db-2"} {
+		raw, err := kv.Get(ctx, placementKey("acme", id))
+		if err != nil || raw == nil {
+			t.Fatalf("raw Get %s = %q, %v", id, raw, err)
+		}
+		if bytes.Contains(raw, []byte(secret)) || bytes.Contains(raw, []byte(`"database"`)) {
+			t.Fatalf("system KV value of %s carries the database name: %s", id, raw)
+		}
+	}
+
+	// The writer knows the names it wrote.
+	got, err := writer.Get(ctx, "acme", "db-1")
+	if err != nil || got.Database != secret || !got.Dropping {
+		t.Fatalf("writer Get = %+v, %v; want %q, dropping", got, err, secret)
+	}
+
+	// Another node's store resolves through the tenant's catalog, once per
+	// tenant per read, and caches what it resolved.
+	reader, _ := NewStore(kv)
+	if got, err := reader.Get(ctx, "acme", "db-1"); err != nil || got.Database != "" {
+		t.Fatalf("reader Get with no resolver = %+v, %v; want no name", got, err)
+	}
+	names := &countingNames{staticNames: staticNames{"acme": {"db-1": secret}}}
+	reader.SetNameResolver(names)
+	list, err := reader.ListForTenant(ctx, "acme")
+	if err != nil || len(list) != 2 {
+		t.Fatalf("ListForTenant = %d, %v", len(list), err)
+	}
+	for _, e := range list {
+		want := map[string]string{"db-1": secret, "db-2": ""}[e.DatabaseID]
+		if e.Database != want {
+			t.Fatalf("entry %s name = %q, want %q", e.DatabaseID, e.Database, want)
+		}
+	}
+	if names.calls != 1 {
+		t.Fatalf("resolver calls = %d, want 1 per tenant per read", names.calls)
+	}
+	if got, err := reader.GetByName(ctx, "acme", secret); err != nil || got.DatabaseID != "db-1" {
+		t.Fatalf("GetByName = %+v, %v", got, err)
+	}
+	reader.SetNameResolver(nil)
+	if got, err := reader.Get(ctx, "acme", "db-1"); err != nil || got.Database != secret {
+		t.Fatalf("cached Get = %+v, %v; want %q", got, err, secret)
+	}
+}
+
+// homeLocatingNames is an isolated tenant's catalog: it lives in the
+// tenant's home store, so listing it first reads the home group's placement
+// through the same store.
+type homeLocatingNames struct {
+	store *Store
+	calls int
+}
+
+func (n *homeLocatingNames) DatabaseNames(ctx context.Context, tenantID string) map[string]string {
+	n.calls++
+	if n.calls > 1 {
+		return nil // a recursing read; the test fails on calls
+	}
+	if _, err := n.store.Get(ctx, tenantID, tenant.HomeName); err != nil {
+		return nil
+	}
+	if _, err := n.store.ListForTenant(ctx, tenantID); err != nil {
+		return nil
+	}
+	return map[string]string{"db-1": "orders"}
+}
+
+// The home group is named without the catalog, and a read made inside the
+// resolver does not ask it again, so an isolated tenant's catalog, which
+// locates its home through this table, resolves its databases without
+// recursing into itself.
+func TestStore_HomeNameResolvesWithoutTheCatalog(t *testing.T) {
+	ctx := context.Background()
+	kv := newAtomicKV()
+	writer, _ := NewStore(kv)
+	for _, p := range []*Placement{samplePlacement("acme", tenant.HomeName, 1000), samplePlacement("acme", "db-1", 1001)} {
+		if err := writer.Put(ctx, p); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+	}
+	reader, _ := NewStore(kv)
+	names := &homeLocatingNames{store: reader}
+	reader.SetNameResolver(names)
+	home, err := reader.Get(ctx, "acme", tenant.HomeName)
+	if err != nil || home.Database != tenant.HomeName || names.calls != 0 {
+		t.Fatalf("home Get = %+v, %v, resolver calls %d; want %q with no resolver call", home, err, names.calls, tenant.HomeName)
+	}
+	db, err := reader.Get(ctx, "acme", "db-1")
+	if err != nil || db.Database != "orders" || names.calls != 1 {
+		t.Fatalf("db-1 Get = %+v, %v, resolver calls %d; want orders in one call", db, err, names.calls)
+	}
+}
+
+// TestStore_GetByNameOfTheHomeAsksNoResolver: an isolated tenant's catalog
+// is located through GetByName of its home, so finding the home must not
+// resolve the tenant's other entries through that catalog.
+func TestStore_GetByNameOfTheHomeAsksNoResolver(t *testing.T) {
+	ctx := context.Background()
+	kv := newAtomicKV()
+	writer, _ := NewStore(kv)
+	for _, p := range []*Placement{samplePlacement("acme", tenant.HomeName, 1000), samplePlacement("acme", "db-1", 1001)} {
+		if err := writer.Put(ctx, p); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+	}
+	reader, _ := NewStore(kv)
+	names := &homeLocatingNames{store: reader}
+	reader.SetNameResolver(names)
+	home, err := reader.GetByName(ctx, "acme", tenant.HomeName)
+	if err != nil || home.DatabaseID != tenant.HomeName || home.Database != tenant.HomeName || names.calls != 0 {
+		t.Fatalf("GetByName(home) = %+v, %v, resolver calls %d; want the home entry with no resolver call", home, err, names.calls)
+	}
+	if _, err := reader.GetByName(ctx, "other", tenant.HomeName); !errors.Is(err, ErrPlacementNotFound) {
+		t.Fatalf("GetByName(home) of a tenant without one = %v; want ErrPlacementNotFound", err)
+	}
 }
 
 // kvMarshal is a tiny test helper exposing the JSON encoding the store uses.
@@ -1372,7 +1543,7 @@ func TestPlacementTypedErrors(t *testing.T) {
 		if err.Error() == "" {
 			t.Errorf("%T has no message", err)
 		}
-		wrapped := &StoreError{TenantID: "t", Database: "d", Op: "put", Err: err}
+		wrapped := &StoreError{TenantID: "t", DatabaseID: "d", Op: "put", Err: err}
 		if !errors.Is(wrapped, err) {
 			t.Errorf("a *StoreError does not unwrap to its %T", err)
 		}

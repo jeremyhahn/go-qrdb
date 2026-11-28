@@ -15,14 +15,20 @@
 package lifecycle
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
@@ -117,6 +123,126 @@ func TestKVStoreAdapter_WithoutTransactionPlaneIsNotFenced(t *testing.T) {
 	}
 }
 
+// txBackedKVServicer is a KV service whose single-key verbs read and write the
+// same map tx evaluates transactions against, so both planes see one store.
+func txBackedKVServicer(tx *evaluatingTxService) *mockKVServicer {
+	value := func(key string) ([]byte, bool) {
+		kv, ok := tx.data[key]
+		if !ok || kv == nil {
+			return nil, false
+		}
+		return kv.Value, true
+	}
+	return &mockKVServicer{
+		putFn: func(_ context.Context, key string, v []byte) error {
+			tx.put(key, v)
+			return nil
+		},
+		getFn: func(_ context.Context, key string) ([]byte, error) {
+			v, ok := value(key)
+			if !ok {
+				return nil, &service.KeyNotFoundError{Key: key}
+			}
+			return v, nil
+		},
+		deleteFn: func(_ context.Context, key string) error {
+			delete(tx.data, key)
+			return nil
+		},
+		listFn: func(_ context.Context, prefix string) ([]string, error) {
+			var keys []string
+			for k := range tx.data {
+				if strings.HasPrefix(k, prefix) {
+					keys = append(keys, k)
+				}
+			}
+			sort.Strings(keys)
+			return keys, nil
+		},
+		scanFn: func(_ context.Context, prefix string) (map[string][]byte, error) {
+			out := map[string][]byte{}
+			for k, kv := range tx.data {
+				if strings.HasPrefix(k, prefix) && kv != nil {
+					out[k] = kv.Value
+				}
+			}
+			return out, nil
+		},
+		putIfAbsentFn: func(_ context.Context, key string, v []byte) (bool, error) {
+			if _, ok := value(key); ok {
+				return false, nil
+			}
+			tx.put(key, v)
+			return true, nil
+		},
+		compareAndSwapFn: func(_ context.Context, key string, expected, next []byte) (bool, error) {
+			v, ok := value(key)
+			if !ok || !bytes.Equal(v, expected) {
+				return false, nil
+			}
+			tx.put(key, next)
+			return true, nil
+		},
+		compareAndDeleteFn: func(_ context.Context, key string, expected []byte) (bool, error) {
+			v, ok := value(key)
+			if !ok || !bytes.Equal(v, expected) {
+				return false, nil
+			}
+			delete(tx.data, key)
+			return true, nil
+		},
+	}
+}
+
+func TestSealDisabledTenantService_CommitsStrictClusterFloor(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	t.Run("fenced adapter commits strict", func(t *testing.T) {
+		tx := newEvaluatingTxService()
+		store := &fencedKVStoreAdapter{kvStoreAdapter: &kvStoreAdapter{svc: txBackedKVServicer(tx)}, tx: tx}
+		svc, err := tenant.NewKVTenantService(store, logger)
+		if err != nil {
+			t.Fatalf("NewKVTenantService: %v", err)
+		}
+		if err := svc.SetClusterIsolationPolicy(ctx, tenant.ClusterIsolationPolicyOperatorAccess); err != nil {
+			t.Fatalf("set operator-access: %v", err)
+		}
+		if err := svc.SetClusterIsolationPolicy(ctx, tenant.ClusterIsolationPolicyStrict); err != nil {
+			t.Fatalf("set strict: %v", err)
+		}
+		got, err := svc.ClusterIsolationPolicy(ctx)
+		if err != nil {
+			t.Fatalf("ClusterIsolationPolicy: %v", err)
+		}
+		if got != tenant.ClusterIsolationPolicyStrict {
+			t.Fatalf("floor = %q, want %q", got, tenant.ClusterIsolationPolicyStrict)
+		}
+	})
+
+	t.Run("bare adapter refuses strict", func(t *testing.T) {
+		tx := newEvaluatingTxService()
+		svc, err := tenant.NewKVTenantService(&kvStoreAdapter{svc: txBackedKVServicer(tx)}, logger)
+		if err != nil {
+			t.Fatalf("NewKVTenantService: %v", err)
+		}
+		if err := svc.SetClusterIsolationPolicy(ctx, tenant.ClusterIsolationPolicyOperatorAccess); err != nil {
+			t.Fatalf("set operator-access: %v", err)
+		}
+		err = svc.SetClusterIsolationPolicy(ctx, tenant.ClusterIsolationPolicyStrict)
+		if !errors.Is(err, tenant.ErrTighteningNotAtomic) {
+			t.Fatalf("set strict err = %v, want ErrTighteningNotAtomic", err)
+		}
+		got, err := svc.ClusterIsolationPolicy(ctx)
+		if err != nil {
+			t.Fatalf("ClusterIsolationPolicy: %v", err)
+		}
+		if got != tenant.ClusterIsolationPolicyOperatorAccess {
+			t.Fatalf("floor = %q, want %q", got, tenant.ClusterIsolationPolicyOperatorAccess)
+		}
+	})
+}
+
 // recordingTxService is evaluatingTxService that also records the compares
 // of every Execute, so a test can see which guards one proposal carried.
 type recordingTxService struct {
@@ -153,7 +279,7 @@ func TestPlacementStore_ReplicaAddFencedOnMoveJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cur := &placement.Placement{TenantID: "acme", Database: "db", ShardID: 9, RF: 1, LeaderReplicaID: 1,
+	cur := &placement.Placement{TenantID: "acme", DatabaseID: "db", ShardID: 9, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{{ReplicaID: 1, NodeID: "n1", RaftAddr: "n1:1"}}}
 	curBytes, err := json.Marshal(cur)
 	if err != nil {

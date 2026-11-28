@@ -30,6 +30,13 @@ func testCatalogFor(dataDir string) *KVCatalog {
 	return c.(*KVCatalog) //nolint:errcheck // the map only ever holds *KVCatalog
 }
 
+// withTestID gives a record a database id, as Manager.create does, so a test
+// can write it to the catalog directly.
+func withTestID(meta DatabaseMeta) DatabaseMeta {
+	meta.ID = "test-id"
+	return meta
+}
+
 // catalogRecord returns the record m's catalog holds for tenantID's database
 // name, failing the test when there is none.
 func catalogRecord(t *testing.T, m *Manager, tenantID, name string) DatabaseMeta {

@@ -2058,7 +2058,19 @@ func runStart(f *startFlags) (err error) {
 				sealPauser = shardPauser
 			}
 
+			// The shared database registry is built after the services; the
+			// node-key log probe reads its names, and the SQL default
+			// database's, each time it runs (go-qrdb#1565).
+			var sharedRegistry atomic.Pointer[server.DatabaseServiceRegistry]
+			sharedDatabaseNames := lifecycle.SharedNames(f.sqlDatabase, func() []string {
+				if r := sharedRegistry.Load(); r != nil {
+					return r.List()
+				}
+				return nil
+			})
+
 			svcNode, err := lifecycle.BuildServices(sigCtx, lifecycle.Infra{
+				SharedDatabaseNames:  sharedDatabaseNames,
 				ClusterSealer:        clusterSeal,
 				ShardPauser:          sealPauser,
 				AuthMethodVocabulary: authMethods.IsAuthMethod,
@@ -2126,23 +2138,6 @@ func runStart(f *startFlags) (err error) {
 			if err != nil {
 				_ = shutdownNode(nodeCloser)
 				return err
-			}
-			// FIPS-140 always tightens the cluster-wide isolation-policy
-			// floor to strict (pkg/tenant/isolation_policy.go); an operator
-			// may also raise it explicitly via the isolation-policy verb.
-			// Best-effort: the floor only ever tightens, so a failure here
-			// (e.g. a peer already moved it, or this node raced another to
-			// the first write) leaves the floor exactly as strict or
-			// stricter than this call asked for, never weaker.
-			if fips140.Enabled() {
-				if setter, ok := svcNode.Tenant.(interface {
-					SetClusterIsolationPolicy(ctx context.Context, next tenant.ClusterIsolationPolicy) error
-				}); ok {
-					if err := setter.SetClusterIsolationPolicy(sigCtx, tenant.ClusterIsolationPolicyStrict); err != nil {
-						slog.Warn("tenant isolation: could not confirm the cluster floor is strict under FIPS-140",
-							slog.Any("error", err))
-					}
-				}
 			}
 			// The node's long-lived watchers (Key B cache eviction, undone
 			// tenant acknowledgement), composed in one place shared with
@@ -2583,12 +2578,28 @@ func runStart(f *startFlags) (err error) {
 			// they fail closed. The served IAM services and the auth middleware
 			// resolve through mgmtResult's resolver, so it gets the same home
 			// stores.
-			homesAttached := false
-			switch {
-			case standalone && barrierRegistry != nil:
-				homesAttached = lifecycle.AttachLocalTenantHomes(svcNode, barrierRegistry, tenantHostReg, mgmtResult.storeResolver)
-			case raftBackendReg != nil:
-				homesAttached = lifecycle.AttachTenantHomes(svcNode, raftBackendReg, mgmtResult.storeResolver)
+			//
+			// FIPS-140 always tightens the cluster-wide isolation-policy
+			// floor to strict (pkg/tenant/isolation_policy.go); an operator
+			// may also raise it explicitly via the isolation-policy verb.
+			// The write may lose to a peer that already moved the floor, so
+			// the floor is read back: a FIPS node whose floor is not strict
+			// refuses to serve (lifecycle.ApplyFIPSIsolationFloor). The tightening's
+			// node-key log probe resolves each isolated tenant's catalog
+			// through its home store, so the floor is applied once the home
+			// stores are attached and before the node serves.
+			homesAttached, err := lifecycle.AttachTenantHomesThenApplyFIPSFloor(sigCtx, fips140.Enabled(), func() bool {
+				switch {
+				case standalone && barrierRegistry != nil:
+					return lifecycle.AttachLocalTenantHomes(svcNode, barrierRegistry, tenantHostReg, mgmtResult.storeResolver)
+				case raftBackendReg != nil:
+					return lifecycle.AttachTenantHomes(svcNode, raftBackendReg, mgmtResult.storeResolver)
+				}
+				return false
+			}, svcNode.Tenant)
+			if err != nil {
+				_ = shutdownNode(nodeCloser)
+				return err
 			}
 			if !homesAttached && barrierRegistry != nil {
 				slog.Warn("isolated tenants' home stores are not available on this node; their requests fail closed")
@@ -2746,7 +2757,6 @@ func runStart(f *startFlags) (err error) {
 				Barriers:      barrierRegistry,
 				DedicatedRaft: raftBackendReg != nil,
 				RaftAddr:      f.raftAddress,
-				PeerAdmin:     registry,
 				TrustDomain:   f.clusterTrustDomain,
 				CACertPool:    bundle.CACertPool,
 				Identity:      nodeIdentity,
@@ -2979,6 +2989,12 @@ func runStart(f *startFlags) (err error) {
 				serverOpts = append(serverOpts,
 					server.WithAuthMiddleware(authResult.authMW),
 				)
+				// An operator's access to a tenant's identity records is
+				// recorded in that tenant's own replicated trail and its
+				// node-local trail (where the tenant's ordinary audit query
+				// reads it), beside the platform decision log the middleware
+				// was built with.
+				authResult.authMW.BindOperatorAccessTenantTrail(svcNode.OperatorAccessTrail)
 				if authResult.soAuthenticator != nil {
 					serverOpts = append(serverOpts, server.WithSOAuthenticator(authResult.soAuthenticator))
 					// Tenant create commits a named SO's PIN through the
@@ -3170,9 +3186,10 @@ func runStart(f *startFlags) (err error) {
 			dbRegistry := server.NewDatabaseServiceRegistry(lifecycle.SystemDatabase)
 			dbRegistry.Register(lifecycle.SystemDatabase, svcNode.DatabaseServices(lifecycle.SystemDatabase, shard.ShardKV))
 			serverOpts = append(serverOpts, server.WithDatabaseServiceRegistry(dbRegistry))
+			sharedRegistry.Store(dbRegistry)
 
 			if tenantSvcInst != nil {
-				applyIsolationFloor(bootCtx, tenantSvcInst, f.tenantConfig.IsolationPolicy)
+				lifecycle.ApplyIsolationFloor(bootCtx, tenantSvcInst, f.tenantConfig.IsolationPolicy)
 			}
 
 			// The sockets the sealed-window listener served on, if it ran;
@@ -3266,6 +3283,10 @@ func runStart(f *startFlags) (err error) {
 			}
 			switch {
 			case f.dynamicMembership && !standalone:
+				// Tenant homes follow roster changes through the node
+				// home roster watch (lifecycle.StartTenantHomeWatch, started
+				// by ComposeRaftTenantCluster once the raft host is set),
+				// with or without dynamic membership.
 				membershipMgr, mErr := startDynamicMembership(bootCtx, f, kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc, rnode, nodeSeal)
 				if mErr != nil {
 					srv.Stop()
@@ -3799,6 +3820,7 @@ func startDynamicMembership(
 	watchSvc service.WatchServicer,
 	leaders server.LeaderSource,
 	nodeSeal cluster.SealProbe,
+	opts ...cluster.MembershipOption,
 ) (*cluster.MembershipManager, error) {
 	client, err := newEmbeddedClient(kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc)
 	if err != nil {
@@ -3821,7 +3843,7 @@ func startDynamicMembership(
 		cluster.Member{NodeID: f.replicaID, Address: f.raftAddress, APIEndpoints: endpoints, Features: featuregate.SupportedNames()},
 		f.shardID,
 		cluster.MembershipConfig{MinQuorum: cluster.QuorumSize(minPeers)},
-		cluster.WithMembershipSealProbe(nodeSeal),
+		append([]cluster.MembershipOption{cluster.WithMembershipSealProbe(nodeSeal)}, opts...)...,
 	)
 	if err != nil {
 		return nil, err

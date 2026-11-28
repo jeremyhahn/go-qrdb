@@ -17,6 +17,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
@@ -69,6 +70,47 @@ func TestCheckResultError_AnUnprefixedPayloadIsNotRecognised(t *testing.T) {
 func TestCheckResultError_APlainResultIsNotAnError(t *testing.T) {
 	if err := checkResultError(sm.Result{Value: 1}); err != nil {
 		t.Fatalf("checkResultError on a successful result = %v, want nil", err)
+	}
+}
+
+// A write the state machine refused for naming a lease it does not hold
+// reaches the caller as the same typed not-found error the pre-proposal
+// lease check returns, carrying the lease ID.
+func TestCheckResultError_LeaseNotFoundRefusalIsTyped(t *testing.T) {
+	err := checkResultError(sm.Result{Data: protocol.EncodeLeaseNotFoundError(9)})
+	var nf *LeaseNotFoundError
+	if !errors.As(err, &nf) || nf.LeaseID != 9 {
+		t.Fatalf("checkResultError = %v, want *LeaseNotFoundError{LeaseID: 9}", err)
+	}
+}
+
+// An ordinary invalid-kind refusal whose message happens to name a lease is
+// not promoted to the typed error: the type comes from the marker, never
+// from prose.
+func TestCheckResultError_ProseNamingALeaseStaysRejected(t *testing.T) {
+	err := checkResultError(sm.Result{Data: protocol.EncodeAppError(protocol.AppErrorInvalid, "lease not found: 9")})
+	var nf *LeaseNotFoundError
+	if errors.As(err, &nf) {
+		t.Fatalf("prose was classified as a lease-not-found refusal: %v", err)
+	}
+	var rejected *CommandRejectedError
+	if !errors.As(err, &rejected) {
+		t.Fatalf("checkResultError = %v, want *CommandRejectedError", err)
+	}
+}
+
+func TestCheckResultError_TxnReadRefusalIsTyped(t *testing.T) {
+	err := checkResultError(sm.Result{Data: protocol.EncodeTxnReadRefusal(4<<20, 4<<20+3)})
+	var tooLarge *TxnReadResultTooLargeError
+	if !errors.As(err, &tooLarge) || tooLarge.Limit != 4<<20 || tooLarge.Read != 4<<20+3 {
+		t.Fatalf("checkResultError = %v, want *TxnReadResultTooLargeError{Limit: %d, Read: %d}", err, 4<<20, 4<<20+3)
+	}
+}
+
+func TestTxnReadResultTooLargeError_NamesBothFigures(t *testing.T) {
+	msg := (&TxnReadResultTooLargeError{Limit: 100, Read: 123}).Error()
+	if !strings.HasPrefix(msg, "service: ") || !strings.Contains(msg, "100") || !strings.Contains(msg, "123") {
+		t.Fatalf("message %q does not name its origin, the limit and the bytes read", msg)
 	}
 }
 

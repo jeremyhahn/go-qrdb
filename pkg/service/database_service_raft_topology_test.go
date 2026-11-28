@@ -81,7 +81,7 @@ func TestCreateForTenant_RaftTopology_DistributedWithPlacementSucceeds(t *testin
 		t.Errorf("Replicas = %d, want 3", info.Replicas)
 	}
 
-	p, err := store.Get(ctx, "rt", "orders")
+	p, err := store.GetByName(ctx, "rt", "orders")
 	if err != nil {
 		t.Fatalf("placement store Get: %v", err)
 	}

@@ -30,6 +30,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
@@ -98,25 +99,65 @@ func (barrierTenants) GetTenant(_ context.Context, id string) (*tenant.TenantInf
 	return &tenant.TenantInfo{ID: id, IsolationType: tenant.IsolationBarrier}, nil
 }
 
-// TestBuildServices_LogServiceRoutesBarrierTenantsToTheirHome: a barrier
-// tenant's log and signing key are applied in the tenant's own home group,
-// never the system shard; before the node attaches its homes the composed log
-// service fails closed before any key is created.
-func TestBuildServices_LogServiceRoutesBarrierTenantsToTheirHome(t *testing.T) {
+// TestBuildServices_LogServiceRoutesBarrierTenantsToTheirHomeGroup: a barrier
+// tenant's log and signing key are applied in its home group, never the
+// system shard; without a home group the composed log service fails closed
+// before any key is created, and once the tenant homes are attached it routes
+// the tenant to its home group.
+func TestBuildServices_LogServiceRoutesBarrierTenantsToTheirHomeGroup(t *testing.T) {
 	device := &recordingHeadSigners{}
 	node := buildSeamNode(t, lifecycle.Infra{HeadSignerProvider: device})
 	node.Tenant = barrierTenants{}
 	ctx := tenant.WithTenantID(context.Background(), "vault")
-	_, err := node.Log.CreateLog(ctx, &service.CreateLogRequest{
-		LogRef: service.LogRef{Database: "ledger", Log: "events"}, Origin: "db.example.com/events", SigningKeyType: vlog.SignatureEd25519,
+	createLog := func() error {
+		_, err := node.Log.CreateLog(ctx, &service.CreateLogRequest{
+			LogRef: service.LogRef{Database: "ledger", Log: "events"}, Origin: "db.example.com/events", SigningKeyType: vlog.SignatureEd25519,
+		})
+		return err
+	}
+
+	t.Run("fails closed without a home group", func(t *testing.T) {
+		var refused *service.BarrierStoreUnavailableError
+		if err := createLog(); !errors.As(err, &refused) || refused.TenantID != "vault" {
+			t.Fatalf("CreateLog = %v, want *service.BarrierStoreUnavailableError for vault", err)
+		}
+		if len(device.created) != 0 {
+			t.Fatalf("device asked to create %+v for a refused tenant", device.created)
+		}
 	})
-	var refused *service.BarrierStoreUnavailableError
-	if !errors.As(err, &refused) || refused.TenantID != "vault" {
-		t.Fatalf("CreateLog = %v, want *service.BarrierStoreUnavailableError for vault", err)
-	}
-	if len(device.created) != 0 {
-		t.Fatalf("device asked to create %+v for a refused tenant", device.created)
-	}
+
+	t.Run("routed with one", func(t *testing.T) {
+		homes := &askedHomeGroups{}
+		if !lifecycle.AttachTenantHomes(node, homes) {
+			t.Fatal("AttachTenantHomes = false, want true")
+		}
+		if err := createLog(); !errors.Is(err, errHomeGroupAsked) {
+			t.Fatalf("CreateLog = %v, want the home group's answer", err)
+		}
+		if len(homes.asked) != 1 || homes.asked[0] != "vault" {
+			t.Fatalf("home groups asked for %v, want [vault]", homes.asked)
+		}
+	})
+}
+
+// errHomeGroupAsked is what askedHomeGroups answers every home group with.
+var errHomeGroupAsked = errors.New("home group asked")
+
+// askedHomeGroups is a raft node's tenant homes: it records which tenants'
+// home groups are asked for and answers each with errHomeGroupAsked.
+type askedHomeGroups struct {
+	asked []string
+}
+
+func (*askedHomeGroups) Services(context.Context, string, string) (*server.DatabaseServices, error) {
+	return nil, errHomeGroupAsked
+}
+
+func (*askedHomeGroups) IsShardJoining(uint64) bool { return false }
+
+func (h *askedHomeGroups) HomeGroup(_ context.Context, tenantID string) (service.Host, uint64, error) {
+	h.asked = append(h.asked, tenantID)
+	return nil, 0, errHomeGroupAsked
 }
 
 // TestBuildServices_StandaloneBarrierTenantsAuditIsWrittenToTheSystemShard:
@@ -247,8 +288,36 @@ func TestBuildServices_StandaloneAuditSwitchKeepsTheChainContinuous(t *testing.T
 }
 
 // auditedTenants is a composed node's tenant service with replicated audit
-// entitled for every tenant.
+// entitled for every tenant. It forwards the wrapped service's isolation
+// epoch and tightening readers, which embedding the TenantServicer interface
+// alone would hide from the node's audit append guard.
 type auditedTenants struct{ tenant.TenantServicer }
+
+var (
+	_ tenant.IsolationEpochReader      = auditedTenants{}
+	_ tenant.IsolationTighteningReader = auditedTenants{}
+)
+
+// errNoIsolationReader is what auditedTenants answers when the wrapped
+// service does not report the isolation reader asked for: the guard then
+// fails closed, as it would on the wrapped service itself.
+var errNoIsolationReader = errors.New("auditedTenants: wrapped tenant service does not report this isolation reader")
+
+func (a auditedTenants) IsolationTightening(ctx context.Context, tenantID string) (bool, error) {
+	r, ok := a.TenantServicer.(tenant.IsolationTighteningReader)
+	if !ok {
+		return false, errNoIsolationReader
+	}
+	return r.IsolationTightening(ctx, tenantID)
+}
+
+func (a auditedTenants) IsolationEpochs(ctx context.Context, tenantID string) (map[string][]byte, error) {
+	r, ok := a.TenantServicer.(tenant.IsolationEpochReader)
+	if !ok {
+		return nil, errNoIsolationReader
+	}
+	return r.IsolationEpochs(ctx, tenantID)
+}
 
 func (auditedTenants) ReplicatedAuditEnabled(context.Context, string) (bool, error) {
 	return true, nil

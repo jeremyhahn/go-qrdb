@@ -22,6 +22,7 @@ import (
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
+	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
@@ -238,6 +239,68 @@ func TestGuardCommand_RefusesWhatCannotBeWrapped(t *testing.T) {
 	}
 }
 
+// TestGuardCommand_GuardedWriteCheckMergesItsGuard: a guarded write check
+// runs before the proposal; its error refuses the write, and the guard it
+// returns is wrapped beside the context's own. With guarded writes off the
+// command goes unguarded. A refusal of its guard is reported as the error
+// the refusal mapper names.
+func TestGuardCommand_GuardedWriteCheckMergesItsGuard(t *testing.T) {
+	cmd := []byte{kv.OpPut, 0, 0}
+	fence := mustDropFenceGuard(t, "acme", "orders")
+	epoch, err := NewWriteGuard(Compare{Key: []byte("__sys:isolation-epoch/acme"), Target: CompareValue, Result: CompareEqual, Value: []byte("e1")})
+	if err != nil {
+		t.Fatalf("NewWriteGuard: %v", err)
+	}
+	base := WithWriteGuard(context.Background(), fence)
+
+	refusal := errors.New("isolation policy unreadable")
+	refused := WithGuardedWriteCheck(base, func(context.Context) (WriteGuard, error) { return WriteGuard{}, refusal })
+	host, cmds := recordingHost(sm.Result{})
+	if _, err := propose(refused, host, 1, cmd); !errors.Is(err, refusal) {
+		t.Fatalf("propose with a failing guarded check: error = %v, want %v", err, refusal)
+	}
+	if len(*cmds) != 0 {
+		t.Fatal("a write whose guarded check failed was proposed")
+	}
+
+	ctx := WithGuardedWriteCheck(base, func(context.Context) (WriteGuard, error) { return epoch, nil })
+	got, err := guardCommand(ctx, nil, 1, cmd)
+	if err != nil {
+		t.Fatalf("guardCommand: %v", err)
+	}
+	want, err := fence.merge(epoch).wrap(cmd)
+	if err != nil {
+		t.Fatalf("wrap: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("the guarded check's guard was not wrapped beside the context guard")
+	}
+
+	off := &gatedHost{mockHost: &mockHost{}, enabled: map[uint64]bool{}}
+	if got, err := guardCommand(ctx, off, 1, cmd); err != nil || !bytes.Equal(got, cmd) {
+		t.Fatalf("guarded writes off: guardCommand = (%x, %v), want the command unguarded", got, err)
+	}
+
+	strict := errors.New("tenant is strict")
+	mapped := WithGuardRefusal(ctx, func(_ context.Context, e *WriteGuardRefusedError) error {
+		if e.Key == "__sys:isolation-epoch/acme" {
+			return strict
+		}
+		return nil
+	})
+	refusedHost, _ := recordingHost(sm.Result{Data: protocol.EncodeGuardRefusal([]byte("__sys:isolation-epoch/acme"))})
+	if _, err := propose(mapped, refusedHost, 1, cmd); !errors.Is(err, strict) || !errors.Is(err, ErrNotStored) {
+		t.Fatalf("refused epoch guard: error = %v, want the mapped error marked not stored", err)
+	}
+	if _, err := proposeWithMode(mapped, refusedHost, 1, cmd, writemode.Sync); !errors.Is(err, strict) {
+		t.Fatalf("proposeWithMode, refused epoch guard: error = %v, want the mapped error", err)
+	}
+	otherHost, _ := recordingHost(sm.Result{Data: protocol.EncodeGuardRefusal([]byte("other"))})
+	if res, err := propose(mapped, otherHost, 1, cmd); err != nil || !errors.As(checkResultError(res), new(*WriteGuardRefusedError)) {
+		t.Fatalf("refusal of another key: (%v, %v), want the refusal reported as before", res, err)
+	}
+}
+
 // The service-level fence verbs set the marker to the tombstone, to an
 // incarnation, or remove it, in the store the resolver names.
 func TestKeyspaceReclaimService_FenceAndUnfence(t *testing.T) {
@@ -448,4 +511,52 @@ func TestKeyspaceReclaimService_UnfenceNeverOverwritesALiveIncarnation(t *testin
 	if err := svc.UnfenceDatabaseKeyspace(ctx, "acme", "orders", "node-b-incarnation", ""); err != nil {
 		t.Fatalf("a create over the dropped tombstone must succeed: %v", err)
 	}
+}
+
+// TestWriteCheck_RunsChecksInOrderAndStopsAtTheFirstRefusal covers the
+// context-carried write checks.
+func TestWriteCheck_RunsChecksInOrderAndStopsAtTheFirstRefusal(t *testing.T) {
+	ctx := context.Background()
+	require.NoError(t, CheckWrite(ctx), "no checks admit the write")
+	require.Equal(t, ctx, WithWriteCheck(ctx, nil), "a nil check leaves the context alone")
+
+	var ran []string
+	ctx = WithWriteCheck(ctx, func(context.Context) error { ran = append(ran, "first"); return nil })
+	ctx = WithWriteCheck(ctx, func(context.Context) error { ran = append(ran, "second"); return errHomeFault })
+	ctx = WithWriteCheck(ctx, func(context.Context) error { ran = append(ran, "third"); return nil })
+	require.ErrorIs(t, CheckWrite(ctx), errHomeFault)
+	require.Equal(t, []string{"first", "second"}, ran)
+}
+
+// TestWriteGuard_EqualComparesEveryFrame covers WriteGuard.Equal.
+func TestWriteGuard_EqualComparesEveryFrame(t *testing.T) {
+	a := WriteGuard{compares: [][]byte{[]byte("x"), []byte("y")}}
+	require.True(t, a.Equal(WriteGuard{compares: [][]byte{[]byte("x"), []byte("y")}}))
+	require.False(t, a.Equal(WriteGuard{compares: [][]byte{[]byte("x")}}))
+	require.False(t, a.Equal(WriteGuard{compares: [][]byte{[]byte("x"), []byte("z")}}))
+	require.True(t, WriteGuard{}.Equal(WriteGuard{}))
+}
+
+// TestServiceErrors_MessagesNameTheirSubject covers the error messages of
+// the tenant home, strict-isolation and log refusals.
+func TestServiceErrors_MessagesNameTheirSubject(t *testing.T) {
+	cases := map[string]struct {
+		err  error
+		want string
+	}{
+		"audit home":          {&AuditHomeNotActiveError{TenantID: "acme"}, `"acme"`},
+		"key not found":       {&KeyNotFoundError{Key: "k1"}, "k1"},
+		"txn result":          {&TransactionResultError{Err: errHomeFault}, errHomeFault.Error()},
+		"strict shared store": {&StrictTenantSharedStoreError{TenantID: "acme", Database: "orders"}, "orders"},
+		"factor set sealed":   {&FactorSetSealedError{UserID: 42}, "42"},
+		"vector home":         {&TenantVectorHomeError{TenantID: "acme"}, "no tenant home resolver"},
+		"vector home cause":   {&TenantVectorHomeError{TenantID: "acme", Err: errHomeFault}, errHomeFault.Error()},
+		"database logs exist": {&DatabaseLogsExistError{TenantID: "acme", Database: "orders", Logs: 3}, "3 verifiable"},
+		"reserved key":        {&ReservedKeyError{Key: "k"}, "reserved verifiable-log keyspace"},
+		"reserved key range":  {&ReservedKeyError{Key: "k", Range: true}, "delete range"},
+	}
+	for name, tc := range cases {
+		require.Contains(t, tc.err.Error(), tc.want, name)
+	}
+	require.Equal(t, "k1", (&KeyNotFoundError{Key: "k1"}).KeyNotFound())
 }

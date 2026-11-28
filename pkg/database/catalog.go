@@ -3,6 +3,8 @@ package database
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 
@@ -20,6 +22,18 @@ const CatalogKeyPrefix = "__sys:dbcatalog/"
 // key, so a record written under one is found under the other.
 func CatalogKey(tenantID, name string) string {
 	return CatalogKeyPrefix + tenantid.Normalize(tenantID) + "/" + name
+}
+
+// NewDatabaseID returns a fresh database id: 128 random bits, hex encoded.
+// It is opaque (nothing about the database's name or tenant can be read
+// from it) and, being random at that width, never reused: a database
+// dropped and created again under the same name gets a different id.
+func NewDatabaseID() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", &DatabaseIDError{Err: err}
+	}
+	return hex.EncodeToString(b[:]), nil
 }
 
 // Catalog is the replicated record of every database: what Manager reads to
@@ -153,6 +167,9 @@ func (c *KVCatalog) store(ctx context.Context, tenantID string) (kvstore.AtomicK
 // Create implements Catalog.
 func (c *KVCatalog) Create(ctx context.Context, meta DatabaseMeta) error {
 	key := CatalogKey(meta.TenantID, meta.Name)
+	if meta.ID == "" {
+		return &DatabaseIDRequiredError{Name: meta.Name}
+	}
 	data, err := json.Marshal(meta)
 	if err != nil {
 		return &CatalogWriteError{Key: key, Err: err}

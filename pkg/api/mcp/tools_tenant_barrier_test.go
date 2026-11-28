@@ -599,6 +599,33 @@ func TestHandleTenantBarrierStatus_Success(t *testing.T) {
 	}
 }
 
+// TestHandleTenantBarrierStatus_NodesUnreadable pins that a status whose
+// serving-node source failed is encoded as nodes_unreadable with no nodes.
+func TestHandleTenantBarrierStatus_NodesUnreadable(t *testing.T) {
+	svc := newMockTenantService()
+	svc.barrierStatusFn = func(_ context.Context, id string) (*tenant.TenantBarrierStatus, error) {
+		return &tenant.TenantBarrierStatus{TenantID: id, Sealed: true, NodesUnreadable: true}, nil
+	}
+	handler := handleTenantBarrierStatus(svc, allowAllTenantScope)
+
+	req := buildCallToolRequest(t, "qrdb_tenant_barrier_status", map[string]any{"tenant_id": "acme"})
+	result, err := handler(context.Background(), req)
+	if err != nil || result.IsError {
+		t.Fatalf("handler err = %v, error result = %v", err, result != nil && result.IsError)
+	}
+	text := resultText(t, result)
+	var raw map[string]any
+	if jsonErr := json.Unmarshal([]byte(text), &raw); jsonErr != nil {
+		t.Fatalf("unmarshal: %v", jsonErr)
+	}
+	if raw["nodes_unreadable"] != true {
+		t.Fatalf("wire = %s; want nodes_unreadable true", text)
+	}
+	if _, ok := raw["nodes"]; ok {
+		t.Fatalf("wire = %s; want no nodes", text)
+	}
+}
+
 func TestHandleTenantBarrierStatus_ServiceError(t *testing.T) {
 	svc := newMockTenantService()
 	svc.barrierStatusFn = func(_ context.Context, _ string) (*tenant.TenantBarrierStatus, error) {

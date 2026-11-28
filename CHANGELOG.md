@@ -25,6 +25,11 @@ are not reconstructed here — their history is in the git log.
 - The verifiable log is served in a barrier-enabled database (#1613): its logs are encrypted under the database's key, refused as sealed (`BarrierSealedError`, `Unavailable`) while the database is sealed, served unchanged after the unseal, and gone with the database on drop. The error that refused every log call in a barrier-enabled database is removed. A legacy raft barrier record is refused with `BarrierOffDataPathError` (`Unprocessable`).
 - A standalone node's audit trail is the tenant's audit log instance `<tenant>/system/audit` (#1613): its single-binary host writes every event with the `AuditAppend` sub-type, as a Raft group does once `verifiable-log-audit` is on, so `qrdb vlog head`, `get` and `prove-inclusion` serve it; the trail stays continuous with the events written before, and a build without `qrdb_vlog` keeps `OpAuditAppend`.
 - The REST transport sends the `X-QRDB-Database` scope header on `/vlog` requests, so `--database` reaches the server over REST as it does over every other transport (#1613).
+- The strict-tenant-isolation engineering contract's status note, phase 7 row and remaining-work list now match what is built (isolation-policy transports, serving set, dedicated WAL, unseal fan-out) (#1565).
+- A barrier tenant's `system` audit route is held from resolution until the append's proposal returns, so a refused append no longer retires it while another append to it is in flight; only a `home` audit route is cached, and an unmarked onboarding audit event that applies after its marked retry appends nothing (#1565).
+- A tightening of a tenant to the strict isolation policy is refused (`tenant.NodeKeyLogsError`) when the tenant holds data under the SQL default database or a database of the shared registry, as it already was for `system`: those logs are on the shared, node-keyed WAL. `qrdbd start`, the SDK node and the `qrdb` bindings server each declare those names through `lifecycle.SharedNames` (#1565).
+- A tenant's vector namespaces in a shared database now count as tenant data on the node-keyed WAL, so a tenant whose only shared-store data is a vector namespace is refused strict. A shared-store write through an already-resolved handle rechecks the tenant's isolation policy and the cluster floor when it is proposed: once strict, it gets `StrictTenantSharedStoreError`, and an unreadable record or floor refuses the write. A write already in flight when the tightening commits is now refused at apply time once guarded writes are on: the tightening writes the tenant's isolation epoch before its probe, and the write's Raft command carries a guard on that epoch (#1565).
+
 - **Tests/Docs.** The `pkg/server` `WithWebTransportHandler` wiring is proven by a started server serving an authenticated WebTransport session (`TestWithWebTransportHandler_ServedSessionReachesTheHandler`); `docs/api-server/api.md` and `architecture.md` describe the route (#1244).
 
 - **Tests/Docs.** The WebTransport `CONNECT` is proven to pass the REST sealed-window (`503`), awaiting-admin-credential (`503`) and client-limit (`429`) layers before the handler runs, and to be refused on the HTTP/1.1 and HTTP/2 listeners (`TestWebTransport_RESTLayersRefuseBeforeTheHandler`, `TestWebTransport_TCPListenersDoNotSpeakWebTransport`); `docs/api-server/api.md` lists the refusals (#1244).
@@ -58,6 +63,8 @@ are not reconstructed here — their history is in the git log.
 - CI runs every job on the standard GitHub-hosted `ubuntu-latest` runner for every event, a push to `main` and a same-repository pull request included (owner ruling 999). The pool split (ruling 841) and the pool image producer that published the pool legs' images to the LAN CI registry (ruling 879) are removed; a job may run self-hosted only with a `# self-hosted: <reason>` comment naming the hardware it needs or the measured hosted limit it exceeds, and none does. Code review's review jobs keep their self-hosted review hosts.
 - Binding a node to the replicated credential store moves the earlier store's records one credential at a time (#1201): the current value, metadata, version history, staged rotations and migration claim of a name are written in one guarded batch that requires every destination key absent, and the source records go only once that batch applied. A name the new store already holds any record of is not moved: both copies stay as they are and the move reports the names (never values) in a `credentials.LayoutConflictError`, logged as a warning at bind. Every plaintext value the move read is wiped after its write attempt. A move cut after a batch applied deletes the source on the next operation without writing it again, and a sealed source store moves nothing and refuses every credential verb with `seal.ErrSealed`. A conflicting name's migration import records are still copied into the new store, so a retried legacy import there imports nothing.
 - A credential whose migration claim record does not decode is refused with `credentials.ErrCorruptMigrationClaim` (classified DataLoss, not retryable) on every verb and on `MigrateLegacy`, instead of the retryable `ErrStoreUnavailable` it was reported as (#1201). The error names the credential, never the record's bytes; the claim is never overwritten, so an operator must remove it. A delete still proceeds and leaves the claim as it is.
+- The vector quota's distinct stored-id count is a new vector command rule gated on the `vector-stored-count` feature: the proposer sets it only once every replica of the shard supports it, and a command without it applies the old one-per-upsert count on every binary.
+- The audit chain's apply-time onboarding dedupe is a new event marker gated on the `audit-append-once` feature: the proposer sets it only once every replica of the shard supports it, and an event without it is appended on every apply, on every binary.
 - CI hands the toolchain and integration-test images between jobs through the LAN CI registry (the repository secret secrets.CI_IMAGE_REGISTRY, so every log line masks its address) on self-hosted runners; GitHub artifacts remain the path on GitHub-hosted runners and whenever a pull fails.
 - `make docker-build-toolchain`, `make docker-build-it` and `scripts/in-toolchain-image.sh` pull the content-hash-tagged image from the CI image registry the runner's environment names in `CI_IMAGE_REGISTRY` before they build, and push what they built to it (`scripts/image-registry.sh`, #1609), so a runner host no longer builds every image on its own disk. A failed or hung pull or push falls back to the build and never fails the job; each image logs one line (`pulled`, `miss, built and pushed` or `miss, built, push failed`); unset, nothing changes.
 
@@ -88,6 +95,10 @@ are not reconstructed here — their history is in the git log.
 - **A signed head belongs to the incarnation it was admitted under (#1613).** `SignHead` admits first and reads the descriptor and head through the admitted group, so a signer paused across a database drop and re-create is refused with `DroppingError` instead of signing the old incarnation's head; `RotateKey` re-reads the descriptor under the admitted incarnation.
 - **Dropping an untenanted database reclaims its verifiable logs (#1613).** The drop skipped a database with no tenant, whose logs the log service keeps under the `system` tenant, so a re-created database of the same name could not create a log of an old name ("already exists"). The drop now checks and reclaims them under the `system` tenant; a tenant's drop is unchanged.
 - **A database drop deletes log descriptors and heads in bounded steps (#1613).** A completed log's descriptor and head count against `MaxPrunePerCommand`, so a database of many empty logs no longer deletes them all in one command.
+- **Strict isolation waits for guarded writes.** A cluster could activate `strict-isolation` before `guarded-writes`, and while guarded writes are off every write guard is proposed unguarded, so a tightening committed then left an in-flight shared-store write or system-routed audit append with only the propose-time recheck. The isolation-policy verbs, a strict tenant's database create and an isolated tenant's placement are now refused with `feature.NotActiveError` naming `guarded-writes` (503, retryable after rollout) until both features are active (#1565).
+- **The configured isolation floor waits for guarded writes.** A clustered node configured with `tenant.isolation_policy` wrote the floor at start without the strict-isolation activation check, so during a rolling upgrade it could commit a tightening while every write guard was dropped. The floor now waits for the same check as the isolation-policy verbs, retrying in the background until `strict-isolation` and `guarded-writes` are both active; a floor that already holds the value needs no write (#1565).
+- **A barrier tenant's audit append in flight across a strict tightening is refused at apply time.** The `system` route's hold is per resolver, so a tightening refused on another node or resolver, or an append whose proposal returned on a timeout, could still append to the node-keyed system chain after the tenant went strict. A system-routed append now carries a guard on the tenant's and the floor's isolation epochs, read before its strict check, and is refused on every replica once guarded writes are on: `tenant.SystemAuditRouteError` when the tenant is now strict, else the retryable `WriteGuardRefusedError` (#1565).
+- **A strict tenant is never served from a node-keyed store, and every node applies the isolation floor.** A strict barrier tenant that named no database, the default one or the SQL default was resolved onto the system shard, whose WAL is under the node key; it is now refused (`StrictTenantSharedStoreError`, FailedPrecondition) on every transport, and the strict tightening's node-key log probe counts data already in that implicit default namespace. SDK nodes (`sdk/go/node`) now apply `tenant.isolation_policy` and, in FIPS 140 mode, the strict floor as `qrdbd` does, refusing to boot (`IsolationFloorError`) when the floor does not read strict. A system audit route recorded by an append that raced a strict tightening, and that carries no chain, is released so the tenant's later appends go to its home group (#1576).
 - **The desktop's embedded server serves named databases (#1478).** Opening a database other than the system database over the embedded connection failed every browse, write, MVCC, lease, batch, index, watch and lock call with `DatabaseScopeUnsupportedError`; the embedded transport now resolves databases through the node's service registry as qrdbd does. Collections an earlier desktop build wrote into its embedded store are not listed after the upgrade: export them with the earlier build and re-import them (see [docs/desktop-gui/user.md](docs/desktop-gui/user.md#upgrading-an-embedded-store)).
 - **A unique index is per entity type on the client DAO store (#1649).** A DAO over `Client.KVStore` sends its entity type's key prefix with every index it registers (`key_prefix` now reaches the server on REST, gRPC, Unix, QUIC, MCP and embedded, and `qrdb index create --key-prefix` sets it), so a value held by one entity type no longer blocks another entity type's save.
 - **A guarded batch or unit of work on the embedded store honours unique compound indexes (#1649).** Two writes of one batch on `sdk.NewEmbeddedKVStore` that share a unique compound tuple were both stored, since the check read committed storage only; the KV engine now checks a flagged transaction's unique compound indexes over all its writes in op order, so such a batch is refused with `ErrConflict` and writes nothing. An existing log replays unchanged.
@@ -184,6 +195,37 @@ are not reconstructed here — their history is in the git log.
   transaction is refused), so no KV writer can forge one. Deleting a tenant
   deletes its policies, and a mint for a tenant that is deleted or retired is
   refused with `TenantNotFoundError`.
+- **Isolation-policy verbs, gated on strict-isolation**
+  (#1423). REST (`GET`/`PUT /v1/cluster/isolation-policy`), gRPC
+  (`Get`/`SetClusterIsolationPolicy`), QUIC (`cluster.IsolationPolicyGet`/
+  `Set`) and MCP (`qrdb_cluster_isolation_policy_get`/`_set`) read and set the
+  cluster floor, and a tenant update carries `isolation_policy`. The Go SDK
+  has `GetClusterIsolationPolicy`/`SetClusterIsolationPolicy` and
+  `UpdateTenantRequest.IsolationPolicy` on every transport, and the CLI has
+  `qrdb cluster-isolation-policy get|set` and
+  `qrdb tenant update --isolation-policy`. Each verb
+  answers `feature.NotActiveError` (HTTP 503, `Unavailable`) and changes
+  nothing until the `strict-isolation` feature (`featuregate.StrictIsolation`)
+  is active: from the start on a standalone node, and on a cluster once it has
+  activated the feature. An unknown policy value is
+  `InvalidArgument` (HTTP 400). The floor now tightens from `operator-access`
+  to `strict` in one compare-and-swap, so a racing writer is refused and the
+  floor is never unset in between. The Go SDK's `TenantInfo` reports the
+  tenant's isolation policy (`IsolationPolicy`) on every transport. A tenant
+  update that changes `isolation_policy` always needs `tenants:update` on the
+  target tenant (and `tenants:update:cross` for another tenant), even when it
+  also carries `status` or `isolation_type`.
+- **Strict tenant isolation fails closed and recovers stranded state**
+  (#1565). An operator's access to a tenant's identity records whose
+  isolation policy cannot be read answers `Unavailable` (HTTP 503,
+  `OperatorAccessUnresolvedError`), so the client retries, and a target
+  tenant that does not exist answers `NotFound` (HTTP 404) on REST and gRPC,
+  as on MCP and QUIC. A strict tenant's audit append is checked against the
+  route that won the route record, and a concurrent tightening fences it. A
+  drop of a name whose refused create left a provisional database record
+  reclaims that record, so the name can be created again.
+  `qrdb_vector_vector_count` follows the committed change of each write, so
+  concurrent writes of one id count once.
 - **The replicated audit trail is a verifiable log.** Once the
   `verifiable-log` and `verifiable-log-audit` feature gates are enabled for a
   group, each tenant's
@@ -449,6 +491,18 @@ are not reconstructed here — their history is in the git log.
   postures: a strict node or tenant without one refuses only the SO-exclusive
   operations. When an SO is named, the pending system SO record is kept until
   its account and PIN are committed.
+- **An isolated tenant's audit trail applies in its home group in cluster
+  mode.** Once tenant home groups are wired, a dedicated-isolation tenant's
+  replicated audit events go to its home group's `<tenant>/system/audit`
+  instead of being refused, and a barrier tenant's go wherever its audit route
+  says: a recorded fact, written once and first writer wins, that stays on the
+  system shard when the tenant already has a chain there or
+  `verifiable-log-audit` is off, and is the home group otherwise. The route
+  never changes and no record moves, so an existing chain is never split. A
+  home-group write while `verifiable-log-audit` is not active on every replica
+  is refused as unavailable (`AuditHomeNotActiveError`). Standalone nodes are
+  unchanged. This ships in the same release as the replicated-audit
+  verifiable log (#1409); a release must not carry one without the other.
 - **The devcontainer build proxy has no `direct` entry** (ci-template
   v1.34.1). `GO_BUILD_PROXY` in `build/docker/devcontainer/Dockerfile`
   defaults to `https://proxy.golang.org` alone, so a module the proxy cannot

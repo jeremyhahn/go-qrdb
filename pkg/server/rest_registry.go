@@ -17,6 +17,7 @@ package server
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
@@ -422,10 +423,153 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 	if managed.notFound != nil && !r.implicitDatabase(db) {
 		return nil, &rest.DatabaseNotFoundError{TenantID: tenantID, Database: db}
 	}
+	// The shared default set's WAL is under the node key, so a strict tenant is
+	// refused here, its implicit default database ("" or the default name)
+	// included: only a database with its own dedicated WAL, resolved above,
+	// serves its data (G1).
+	if err := r.refuseStrictSharedStore(tenantID, db, isolation, info); err != nil {
+		return nil, err
+	}
 	if r.dbReg.GetOrDefault(db) == nil && !r.databaseExists(tenantID, db) {
 		return nil, &rest.DatabaseNotFoundError{TenantID: tenantID, Database: db}
 	}
 	return r.resolveShared(tenantID, db, info, managed)
+}
+
+// refuseStrictSharedStore refuses (*rest.StrictTenantSharedStoreError) a
+// request by a tenant whose effective isolation policy is strict -- its own
+// policy, or the cluster floor it inherits -- that would be served from the
+// shared node-keyed store. A prefix tenant shares the store by design and the
+// system tenant is the node's own, so neither is refused. A floor that cannot
+// be read fails closed.
+func (r *restServiceRegistry) refuseStrictSharedStore(tenantID, db string, isolation tenant.IsolationType, info *tenant.TenantInfo) error {
+	if info == nil || isolation == tenant.IsolationPrefix || tenantID == r.systemTenant {
+		return nil
+	}
+	var floor tenant.ClusterIsolationPolicy
+	if reader, ok := r.tenantSvc.(tenant.ClusterIsolationPolicyReader); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		read, err := reader.ClusterIsolationPolicy(ctx)
+		cancel()
+		if err != nil {
+			return err
+		}
+		floor = read
+	}
+	if tenant.EffectiveIsolationPolicy(floor, info.IsolationPolicy) != tenant.ClusterIsolationPolicyStrict {
+		return nil
+	}
+	return &rest.StrictTenantSharedStoreError{TenantID: tenantID, Database: db}
+}
+
+// strictWriteCheck returns the write-time recheck a shared-store view runs
+// before each write it proposes: it reads the tenant's record and the
+// cluster floor again and refuses (*rest.StrictTenantSharedStoreError, as
+// resolve does) once the effective policy is strict, so a handle resolved
+// before a tightening cannot keep writing to the node-keyed log. A record or
+// floor that cannot be read fails the write closed. It is nil -- no recheck
+// -- where resolve never refuses: no tenant record (no tenant service, the
+// system-tenant fallback), a prefix tenant, the system tenant.
+//
+// The recheck is decided at propose time. A write already past it when the
+// tightening commits is refused at apply time by the isolation epoch guard
+// the same view attaches (strictWriteGuard), on every replica, once guarded
+// writes are on. Two residuals remain: a group with guarded writes off (a
+// mixed-version group) has only this recheck, and vector writes, which are
+// node-local and not proposals, carry no guard.
+func (r *restServiceRegistry) strictWriteCheck(tenantID, db string, info *tenant.TenantInfo) func(context.Context) error {
+	if r.tenantSvc == nil || info == nil || tenantID == r.systemTenant || info.EffectiveIsolationType() == tenant.IsolationPrefix {
+		return nil
+	}
+	return func(context.Context) error {
+		lookupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		current, err := r.tenantSvc.GetTenant(lookupCtx, tenantID)
+		cancel()
+		if err != nil {
+			return err
+		}
+		if current == nil {
+			return &rest.TenantNotFoundError{TenantID: tenantID}
+		}
+		return r.refuseStrictSharedStore(tenantID, db, current.EffectiveIsolationType(), current)
+	}
+}
+
+// errIsolationEpochUnreadable fails a shared-store write closed when the
+// tenant service cannot read the isolation epochs its guard compares.
+var errIsolationEpochUnreadable = errors.New("server: the tenant service cannot read the isolation epochs; the shared-store write is refused")
+
+// strictWriteGuard returns, for a view whose writes recheck carries
+// (strictWriteCheck), the guarded write check that closes the in-flight
+// residual, and the mapper naming its refusal. The check reads tenantID's
+// isolation epochs (tenant.IsolationEpochKeys) and returns a guard
+// comparing each to the value read -- an absent key to absence. A
+// tightening to strict writes its scope's epoch before its node-key log
+// probe, so the write either applied before that, and the probe counts its
+// data, or applies after it and the guard refuses it on every replica. A
+// refusal on an epoch key is reported as recheck reports it
+// (*rest.StrictTenantSharedStoreError) when the tenant is now strict; else
+// the guard refusal stands (a benign race with another policy change: the
+// client retries). A tenant service that cannot read epochs fails closed.
+func (r *restServiceRegistry) strictWriteGuard(tenantID string, recheck func(context.Context) error) (func(context.Context) (service.WriteGuard, error), func(context.Context, *service.WriteGuardRefusedError) error) {
+	if recheck == nil {
+		return nil, nil
+	}
+	keys := tenant.IsolationEpochKeys(tenantID)
+	guard := func(ctx context.Context) (service.WriteGuard, error) {
+		reader, ok := r.tenantSvc.(tenant.IsolationEpochReader)
+		if !ok {
+			return service.WriteGuard{}, errIsolationEpochUnreadable
+		}
+		lookupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		epochs, err := reader.IsolationEpochs(lookupCtx, tenantID)
+		cancel()
+		if err != nil {
+			return service.WriteGuard{}, err
+		}
+		// A tightening committed before this epoch read is refused here; one after it fails the guard.
+		if err := recheck(ctx); err != nil {
+			return service.WriteGuard{}, err
+		}
+		compares := make([]service.Compare, 0, len(keys))
+		for _, key := range keys {
+			compares = append(compares, service.Compare{
+				Key:    []byte(key),
+				Target: service.CompareValue,
+				Result: service.CompareEqual,
+				Value:  epochs[key],
+			})
+		}
+		return service.NewWriteGuard(compares...)
+	}
+	refused := func(ctx context.Context, e *service.WriteGuardRefusedError) error {
+		if !slices.Contains(keys, e.Key) {
+			return nil
+		}
+		var strict *rest.StrictTenantSharedStoreError
+		if err := recheck(ctx); errors.As(err, &strict) {
+			return err
+		}
+		return nil
+	}
+	return guard, refused
+}
+
+// vectorFenceCheck is the vector view's check-then-write fence: the drop
+// fence check, then the write-time isolation recheck.
+func (f databaseFence) vectorFenceCheck() func() error {
+	if f.writeCheck == nil {
+		return f.vectorCheck
+	}
+	drop, isolation := f.vectorCheck, f.writeCheck
+	return func() error {
+		if drop != nil {
+			if err := drop(); err != nil {
+				return err
+			}
+		}
+		return isolation(context.Background())
+	}
 }
 
 // resolveShared returns (tenant, db)'s composite-namespaced, quota-wrapped
@@ -453,6 +597,11 @@ func (r *restServiceRegistry) resolveShared(tenantID, db string, info *tenant.Te
 	if err != nil {
 		return nil, err
 	}
+	// Resolve refused a strict tenant, but the handle outlives the check: a
+	// tightening committed after it (the probe sees an empty implicit
+	// database) must still keep this view's writes off the node-keyed log.
+	fence.writeCheck = r.strictWriteCheck(tenantID, db, info)
+	fence.strictWriteGuard, fence.strictRefusal = r.strictWriteGuard(tenantID, fence.writeCheck)
 	out := r.applyQuota(r.applyComposite(svcs, tenantID, db, fence), tenantID, info)
 	out.Placement = service.StorePlacementShared
 	return out, nil
@@ -848,6 +997,19 @@ type databaseFence struct {
 	guard       service.WriteGuard
 	vectorCheck func() error
 
+	// writeCheck, when set, is run before every write through the views,
+	// the vector view's included: the shared-store recheck of the tenant's
+	// isolation policy (strictWriteCheck).
+	writeCheck func(context.Context) error
+
+	// strictWriteGuard, when set, is run before every write the views
+	// propose and returns the guard the write carries in its own Raft
+	// command: the tenant's isolation epochs as read at propose time
+	// (restServiceRegistry.strictWriteGuard). strictRefusal names a refusal
+	// of that guard.
+	strictWriteGuard func(context.Context) (service.WriteGuard, error)
+	strictRefusal    func(context.Context, *service.WriteGuardRefusedError) error
+
 	// binding identifies the database the fence was built for -- owner,
 	// name, incarnation -- for the views' compaction policy.
 	binding compaction.Binding
@@ -951,7 +1113,7 @@ type managedRecord struct {
 // consults -- see the doc comment above the lease-view construction below.
 func (f databaseFence) apply(svcs *DatabaseServices, prefix string, wrapLease bool) *DatabaseServices {
 	out := *svcs
-	g := dbGuard{guard: f.guard}
+	g := dbGuard{guard: f.guard, check: f.writeCheck, guardCheck: f.strictWriteGuard, refusal: f.strictRefusal}
 	if svcs.KV != nil {
 		// prefix is already the full "<tenant>/<db>/" namespace (or
 		// empty), so it is used as given.
@@ -1006,7 +1168,7 @@ func (f databaseFence) apply(svcs *DatabaseServices, prefix string, wrapLease bo
 	}
 	if svcs.Vector != nil {
 		vec := newNamespacedVectorService(svcs.Vector, prefix)
-		vec.dropFence = dropFence{check: f.vectorCheck}
+		vec.dropFence = dropFence{check: f.vectorFenceCheck()}
 		out.Vector = vec
 	}
 	return &out

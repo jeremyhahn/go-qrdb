@@ -311,7 +311,13 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 		// The embedded server has no auth.separation_of_duties; FIPS 140-3
 		// mode alone makes it strict.
 		SeparationOfDuties: wiring.ResolveStrictSeparation(false),
-		Logger:             slog.Default(),
+		// The embedded server configures no SQL default database and
+		// builds no shared database service registry, so the shared
+		// system store serves a tenant no implicit database besides
+		// SystemDatabase: the node-key log probe has no other name to
+		// read (go-qrdb#1565).
+		SharedDatabaseNames: lifecycle.SharedNames("", nil),
+		Logger:              slog.Default(),
 	})
 	if svcErr != nil {
 		hub.Close()

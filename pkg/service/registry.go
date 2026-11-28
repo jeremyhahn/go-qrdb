@@ -167,3 +167,21 @@ type IsolationBackendUnavailableError struct {
 func (e *IsolationBackendUnavailableError) Error() string {
 	return "service: isolation backend unavailable for tenant " + e.TenantID + " (isolation: " + e.Isolation + ")"
 }
+
+// StrictTenantSharedStoreError is returned when a tenant whose effective
+// isolation policy is strict resolves a database served from the shared
+// store, its implicit default database included. The shared store's WAL is
+// under the node key, so a strict tenant's data is never served from it
+// (docs/SPEC.md decision G1); the remedy is a database with its own
+// dedicated WAL. The same request succeeds for an operator-access tenant, so
+// it classifies FailedPrecondition (HTTP 409).
+type StrictTenantSharedStoreError struct {
+	TenantID string
+	Database string
+}
+
+// Error returns a human-readable description.
+func (e *StrictTenantSharedStoreError) Error() string {
+	return "service: tenant " + e.TenantID + " has a strict isolation policy: its data is never served from the shared node-keyed store (database \"" +
+		e.Database + "\"); create a database with a dedicated WAL (its own data path or the raft backend) and use it"
+}

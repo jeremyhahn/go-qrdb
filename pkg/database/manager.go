@@ -427,7 +427,17 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	// dropping. The record is created only where none exists, so of two
 	// nodes creating one name, one is refused here.
 	meta := metaFromConfig(cfg, false, incarnation)
+	if meta.ID, err = NewDatabaseID(); err != nil {
+		return nil, err
+	}
 	meta.OwnerNode = m.ownerFor(cfg, shared)
+	// The record is written provisional: no opener on any node serves it
+	// until the create guard below has accepted the database. A provisioned
+	// (shared) database is the exception: every node creates it at boot under
+	// the one shared incarnation, with no API create to guard, so a peer (or
+	// this node's next run) provisioning the same name must find it serving
+	// rather than see a record it can neither open nor create.
+	meta.Provisional = !shared
 	if err := cat.Create(ctx, meta); err != nil {
 		// A write that may have committed is settled first: rolling back
 		// around a record it left would orphan the name. A record that
@@ -441,6 +451,40 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 		return nil, undo.run(ctx, err)
 	}
 	undo.catalog, undo.incarnation = cat, incarnation
+
+	// The caller's create guard runs with the record in the catalog and
+	// before the database is opened, unfenced or published: a refusal here
+	// leaves nothing any request could have written to.
+	if guard := createGuard(ctx); guard != nil {
+		if err := guard(ctx); err != nil {
+			return nil, undo.run(ctx, err)
+		}
+	}
+	// Accepted: promote the record so every node may serve it. A refusal
+	// above never gets here, so a record its cleanup could not remove stays
+	// provisional and is never opened.
+	if meta.Provisional {
+		if err := cat.Update(ctx, cfg.TenantID, cfg.Name, incarnation, func(rec *DatabaseMeta) error {
+			// A drop reclaiming the name claimed the record meanwhile
+			// (reclaimProvisional): it is never promoted.
+			if rec.DropClaim != "" {
+				return &DropInProgressError{Name: cfg.Name}
+			}
+			rec.Provisional = false
+			return nil
+		}); err != nil {
+			var claimed *DropInProgressError
+			var reclaimed *NotFoundError
+			if errors.As(err, &claimed) || errors.As(err, &reclaimed) {
+				// A drop claimed the record, or already reclaimed it and a
+				// successor may have re-created the name: the record and
+				// the directories a re-create reuses are not this create's,
+				// so it neither removes them nor reports an orphan.
+				undo.catalog, undo.dirs = nil, nil
+			}
+			return nil, undo.run(ctx, err)
+		}
+	}
 
 	// Open storage backend via factory.
 	backend, err := m.factory.Create(cfg, dataDir)
@@ -488,6 +532,7 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 		}
 	}
 	db.incarnation = incarnation
+	db.id = meta.ID
 	db.ownerNode = meta.OwnerNode
 
 	// Mark the new incarnation live in the store holding the database's
@@ -551,6 +596,11 @@ func (m *Manager) Open(ctx context.Context, tenantID, name string) (*Database, e
 // has it open already. Concurrent openers of one key do not both build a
 // backend: the loser gets *AlreadyExistsError.
 func (m *Manager) openRecord(key dbKey, meta DatabaseMeta) (*Database, error) {
+	// A provisional record is a create its guard has not accepted (or a
+	// refused one whose cleanup failed): there is no database to open yet.
+	if meta.Provisional {
+		return nil, &NotFoundError{Name: key.name}
+	}
 	if refusal, held := m.ownerRefusal(key, meta); held {
 		return nil, refusal
 	}
@@ -695,7 +745,14 @@ func (m *Manager) openMeta(key dbKey, meta DatabaseMeta) (*Database, error) {
 	if meta.Dropping {
 		db.SetDropping(true)
 	}
+	// A failed drop whose claim never reached the catalog left the fence
+	// pinned on this node's disk instead: the record reads live, but the
+	// database reopens fenced until a retried drop removes it.
+	if m.keptFenceHolds(key.tenant, name, meta.Incarnation) {
+		db.keepDropFence()
+	}
 	db.incarnation = meta.Incarnation
+	db.id = meta.ID
 	db.ownerNode = meta.OwnerNode
 
 	if actual, loaded := m.databases.LoadOrStore(key, db); loaded {
@@ -915,7 +972,23 @@ func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 	}
 	db.SetDropping(true)
 	if err := m.claimDrop(ctx, db, claim); err != nil {
-		db.SetDropping(false)
+		// A rollback that must keep the database unservable leaves the
+		// in-memory fence up: the database refuses every caller here until
+		// a retried drop lands (KeepFenceOnFailure). The claim did not
+		// commit, so the catalog still records the database live: the
+		// fence is pinned, or the catalog reconcile would lift it, and
+		// recorded on this node's disk, or a restart would reopen the
+		// database from its live record and serve it.
+		if keepFenceOnFailure(ctx) {
+			db.keepDropFence()
+			if recErr := m.recordKeptFence(db); recErr != nil {
+				m.logger.Warn("failed to record the kept drop fence: it holds in memory only until a retried drop lands",
+					slog.String("name", name), slog.Any("error", recErr))
+				err = errors.Join(err, recErr)
+			}
+		} else {
+			db.SetDropping(false)
+		}
 		return &LocalFenceError{Name: name, Err: err}
 	}
 
@@ -1019,8 +1092,14 @@ func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 
 	// 5. The in-memory mirror of the record removed in step 4. Last, and
 	//    adjacent to it, so the window in which the two disagree is as narrow
-	//    as it can be made without a persisted marker (go-qrdb#425).
+	//    as it can be made without a persisted marker (go-qrdb#425). A
+	//    fence an earlier failed attempt pinned on this node's disk goes
+	//    with the record it fenced.
 	m.databases.CompareAndDelete(key, db)
+	if err := m.forgetKeptFence(key.tenant, name); err != nil {
+		m.logger.Warn("failed to remove the kept drop fence record of a dropped database",
+			slog.String("name", name), slog.Any("error", err))
+	}
 
 	m.logger.Info("database dropped", slog.String("name", name))
 	return nil
@@ -1051,6 +1130,11 @@ func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 // reaches -- keeps its fence, and one that lands after the unfence fences
 // again before it reclaims.
 func (m *Manager) rollbackDropFence(ctx context.Context, name string, db *Database, claim string) bool {
+	if keepFenceOnFailure(ctx) {
+		m.logger.Warn("failed drop keeps its fence: the database stays unservable until the drop is retried",
+			slog.String("name", name))
+		return false
+	}
 	rollbackCtx, cancel := DropRollbackContext(ctx)
 	defer cancel()
 	cat, err := m.catalog("roll back drop fence")
@@ -1524,6 +1608,65 @@ func (m *Manager) claimDrop(ctx context.Context, db *Database, claim string) err
 	})
 }
 
+// reclaimProvisional removes tenantID's catalog record name when it is a
+// stranded provisional record: a create that crashed between its catalog
+// write and its acceptance, or whose rollback could not remove the record,
+// leaves one, and without a reclaim the name could never be created or
+// dropped again. It reports false and nil when there is no record or the
+// record is not provisional. When wantID or wantIncarnation is set and the
+// record is of another database or incarnation it refuses with
+// *DropSupersededError. Otherwise it claims the record -- a fresh DropClaim,
+// swapped in conditional on the incarnation and only while the record is
+// still provisional -- and deletes it conditional on both, so the record
+// never becomes serving: a create that had not yet promoted it finds the
+// claim and refuses the promotion. A create promoted meanwhile wins: the
+// claim is not taken, false and nil are returned, and the caller's normal
+// drop applies. A re-create of the name reuses the directories the failed
+// create left (createUndo keeps them, and mkdirAll accepts them).
+func (m *Manager) reclaimProvisional(ctx context.Context, tenantID, name, wantID, wantIncarnation string) (bool, error) {
+	cat, err := m.catalog("reclaim provisional database")
+	if err != nil {
+		return false, err
+	}
+	rec, err := cat.Get(ctx, tenantID, name)
+	var notFound *NotFoundError
+	switch {
+	case errors.As(err, &notFound):
+		return false, nil
+	case err != nil:
+		return false, err
+	case !rec.Provisional:
+		return false, nil
+	}
+	if (wantID != "" && rec.ID != wantID) || (wantIncarnation != "" && rec.Incarnation != wantIncarnation) {
+		return false, &DropSupersededError{Name: name, TenantID: tenantID}
+	}
+	claim, err := NewIncarnation()
+	if err != nil {
+		return false, &DropError{Name: name, Err: err}
+	}
+	// A claim left by a reclaim that stopped before its delete is taken
+	// over: the delete is conditional on the claim, so of two racing
+	// reclaims only the one holding the current claim removes the record.
+	errPromoted := errors.New("provisional record promoted")
+	if err := cat.Update(ctx, tenantID, name, rec.Incarnation, func(meta *DatabaseMeta) error {
+		if !meta.Provisional {
+			return errPromoted
+		}
+		meta.DropClaim = claim
+		return nil
+	}); err != nil {
+		if errors.Is(err, errPromoted) || errors.As(err, &notFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	if err := cat.Delete(ctx, tenantID, name, rec.Incarnation, claim); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // releaseDropClaim clears the durable fence claim set, in one swap that
 // fails with *DropInProgressError when another drop has taken the claim
 // over since: the fence is then that drop's, and only it may clear it.
@@ -1669,6 +1812,10 @@ func (m *Manager) OpenAll(ctx context.Context) error {
 	}
 	for _, meta := range metas {
 		key := keyFor(meta.TenantID, meta.Name)
+		// A create not yet accepted serves nothing (see Provisional).
+		if meta.Provisional {
+			continue
+		}
 		// Another node holds it: that node opens it, and this one forwards.
 		if _, held := m.ownerRefusal(key, meta); held {
 			continue

@@ -80,7 +80,7 @@ func TestScaleForTenant_ScaleUpOfAMixedGroupIsRefused(t *testing.T) {
 	svc, store, f := newScaleDatabaseService(t, healthyNodes("n1", "n2", "n3"),
 		&quota.Quotas{MaxReplicasPerGroup: 5, MaxTotalReplicas: 100}, host)
 	info := createScaleDB(t, svc, "db1", 2)
-	p, err := store.Get(scaleCtx(), scaleTenantID, "db1")
+	p, err := store.GetByName(scaleCtx(), scaleTenantID, "db1")
 	if err != nil {
 		t.Fatalf("placement Get: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestScaleForTenant_ScaleUpOfAMixedGroupIsRefused(t *testing.T) {
 	if len(host.observerCalls) != 0 {
 		t.Fatalf("AddObserver called %d times for a refused replica", len(host.observerCalls))
 	}
-	after, err := store.Get(scaleCtx(), scaleTenantID, "db1")
+	after, err := store.GetByName(scaleCtx(), scaleTenantID, "db1")
 	if err != nil {
 		t.Fatalf("placement Get: %v", err)
 	}

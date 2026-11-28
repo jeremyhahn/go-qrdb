@@ -16,6 +16,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
+	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -236,4 +238,58 @@ func TestDatabaseService_Drop_UnknownDatabaseIsStillNotFound(t *testing.T) {
 
 	var want *database.NotFoundError
 	assert.ErrorAs(t, err, &want)
+}
+
+// TestDropForTenant_RecreateAfterFailedPlacementDeleteResolvesTheNewDatabase
+// is #1517 Codex finding 2: a dedicated-raft drop whose placement delete
+// fails leaves the fenced entry behind, and a create under the same name
+// stores a second entry under a new database id. Every name lookup -- the
+// scale path among them -- must resolve the re-created database, never the
+// fenced one, whichever id the placement scan meets first.
+func TestDropForTenant_RecreateAfterFailedPlacementDeleteResolvesTheNewDatabase(t *testing.T) {
+	f := &fakeReplicaQuota{q: &quota.Quotas{MaxReplicasPerGroup: 5, MaxTotalReplicas: 100}}
+	svc, store, kv := newFlakyPlacementDatabaseService(t, raftTenant(t), f, healthyNodes("n1"))
+	ctx := tenant.WithTenantID(context.Background(), "rt")
+
+	cfg := testDBConfig("orders")
+	cfg.Replicas = 1
+	if _, err := svc.CreateForTenant(ctx, cfg); err != nil {
+		t.Fatalf("CreateForTenant: %v", err)
+	}
+	old, err := store.GetByName(ctx, "rt", "orders")
+	if err != nil {
+		t.Fatalf("GetByName before the drop: %v", err)
+	}
+
+	kv.failNextDelete = true
+	if err := svc.DropForTenant(ctx, "orders"); err == nil {
+		t.Fatal("DropForTenant with a failing placement delete = nil error, want the delete failure")
+	}
+	fenced, err := store.Get(ctx, "rt", old.DatabaseID)
+	if err != nil || !fenced.Dropping {
+		t.Fatalf("fenced entry after the failed delete = %+v, %v; want it present with Dropping set", fenced, err)
+	}
+
+	recfg := testDBConfig("orders")
+	recfg.Replicas = 1
+	if _, err := svc.CreateForTenant(ctx, recfg); err != nil {
+		t.Fatalf("re-create under the same name: %v", err)
+	}
+	got, err := store.GetByName(ctx, "rt", "orders")
+	if err != nil {
+		t.Fatalf("GetByName after the re-create: %v", err)
+	}
+	if got.DatabaseID == old.DatabaseID || got.Dropping {
+		t.Fatalf("GetByName resolved id %s dropping=%v; want the re-created database, not the fenced %s", got.DatabaseID, got.Dropping, old.DatabaseID)
+	}
+
+	// The scale path resolves the database by name: it must reach the live
+	// entry, not refuse with the fenced entry's DroppingError.
+	if _, err := svc.ScaleForTenant(ctx, "orders", 1); err != nil {
+		var dropping *database.DroppingError
+		if errors.As(err, &dropping) {
+			t.Fatalf("ScaleForTenant resolved the fenced placement: %v", err)
+		}
+		t.Fatalf("ScaleForTenant: %v", err)
+	}
 }

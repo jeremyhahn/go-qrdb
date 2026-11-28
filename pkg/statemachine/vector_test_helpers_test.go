@@ -137,6 +137,7 @@ type MockVectorStorageWrapper struct {
 	namespaces  map[string]*vector.NamespaceInfo
 	vectors     map[string]map[uint64]*vector.VectorValue
 	nextID      uint64
+	getErr      error // Error to return from GetVector; writes still succeed
 	createErr   error // Error to return from CreateNamespace
 	deleteNsErr error // Error to return from DeleteNamespace
 }
@@ -149,17 +150,18 @@ func NewMockVectorStorageWrapper() *MockVectorStorageWrapper {
 	}
 }
 
-func (m *MockVectorStorageWrapper) UpdateNamespace(ctx context.Context, namespace string, update *vector.NamespaceUpdate) error {
+func (m *MockVectorStorageWrapper) UpdateNamespace(ctx context.Context, namespace string, update *vector.NamespaceUpdate) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	info, exists := m.namespaces[namespace]
 	if !exists {
-		return vector.ErrNamespaceNotFound
+		return false, vector.ErrNamespaceNotFound
 	}
-	info.IndexConfig = update.IndexConfig
-	info.Metadata = update.Metadata
-	info.UpdatedAt = update.UpdatedAt
-	return nil
+	merged, requiresRebuild := vector.ApplyNamespaceUpdate(info, update)
+	info.IndexConfig = merged.IndexConfig
+	info.Metadata = merged.Metadata
+	info.UpdatedAt = merged.UpdatedAt
+	return requiresRebuild, nil
 }
 
 func (m *MockVectorStorageWrapper) CreateNamespace(ctx context.Context, info *vector.NamespaceInfo) error {
@@ -220,11 +222,12 @@ func (m *MockVectorStorageWrapper) UpsertVector(ctx context.Context, namespace s
 func (m *MockVectorStorageWrapper) GetVector(ctx context.Context, namespace string, id uint64) (*vector.VectorValue, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	vectors, ok := m.vectors[namespace]
-	if !ok {
-		return nil, api.NewNotFoundError("MockVectorStorage", "namespace")
+	if m.getErr != nil {
+		return nil, m.getErr
 	}
-	vec, ok := vectors[id]
+	// As the real storages do, a missing namespace or id is
+	// vector.ErrVectorNotFound.
+	vec, ok := m.vectors[namespace][id]
 	if !ok {
 		// The real storage reports a missing vector as ErrVectorNotFound.
 		return nil, vector.ErrVectorNotFound

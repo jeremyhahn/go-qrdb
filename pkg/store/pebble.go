@@ -2195,6 +2195,24 @@ func (w pebbleAuditWriter) Delete(key []byte) error {
 	return w.batch.Delete(key, pebble.Sync)
 }
 
+// Get reads key through the apply batch (indexed, so it sees the writes
+// staged earlier in the same Update call), copying the value before the
+// closer is released. A missing key is storage.ErrKeyNotFound.
+func (w pebbleAuditWriter) Get(key []byte) ([]byte, error) {
+	v, closer, err := w.batch.Get(key)
+	if err != nil {
+		if errors.Is(err, pebble.ErrNotFound) {
+			return nil, storage.ErrKeyNotFound
+		}
+		return nil, err
+	}
+	out := append([]byte(nil), v...)
+	if cErr := closer.Close(); cErr != nil {
+		return nil, cErr
+	}
+	return out, nil
+}
+
 // ---------------------------------------------------------------------------
 // Chunked import session staging (go-qrdb#576)
 //

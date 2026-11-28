@@ -15,6 +15,7 @@
 package errclass
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -46,6 +47,32 @@ func TestClassify_DatabaseBarrierRequestRefusals(t *testing.T) {
 	for _, tc := range cases {
 		if got := Classify(tc.err); got != tc.want {
 			t.Errorf("Classify(%T) = %v, want %v", tc.err, got, tc.want)
+		}
+	}
+}
+
+// TestClassify_StrictTenantDedicatedWALRequired: a strict tenant's database
+// created without a dedicated WAL (phase 5 G1) is refused by the tenant's
+// policy, wrapped or not, on every transport as FailedPrecondition.
+func TestClassify_StrictTenantDedicatedWALRequired(t *testing.T) {
+	for _, err := range []error{
+		&database.StrictTenantDedicatedWALRequiredError{Name: "orders", Tenant: "acme"},
+		&database.StrictTenantDedicatedWALRequiredError{Name: "orders", Tenant: "acme", Backend: "pebble"},
+		fmt.Errorf("create: %w", &database.StrictTenantDedicatedWALRequiredError{Name: "orders", Tenant: "acme"}),
+	} {
+		if got := Classify(err); got != FailedPrecondition {
+			t.Errorf("Classify(%v) = %v, want FailedPrecondition", err, got)
+		}
+	}
+}
+
+func TestClassify_StrictTenantSharedStore(t *testing.T) {
+	for _, err := range []error{
+		&service.StrictTenantSharedStoreError{TenantID: "acme", Database: ""},
+		fmt.Errorf("resolve: %w", &service.StrictTenantSharedStoreError{TenantID: "acme", Database: "default"}),
+	} {
+		if got := Classify(err); got != FailedPrecondition {
+			t.Errorf("Classify(%v) = %v, want FailedPrecondition", err, got)
 		}
 	}
 }

@@ -51,6 +51,7 @@ package integration_test
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"testing"
@@ -393,7 +394,7 @@ func TestAudit_CLI_AuditInstance_Standalone_PerProtocol(t *testing.T) {
 }
 
 // assertTenantAuditInstancePerProtocol onboards tenantID on node, whose
-// tenant.onboard events are the audit instance's first leaves, and checks
+// admin files the audit instance's first leaf, and checks
 // over every transport the instance's head, its newest leaf, an inclusion
 // proof of that leaf, the reserved-log refusal of a forged append, and that
 // `qrdb audit query --replicated` and `audit verify --replicated` answer.
@@ -402,6 +403,14 @@ func assertTenantAuditInstancePerProtocol(t *testing.T, node *multiProtoNode, te
 	createTenant(t, node, multiProtocols[0], tenantID, "Audit Log Tenant", "prefix", false)
 	certPath, keyPath := provisionTenantSOIdentity(t, node, tenantID, "audit-log-reader",
 		[]string{"vlog:head", "vlog:get", "vlog:proof", "vlog:append", "audit:query", "audit:verify_replicated", "admin:health"})
+	// Onboarding records are platform events on the system tenant's trail,
+	// so the tenant's admin files the instance's first leaf itself.
+	adminCred, ok := lookupTenantAdminCred(tenantID)
+	if !ok {
+		t.Fatalf("no admin credential registered for %s", tenantID)
+	}
+	fileTenantAuditEvent(t, node.restPort, tenantID,
+		mtlsHTTPClientFromFiles(t, node.ca, adminCred.certPath, adminCred.keyPath, 15*time.Second))
 
 	auditLog := []string{"--database", "system", "--log", "audit"}
 	for _, proto := range multiProtocols {
@@ -426,7 +435,7 @@ func assertTenantAuditInstancePerProtocol(t *testing.T, node *multiProtoNode, te
 				headErr = vlogJSON(&head, "head")
 				return headErr == nil && head.Size >= 1
 			}) {
-				t.Fatalf("[%s] vlog head on %s/system/audit = size %d, %v; want the onboarding events", proto.name, tenantID, head.Size, headErr)
+				t.Fatalf("[%s] vlog head on %s/system/audit = size %d, %v; want the tenant's user.invite record", proto.name, tenantID, head.Size, headErr)
 			}
 			if len(head.Root) != rfc6962.DefaultHasher.Size() {
 				t.Fatalf("[%s] vlog head on %s/system/audit has root %x", proto.name, tenantID, head.Root)
@@ -481,5 +490,22 @@ func assertTenantAuditInstancePerProtocol(t *testing.T, node *multiProtoNode, te
 				t.Fatalf("[%s] audit verify --replicated = %+v, %v; want a continuous chain\noutput: %s", proto.name, result, jerr, out)
 			}
 		})
+	}
+}
+
+// fileTenantAuditEvent files a tenant-keyed record on tenantID's trail: the
+// tenant's admin invites a user, and the invitation service, whose sink is
+// the node's replicated audit logger, records a user.invite success under
+// the caller's tenant. Tenant onboarding does not serve: its records are
+// platform events, filed on the system tenant's trail naming the tenant.
+// Nor does an auth factor: users:invite is a tenant admin's own permission,
+// user_authfactors:add is not.
+func fileTenantAuditEvent(t *testing.T, restPort int, tenantID string, adminClient *http.Client) {
+	t.Helper()
+	username := tenantID + "-audit-invitee"
+	body, status := iraftAPIPost(t, adminClient, fmt.Sprintf("https://127.0.0.1:%d/users/invite", restPort),
+		map[string]any{"username": username, "email": username + "@" + tenantID + ".example.com"})
+	if status != http.StatusCreated {
+		t.Fatalf("fileTenantAuditEvent: invite %s in %s: status %d, body: %s", username, tenantID, status, body)
 	}
 }

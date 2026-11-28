@@ -34,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	api "github.com/jeremyhahn/go-qrdb/pkg/api"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
@@ -91,6 +92,20 @@ type vectorService struct {
 	// service's behavior before the cluster isolation policy existed.
 	policyReader atomic.Pointer[clusterIsolationPolicyReaderBox]
 
+	// homes resolves an isolated tenant's home store; routed sends every
+	// per-namespace storage call to the store storageFor picks, and
+	// homeStores caches one vector view per isolated tenant.
+	homes      atomic.Pointer[tenantHomeResolverBox]
+	routed     vector.Storage
+	homeMu     sync.Mutex
+	homeStores map[string]*tenantVectorHome
+	// homeSeeded records, under homeMu, the tenants whose home-store vector
+	// counts the metrics were seeded from, so a store re-opened or not
+	// cacheable is never counted twice.
+	homeSeeded map[string]bool
+	// homeGens records, under indexMu, the home-store write generation each cached home-namespace index reflects.
+	homeGens map[string]homeIndexGeneration
+
 	// nsLocksMu guards nsLocks, the per-composite-namespace lock registry
 	// backing LockVectorNamespaceWrite/LockVectorNamespaceReclaim. Vector
 	// writes are not Raft proposals (see pkg/server/drop_fence.go), so
@@ -103,6 +118,38 @@ type vectorService struct {
 	// has started waits for it and then sees the check refuse it.
 	nsLocksMu sync.Mutex
 	nsLocks   map[string]*sync.RWMutex
+
+	// nsWriteMu guards nsWriteLocks, which maps a scoped namespace to the
+	// mutex that serialises its local (non-Raft) writes; see
+	// lockNamespaceWrites. Writers share the reclaim lock above, so that
+	// lock cannot order two writers. As with nsLocks, an entry outlives a
+	// drop of its namespace: removing it while a writer still held it would
+	// let a writer to a re-created namespace of the same name take a fresh
+	// mutex and run beside it.
+	nsWriteMu    sync.Mutex
+	nsWriteLocks map[string]*sync.Mutex
+}
+
+// lockNamespaceWrites serialises the local (non-Raft) writes to one scoped
+// namespace, so the read that decides a write's vector-count delta and the
+// write itself are one step: two concurrent upserts of the same new id
+// cannot both read it absent and each add one to the gauge, nor two
+// deletes of one stored id each take one away. A Raft-path write needs no
+// such lock, since the state machine applies the log in order and reports
+// the change each entry made (see proposeToRaft).
+func (v *vectorService) lockNamespaceWrites(scoped string) (unlock func()) {
+	v.nsWriteMu.Lock()
+	if v.nsWriteLocks == nil {
+		v.nsWriteLocks = make(map[string]*sync.Mutex)
+	}
+	lock, ok := v.nsWriteLocks[scoped]
+	if !ok {
+		lock = &sync.Mutex{}
+		v.nsWriteLocks[scoped] = lock
+	}
+	v.nsWriteMu.Unlock()
+	lock.Lock()
+	return lock.Unlock
 }
 
 // clusterIsolationPolicyReaderBox boxes a tenant.ClusterIsolationPolicyReader
@@ -177,6 +224,127 @@ type vectorServiceMetrics struct {
 	operationErrors   *metrics.CounterVec
 	indexSizeBytes    *metrics.GaugeVec
 	vectorCount       *metrics.GaugeVec
+
+	// The two gauges carry one series per tenant, summing the tenant's
+	// namespaces, so each namespace's share is tracked here, keyed by the
+	// scoped namespace name: a change applies only its delta to the
+	// tenant series, and a namespace delete subtracts exactly the share
+	// the gauge holds for it.
+	nsMu         sync.Mutex
+	nsVectors    map[string]float64
+	nsIndexBytes map[string]float64
+}
+
+// addVectors changes a scoped namespace's vector count by delta and applies
+// the same delta to its tenant's vector_count series.
+func (m *vectorServiceMetrics) addVectors(scoped string, delta float64) {
+	m.nsMu.Lock()
+	defer m.nsMu.Unlock()
+	m.nsVectors[scoped] += delta
+	m.vectorCount.WithLabels(tenantMetricLabels(scoped)).Add(delta)
+}
+
+// setIndexBytes records a scoped namespace's index size estimate and moves
+// its tenant's index_size_bytes series by the change from the last value.
+func (m *vectorServiceMetrics) setIndexBytes(scoped string, bytes float64) {
+	m.nsMu.Lock()
+	defer m.nsMu.Unlock()
+	delta := bytes - m.nsIndexBytes[scoped]
+	m.nsIndexBytes[scoped] = bytes
+	m.indexSizeBytes.WithLabels(tenantMetricLabels(scoped)).Add(delta)
+}
+
+// dropNamespace removes a deleted scoped namespace's share from both tenant
+// series and forgets it.
+func (m *vectorServiceMetrics) dropNamespace(scoped string) {
+	m.nsMu.Lock()
+	defer m.nsMu.Unlock()
+	labels := tenantMetricLabels(scoped)
+	m.vectorCount.WithLabels(labels).Sub(m.nsVectors[scoped])
+	m.indexSizeBytes.WithLabels(labels).Sub(m.nsIndexBytes[scoped])
+	delete(m.nsVectors, scoped)
+	delete(m.nsIndexBytes, scoped)
+}
+
+// dropAll subtracts every namespace share this service holds from its
+// tenant series and forgets them, so the process-wide gauges no longer
+// carry a closed service. A second call finds the maps empty and subtracts
+// nothing.
+func (m *vectorServiceMetrics) dropAll() {
+	m.nsMu.Lock()
+	defer m.nsMu.Unlock()
+	for scoped, count := range m.nsVectors {
+		m.vectorCount.WithLabels(tenantMetricLabels(scoped)).Sub(count)
+	}
+	for scoped, bytes := range m.nsIndexBytes {
+		m.indexSizeBytes.WithLabels(tenantMetricLabels(scoped)).Sub(bytes)
+	}
+	clear(m.nsVectors)
+	clear(m.nsIndexBytes)
+}
+
+// estimateIndexSizeBytes estimates the in-memory size of an HNSW index from
+// its stats: per node, the fixed node overhead, the float32 vector and the
+// neighbour IDs over every layer. Zero for a nil or empty index.
+func estimateIndexSizeBytes(index interfaces.HNSWIndex) uint64 {
+	if index == nil {
+		return 0
+	}
+	stats := index.GetStats()
+	if stats == nil || stats.NodeCount <= 0 {
+		return 0
+	}
+	const baseNodeOverhead = 8 + 8 + 24 + 48 // 88 bytes
+
+	vectorDataSize := uint64(stats.Dimensions) * 4 //nolint:gosec // G115: Dimensions is validated positive
+
+	maxLayers := stats.MaxLayer + 1
+	if maxLayers < 1 {
+		maxLayers = 1
+	}
+	connectionDataSize := uint64(stats.AvgConnections * float64(maxLayers) * 8)
+
+	perNodeSize := uint64(baseNodeOverhead) + vectorDataSize + connectionDataSize
+
+	return uint64(stats.NodeCount) * perNodeSize // #nosec G115 -- NodeCount is int64 from HNSW stats, checked positive above
+}
+
+// refreshIndexSizeMetric sets the index_size_bytes share of a scoped
+// namespace from its current index. Callers must not hold indexMu.
+func (v *vectorService) refreshIndexSizeMetric(scoped string) {
+	if v.metrics == nil {
+		return
+	}
+	v.indexMu.RLock()
+	index := v.hnswIndexes[scoped]
+	v.indexMu.RUnlock()
+	v.metrics.setIndexBytes(scoped, float64(estimateIndexSizeBytes(index)))
+}
+
+// vectorStored reports whether storage holds vector id in the scoped
+// namespace. The vector_count gauge moves only for ids whose stored state
+// a write changes: an upsert of a stored id and a delete of a missing id
+// leave the count where it is.
+func (v *vectorService) vectorStored(ctx context.Context, scoped string, id uint64) bool {
+	vec, err := v.routed.GetVector(ctx, scoped, id)
+	return err == nil && vec != nil
+}
+
+// storedVectorIDs counts the distinct ids of a batch and how many of them
+// storage already holds in the scoped namespace: a batch upsert adds
+// distinct-stored vectors, a batch delete removes stored.
+func (v *vectorService) storedVectorIDs(ctx context.Context, scoped string, ids []uint64) (distinct, stored int) {
+	seen := make(map[uint64]struct{}, len(ids))
+	for _, id := range ids {
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		if v.vectorStored(ctx, scoped, id) {
+			stored++
+		}
+	}
+	return len(seen), stored
 }
 
 // RebuildJobState tracks the state of an index rebuild job.
@@ -316,19 +484,15 @@ func scopedFromContext(ctx context.Context, logical string) string {
 	return scopedNamespace(tenant.FromContext(ctx), logical)
 }
 
-// namespaceMetricLabels returns Prometheus label values for the two GaugeVecs
+// tenantMetricLabels returns Prometheus label values for the two GaugeVecs
 // (vectorCount, indexSizeBytes) keyed by a physical (scoped) namespace name.
-// The "namespace" label carries the logical name (control-byte-free, tenant
-// prefix stripped) and "tenant" carries the owner tenant ID.
-//
-// This ensures no \x1f byte or other control character appears in emitted
-// label values, and prevents cross-tenant namespace name leakage on /metrics.
-func namespaceMetricLabels(physical string) prometheus.Labels {
-	tenantID, logical := unscopedNamespace(physical)
-	return prometheus.Labels{
-		"namespace": logical,
-		"tenant":    tenantID,
-	}
+// The only label is "tenant", the owner tenant ID taken from the scope prefix.
+// The namespace name is never a label value: a tenant's namespace names are
+// tenant data and must not reach a /metrics scrape (strict-tenant-isolation
+// phase 10), so the gauges aggregate over every namespace a tenant owns.
+func tenantMetricLabels(physical string) prometheus.Labels {
+	tenantID, _ := unscopedNamespace(physical)
+	return prometheus.Labels{"tenant": tenantID}
 }
 
 // parseDistanceMetric resolves a namespace's stored or requested distance
@@ -428,7 +592,10 @@ func NewVectorService(
 		logger:         logger.WithField("component", "vector_service"),
 		rebuildJobs:    make(map[string]*RebuildJobState),
 		compactionJobs: make(map[string]*CompactionJobState),
+		homeStores:     make(map[string]*tenantVectorHome),
+		homeSeeded:     make(map[string]bool),
 	}
+	svc.routed = &tenantRoutedVectorStorage{v: svc}
 	svc.bgCtx, svc.bgCancel = context.WithCancel(context.Background())
 
 	// Apply functional options
@@ -463,7 +630,8 @@ var _ io.Closer = (*vectorService)(nil)
 // beneath the service afterwards. It does not close the storage, which the
 // service does not own. Every call, including one concurrent with or after
 // the first, returns only once the jobs have stopped; Close is otherwise
-// idempotent.
+// idempotent. Close takes the service's contributions away from the
+// process-wide tenant vector count and index size gauges, once in total.
 func (v *vectorService) Close() error {
 	v.mu.Lock()
 	v.closed = true
@@ -476,6 +644,13 @@ func (v *vectorService) Close() error {
 	// Waits observe the same drain.
 	v.bgCancel()
 	v.bg.Wait()
+
+	// No background job runs and no write is admitted past closed, so the
+	// gauge shares are final; dropAll takes them away exactly once across
+	// all Close calls.
+	if v.metrics != nil {
+		v.metrics.dropAll()
+	}
 	return nil
 }
 
@@ -516,6 +691,8 @@ func (v *vectorService) startBackground(job func(ctx context.Context)) error {
 // initMetrics initializes Prometheus metrics for the vector service.
 func (v *vectorService) initMetrics() {
 	v.metrics = &vectorServiceMetrics{
+		nsVectors:    make(map[string]float64),
+		nsIndexBytes: make(map[string]float64),
 		namespacesCreated: metrics.NewCounter(metrics.CounterOpts{
 			Namespace: "qrdb",
 			Subsystem: "vector",
@@ -570,15 +747,15 @@ func (v *vectorService) initMetrics() {
 			Namespace: "qrdb",
 			Subsystem: "vector",
 			Name:      "index_size_bytes",
-			Help:      "Size of HNSW index in bytes, partitioned by logical namespace and tenant",
-		}, []string{"namespace", "tenant"}),
+			Help:      "Size of HNSW indexes in bytes, summed per tenant",
+		}, []string{"tenant"}),
 
 		vectorCount: metrics.NewGaugeVec(metrics.GaugeOpts{
 			Namespace: "qrdb",
 			Subsystem: "vector",
 			Name:      "vector_count",
-			Help:      "Number of vectors in namespace, partitioned by logical namespace and tenant",
-		}, []string{"namespace", "tenant"}),
+			Help:      "Number of vectors, summed over the tenant's namespaces",
+		}, []string{"tenant"}),
 	}
 }
 
@@ -603,7 +780,7 @@ func (v *vectorService) loadNamespaces() error {
 		// forever, so a restart would come up with an empty index under the
 		// wrong metric and nothing would ever rebuild it (go-qrdb vector
 		// restart blocker).
-		if _, err := v.ensureHNSWIndex(ctx, ns.Name); err != nil {
+		if _, err := v.ensureHNSWIndexFrom(ctx, v.storage, ns.Name); err != nil {
 			// A namespace this server cannot serve stays unindexed: every
 			// operation on it re-reads the record and returns the typed
 			// refusal, so the failure reaches callers rather than this log
@@ -623,18 +800,45 @@ func (v *vectorService) loadNamespaces() error {
 			continue
 		}
 
-		// Update metrics with logical namespace name and tenant label so
-		// that no scoped key (containing \x1f) appears in emitted label values.
-		if v.metrics != nil {
-			v.metrics.vectorCount.WithLabels(namespaceMetricLabels(ns.Name)).Set(float64(ns.VectorCount))
-		}
+		v.seedNamespaceMetrics(ctx, v.storage, &ns)
 	}
 
 	return nil
 }
 
+// seedNamespaceMetrics adds ns's stored vector count from st to the vector
+// count gauge and refreshes its index-size gauge. The metrics carry the
+// logical namespace name and tenant label, so no scoped key (containing
+// \x1f) appears in emitted label values. The seed is the stored count:
+// ListNamespaces returns the record as created, whose VectorCount no write
+// updates, while GetNamespaceInfo overlays the live count.
+func (v *vectorService) seedNamespaceMetrics(ctx context.Context, st vector.Storage, ns *vector.NamespaceInfo) {
+	if v.metrics == nil || ns == nil {
+		return
+	}
+	stored := ns.VectorCount
+	if info, err := st.GetNamespaceInfo(ctx, ns.Name); err == nil && info != nil {
+		stored = info.VectorCount
+	}
+	v.metrics.addVectors(ns.Name, float64(stored))
+	v.refreshIndexSizeMetric(ns.Name)
+}
+
 // ensureHNSWIndex ensures that an HNSW index exists for the given namespace.
 func (v *vectorService) ensureHNSWIndex(ctx context.Context, namespace string) (interfaces.HNSWIndex, error) {
+	// A cached index is served only to a tenant its home store admits, as an uncached one is.
+	st, err := v.storageForNamespace(ctx, namespace)
+	if err != nil {
+		return nil, err
+	}
+	if home, ok := st.(generationStorage); ok && st != v.storage {
+		return v.homeIndex(ctx, home, namespace)
+	}
+	return v.ensureHNSWIndexFrom(ctx, v.routed, namespace)
+}
+
+// ensureHNSWIndexFrom builds namespace's index from st when none is cached.
+func (v *vectorService) ensureHNSWIndexFrom(ctx context.Context, st vector.Storage, namespace string) (interfaces.HNSWIndex, error) {
 	// First check if index already exists
 	v.indexMu.RLock()
 	index, exists := v.hnswIndexes[namespace]
@@ -644,38 +848,9 @@ func (v *vectorService) ensureHNSWIndex(ctx context.Context, namespace string) (
 		return index, nil
 	}
 
-	// Index doesn't exist, check if namespace exists in storage
-	info, err := v.storage.GetNamespaceInfo(ctx, namespace)
+	newIndex, loaded, err := v.buildHNSWIndex(ctx, st, namespace, false)
 	if err != nil {
 		return nil, err
-	}
-
-	if err := checkStoredGeometry(namespace, info); err != nil {
-		return nil, err
-	}
-
-	newIndex, err := v.newNamespaceIndex(info, nil)
-	if err != nil {
-		return nil, &api.OperationFailedError{Operation: "create namespace index", Cause: err}
-	}
-
-	// Load all vectors from storage into the index
-	vectors, err := v.storage.ScanNamespace(ctx, namespace, nil)
-	if err != nil {
-		v.logger.WithFields(map[string]interface{}{
-			"namespace": namespace,
-			"error":     err,
-		}).Warn("failed to scan vectors for HNSW index rebuild")
-	} else {
-		for _, vec := range vectors {
-			if err := newIndex.Insert(vec.ID, vec.Embedding); err != nil {
-				v.logger.WithFields(map[string]interface{}{
-					"namespace": namespace,
-					"vector_id": vec.ID,
-					"error":     err,
-				}).Warn("failed to insert vector into HNSW index")
-			}
-		}
 	}
 
 	// Store the index (check again in case another goroutine created it)
@@ -689,10 +864,51 @@ func (v *vectorService) ensureHNSWIndex(ctx context.Context, namespace string) (
 
 	v.logger.WithFields(map[string]interface{}{
 		"namespace": namespace,
-		"vectors":   len(vectors),
+		"vectors":   loaded,
 	}).Info("lazily created index for namespace")
 
 	return newIndex, nil
+}
+
+// buildHNSWIndex builds namespace's index from the vectors st holds and
+// reports how many it loaded; strict fails the build when the scan fails.
+func (v *vectorService) buildHNSWIndex(ctx context.Context, st vector.Storage, namespace string, strict bool) (interfaces.HNSWIndex, int, error) {
+	info, err := st.GetNamespaceInfo(ctx, namespace)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	if err := checkStoredGeometry(namespace, info); err != nil {
+		return nil, 0, err
+	}
+
+	newIndex, err := v.newNamespaceIndex(info, nil)
+	if err != nil {
+		return nil, 0, &api.OperationFailedError{Operation: "create namespace index", Cause: err}
+	}
+
+	// Load all vectors from storage into the index
+	vectors, err := st.ScanNamespace(ctx, namespace, nil)
+	if err != nil {
+		v.logger.WithFields(map[string]interface{}{
+			"namespace": namespace,
+			"error":     err,
+		}).Warn("failed to scan vectors for HNSW index rebuild")
+		if strict {
+			return nil, 0, err
+		}
+		return newIndex, 0, nil
+	}
+	for _, vec := range vectors {
+		if err := newIndex.Insert(vec.ID, vec.Embedding); err != nil {
+			v.logger.WithFields(map[string]interface{}{
+				"namespace": namespace,
+				"vector_id": vec.ID,
+				"error":     err,
+			}).Warn("failed to insert vector into HNSW index")
+		}
+	}
+	return newIndex, len(vectors), nil
 }
 
 // =============================================================================
@@ -792,6 +1008,9 @@ func invalidVectorFromStorage(_ string, _ uint64, err error) error {
 // namespace is the caller's LOGICAL namespace, never the tenant-scoped storage
 // key, so an error message cannot leak another tenant's key layout.
 func vectorStorageError(op, namespace string, id uint64, err error) error {
+	if home, ok := errors.AsType[*TenantVectorHomeError](err); ok {
+		return home
+	}
 	for _, row := range vectorStorageErrors {
 		if errors.Is(err, row.sentinel) {
 			return row.typed(namespace, id, err)
@@ -804,27 +1023,34 @@ func vectorStorageError(op, namespace string, id uint64, err error) error {
 // Raft Proposal Helpers
 // =============================================================================
 
-// proposeToRaft proposes a vector command to Raft for consensus.
-func (v *vectorService) proposeToRaft(ctx context.Context, cmd *statemachine.VectorCommand) error {
+// proposeToRaft proposes a vector command to Raft for consensus and returns
+// the committed entry's Result.Value: for an upsert, delete or batch upsert,
+// the change it made to the stored vector count. With no Raft node it
+// proposes nothing and returns 0.
+func (v *vectorService) proposeToRaft(ctx context.Context, cmd *statemachine.VectorCommand) (uint64, error) {
 	return v.proposeToRaftResult(ctx, cmd, nil)
 }
 
 // proposeToRaftResult is proposeToRaft that also stores the accepted
 // state-machine result in out (when out is non-nil), for a caller that reads
 // what the apply reported, such as whether an upsert created the vector.
-func (v *vectorService) proposeToRaftResult(ctx context.Context, cmd *statemachine.VectorCommand, out *sm.Result) error {
+func (v *vectorService) proposeToRaftResult(ctx context.Context, cmd *statemachine.VectorCommand, out *sm.Result) (uint64, error) {
 	if v.raftNode == nil {
-		return nil
+		return 0, nil
 	}
+
+	// The stored-count rule changes how apply counts vectors, so a command
+	// carries it only once every replica of the shard applies it alike.
+	cmd.StoredCount = v.vectorStoredCountEnabled()
 
 	cmdBytes, err := cmd.Encode()
 	if err != nil {
-		return &EncodeRequestError{Err: err}
+		return 0, &EncodeRequestError{Err: err}
 	}
 
 	result, err := v.raftNode.SyncPropose(ctx, v.shardID, cmdBytes)
 	if err != nil {
-		return translateProposeError(err)
+		return 0, translateProposeError(err)
 	}
 
 	// A proposal that Raft accepted can still have been REFUSED by the state
@@ -846,16 +1072,32 @@ func (v *vectorService) proposeToRaftResult(ctx context.Context, cmd *statemachi
 	// outcome is not evidence that the outcome was good.
 	smResult, ok := result.(sm.Result)
 	if !ok {
-		return &VectorOperationError{Op: fmt.Sprintf("raft proposal (result type %T carries no readable state-machine outcome)", result)}
+		return 0, &VectorOperationError{Op: fmt.Sprintf("raft proposal (result type %T carries no readable state-machine outcome)", result)}
 	}
 	if resultErr := checkResultError(smResult); resultErr != nil {
-		return resultErr
+		return 0, resultErr
 	}
 	if out != nil {
 		*out = smResult
 	}
 
-	return nil
+	// Result.Value of an upsert, delete or batch upsert is the change that
+	// entry made to the stored vector count, the same on every replica
+	// since each applies the log in order; the caller moves its gauge by it
+	// rather than by a read taken before the proposal, which a concurrent
+	// write of the same id can make stale.
+	return smResult.Value, nil
+}
+
+// vectorStoredCountEnabled reports whether featuregate.VectorStoredCount is
+// enabled on the shard, through the gates WithFeatureGates set, else the
+// raft node's. A service with neither has every replica running this binary.
+func (v *vectorService) vectorStoredCountEnabled() bool {
+	gates := v.featureGates
+	if gates == nil {
+		gates, _ = v.raftNode.(FeatureGatedHost)
+	}
+	return gates == nil || gates.FeatureEnabled(v.shardID, featuregate.VectorStoredCount)
 }
 
 // =============================================================================
@@ -899,7 +1141,7 @@ func (v *vectorService) CreateNamespace(ctx context.Context, req *CreateNamespac
 	}
 
 	// Check if namespace already exists under this tenant's scoped key.
-	existingInfo, err := v.storage.GetNamespaceInfo(ctx, scoped)
+	existingInfo, err := v.routed.GetNamespaceInfo(ctx, scoped)
 	if err == nil && existingInfo != nil {
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("create_namespace", "already_exists").Inc()
@@ -943,7 +1185,7 @@ func (v *vectorService) CreateNamespace(ctx context.Context, req *CreateNamespac
 			NodeID:         v.nodeID,
 		})
 
-		if err := v.proposeToRaft(ctx, cmd); err != nil {
+		if _, err := v.proposeToRaft(ctx, cmd); err != nil {
 			if v.metrics != nil {
 				v.metrics.operationErrors.With("create_namespace", "raft_error").Inc()
 			}
@@ -952,7 +1194,8 @@ func (v *vectorService) CreateNamespace(ctx context.Context, req *CreateNamespac
 
 		if v.metrics != nil {
 			v.metrics.namespacesCreated.Inc()
-			v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Set(0)
+			v.metrics.addVectors(scoped, 0)
+			v.refreshIndexSizeMetric(scoped)
 		}
 
 		v.logger.WithFields(map[string]interface{}{
@@ -999,7 +1242,7 @@ func (v *vectorService) CreateNamespace(ctx context.Context, req *CreateNamespac
 		UpdatedAt:      time.Now().UnixNano(),
 	}
 
-	if err := v.storage.CreateNamespace(ctx, info); err != nil {
+	if err := v.routed.CreateNamespace(ctx, info); err != nil {
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("create_namespace", "storage_error").Inc()
 		}
@@ -1017,7 +1260,7 @@ func (v *vectorService) CreateNamespace(ctx context.Context, req *CreateNamespac
 	// only under the wrong metric from the moment it was created.
 	index, err := v.newNamespaceIndex(info, nil)
 	if err != nil {
-		_ = v.storage.DeleteNamespace(ctx, scoped)
+		_ = v.routed.DeleteNamespace(ctx, scoped)
 		return nil, &VectorOperationError{Op: "create namespace index", Err: err}
 	}
 
@@ -1027,7 +1270,8 @@ func (v *vectorService) CreateNamespace(ctx context.Context, req *CreateNamespac
 
 	if v.metrics != nil {
 		v.metrics.namespacesCreated.Inc()
-		v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Set(0)
+		v.metrics.addVectors(scoped, 0)
+		v.refreshIndexSizeMetric(scoped)
 	}
 
 	v.logger.WithFields(map[string]interface{}{
@@ -1071,7 +1315,7 @@ func (v *vectorService) UpdateNamespace(ctx context.Context, req *UpdateNamespac
 		return nil, &VectorServiceClosedError{}
 	}
 
-	info, err := v.storage.GetNamespaceInfo(ctx, scoped)
+	info, err := v.routed.GetNamespaceInfo(ctx, scoped)
 	if err != nil {
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("update_namespace", "not_found").Inc()
@@ -1087,24 +1331,38 @@ func (v *vectorService) UpdateNamespace(ctx context.Context, req *UpdateNamespac
 
 	metadata := convertToStringMap(req.Metadata)
 	now := time.Now().UnixNano()
-	update, requiresRebuild := vector.MergeNamespaceUpdate(info, req.IndexConfig, metadata, now)
+	// The request is a patch: storage (or the state machine) applies it to
+	// the record its write replaces, so another node's patch of other keys,
+	// committed since the read above, is kept. requiresRebuild is the
+	// applied merge's.
+	update := &vector.NamespaceUpdate{IndexConfig: req.IndexConfig, Metadata: metadata, UpdatedAt: now}
+	var requiresRebuild bool
 
 	v.logger.WithFields(map[string]interface{}{
-		"namespace":        req.Namespace,
-		"scoped":           scoped,
-		"requires_rebuild": requiresRebuild,
+		"namespace": req.Namespace,
+		"scoped":    scoped,
 	}).Debug("updating namespace")
 
 	if v.raftNode != nil {
 		cmd := statemachine.NewUpdateNamespaceCommand(scoped, req.IndexConfig, req.Metadata, v.nodeID)
 		cmd.Dimension = req.Dimension
-		if err := v.proposeToRaft(ctx, cmd); err != nil {
+		var result sm.Result
+		if _, err := v.proposeToRaftResult(ctx, cmd, &result); err != nil {
 			if v.metrics != nil {
 				v.metrics.operationErrors.With("update_namespace", "raft_error").Inc()
 			}
 			return nil, err
 		}
-	} else if err := v.storage.UpdateNamespace(ctx, scoped, update); err != nil {
+		// The state machine reports the merge it applied; an apply with no
+		// storage behind it reports nothing and changed nothing.
+		if len(result.Data) > 0 {
+			var applied statemachine.UpdateNamespaceResult
+			if err := applied.Decode(result.Data); err != nil {
+				return nil, err
+			}
+			requiresRebuild = applied.RequiresRebuild
+		}
+	} else if requiresRebuild, err = v.routed.UpdateNamespace(ctx, scoped, update); err != nil {
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("update_namespace", "storage_error").Inc()
 		}
@@ -1151,7 +1409,7 @@ func (v *vectorService) DeleteNamespace(ctx context.Context, req *DeleteNamespac
 
 	v.logger.WithField("namespace", req.Namespace).Debug("deleting namespace")
 
-	info, err := v.storage.GetNamespaceInfo(ctx, scoped)
+	info, err := v.routed.GetNamespaceInfo(ctx, scoped)
 	var vectorsDeleted uint64
 	if err == nil {
 		vectorsDeleted = info.VectorCount
@@ -1159,7 +1417,7 @@ func (v *vectorService) DeleteNamespace(ctx context.Context, req *DeleteNamespac
 
 	if v.raftNode != nil {
 		cmd := statemachine.NewDeleteNamespaceCommand(scoped, v.nodeID)
-		if err := v.proposeToRaft(ctx, cmd); err != nil {
+		if _, err := v.proposeToRaft(ctx, cmd); err != nil {
 			if v.metrics != nil {
 				v.metrics.operationErrors.With("delete_namespace", "raft_error").Inc()
 			}
@@ -1172,7 +1430,7 @@ func (v *vectorService) DeleteNamespace(ctx context.Context, req *DeleteNamespac
 
 		if v.metrics != nil {
 			v.metrics.namespacesDeleted.Inc()
-			v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Set(0)
+			v.metrics.dropNamespace(scoped)
 		}
 
 		v.logger.WithField("namespace", req.Namespace).Info("namespace deleted successfully via Raft")
@@ -1184,7 +1442,7 @@ func (v *vectorService) DeleteNamespace(ctx context.Context, req *DeleteNamespac
 		}, nil
 	}
 
-	if err := v.storage.DeleteNamespace(ctx, scoped); err != nil {
+	if err := v.routed.DeleteNamespace(ctx, scoped); err != nil {
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("delete_namespace", "storage_error").Inc()
 		}
@@ -1197,7 +1455,7 @@ func (v *vectorService) DeleteNamespace(ctx context.Context, req *DeleteNamespac
 
 	if v.metrics != nil {
 		v.metrics.namespacesDeleted.Inc()
-		v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Set(0)
+		v.metrics.dropNamespace(scoped)
 	}
 
 	v.logger.WithField("namespace", req.Namespace).Info("namespace deleted successfully")
@@ -1225,7 +1483,7 @@ func (v *vectorService) ListNamespaces(ctx context.Context, req *ListNamespacesR
 		return nil, &VectorServiceClosedError{}
 	}
 
-	namespaces, err := v.storage.ListNamespaces(ctx)
+	namespaces, err := v.routed.ListNamespaces(ctx)
 	if err != nil {
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("list_namespaces", "storage_error").Inc()
@@ -1310,7 +1568,7 @@ func (v *vectorService) GetNamespaceInfo(ctx context.Context, req *GetNamespaceI
 		return nil, &VectorServiceClosedError{}
 	}
 
-	info, err := v.storage.GetNamespaceInfo(ctx, scoped)
+	info, err := v.routed.GetNamespaceInfo(ctx, scoped)
 	if err != nil {
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("get_namespace_info", "not_found").Inc()
@@ -1388,7 +1646,7 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 // and v.writeMu and has validated req, so a read-modify-write such as
 // UpdateMetadata runs its read and this write as one step.
 func (v *vectorService) upsertVectorLocked(ctx context.Context, scoped string, req *UpsertVectorRequest) (*UpsertVectorResponse, error) {
-	nsInfo, err := v.storage.GetNamespaceInfo(ctx, scoped)
+	nsInfo, err := v.routed.GetNamespaceInfo(ctx, scoped)
 	if err != nil {
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("upsert_vector", "namespace_not_found").Inc()
@@ -1411,11 +1669,14 @@ func (v *vectorService) upsertVectorLocked(ctx context.Context, scoped string, r
 
 	if v.raftNode != nil {
 		cmd := statemachine.NewUpsertCommand(scoped, req.ID, req.Vector, req.Metadata, v.nodeID)
-		var applied sm.Result
+		var result sm.Result
 		// The proposal and its index insert are one step under writeMu
 		// (held by the caller), so a concurrent delete of the ID cannot
 		// land between them.
-		if err := v.proposeToRaftResult(ctx, cmd, &applied); err != nil {
+		// applied is 1 when the committed entry stored a new id and 0 on a
+		// re-upsert, as the state machine counted it in log order.
+		applied, err := v.proposeToRaftResult(ctx, cmd, &result)
+		if err != nil {
 			if v.metrics != nil {
 				v.metrics.operationErrors.With("upsert_vector", "raft_error").Inc()
 			}
@@ -1440,7 +1701,8 @@ func (v *vectorService) upsertVectorLocked(ctx context.Context, scoped string, r
 
 		if v.metrics != nil {
 			v.metrics.vectorsUpserted.Inc()
-			v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Inc()
+			v.metrics.addVectors(scoped, float64(applied))
+			v.refreshIndexSizeMetric(scoped)
 		}
 
 		v.logger.WithFields(map[string]interface{}{
@@ -1453,8 +1715,18 @@ func (v *vectorService) upsertVectorLocked(ctx context.Context, scoped string, r
 			Version:   1,
 			Timestamp: now,
 			Success:   true,
-			Created:   statemachine.UpsertCreated(applied.Data),
+			Created:   statemachine.UpsertCreated(result.Data),
 		}, nil
+	}
+
+	// The read that decides the gauge delta and the write are one step
+	// under the namespace's write lock: a re-upsert of a stored id adds no
+	// vector, and two concurrent upserts of one new id add it once.
+	unlock := v.lockNamespaceWrites(scoped)
+	defer unlock()
+	var added float64
+	if v.metrics != nil && !v.vectorStored(ctx, scoped, req.ID) {
+		added = 1
 	}
 
 	vecValue := &vector.VectorValue{
@@ -1471,8 +1743,18 @@ func (v *vectorService) upsertVectorLocked(ctx context.Context, scoped string, r
 	// one reports created and a concurrent delete of the ID cannot land
 	// between write and index.
 	created := v.vectorIsNew(ctx, scoped, req.ID)
-	err = v.storage.UpsertVector(ctx, scoped, vecValue)
-	if err != nil {
+	// The write re-validates the namespace record it commits to, so a
+	// namespace deleted and re-created since the check above (another
+	// replica's, or another dimension) refuses it.
+	if err := v.upsertVectorChecked(ctx, scoped, vecValue, func(info *vector.NamespaceInfo) error {
+		return checkUpsertNamespace(scoped, info, len(req.Vector))
+	}); err != nil {
+		if mismatch, ok := errors.AsType[*DimensionMismatchError](err); ok {
+			return nil, mismatch
+		}
+		if geometry, ok := errors.AsType[*UnsupportedNamespaceGeometryError](err); ok {
+			return nil, geometry
+		}
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("upsert_vector", "storage_error").Inc()
 		}
@@ -1495,7 +1777,8 @@ func (v *vectorService) upsertVectorLocked(ctx context.Context, scoped string, r
 
 	if v.metrics != nil {
 		v.metrics.vectorsUpserted.Inc()
-		v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Inc()
+		v.metrics.addVectors(scoped, added)
+		v.refreshIndexSizeMetric(scoped)
 	}
 
 	v.logger.WithFields(map[string]interface{}{
@@ -1516,7 +1799,7 @@ func (v *vectorService) upsertVectorLocked(ctx context.Context, scoped string, r
 // namespace yet, so an upsert can say whether it created or replaced one.
 // Only a not-found answer counts as new: a read error leaves it false.
 func (v *vectorService) vectorIsNew(ctx context.Context, scoped string, id uint64) bool {
-	_, err := v.storage.GetVector(ctx, scoped, id)
+	_, err := v.routed.GetVector(ctx, scoped, id)
 	return errors.Is(err, vector.ErrVectorNotFound)
 }
 
@@ -1545,7 +1828,7 @@ func (v *vectorService) GetVector(ctx context.Context, req *GetVectorRequest) (*
 		return nil, &VectorServiceClosedError{}
 	}
 
-	vecValue, err := v.storage.GetVector(ctx, scoped, req.ID)
+	vecValue, err := v.routed.GetVector(ctx, scoped, req.ID)
 	if err != nil {
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("get_vector", "not_found").Inc()
@@ -1601,7 +1884,10 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 		cmd := statemachine.NewDeleteCommand(scoped, req.ID, v.nodeID)
 		// The proposal and its index delete are one step under writeMu.
 		v.writeMu.Lock()
-		if err := v.proposeToRaft(ctx, cmd); err != nil {
+		// applied is 1 when the committed entry removed a stored id and 0
+		// when the id was missing, as the state machine counted it.
+		applied, err := v.proposeToRaft(ctx, cmd)
+		if err != nil {
 			v.writeMu.Unlock()
 			if v.metrics != nil {
 				v.metrics.operationErrors.With("delete_vector", "raft_error").Inc()
@@ -1625,7 +1911,8 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 
 		if v.metrics != nil {
 			v.metrics.vectorsDeleted.Inc()
-			v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Dec()
+			v.metrics.addVectors(scoped, -float64(applied))
+			v.refreshIndexSizeMetric(scoped)
 		}
 
 		v.logger.WithFields(map[string]interface{}{
@@ -1641,8 +1928,17 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 
 	// The storage delete and its index delete are one step under writeMu.
 	v.writeMu.Lock()
-	err := v.storage.DeleteVector(ctx, scoped, req.ID)
-	if err != nil {
+	// The read that decides the gauge delta and the delete are one step
+	// under the namespace's write lock: a delete of a missing id removes no
+	// vector, and two concurrent deletes of one stored id remove it once.
+	unlock := v.lockNamespaceWrites(scoped)
+	defer unlock()
+	var removed float64
+	if v.metrics != nil && v.vectorStored(ctx, scoped, req.ID) {
+		removed = -1
+	}
+
+	if err := v.routed.DeleteVector(ctx, scoped, req.ID); err != nil {
 		v.writeMu.Unlock()
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("delete_vector", "storage_error").Inc()
@@ -1667,7 +1963,8 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 
 	if v.metrics != nil {
 		v.metrics.vectorsDeleted.Inc()
-		v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Dec()
+		v.metrics.addVectors(scoped, removed)
+		v.refreshIndexSizeMetric(scoped)
 	}
 
 	v.logger.WithFields(map[string]interface{}{
@@ -1710,7 +2007,7 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 	// checked against, so a batch is never written without it: an
 	// unreadable namespace would otherwise validate any internally
 	// consistent batch of the wrong length.
-	info, err := v.storage.GetNamespaceInfo(ctx, scoped)
+	info, err := v.routed.GetNamespaceInfo(ctx, scoped)
 	if err != nil {
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("batch_upsert", "namespace_not_found").Inc()
@@ -1752,7 +2049,10 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 		cmd := statemachine.NewBatchUpsertCommand(scoped, batchIDs, batchVectors, v.nodeID)
 		// The proposal and its index inserts are one step under writeMu.
 		v.writeMu.Lock()
-		if err := v.proposeToRaft(ctx, cmd); err != nil {
+		// applied is the number of distinct ids the committed entry stored
+		// that were not stored before, as the state machine counted them.
+		applied, err := v.proposeToRaft(ctx, cmd)
+		if err != nil {
 			v.writeMu.Unlock()
 			if v.metrics != nil {
 				v.metrics.operationErrors.With("batch_upsert", "raft_error").Inc()
@@ -1781,7 +2081,8 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 
 		if v.metrics != nil {
 			v.metrics.vectorsUpserted.Add(float64(len(req.Vectors)))
-			v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Add(float64(len(req.Vectors)))
+			v.metrics.addVectors(scoped, float64(applied))
+			v.refreshIndexSizeMetric(scoped)
 		}
 
 		v.logger.WithFields(map[string]interface{}{
@@ -1812,8 +2113,37 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 
 	// The storage write and its index inserts are one step under writeMu.
 	v.writeMu.Lock()
-	if err := v.storage.BatchUpsertVectors(ctx, scoped, vecs); err != nil {
+	// The read that decides the gauge delta and the write are one step
+	// under the namespace's write lock: only distinct ids not yet stored
+	// add vectors, and a concurrent write of the same ids cannot make the
+	// read stale before this batch lands.
+	unlock := v.lockNamespaceWrites(scoped)
+	defer unlock()
+	var added float64
+	if v.metrics != nil {
+		distinct, stored := v.storedVectorIDs(ctx, scoped, ids)
+		added = float64(distinct - stored)
+	}
+
+	// The write re-validates the namespace record it commits to, so a
+	// namespace deleted and re-created since the check above (another
+	// replica's, or another dimension) refuses the whole batch.
+	if err := v.batchUpsertVectorsChecked(ctx, scoped, vecs, func(info *vector.NamespaceInfo) error {
+		if err := checkStoredGeometry(scoped, info); err != nil {
+			return err
+		}
+		return validateBatchDimensions(req.Vectors, info.Dimension)
+	}); err != nil {
 		v.writeMu.Unlock()
+		if mismatch, ok := errors.AsType[*DimensionMismatchError](err); ok {
+			if v.metrics != nil {
+				v.metrics.operationErrors.With("batch_upsert", "invalid_dimension").Inc()
+			}
+			return nil, mismatch
+		}
+		if geometry, ok := errors.AsType[*UnsupportedNamespaceGeometryError](err); ok {
+			return nil, geometry
+		}
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("batch_upsert", "storage_error").Inc()
 		}
@@ -1839,7 +2169,8 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 
 	if v.metrics != nil {
 		v.metrics.vectorsUpserted.Add(float64(len(req.Vectors)))
-		v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Add(float64(len(req.Vectors)))
+		v.metrics.addVectors(scoped, added)
+		v.refreshIndexSizeMetric(scoped)
 	}
 
 	v.logger.WithFields(map[string]interface{}{
@@ -1894,6 +2225,12 @@ func (v *vectorService) SearchSimilar(ctx context.Context, req *SearchSimilarReq
 			}
 			return nil, unsupported
 		}
+		if homeErr, ok := errors.AsType[*TenantVectorHomeError](err); ok {
+			if v.metrics != nil {
+				v.metrics.operationErrors.With("search_similar", "tenant_home").Inc()
+			}
+			return nil, homeErr
+		}
 		v.logger.WithFields(map[string]interface{}{
 			"namespace": req.Namespace,
 			"error":     err,
@@ -1939,7 +2276,7 @@ func (v *vectorService) SearchSimilar(ctx context.Context, req *SearchSimilarReq
 		}
 
 		if req.IncludeVectors || req.IncludeMetadata {
-			vec, err := v.storage.GetVector(ctx, scoped, res.ID)
+			vec, err := v.routed.GetVector(ctx, scoped, res.ID)
 			if err == nil {
 				if req.IncludeVectors {
 					result.Vector = vec.Embedding
@@ -2006,7 +2343,12 @@ func (v *vectorService) SearchByMetadata(ctx context.Context, req *SearchByMetad
 		limit = 1000
 	}
 
-	vecs, err := v.storage.ScanByMultipleFilters(ctx, scoped, filters, &vector.ScanOptions{Limit: limit, Offset: req.Offset})
+	opts := &vector.ScanOptions{
+		Limit:  limit,
+		Offset: req.Offset,
+	}
+
+	vecs, err := v.routed.ScanByMultipleFilters(ctx, scoped, filters, opts)
 	if err != nil {
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("search_by_metadata", "scan_failed").Inc()
@@ -2115,7 +2457,7 @@ func (v *vectorService) RebuildIndex(ctx context.Context, req *RebuildIndexReque
 	jobID := uuid.New().String()
 	scoped := scopedFromContext(ctx, req.Namespace)
 
-	info, err := v.storage.GetNamespaceInfo(ctx, scoped)
+	info, err := v.routed.GetNamespaceInfo(ctx, scoped)
 	if err != nil {
 		return nil, vectorStorageError("find namespace", req.Namespace, 0, err)
 	}
@@ -2324,7 +2666,7 @@ func (v *vectorService) performIndexRebuild(ctx context.Context, jobID, namespac
 			job.mu.Unlock()
 			return &VectorOperationError{Op: "scan vectors", Err: err}
 		}
-		vecs, err := v.storage.ScanNamespace(ctx, namespace, opts)
+		vecs, err := v.routed.ScanNamespace(ctx, namespace, opts)
 		if err != nil {
 			job.mu.Lock()
 			job.Error = err
@@ -2394,7 +2736,7 @@ func (v *vectorService) GetIndexStats(ctx context.Context, req *GetIndexStatsReq
 
 	scoped := scopedFromContext(ctx, req.Namespace)
 
-	info, err := v.storage.GetNamespaceInfo(ctx, scoped)
+	info, err := v.routed.GetNamespaceInfo(ctx, scoped)
 	if err != nil {
 		return nil, vectorStorageError("find namespace", req.Namespace, 0, err)
 	}
@@ -2409,26 +2751,8 @@ func (v *vectorService) GetIndexStats(ctx context.Context, req *GetIndexStatsReq
 
 	if exists {
 		indexCount = index.Count()
-
-		stats := index.GetStats()
-		if stats != nil && stats.NodeCount > 0 {
-			const baseNodeOverhead = 8 + 8 + 24 + 48 // 88 bytes
-
-			vectorDataSize := uint64(stats.Dimensions) * 4 //nolint:gosec // G115: Dimensions is validated positive
-
-			avgConnectionsPerNode := stats.AvgConnections
-			maxLayers := stats.MaxLayer + 1
-			if maxLayers < 1 {
-				maxLayers = 1
-			}
-			connectionDataSize := uint64(avgConnectionsPerNode * float64(maxLayers) * 8)
-
-			perNodeSize := uint64(baseNodeOverhead) + vectorDataSize + connectionDataSize
-
-			indexSizeBytes = uint64(stats.NodeCount) * perNodeSize // #nosec G115 -- NodeCount is int64 from HNSW stats, always non-negative
-
-			memoryUsageBytes = indexSizeBytes + (indexSizeBytes / 5)
-		}
+		indexSizeBytes = estimateIndexSizeBytes(index)
+		memoryUsageBytes = indexSizeBytes + (indexSizeBytes / 5)
 	}
 
 	var vectorCount uint64
@@ -2763,7 +3087,7 @@ func (v *vectorService) CompactNamespace(ctx context.Context, req *CompactNamesp
 	}
 	v.mu.RUnlock()
 
-	info, err := v.storage.GetNamespaceInfo(ctx, scoped)
+	info, err := v.routed.GetNamespaceInfo(ctx, scoped)
 	if err != nil {
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("compact_namespace", "not_found").Inc()
@@ -2868,20 +3192,20 @@ func (v *vectorService) performCompaction(ctx context.Context, operationID, name
 		return &VectorOperationError{Op: "compaction", Err: err}
 	}
 
-	preStats, _ := v.storage.GetStats(ctx, namespace)
+	preStats, _ := v.routed.GetStats(ctx, namespace)
 	var preSizeBytes int64
 	if preStats != nil {
 		preSizeBytes = int64(preStats.SizeBytes) //nolint:gosec // G115: SizeBytes is bounded by storage capacity
 	}
 
-	if err := v.storage.Compact(ctx, namespace); err != nil {
+	if err := v.routed.Compact(ctx, namespace); err != nil {
 		job.mu.Lock()
 		job.Error = err
 		job.mu.Unlock()
 		return &VectorOperationError{Op: "compaction", Err: err}
 	}
 
-	postStats, _ := v.storage.GetStats(ctx, namespace)
+	postStats, _ := v.routed.GetStats(ctx, namespace)
 	var postSizeBytes int64
 	if postStats != nil {
 		postSizeBytes = int64(postStats.SizeBytes) //nolint:gosec // G115: SizeBytes is bounded by storage capacity
@@ -3081,13 +3405,19 @@ func (v *vectorService) BatchDeleteVectors(ctx context.Context, req *BatchDelete
 			v.writeMu.Lock()
 			defer v.writeMu.Unlock()
 			cmd := statemachine.NewBatchDeleteCommand(scoped, req.IDs, v.nodeID)
-			if err := v.proposeToRaft(ctx, cmd); err != nil {
+			// removed is the number of distinct stored ids the committed
+			// entry deleted, as the state machine counted them.
+			removed, err := v.proposeToRaft(ctx, cmd)
+			if err != nil {
 				if v.metrics != nil {
 					v.metrics.operationErrors.With("batch_delete", "raft_error").Inc()
 				}
 				return err
 			}
 			v.removeFromLiveIndex(scoped, req.Namespace, req.IDs)
+			if v.metrics != nil {
+				v.metrics.addVectors(scoped, -float64(removed))
+			}
 			return nil
 		})
 		if err != nil {
@@ -3103,15 +3433,29 @@ func (v *vectorService) BatchDeleteVectors(ctx context.Context, req *BatchDelete
 		}, nil
 	}
 
+	// The read that decides the gauge delta, the delete and the gauge move
+	// are one step under the namespace's write lock: the batch removes only
+	// the distinct ids stored now, and a concurrent delete of the same ids
+	// cannot take them away from the gauge a second time.
 	err := v.admit(func() error {
 		// The storage delete and its index removal are one step under
 		// writeMu; the per-ID fallback below runs after the lock is released.
 		v.writeMu.Lock()
 		defer v.writeMu.Unlock()
-		if err := v.storage.BatchDeleteVectors(ctx, scoped, req.IDs); err != nil {
+		unlock := v.lockNamespaceWrites(scoped)
+		defer unlock()
+		var removed float64
+		if v.metrics != nil {
+			_, stored := v.storedVectorIDs(ctx, scoped, req.IDs)
+			removed = -float64(stored)
+		}
+		if err := v.routed.BatchDeleteVectors(ctx, scoped, req.IDs); err != nil {
 			return err
 		}
 		v.removeFromLiveIndex(scoped, req.Namespace, req.IDs)
+		if v.metrics != nil {
+			v.metrics.addVectors(scoped, removed)
+		}
 		return nil
 	})
 	var closedErr *VectorServiceClosedError
@@ -3150,6 +3494,7 @@ func (v *vectorService) BatchDeleteVectors(ctx context.Context, req *BatchDelete
 	}
 
 	if v.metrics != nil {
+		v.refreshIndexSizeMetric(scoped)
 		v.metrics.operationDuration.With("batch_delete").Observe(time.Since(start).Seconds())
 	}
 
@@ -3163,8 +3508,10 @@ func (v *vectorService) BatchDeleteVectors(ctx context.Context, req *BatchDelete
 
 // removeFromLiveIndex drops ids from the namespace's live HNSW index after
 // storage has deleted them and moves the delete metrics, as DeleteVector does
-// for one ID. A failed index removal is logged and the rest go on. Callers
-// hold v.mu read-locked with v.closed checked (v.admit).
+// for one ID. A failed index removal is logged and the rest go on. The
+// vector_count gauge is the caller's: it moves by the ids the delete removed
+// (addVectors), not by len(ids). Callers hold v.mu read-locked with v.closed
+// checked (v.admit).
 func (v *vectorService) removeFromLiveIndex(scoped, namespace string, ids []uint64) {
 	v.indexMu.RLock()
 	index, exists := v.hnswIndexes[scoped]
@@ -3183,9 +3530,7 @@ func (v *vectorService) removeFromLiveIndex(scoped, namespace string, ids []uint
 	}
 
 	if v.metrics != nil {
-		n := float64(len(ids))
-		v.metrics.vectorsDeleted.Add(n)
-		v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Sub(n)
+		v.metrics.vectorsDeleted.Add(float64(len(ids)))
 	}
 }
 
@@ -3230,11 +3575,11 @@ func (v *vectorService) ListVectors(ctx context.Context, req *ListVectorsRequest
 	)
 	err := v.admit(func() error {
 		var err error
-		namespaceInfo, err = v.storage.GetNamespaceInfo(ctx, scoped)
+		namespaceInfo, err = v.routed.GetNamespaceInfo(ctx, scoped)
 		if err != nil {
 			return vectorStorageError("find namespace", req.Namespace, 0, err)
 		}
-		vectors, err = v.storage.ScanNamespace(ctx, scoped, scanOpts)
+		vectors, err = v.routed.ScanNamespace(ctx, scoped, scanOpts)
 		if err != nil {
 			return vectorStorageError("list vectors", req.Namespace, 0, err)
 		}
@@ -3317,28 +3662,48 @@ func (v *vectorService) UpdateMetadata(ctx context.Context, req *UpdateVectorMet
 	v.writeMu.Lock()
 	defer v.writeMu.Unlock()
 
-	existingVector, err := v.storage.GetVector(ctx, scoped, req.ID)
+	// On a guarded store (a tenant home, replicated across its group) the
+	// read and the write are one guarded commit, so a concurrent update on
+	// another replica is merged rather than overwritten.
+	stored, guarded, err := v.updateStoredVector(ctx, scoped, req.ID, func(old *vector.VectorValue) (*vector.VectorValue, error) {
+		next := *old
+		next.Metadata = convertToStringMap(mergeVectorMetadata(old.Metadata, req))
+		next.UpdatedAt = time.Now().UnixNano()
+		if err := v.validateUpsertVectorRequest(&UpsertVectorRequest{
+			Namespace: req.Namespace,
+			ID:        req.ID,
+			Vector:    old.Embedding,
+			Metadata:  mergeVectorMetadata(old.Metadata, req),
+			ShardID:   req.ShardID,
+		}); err != nil {
+			return nil, err
+		}
+		return &next, nil
+	})
+	if guarded {
+		if err != nil {
+			if invalid, ok := errors.AsType[*InvalidVectorError](err); ok {
+				return nil, invalid
+			}
+			return nil, vectorStorageError("update vector metadata", req.Namespace, req.ID, err)
+		}
+		if v.metrics != nil {
+			v.metrics.operationDuration.With("update_metadata").Observe(time.Since(start).Seconds())
+		}
+		return &UpdateVectorMetadataResponse{
+			ID:        req.ID,
+			Version:   stored.Version,
+			Timestamp: stored.UpdatedAt,
+			Success:   true,
+		}, nil
+	}
+
+	existingVector, err := v.routed.GetVector(ctx, scoped, req.ID)
 	if err != nil {
 		return nil, vectorStorageError("find vector", req.Namespace, req.ID, err)
 	}
 
-	var newMetadata map[string]interface{}
-	if req.MergeMetadata {
-		newMetadata = make(map[string]interface{})
-		if existingVector.Metadata != nil {
-			for k, val := range existingVector.Metadata {
-				newMetadata[k] = val
-			}
-		}
-		for k, val := range req.Metadata {
-			newMetadata[k] = val
-		}
-		for _, key := range req.DeleteKeys {
-			delete(newMetadata, key)
-		}
-	} else {
-		newMetadata = req.Metadata
-	}
+	newMetadata := mergeVectorMetadata(existingVector.Metadata, req)
 
 	upsertReq := &UpsertVectorRequest{
 		Namespace: req.Namespace,
@@ -3368,6 +3733,26 @@ func (v *vectorService) UpdateMetadata(ctx context.Context, req *UpdateVectorMet
 	}, nil
 }
 
+// mergeVectorMetadata is the metadata req leaves on a vector that holds
+// stored: req.Metadata over stored less req.DeleteKeys on a merge, else
+// req.Metadata alone.
+func mergeVectorMetadata(stored map[string]string, req *UpdateVectorMetadataRequest) map[string]interface{} {
+	if !req.MergeMetadata {
+		return req.Metadata
+	}
+	merged := make(map[string]interface{}, len(stored)+len(req.Metadata))
+	for k, val := range stored {
+		merged[k] = val
+	}
+	for k, val := range req.Metadata {
+		merged[k] = val
+	}
+	for _, key := range req.DeleteKeys {
+		delete(merged, key)
+	}
+	return merged
+}
+
 // SearchByID finds similar vectors using an existing vector's ID as the query.
 func (v *vectorService) SearchByID(ctx context.Context, req *SearchByIDRequest) (*SearchByIDResponse, error) {
 	start := time.Now()
@@ -3390,7 +3775,7 @@ func (v *vectorService) SearchByID(ctx context.Context, req *SearchByIDRequest) 
 	var sourceVector *vector.VectorValue
 	err := v.admit(func() error {
 		var err error
-		sourceVector, err = v.storage.GetVector(ctx, scoped, req.ID)
+		sourceVector, err = v.routed.GetVector(ctx, scoped, req.ID)
 		if err != nil {
 			return vectorStorageError("find source vector", req.Namespace, req.ID, err)
 		}

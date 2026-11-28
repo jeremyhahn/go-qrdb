@@ -15,20 +15,30 @@
 package lifecycle
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"sort"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
 // fakeHomeServices is a TenantHomeServices returning one bundle, or an error.
@@ -40,6 +50,7 @@ type fakeHomeServices struct {
 	dbs     []string
 	joining map[uint64]bool
 	asked   []uint64
+	host    service.Host
 }
 
 var _ TenantHomeServices = (*fakeHomeServices)(nil)
@@ -56,6 +67,15 @@ func (f *fakeHomeServices) Services(_ context.Context, _, db string) (*server.Da
 func (f *fakeHomeServices) IsShardJoining(shardID uint64) bool {
 	f.asked = append(f.asked, shardID)
 	return f.joining[shardID]
+}
+
+// HomeGroup mirrors the raft factory's: the home database's shard on host.
+func (f *fakeHomeServices) HomeGroup(ctx context.Context, tenantID string) (service.Host, uint64, error) {
+	svcs, err := f.Services(ctx, tenantID, database.TenantHomeName)
+	if err != nil {
+		return nil, 0, err
+	}
+	return f.host, svcs.ShardID, nil
 }
 
 // fakeHomeProvisioner is a TenantHomeProvisioner recording what it placed.
@@ -160,6 +180,88 @@ func TestTenantHomes_HomeStore_CatchingUpReplicaIsNotServed(t *testing.T) {
 	if _, err := h.HomeStore(ctx, "vault"); err != nil {
 		t.Fatalf("HomeStore after catching up: %v", err)
 	}
+}
+
+// stubHost is a service.Host identified by pointer; HomeGroup only names it.
+type stubHost struct{ service.Host }
+
+func TestTenantHomes_HomeGroup(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("names the home database's shard", func(t *testing.T) {
+		bundle := homeBundle(func() error { return nil })
+		bundle.ShardID = 42
+		host := &stubHost{}
+		svcs := &fakeHomeServices{svcs: bundle, host: host}
+		h := newTestTenantHomes(svcs, &fakeHomeProvisioner{})
+
+		got, shardID, err := h.HomeGroup(ctx, "vault")
+		if err != nil {
+			t.Fatalf("HomeGroup: %v", err)
+		}
+		if got != host || shardID != 42 {
+			t.Fatalf("HomeGroup = (%v, %d), want (the services' host, 42)", got, shardID)
+		}
+		if len(svcs.dbs) != 1 || svcs.dbs[0] != database.TenantHomeName {
+			t.Fatalf("services asked for %v, want [%s]", svcs.dbs, database.TenantHomeName)
+		}
+	})
+
+	t.Run("catching up is refused", func(t *testing.T) {
+		bundle := homeBundle(func() error { return nil })
+		bundle.ShardID = 42
+		svcs := &fakeHomeServices{svcs: bundle, host: &stubHost{}, joining: map[uint64]bool{42: true}}
+		h := newTestTenantHomes(svcs, &fakeHomeProvisioner{})
+
+		_, _, err := h.HomeGroup(ctx, "vault")
+		var catchingUp *TenantHomeCatchingUpError
+		if !errors.As(err, &catchingUp) || catchingUp.TenantID != "vault" {
+			t.Fatalf("err = %v, want *TenantHomeCatchingUpError for vault", err)
+		}
+	})
+
+	t.Run("sealed is returned as is", func(t *testing.T) {
+		h := newTestTenantHomes(&fakeHomeServices{err: seal.ErrSealed}, &fakeHomeProvisioner{})
+		if _, _, err := h.HomeGroup(ctx, "vault"); !errors.Is(err, seal.ErrSealed) {
+			t.Fatalf("err = %v, want seal.ErrSealed", err)
+		}
+	})
+}
+
+// TestTenantHomes_HomeGroup_RefusalsClassifyUnavailable pins what a transport
+// answers when the home group cannot be named: a retryable unavailable, as the
+// HomeStore path answers for the same causes, not an internal error.
+func TestTenantHomes_HomeGroup_RefusalsClassifyUnavailable(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("catching up", func(t *testing.T) {
+		bundle := homeBundle(func() error { return nil })
+		bundle.ShardID = 42
+		svcs := &fakeHomeServices{svcs: bundle, host: &stubHost{}, joining: map[uint64]bool{42: true}}
+		h := newTestTenantHomes(svcs, &fakeHomeProvisioner{})
+
+		_, _, err := h.HomeGroup(ctx, "vault")
+		if got := errclass.Classify(err); got != errclass.Unavailable {
+			t.Fatalf("Classify(%v) = %v, want Unavailable", err, got)
+		}
+		var catchingUp *TenantHomeCatchingUpError
+		if !errors.As(err, &catchingUp) || catchingUp.TenantID != "vault" {
+			t.Fatalf("err = %v, want *TenantHomeCatchingUpError for vault", err)
+		}
+	})
+
+	t.Run("factory error", func(t *testing.T) {
+		factoryErr := errors.New("home services not built")
+		h := newTestTenantHomes(&fakeHomeServices{err: factoryErr}, &fakeHomeProvisioner{})
+
+		_, _, err := h.HomeGroup(ctx, "vault")
+		if got := errclass.Classify(err); got != errclass.Unavailable {
+			t.Fatalf("Classify(%v) = %v, want Unavailable", err, got)
+		}
+		if !errors.Is(err, factoryErr) {
+			t.Fatalf("err = %v, want it to wrap the factory's error", err)
+		}
+	})
 }
 
 func TestTenantHomes_HomeStore_CachedStoreIsNotServedWhileCatchingUp(t *testing.T) {
@@ -541,4 +643,256 @@ func TestAttachHomeSource_RefusesWithoutARoutingResolver(t *testing.T) {
 			t.Fatalf("refused attach bound served=%v credentials=%d calls", served.src, creds.calls)
 		}
 	}
+}
+
+// quietLogger returns a logger that discards every record.
+func quietLogger(t *testing.T) interfaces.Logger {
+	t.Helper()
+	l, err := logger.NewWithHandler(slog.DiscardHandler, logger.LogConfig{})
+	if err != nil {
+		t.Fatalf("NewWithHandler: %v", err)
+	}
+	return logger.NewAdapter(l)
+}
+
+// isolatedVectorNode returns a node whose StoreResolver keeps acme in a home of the given isolation and beta prefix-scoped.
+// isolatingTenants reports id with the given isolation, as a seal-enabled tenant service records it.
+type isolatingTenants struct {
+	tenant.TenantServicer
+	id        string
+	isolation tenant.IsolationType
+}
+
+func (s isolatingTenants) GetTenant(ctx context.Context, tenantID string) (*tenant.TenantInfo, error) {
+	info, err := s.TenantServicer.GetTenant(ctx, tenantID)
+	if err != nil || tenantID != s.id {
+		return info, err
+	}
+	cp := *info
+	cp.IsolationType = s.isolation
+	return &cp, nil
+}
+
+func isolatedVectorNode(t *testing.T, isolation tenant.IsolationType) (*Node, *seal.BarrierRegistry, *vector.MemoryVectorStorage) {
+	t.Helper()
+	ctx := context.Background()
+	reg := newHomeRegistry(t)
+	strategy, err := seal.NewSoftwareStrategy(ctx, []byte("acme-passphrase"))
+	if err != nil {
+		t.Fatalf("NewSoftwareStrategy: %v", err)
+	}
+	tb, err := reg.RegisterTenant(ctx, "acme", seal.NewMemoryBackend(), seal.BarrierConfig{}, strategy)
+	if err != nil {
+		t.Fatalf("RegisterTenant: %v", err)
+	}
+	if err := tb.Barrier().Initialize(ctx, seal.MustCredentials(ctx, []byte("acme-passphrase"))); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	shared := kvstore.NewMemoryKVStore()
+	tenants, err := tenant.NewKVTenantService(shared, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("NewKVTenantService: %v", err)
+	}
+	for _, id := range []string{"acme", "beta"} {
+		if _, err := tenants.CreateTenant(ctx, id, id, tenant.IsolationPrefix); err != nil {
+			t.Fatalf("CreateTenant(%s): %v", id, err)
+		}
+	}
+	resolver, err := tenant.NewStoreResolver(shared, reg, isolatingTenants{TenantServicer: tenants, id: "acme", isolation: isolation})
+	if err != nil {
+		t.Fatalf("NewStoreResolver: %v", err)
+	}
+	nodeWide := vector.NewMemoryVectorStorage()
+	vec, err := service.NewVectorService(nodeWide, quietLogger(t))
+	if err != nil {
+		t.Fatalf("NewVectorService: %v", err)
+	}
+	return &Node{StoreResolver: resolver, Vector: vec, Database: &provisioningDatabase{}}, reg, nodeWide
+}
+
+// requireVectorsInHome checks acme's vectors land in home's vector keyspace and beta's in nodeWide.
+func requireVectorsInHome(t *testing.T, n *Node, home kvstore.KVStore, nodeWide *vector.MemoryVectorStorage) {
+	t.Helper()
+	for _, id := range []string{"acme", "beta"} {
+		ctx := tenant.WithTenantID(context.Background(), id)
+		if _, err := n.Vector.CreateNamespace(ctx, &service.CreateNamespaceRequest{Namespace: "docs", Dimension: 2, DistanceMetric: "cosine"}); err != nil {
+			t.Fatalf("CreateNamespace(%s): %v", id, err)
+		}
+		if _, err := n.Vector.UpsertVector(ctx, &service.UpsertVectorRequest{Namespace: "docs", ID: 1, Vector: []float32{1, 0}}); err != nil {
+			t.Fatalf("UpsertVector(%s): %v", id, err)
+		}
+		got, err := n.Vector.GetVector(ctx, &service.GetVectorRequest{Namespace: "docs", ID: 1})
+		if err != nil || !got.Found {
+			t.Fatalf("GetVector(%s) = %+v, %v; want found", id, got, err)
+		}
+	}
+	keys, err := home.List(context.Background(), "__vector/")
+	if err != nil {
+		t.Fatalf("List(home): %v", err)
+	}
+	if len(keys) == 0 {
+		t.Fatal("acme's home store holds no vector key")
+	}
+	spaces, err := nodeWide.ListNamespaces(context.Background())
+	if err != nil {
+		t.Fatalf("ListNamespaces(node-wide): %v", err)
+	}
+	if len(spaces) != 1 || !strings.HasPrefix(spaces[0].Name, "beta") {
+		t.Fatalf("node-wide namespaces = %+v, want beta's only", spaces)
+	}
+}
+
+func TestAttachLocalTenantHomes_VectorsInTenantBarrier(t *testing.T) {
+	n, reg, nodeWide := isolatedVectorNode(t, tenant.IsolationBarrier)
+	if !AttachLocalTenantHomes(n, reg, nil) {
+		t.Fatal("AttachLocalTenantHomes = false, want true")
+	}
+	if err := attachVectorTenantHomes(n); err != nil {
+		t.Fatalf("attachVectorTenantHomes: %v", err)
+	}
+	home, err := n.StoreResolver.Resolve(context.Background(), "acme")
+	if err != nil {
+		t.Fatalf("Resolve(acme): %v", err)
+	}
+	requireVectorsInHome(t, n, home, nodeWide)
+
+	if err := reg.SealTenant("acme"); err != nil {
+		t.Fatalf("SealTenant(acme): %v", err)
+	}
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	_, err = n.Vector.GetVector(ctx, &service.GetVectorRequest{Namespace: "docs", ID: 1})
+	if !errors.Is(err, tenant.ErrTenantSealed) {
+		t.Fatalf("GetVector on a sealed home = %v, want ErrTenantSealed", err)
+	}
+}
+
+func TestAttachTenantHomes_VectorsInHomeGroup(t *testing.T) {
+	n, _, nodeWide := isolatedVectorNode(t, tenant.IsolationRaft)
+	group := newMapKVServicer()
+	if !AttachTenantHomes(n, &fakeHomeServices{svcs: &server.DatabaseServices{KV: group, Transaction: group}}) {
+		t.Fatal("AttachTenantHomes = false, want true")
+	}
+	if err := attachVectorTenantHomes(n); err != nil {
+		t.Fatalf("attachVectorTenantHomes: %v", err)
+	}
+	home, err := n.StoreResolver.Resolve(context.Background(), "acme")
+	if err != nil {
+		t.Fatalf("Resolve(acme): %v", err)
+	}
+	requireVectorsInHome(t, n, home, nodeWide)
+	if keys := group.keysWithPrefix("__vector/"); len(keys) == 0 {
+		t.Fatal("the home group's store holds no vector key")
+	}
+}
+
+func TestAttachVectorTenantHomes_RefusesAResolverWithoutHomes(t *testing.T) {
+	vec, err := service.NewVectorService(vector.NewMemoryVectorStorage(), quietLogger(t))
+	if err != nil {
+		t.Fatalf("NewVectorService: %v", err)
+	}
+	err = attachVectorTenantHomes(&Node{StoreResolver: plainResolver{}, Vector: vec})
+	if !errors.Is(err, ErrStoreResolverLocatesNoHomes) {
+		t.Fatalf("attachVectorTenantHomes = %v, want ErrStoreResolverLocatesNoHomes", err)
+	}
+}
+
+// mapKVServicer is a map-backed KV servicer standing in for a home group's store.
+//
+// Like a real home group, its KV verbs and its transactions share one store:
+// a guarded batch (the vector store's CreateNamespace) written through
+// Execute is what a later Get or Scan reads. The store is an
+// evaluatingTxService, so a transaction's compares see real versions.
+type mapKVServicer struct {
+	mockKVServicer
+	mu sync.Mutex
+	tx *evaluatingTxService
+}
+
+// Execute runs the transaction against the shared store.
+func (m *mapKVServicer) Execute(ctx context.Context, compares []service.Compare, successOps, failureOps []service.Op) (*service.TransactionResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.tx.Execute(ctx, compares, successOps, failureOps)
+}
+
+// ExecuteWithMode is Execute; the double has one durability.
+func (m *mapKVServicer) ExecuteWithMode(ctx context.Context, compares []service.Compare, successOps, failureOps []service.Op, _ writemode.Mode) (*service.TransactionResponse, error) {
+	return m.Execute(ctx, compares, successOps, failureOps)
+}
+
+// ExecuteEntity is not served, as evaluatingTxService does not serve it.
+func (m *mapKVServicer) ExecuteEntity(ctx context.Context, req *service.TransactionEntityRequest) (*service.TransactionEntityResponse, error) {
+	return m.tx.ExecuteEntity(ctx, req)
+}
+
+func newMapKVServicer() *mapKVServicer {
+	m := &mapKVServicer{tx: newEvaluatingTxService()}
+	m.putFn = func(_ context.Context, key string, value []byte) error {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.tx.put(key, append([]byte(nil), value...))
+		return nil
+	}
+	m.putIfAbsentFn = func(_ context.Context, key string, value []byte) (bool, error) {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if _, ok := m.tx.data[key]; ok {
+			return false, nil
+		}
+		m.tx.put(key, append([]byte(nil), value...))
+		return true, nil
+	}
+	m.getFn = func(_ context.Context, key string) ([]byte, error) {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		kv, ok := m.tx.data[key]
+		if !ok {
+			return nil, &service.KeyNotFoundError{Key: key}
+		}
+		return append([]byte(nil), kv.Value...), nil
+	}
+	m.deleteFn = func(_ context.Context, key string) error {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		delete(m.tx.data, key)
+		return nil
+	}
+	m.scanFn = func(_ context.Context, prefix string) (map[string][]byte, error) {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		out := map[string][]byte{}
+		for k, kv := range m.tx.data {
+			if strings.HasPrefix(k, prefix) {
+				out[k] = append([]byte(nil), kv.Value...)
+			}
+		}
+		return out, nil
+	}
+	m.listFn = func(_ context.Context, prefix string) ([]string, error) {
+		return m.keysWithPrefix(prefix), nil
+	}
+	m.compareAndSwapFn = func(_ context.Context, key string, expected, next []byte) (bool, error) {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		cur, ok := m.tx.data[key]
+		if !ok || !bytes.Equal(cur.Value, expected) {
+			return false, nil
+		}
+		m.tx.put(key, append([]byte(nil), next...))
+		return true, nil
+	}
+	return m
+}
+
+func (m *mapKVServicer) keysWithPrefix(prefix string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var keys []string
+	for k := range m.tx.data {
+		if strings.HasPrefix(k, prefix) {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	return keys
 }

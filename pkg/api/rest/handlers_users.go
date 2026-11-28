@@ -23,6 +23,7 @@ import (
 	"time"
 
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -150,6 +151,11 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
 
+	ctx, ok := s.operatorTenantContext(ctx, w, req.TenantID, permission.UsersWriteTenant)
+	if !ok {
+		return
+	}
+
 	if len(req.RoleIDs) > 0 {
 		if err := s.authMW.AuthorizeRoleAssignmentWriteOnCreate(ctx, s.roleSvc, req.TenantID, req.RoleIDs); err != nil {
 			writeErrorJSON(w, mapHTTPError(err), err)
@@ -219,7 +225,11 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 		listReq.PageSize = pageSize
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	ctx, ok := s.operatorTenantContext(r.Context(), w, listReq.TenantID, permission.UsersReadTenant)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, apiRequestTimeout)
 	defer cancel()
 
 	resp, err := s.userSvc.ListUsers(ctx, listReq)
@@ -431,6 +441,11 @@ func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request, id uint64
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
 
+	ctx, ok := s.operatorTenantContext(ctx, w, r.URL.Query().Get("tenantID"), permission.UsersReadTenant)
+	if !ok {
+		return
+	}
+
 	u, err := s.userSvc.GetUser(ctx, id)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -447,6 +462,11 @@ func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request, id uint64
 func (s *Server) handleGetUserByUsername(w http.ResponseWriter, r *http.Request, username string) {
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
+
+	ctx, ok := s.operatorTenantContext(ctx, w, r.URL.Query().Get("tenantID"), permission.UsersReadTenant)
+	if !ok {
+		return
+	}
 
 	tenantID := r.URL.Query().Get("tenantID")
 
@@ -480,6 +500,10 @@ func (s *Server) handleLookupUser(w http.ResponseWriter, r *http.Request) {
 		writeErrorJSON(w, http.StatusBadRequest, &MissingParameterError{Param: "email"})
 		return
 	}
+	ctx, ok := s.operatorTenantContext(ctx, w, req.TenantID, permission.UsersReadTenant)
+	if !ok {
+		return
+	}
 
 	u, err := s.userSvc.GetUserByEmail(ctx, req.TenantID, req.Email)
 	if err != nil {
@@ -496,6 +520,10 @@ func (s *Server) handleLookupUser(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetUserByCertThumbprint(w http.ResponseWriter, r *http.Request, thumbprint string) {
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
+	ctx, ok := s.operatorTenantContext(ctx, w, r.URL.Query().Get("tenantID"), permission.UsersReadTenant)
+	if !ok {
+		return
+	}
 
 	u, err := s.userSvc.UserByCertThumbprint(ctx, thumbprint)
 	if err != nil {
@@ -518,6 +546,11 @@ type addCertBindingRequest struct {
 func (s *Server) handleAddCertBinding(w http.ResponseWriter, r *http.Request, userID uint64) {
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
+
+	ctx, ok := s.operatorTenantContext(ctx, w, r.URL.Query().Get("tenantID"), permission.UsersWriteTenant)
+	if !ok {
+		return
+	}
 
 	var req addCertBindingRequest
 	if !decodeIAMRequest(w, r, &req) {
@@ -546,6 +579,11 @@ func (s *Server) handleRemoveCertBinding(w http.ResponseWriter, r *http.Request,
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
 
+	ctx, ok := s.operatorTenantContext(ctx, w, r.URL.Query().Get("tenantID"), permission.UsersWriteTenant)
+	if !ok {
+		return
+	}
+
 	u, err := s.userSvc.RemoveCertBinding(ctx, userID, thumbprint)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -564,6 +602,11 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request, id uin
 
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
+
+	ctx, ok := s.operatorTenantContext(ctx, w, r.URL.Query().Get("tenantID"), permission.UsersWriteTenant)
+	if !ok {
+		return
+	}
 
 	updateReq := &user.UpdateUserRequest{
 		Guard:        s.authMW.SORoleGuard(ctx),
@@ -608,6 +651,11 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request, id uin
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
 
+	ctx, ok := s.operatorTenantContext(ctx, w, r.URL.Query().Get("tenantID"), permission.UsersWriteTenant)
+	if !ok {
+		return
+	}
+
 	if err := s.userSvc.DeleteUser(ctx, id); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -620,6 +668,11 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request, id uin
 func (s *Server) handleEnableUser(w http.ResponseWriter, r *http.Request, id uint64) {
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
+
+	ctx, ok := s.operatorTenantContext(ctx, w, r.URL.Query().Get("tenantID"), permission.UsersWriteTenant)
+	if !ok {
+		return
+	}
 
 	if err := s.userSvc.EnableUser(ctx, id); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -634,6 +687,11 @@ func (s *Server) handleDisableUser(w http.ResponseWriter, r *http.Request, id ui
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
 
+	ctx, ok := s.operatorTenantContext(ctx, w, r.URL.Query().Get("tenantID"), permission.UsersWriteTenant)
+	if !ok {
+		return
+	}
+
 	if err := s.userSvc.DisableUser(ctx, id); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -646,6 +704,11 @@ func (s *Server) handleSuspendUser(w http.ResponseWriter, r *http.Request, id ui
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
 
+	ctx, ok := s.operatorTenantContext(ctx, w, r.URL.Query().Get("tenantID"), permission.UsersWriteTenant)
+	if !ok {
+		return
+	}
+
 	if err := s.userSvc.SuspendUser(ctx, id); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -657,6 +720,11 @@ func (s *Server) handleSuspendUser(w http.ResponseWriter, r *http.Request, id ui
 func (s *Server) handleUnsuspendUser(w http.ResponseWriter, r *http.Request, id uint64) {
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
+
+	ctx, ok := s.operatorTenantContext(ctx, w, r.URL.Query().Get("tenantID"), permission.UsersWriteTenant)
+	if !ok {
+		return
+	}
 
 	if err := s.userSvc.UnsuspendUser(ctx, id); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)

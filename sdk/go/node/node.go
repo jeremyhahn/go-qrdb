@@ -80,6 +80,7 @@ package node
 
 import (
 	"context"
+	"crypto/fips140"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
@@ -1040,7 +1041,28 @@ func (n *Node) buildServices(ctx context.Context, infra lifecycle.Infra, cfg *qr
 	if err != nil {
 		return nil, err
 	}
+	if infra.SharedDatabaseNames == nil {
+		infra.SharedDatabaseNames = n.sharedDatabaseNames(cfg)
+	}
 	return lifecycle.BuildServices(ctx, infra)
+}
+
+// sharedDatabaseNames is the Infra.SharedDatabaseNames source of an SDK
+// node: the configured SQL default database and the databases of the
+// shared registry wireClientAndServer builds after the services (none
+// before it exists), read each time the node-key log probe runs
+// (go-qrdb#1565).
+func (n *Node) sharedDatabaseNames(cfg *qrdbconfig.Config) func() []string {
+	var sqlDefault string
+	if cfg != nil {
+		sqlDefault = cfg.SQL.DefaultDatabase
+	}
+	return lifecycle.SharedNames(sqlDefault, func() []string {
+		if r := n.sharedRegistry.Load(); r != nil {
+			return r.List()
+		}
+		return nil
+	})
 }
 
 // buildSealServices builds the sealed window's service graph over infra with
@@ -1241,6 +1263,9 @@ type Node struct {
 	// requests, as cmd/qrdbd keeps it.
 	featureClient atomic.Pointer[sdk.Client]
 	svcNode       atomic.Pointer[lifecycle.Node]
+	// sharedRegistry is the shared database service registry the server
+	// serves; the node-key log probe lists its databases (go-qrdb#1565).
+	sharedRegistry atomic.Pointer[server.DatabaseServiceRegistry]
 
 	// carriedCeremony is the ceremony service a data-plane teardown carried
 	// out of the stopped service graph, for the rebuild to reuse. See
@@ -2747,6 +2772,10 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 			n.bgCancel = nil
 		}
 		n.bgWG.Wait()
+		// wireClientAndServer started the feature gate and member record
+		// before the isolation floor; the cancel above ends their loops.
+		_ = n.stopFeatureGate()
+		_ = n.stopMemberRecord()
 		n.stopTenantMoveWorker()
 		n.stopVolumeReporter()
 		_ = svcNode.Stop(context.Background())
@@ -2777,8 +2806,6 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		}
 		return err
 	}
-	n.startFeatureGate(host, svcNode.KV)
-	n.startMemberRecord(host, pending.cfg)
 	return nil
 }
 
@@ -3712,13 +3739,15 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 			n.bgCancel = nil
 		}
 		n.bgWG.Wait()
+		// wireClientAndServer started the feature gate and member record
+		// before the isolation floor; the cancel above ends their loops.
+		_ = n.stopFeatureGate()
+		_ = n.stopMemberRecord()
 		_ = svcNode.Stop(context.Background())
 		_ = host.Close()
 		n.closeDatabaseManager()
 		return nil, err
 	}
-	n.startFeatureGate(host, svcNode.KV)
-	n.startMemberRecord(host, cfg)
 
 	return n, nil
 }
@@ -4578,6 +4607,11 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// (auth disabled) leaves the built-in tokens.
 	n.authMethods.Bind(authMW)
 	n.authMiddleware.Store(authMW)
+	// An operator's access to a tenant's identity records is recorded in
+	// that tenant's own replicated trail and, as on the daemon, in the
+	// node-local trail: a tenant without the replicated-audit entitlement
+	// reads only the node-local trail, so OperatorAccessTrail joins both.
+	authMW.BindOperatorAccessTenantTrail(svcNode.OperatorAccessTrail)
 
 	// featureClient (built below) is node machinery, not a caller surface --
 	// its own field doc says as much, and it is already exempted from the
@@ -4632,6 +4666,27 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	}
 	n.featureClient.Store(featureClient)
 
+	// A clustered node starts its feature gate and publishes its member
+	// record (the features it supports) before the isolation floor, as
+	// cmd/qrdbd starts its gate first: the FIPS-140 floor waits for the
+	// strict-isolation and guarded-writes features, which activate only
+	// once every member advertises them, so a floor applied first would
+	// wait on an advertisement that starts only after it returns. A
+	// standalone node has every feature active at once.
+	if host, ok := n.host.(leaderReporter); ok && !standalone {
+		n.startFeatureGate(host, svcNode.KV)
+		n.startMemberRecord(host, cfg)
+	}
+	// The cluster isolation floor, applied as cmd/qrdbd applies it and
+	// before anything serves: every boot path reaches here after its
+	// tenants' home stores are attached (the tightening's node-key log
+	// probe resolves each isolated tenant's catalog through its home), so
+	// a FIPS-140 node whose floor is not confirmed strict refuses to boot.
+	if err := n.applyIsolationFloor(ctx, svcNode, cfg); err != nil {
+		n.closeFeatureClient()
+		return err
+	}
+
 	// The caller's client refuses what the node's network listeners refuse:
 	// every request outside the sealed-window allowlist while the node
 	// barrier is sealed, or a cluster seal holds the node, cuts it off, or
@@ -4684,7 +4739,9 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 
 	// Build multi-protocol server.
 	serverCfg := buildNodeServerConfig(cfg)
-	allOpts := buildServerOpts(svcNode, ceremonySvc, n.dbManager, callerOpts, standalone)
+	dbRegistry := newNodeDatabaseRegistry(svcNode, standalone)
+	n.sharedRegistry.Store(dbRegistry)
+	allOpts := buildServerOptsOn(dbRegistry, svcNode, ceremonySvc, n.dbManager, callerOpts, standalone)
 	fwdOpt, fwdErr := n.replicaForwardingOption(cfg, standalone, placementChangesOf(svcNode), featureClient)
 	if fwdErr != nil {
 		_ = client.Close()
@@ -4825,6 +4882,46 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	wired = true
 	return nil
 }
+
+// applyIsolationFloor applies the cluster isolation floor to svcNode's
+// tenant service exactly as cmd/qrdbd does (lifecycle.ApplyFIPSIsolationFloor,
+// then lifecycle.ApplyIsolationFloor with tenant.isolation_policy): a
+// FIPS-140 build tightens the floor to strict and refuses to boot unless it
+// reads strict back; the configured floor is then raised, retrying in the
+// background for the node's life when the store is not yet writable. A node
+// built without a tenant service has no floor to apply.
+func (n *Node) applyIsolationFloor(ctx context.Context, svcNode *lifecycle.Node, cfg *qrdbconfig.Config) error {
+	if svcNode == nil {
+		return nil
+	}
+	if err := lifecycle.ApplyFIPSIsolationFloor(ctx, fipsEnabled(), svcNode.Tenant); err != nil {
+		return &IsolationFloorError{Err: err}
+	}
+	if cfg != nil && svcNode.Tenant != nil {
+		lifecycle.ApplyIsolationFloor(n.background(), svcNode.Tenant, cfg.Tenant.IsolationPolicy)
+	}
+	return nil
+}
+
+// fipsEnabled reports whether this build runs in FIPS 140-3 mode. It is a
+// variable only so a test can prove the FIPS floor on a non-FIPS build.
+var fipsEnabled = fips140.Enabled
+
+// IsolationFloorError is returned when a node could not confirm the cluster
+// isolation floor its build requires: a FIPS-140 node whose floor does not
+// read strict back (lifecycle.ErrFIPSFloorNotStrict) refuses to boot rather
+// than serve tenants under a weaker floor than cmd/qrdbd would.
+type IsolationFloorError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *IsolationFloorError) Error() string {
+	return "node: cluster isolation floor not applied: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *IsolationFloorError) Unwrap() error { return e.Err }
 
 // buildEmbeddedOpts constructs the embedded transport options from the
 // lifecycle.Node's services. When the node carries a User service it also
@@ -5177,12 +5274,26 @@ func principalRoles(u *user.User) []string {
 // database-scoped client was refused outright and RAG, which is bound to the
 // registry, refused every call.
 func buildServerOpts(svcNode *lifecycle.Node, ceremonySvc service.CeremonyServicer, dbManager *database.Manager, callerOpts []server.ServerOption, standalone bool) []server.ServerOption {
+	return buildServerOptsOn(newNodeDatabaseRegistry(svcNode, standalone), svcNode, ceremonySvc, dbManager, callerOpts, standalone)
+}
+
+// newNodeDatabaseRegistry returns the node's shared database service
+// registry with its default entry, the node's own service graph
+// (lifecycle.SystemDatabase).
+func newNodeDatabaseRegistry(svcNode *lifecycle.Node, standalone bool) *server.DatabaseServiceRegistry {
 	var shardID uint64
 	if !standalone {
 		shardID = shard.ShardKV
 	}
 	dbRegistry := server.NewDatabaseServiceRegistry(lifecycle.SystemDatabase)
 	dbRegistry.Register(lifecycle.SystemDatabase, svcNode.DatabaseServices(lifecycle.SystemDatabase, shardID))
+	return dbRegistry
+}
+
+// buildServerOptsOn is buildServerOpts over a registry the caller built, so
+// the caller can hand the same registry to the node-key log probe
+// (go-qrdb#1565).
+func buildServerOptsOn(dbRegistry *server.DatabaseServiceRegistry, svcNode *lifecycle.Node, ceremonySvc service.CeremonyServicer, dbManager *database.Manager, callerOpts []server.ServerOption, standalone bool) []server.ServerOption {
 	opts := []server.ServerOption{
 		server.WithDatabaseServiceRegistry(dbRegistry),
 		server.WithBatch(svcNode.Batch),
