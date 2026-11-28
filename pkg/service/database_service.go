@@ -2085,6 +2085,20 @@ func (s *DatabaseService) validateRaftTopology(name string, requested, resolved 
 // caller can pass it directly to the key distributor without a round-trip
 // Store.Get call.
 func (s *DatabaseService) persistPlacement(ctx context.Context, tenantID string, info *database.DatabaseInfo) (*placement.Placement, error) {
+	plan, err := s.placementPlan(ctx, tenantID, info)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.placementStore.Put(ctx, plan); err != nil {
+		return nil, err
+	}
+	s.logPlacement(tenantID, info.Name, plan)
+	return plan, nil
+}
+
+// placementPlan computes the replica placement of a dedicated-raft database
+// from the current cluster topology, the plan every create path persists.
+func (s *DatabaseService) placementPlan(ctx context.Context, tenantID string, info *database.DatabaseInfo) (*placement.Placement, error) {
 	rf := info.Replicas
 	if rf < 1 {
 		rf = 1
@@ -2110,16 +2124,62 @@ func (s *DatabaseService) persistPlacement(ctx context.Context, tenantID string,
 	if info.Raft != nil {
 		plan.StateStorage = placement.Backend(info.Raft.StateStorage)
 	}
-	if err := s.placementStore.Put(ctx, plan); err != nil {
-		return nil, err
-	}
+	return plan, nil
+}
+
+func (s *DatabaseService) logPlacement(tenantID, name string, plan *placement.Placement) {
 	s.logger.Info("persisted dedicated raft placement",
 		slog.String("tenant", tenantID),
-		slog.String("database", info.Name),
+		slog.String("database", name),
 		slog.Uint64("shard_id", plan.ShardID),
 		slog.Int("rf", plan.RF),
 		slog.Uint64("leader_replica_id", plan.LeaderReplicaID))
-	return plan, nil
+}
+
+// PlaceProvisioned gives a system database the node's configuration
+// provisioned at boot (database.Manager.Provision, which writes no placement)
+// the replicated placement an API create gives it: a dedicated-raft database
+// the boot recorded is placed on the cluster's nodes, its replicas invited,
+// exactly as createForTenantWithCredentials does. It is idempotent, as boot
+// provisioning is: every node provisions the same file, so the first to claim
+// the entry (placement.Store.ClaimPlacement) places the database and every
+// other node, and every later boot, finds it placed. A database that is not
+// backend: raft, or a node with no placement table (standalone), has nothing
+// to place.
+func (s *DatabaseService) PlaceProvisioned(ctx context.Context, db *database.Database) error {
+	if s.placementStore == nil || s.placementScheduler == nil || db == nil {
+		return nil
+	}
+	info := db.Info()
+	if info.Backend != database.BackendRaft {
+		return nil
+	}
+	name := info.Name
+	tenantID := tenantid.Normalize(info.TenantID)
+	if _, err := s.placementStore.Get(ctx, tenantID, name); err == nil {
+		return nil
+	} else if !errors.Is(err, placement.ErrPlacementNotFound) {
+		return err
+	}
+	// The API create clamps the replication factor to the live cluster
+	// before it records the database; the boot recorded the node's default,
+	// so the plan clamps it here instead.
+	if size := s.placementScheduler.ClusterSize(); size >= 1 && info.Replicas > size {
+		info.Replicas = size
+	}
+	plan, err := s.placementPlan(ctx, tenantID, &info)
+	if err != nil {
+		return err
+	}
+	claimed, _, err := s.placementStore.ClaimPlacement(ctx, plan)
+	if err != nil || !claimed {
+		return err
+	}
+	s.logPlacement(tenantID, name, plan)
+	// The system tenant has no tenant barrier, so it ships no key (as in
+	// createForTenantWithCredentials).
+	s.inviteReplicas(ctx, tenantID, name, plan, true)
+	return nil
 }
 
 // GetForTenant returns runtime information about a database after verifying

@@ -207,6 +207,67 @@ func TestCreateForTenant_PersistsPlacement(t *testing.T) {
 	}
 }
 
+// TestPlaceProvisioned_PlacesARaftDatabaseWithoutOne covers a raft database
+// opened outside the API (boot provisioning): it has a shard but no placement
+// row, so no reconciler would ever start its group. PlaceProvisioned writes the
+// row, and a second call leaves the recorded placement alone.
+func TestPlaceProvisioned_PlacesARaftDatabaseWithoutOne(t *testing.T) {
+	f := &fakeReplicaQuota{q: &quota.Quotas{MaxReplicasPerGroup: 5, MaxTotalReplicas: 100}}
+	svcI, store := newPlacementDatabaseService(t, raftTenant(t), f, healthyNodes("n1", "n2"))
+	svc := svcI.(*DatabaseService)
+	ctx := tenant.WithTenantID(context.Background(), "rt")
+
+	cfg := testDBConfig("boot")
+	cfg.Replicas = 3
+	if _, err := svc.CreateForTenant(ctx, cfg); err != nil {
+		t.Fatalf("CreateForTenant: %v", err)
+	}
+	// Model the boot path: the database exists, its placement does not.
+	if err := store.Delete(ctx, "rt", "boot"); err != nil {
+		t.Fatalf("placement Delete: %v", err)
+	}
+	db, err := svc.manager.GetOwned("boot", "rt")
+	if err != nil {
+		t.Fatalf("GetOwned: %v", err)
+	}
+
+	if err := svc.PlaceProvisioned(ctx, db); err != nil {
+		t.Fatalf("PlaceProvisioned: %v", err)
+	}
+	p, err := store.Get(ctx, "rt", "boot")
+	if err != nil {
+		t.Fatalf("placement Get after PlaceProvisioned: %v", err)
+	}
+	if p.ShardID != db.Info().ShardID {
+		t.Errorf("placement shard = %d, want %d", p.ShardID, db.Info().ShardID)
+	}
+	// RF is clamped to the two-node cluster, as on the API path.
+	if p.RF != 2 || len(p.Replicas) != 2 {
+		t.Errorf("placement RF = %d replicas = %d, want 2/2", p.RF, len(p.Replicas))
+	}
+
+	leader := p.LeaderReplicaID
+	if err := svc.PlaceProvisioned(ctx, db); err != nil {
+		t.Fatalf("second PlaceProvisioned: %v", err)
+	}
+	again, err := store.Get(ctx, "rt", "boot")
+	if err != nil {
+		t.Fatalf("placement Get after second call: %v", err)
+	}
+	if again.LeaderReplicaID != leader || again.ShardID != p.ShardID {
+		t.Errorf("second PlaceProvisioned rewrote the placement: %+v, want %+v", again, p)
+	}
+}
+
+// TestPlaceProvisioned_StandaloneIsANoop covers a node without a placement
+// table (standalone): provisioning must not fail and writes nothing.
+func TestPlaceProvisioned_StandaloneIsANoop(t *testing.T) {
+	svc := &DatabaseService{}
+	if err := svc.PlaceProvisioned(context.Background(), nil); err != nil {
+		t.Fatalf("PlaceProvisioned without a placement store: %v", err)
+	}
+}
+
 // newPlacementDatabaseServiceWithLocalNode is like newPlacementDatabaseService
 // but wires a localNodeID via WithLocalNodeID. The node ID must appear in the
 // topology so the scheduler can assign a replica to it.

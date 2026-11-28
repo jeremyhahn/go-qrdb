@@ -43,6 +43,13 @@ type databaseProvisioner interface {
 	UpdateSQLForTenant(ctx context.Context, name string, sqlCfg *database.SQLConfig) error
 }
 
+// databasePlacer gives a provisioned database the replicated placement an
+// API create gives it (service.DatabaseService.PlaceProvisioned): Provision
+// records a backend: raft database, and its group, but writes no placement.
+type databasePlacer interface {
+	PlaceProvisioned(ctx context.Context, db *database.Database) error
+}
+
 var _ databaseProvisioner = (*database.Manager)(nil)
 
 // provisionDatabases creates or opens every database the configuration
@@ -70,7 +77,17 @@ var _ databaseProvisioner = (*database.Manager)(nil)
 // after server.AwaitShardLeader returned successfully. Every write below is retried
 // through WhileSystemShardSettling for exactly that reason; any other
 // error class is returned at once.
-func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisioner, node server.LeaderSource) error {
+func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisioner, placer databasePlacer, node server.LeaderSource) error {
+	// place gives a provisioned database its placement; a node with no
+	// placer (standalone) places nothing.
+	place := func(name string, db *database.Database) error {
+		if placer == nil || db == nil {
+			return nil
+		}
+		return server.WhileSystemShardSettling(ctx, node, "place database "+name, func(context.Context) error {
+			return placer.PlaceProvisioned(ctx, db)
+		})
+	}
 	if err := server.AwaitShardLeader(ctx, node, leaderWaitBudget(f), shard.ShardKV); err != nil {
 		return &DatabaseProvisionError{Step: "wait for leader", Err: err}
 	}
@@ -80,9 +97,11 @@ func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisio
 	// retry races it.
 	for _, cfg := range configuredDatabases(f) {
 		held := false
+		var db *database.Database
 		if err := whileShardIDsActivate(ctx, leaderWaitBudget(f), shardIDsActivationPoll, func() error {
 			return server.WhileSystemShardSettling(ctx, node, "provision database "+cfg.Name, func(context.Context) error {
-				_, err := dbs.Provision(ctx, cfg)
+				var err error
+				db, err = dbs.Provision(ctx, cfg)
 				if heldElsewhere(err) {
 					held = true
 					return nil
@@ -97,6 +116,9 @@ func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisio
 		if held {
 			slog.Info("configured database is held by another node; not opening it here", "database", cfg.Name)
 			continue
+		}
+		if err := place(cfg.Name, db); err != nil {
+			return err
 		}
 		// The file declares the database's SQL settings: a database that
 		// already existed (Provision is idempotent) takes them too, the
@@ -126,13 +148,19 @@ func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisio
 	var dde *database.DroppingError
 	switch {
 	case errors.As(err, &nfe):
-		return server.WhileSystemShardSettling(ctx, node, "provision SQL database "+f.sqlDatabase, func(context.Context) error {
-			_, err := dbs.Provision(ctx, sqlDatabaseConfig(f))
+		var db *database.Database
+		if err := server.WhileSystemShardSettling(ctx, node, "provision SQL database "+f.sqlDatabase, func(context.Context) error {
+			var err error
+			db, err = dbs.Provision(ctx, sqlDatabaseConfig(f))
 			if heldElsewhere(err) {
+				db = nil
 				return nil
 			}
 			return err
-		})
+		}); err != nil {
+			return err
+		}
+		return place(f.sqlDatabase, db)
 	case errors.As(err, &dde):
 		// The SQL database is fenced by a drop still in flight, most likely
 		// one a crash interrupted. Failing boot would leave the node

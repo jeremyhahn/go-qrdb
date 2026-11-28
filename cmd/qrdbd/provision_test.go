@@ -92,19 +92,19 @@ func TestProvisionDatabases_DroppedConfiguredNameNeedsTheReclaimer(t *testing.T)
 	reclaimer := &provisionReclaimer{marker: map[string]string{}}
 	mgr := databasetest.NewManager(nil, dir)
 	mgr.SetKeyspaceReclaimer(reclaimer)
-	require.NoError(t, provisionDatabases(context.Background(), provisionFlags(""), mgr, electedLeader{}))
+	require.NoError(t, provisionDatabases(context.Background(), provisionFlags(""), mgr, nil, electedLeader{}))
 	require.NoError(t, mgr.Drop(context.Background(), "orders"))
 	require.NoError(t, mgr.Close())
 
 	restarted := databasetest.NewManager(nil, dir)
 	t.Cleanup(func() { _ = restarted.Close() })
 	require.NoError(t, restarted.OpenAll(context.Background()))
-	err := provisionDatabases(context.Background(), provisionFlags(""), restarted, electedLeader{})
+	err := provisionDatabases(context.Background(), provisionFlags(""), restarted, nil, electedLeader{})
 	var required *database.ReclaimerRequiredError
 	require.ErrorAs(t, err, &required)
 
 	restarted.SetKeyspaceReclaimer(reclaimer)
-	require.NoError(t, provisionDatabases(context.Background(), provisionFlags(""), restarted, electedLeader{}))
+	require.NoError(t, provisionDatabases(context.Background(), provisionFlags(""), restarted, nil, electedLeader{}))
 	_, err = restarted.Get("orders")
 	require.NoError(t, err)
 	assert.Empty(t, reclaimer.marker["/orders"], "provisioning must clear the tombstone")
@@ -117,14 +117,14 @@ func TestProvisionDatabases_CreatesAndKeepsTheSQLDatabase(t *testing.T) {
 		database.WithDefaults(database.Defaults{RunMode: database.RunModeStandalone, Backend: database.BackendMemory}))
 	t.Cleanup(func() { _ = mgr.Close() })
 	f := provisionFlags("shop")
-	require.NoError(t, provisionDatabases(context.Background(), f, mgr, electedLeader{}))
+	require.NoError(t, provisionDatabases(context.Background(), f, mgr, nil, electedLeader{}))
 	db, err := mgr.Get("shop")
 	require.NoError(t, err)
 	assert.True(t, db.ProtocolConfig().MySQL)
 	assert.Equal(t, database.BackendMemory, db.Config().Backend)
 
 	f.enablePgSQL = true
-	require.NoError(t, provisionDatabases(context.Background(), f, mgr, electedLeader{}))
+	require.NoError(t, provisionDatabases(context.Background(), f, mgr, nil, electedLeader{}))
 	again, err := mgr.Get("shop")
 	require.NoError(t, err)
 	assert.Same(t, db, again)
@@ -140,7 +140,7 @@ func TestProvisionDatabases_SQLDatabaseRecordsTheNodeDefault(t *testing.T) {
 		database.WithDefaults(database.Defaults{RunMode: database.RunModeStandalone, Backend: database.BackendFile}))
 	f := provisionFlags("shop")
 	f.smType = "memory"
-	require.NoError(t, provisionDatabases(context.Background(), f, mgr, electedLeader{}))
+	require.NoError(t, provisionDatabases(context.Background(), f, mgr, nil, electedLeader{}))
 	require.NoError(t, mgr.Close())
 
 	// Reopened under another default, the database keeps what was recorded.
@@ -160,12 +160,12 @@ func TestProvisionDatabases_ATenantDatabaseOfTheSameNameIsLeftAlone(t *testing.T
 	mgr := databasetest.NewManager(nil, t.TempDir(), memoryDefaults())
 	t.Cleanup(func() { _ = mgr.Close() })
 	f := provisionFlags("shop")
-	require.NoError(t, provisionDatabases(context.Background(), f, mgr, electedLeader{}))
+	require.NoError(t, provisionDatabases(context.Background(), f, mgr, nil, electedLeader{}))
 	theirs, err := mgr.Create(database.DatabaseConfig{Name: "shop", TenantID: "acme", Backend: database.BackendMemory})
 	require.NoError(t, err)
 
 	f.enablePgSQL = true
-	require.NoError(t, provisionDatabases(context.Background(), f, mgr, electedLeader{}))
+	require.NoError(t, provisionDatabases(context.Background(), f, mgr, nil, electedLeader{}))
 	ours, err := mgr.GetOwned("shop", tenantid.System)
 	require.NoError(t, err)
 	assert.True(t, ours.ProtocolConfig().PostgreSQL, "the system tenant's SQL database gains the enabled protocols")
@@ -183,7 +183,7 @@ func TestProvisionDatabases_ConfiguredSQLSettingsSkipATenantDatabase(t *testing.
 		Name: "ledger", Backend: string(database.BackendMemory),
 		SQL: &qrdbconfig.DatabaseSQLConfig{Concurrency: string(database.ConcurrencyPessimistic)},
 	}}}
-	require.NoError(t, provisionDatabases(context.Background(), f, mgr, electedLeader{}))
+	require.NoError(t, provisionDatabases(context.Background(), f, mgr, nil, electedLeader{}))
 	ours, err := mgr.GetOwned("ledger", tenantid.System)
 	require.NoError(t, err)
 	assert.Equal(t, database.ConcurrencyPessimistic, ours.SQLConfig().EffectiveConcurrency())
@@ -196,7 +196,7 @@ func TestProvisionDatabases_SkipsTheSQLDatabaseWithoutASQLProtocol(t *testing.T)
 	t.Cleanup(func() { _ = mgr.Close() })
 	f := provisionFlags("shop")
 	f.enableMySQL = false
-	require.NoError(t, provisionDatabases(context.Background(), f, mgr, electedLeader{}))
+	require.NoError(t, provisionDatabases(context.Background(), f, mgr, nil, electedLeader{}))
 	var notFound *database.NotFoundError
 	_, err := mgr.Get("shop")
 	assert.ErrorAs(t, err, &notFound)
@@ -215,7 +215,7 @@ func TestProvisionDatabases_ConfiguredEntryCarriesItsOwnProtocol(t *testing.T) {
 		},
 		smType: "memory",
 	}
-	require.NoError(t, provisionDatabases(context.Background(), f, mgr, electedLeader{}))
+	require.NoError(t, provisionDatabases(context.Background(), f, mgr, nil, electedLeader{}))
 	db, err := mgr.Get("orders")
 	require.NoError(t, err)
 	assert.True(t, db.ProtocolConfig().MySQL, "configured mysql: true was dropped")
@@ -246,14 +246,14 @@ func TestProvisionDatabases_ConfiguredEntryAppliesItsSQLSettings(t *testing.T) {
 		}},
 		smType: "memory",
 	}
-	require.NoError(t, provisionDatabases(context.Background(), f, mgr, electedLeader{}))
+	require.NoError(t, provisionDatabases(context.Background(), f, mgr, nil, electedLeader{}))
 	db, err := mgr.Get("orders")
 	require.NoError(t, err)
 	require.NotNil(t, db.SQLConfig())
 	assert.Equal(t, database.ConcurrencyPessimistic, db.SQLConfig().Concurrency)
 
 	boom := errors.New("sql settings refused")
-	err = provisionDatabases(context.Background(), f, sqlUpdateFailingManager{Manager: mgr, err: boom}, electedLeader{})
+	err = provisionDatabases(context.Background(), f, sqlUpdateFailingManager{Manager: mgr, err: boom}, nil, electedLeader{})
 	assert.ErrorIs(t, err, boom)
 }
 
@@ -298,7 +298,7 @@ func TestProvisionDatabases_ConfiguredEntryCarriesEtcd(t *testing.T) {
 		},
 		smType: "memory",
 	}
-	require.NoError(t, provisionDatabases(context.Background(), f, mgr, electedLeader{}))
+	require.NoError(t, provisionDatabases(context.Background(), f, mgr, nil, electedLeader{}))
 	db, err := mgr.Get("locks")
 	require.NoError(t, err)
 	require.NotNil(t, db.ProtocolConfig().Etcd)
@@ -311,7 +311,7 @@ func TestProvisionDatabases_LeavesADroppingSQLDatabaseFenced(t *testing.T) {
 	mgr := databasetest.NewManager(nil, dir, memoryDefaults())
 	t.Cleanup(func() { _ = mgr.Close() })
 	f := provisionFlags("shop")
-	require.NoError(t, provisionDatabases(context.Background(), f, mgr, electedLeader{}))
+	require.NoError(t, provisionDatabases(context.Background(), f, mgr, nil, electedLeader{}))
 	db, err := mgr.Get("shop")
 	require.NoError(t, err)
 	// A drop fences the catalog record, which resolution reconciles the
@@ -324,7 +324,7 @@ func TestProvisionDatabases_LeavesADroppingSQLDatabaseFenced(t *testing.T) {
 		}))
 	db.SetDropping(true)
 
-	require.NoError(t, provisionDatabases(context.Background(), f, mgr, electedLeader{}))
+	require.NoError(t, provisionDatabases(context.Background(), f, mgr, nil, electedLeader{}))
 	var dropping *database.DroppingError
 	_, err = mgr.Get("shop")
 	assert.ErrorAs(t, err, &dropping)
@@ -333,7 +333,7 @@ func TestProvisionDatabases_LeavesADroppingSQLDatabaseFenced(t *testing.T) {
 // A lookup failure other than not-found or dropping is returned.
 func TestProvisionDatabases_ReturnsAnUnexpectedLookupFailure(t *testing.T) {
 	boom := errors.New("catalog unavailable")
-	err := provisionDatabases(context.Background(), &startFlags{sqlDatabase: "shop", enablePgSQL: true}, failingProvisioner{err: boom}, electedLeader{})
+	err := provisionDatabases(context.Background(), &startFlags{sqlDatabase: "shop", enablePgSQL: true}, failingProvisioner{err: boom}, nil, electedLeader{})
 	assert.ErrorIs(t, err, boom)
 }
 
@@ -352,7 +352,44 @@ func TestProvisionDatabases_SkipsADatabaseHeldByAnotherNode(t *testing.T) {
 		enablePgSQL: true,
 		smType:      "memory",
 	}
-	require.NoError(t, provisionDatabases(context.Background(), f, failingProvisioner{err: held}, electedLeader{}))
+	require.NoError(t, provisionDatabases(context.Background(), f, failingProvisioner{err: held}, nil, electedLeader{}))
+}
+
+// recordingPlacer records each database handed to it for placement.
+type recordingPlacer struct{ names []string }
+
+func (p *recordingPlacer) PlaceProvisioned(_ context.Context, db *database.Database) error {
+	p.names = append(p.names, db.Info().Name)
+	return nil
+}
+
+// TestProvisionDatabases_PlacesEachProvisionedDatabase covers boot
+// provisioning on Raft: every database it opens is handed to the placer, so a
+// placement row exists and the reconciler starts its group.
+func TestProvisionDatabases_PlacesEachProvisionedDatabase(t *testing.T) {
+	mgr := databasetest.NewManager(nil, t.TempDir(),
+		database.WithDefaults(database.Defaults{RunMode: database.RunModeStandalone, Backend: database.BackendMemory}))
+	t.Cleanup(func() { _ = mgr.Close() })
+	f := provisionFlags("shop")
+	f.databases = []qrdbconfig.DatabaseConfig{{Name: "orders", Backend: "memory"}}
+	placer := &recordingPlacer{}
+	require.NoError(t, provisionDatabases(context.Background(), f, mgr, placer, electedLeader{}))
+	assert.Equal(t, []string{"orders", "shop"}, placer.names)
+}
+
+// TestProvisionDatabases_DoesNotPlaceADatabaseHeldElsewhere covers a database
+// another node holds: this node did not open it, so it places nothing.
+func TestProvisionDatabases_DoesNotPlaceADatabaseHeldElsewhere(t *testing.T) {
+	held := &placement.NotAReplicaError{TenantID: "system", Database: "orders", NodeID: "node-b"}
+	f := &startFlags{
+		databases:   []qrdbconfig.DatabaseConfig{{Name: "orders", Backend: "memory"}},
+		sqlDatabase: "shop",
+		enablePgSQL: true,
+		smType:      "memory",
+	}
+	placer := &recordingPlacer{}
+	require.NoError(t, provisionDatabases(context.Background(), f, failingProvisioner{err: held}, placer, electedLeader{}))
+	assert.Empty(t, placer.names)
 }
 
 // A --sql-database this node has never seen, whose provision another node
@@ -361,7 +398,7 @@ func TestProvisionDatabases_SkipsASQLDatabaseHeldByAnotherNode(t *testing.T) {
 	held := &placement.NotAReplicaError{TenantID: "system", Database: "shop", NodeID: "node-b"}
 	f := &startFlags{sqlDatabase: "shop", enablePgSQL: true, smType: "memory"}
 	dbs := heldOnProvision{held: held}
-	require.NoError(t, provisionDatabases(context.Background(), f, dbs, electedLeader{}))
+	require.NoError(t, provisionDatabases(context.Background(), f, dbs, nil, electedLeader{}))
 }
 
 // heldOnProvision has no database of any name, and refuses each provision
@@ -418,7 +455,7 @@ func TestProvisionDatabases_WaitsForALeaderBeforeWriting(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := provisionDatabases(ctx, provisionFlags(""), mgr, noLeader{})
+	err := provisionDatabases(ctx, provisionFlags(""), mgr, nil, noLeader{})
 	var provErr *DatabaseProvisionError
 	require.ErrorAs(t, err, &provErr)
 	assert.Equal(t, "wait for leader", provErr.Step)
@@ -479,7 +516,7 @@ func TestProvisionDatabases_RetriesTransientNotLeader(t *testing.T) {
 	t.Cleanup(func() { _ = mgr.Close() })
 	flaky := &flakyProvisioner{databaseProvisioner: mgr, notLeaderUntil: 3}
 
-	require.NoError(t, provisionDatabases(context.Background(), provisionFlags(""), flaky, electedLeader{}))
+	require.NoError(t, provisionDatabases(context.Background(), provisionFlags(""), flaky, nil, electedLeader{}))
 	assert.Equal(t, 3, flaky.calls)
 	_, err := mgr.Get("orders")
 	require.NoError(t, err)
@@ -490,7 +527,7 @@ func TestProvisionDatabases_RetriesTransientNotLeader(t *testing.T) {
 // FIRST call, with no retry: waiting cannot fix it.
 func TestProvisionDatabases_NonLeaderErrorsDoNotRetry(t *testing.T) {
 	boom := errors.New("disk full")
-	err := provisionDatabases(context.Background(), provisionFlags(""), failingProvisioner{err: boom}, electedLeader{})
+	err := provisionDatabases(context.Background(), provisionFlags(""), failingProvisioner{err: boom}, nil, electedLeader{})
 	assert.ErrorIs(t, err, boom)
 }
 

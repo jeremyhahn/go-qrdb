@@ -2301,7 +2301,11 @@ func runStart(f *startFlags) (err error) {
 			// provisionDatabases). It is idempotent, so the in-process
 			// migration recycle that re-runs this body finds every database
 			// already present.
-			if err := provisionDatabases(bootCtx, f, dbManager, rnode); err != nil {
+			// The database service places a provisioned raft database as an
+			// API create does; a service without a placement table
+			// (standalone) places nothing.
+			placer, _ := svcNode.Database.(databasePlacer)
+			if err := provisionDatabases(bootCtx, f, dbManager, placer, rnode); err != nil {
 				_ = gateCloser.Close()
 				_ = shutdownNode(nodeCloser)
 				// A shutdown signal during the leader wait is a clean
