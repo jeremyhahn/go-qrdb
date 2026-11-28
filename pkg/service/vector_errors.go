@@ -228,6 +228,20 @@ func (e *TenantVectorHomeError) Error() string {
 
 func (e *TenantVectorHomeError) Unwrap() error { return e.Err }
 
+// RaftVectorIsolatedHomeError refuses a vector write proposed through a
+// service built WithRaftNode for a tenant whose vectors live in an isolated
+// home: the raft node proposes to the fixed vector shard, whose log is the
+// shared, node-keyed WAL, so the write would land the tenant's data outside
+// its home.
+type RaftVectorIsolatedHomeError struct {
+	// TenantID is the tenant whose write was refused.
+	TenantID string
+}
+
+func (e *RaftVectorIsolatedHomeError) Error() string {
+	return fmt.Sprintf("vector write of tenant %q refused: the tenant's vectors live in its isolated home, and a raft-proposed write would go to the shared vector shard", e.TenantID)
+}
+
 type TenantRequiredError struct {
 	// Op is the service operation that was rejected.
 	Op string

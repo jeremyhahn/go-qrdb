@@ -440,3 +440,65 @@ func TestVectorService_HomedUpdateAndSearch(t *testing.T) {
 	_, ok = errors.AsType[*VectorServiceClosedError](err)
 	require.True(t, ok, "got %v", err)
 }
+
+// TestVectorService_RaftWritesStayOutOfTheSharedShardForIsolatedTenants: a
+// service built WithRaftNode proposes every write to the fixed vector
+// shard, on the shared node-keyed WAL. For a tenant whose vectors live in
+// an isolated home it refuses the write before proposing; a home lookup
+// that fails refuses the create too (standalone and raft); a prefix-only
+// tenant still proposes.
+func TestVectorService_RaftWritesStayOutOfTheSharedShardForIsolatedTenants(t *testing.T) {
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	newSvc := func(t *testing.T, raft bool, homes TenantHomeResolver) (*vectorService, *int) {
+		t.Helper()
+		proposals := 0
+		opts := []VectorServiceOption{WithNodeID("node-1")}
+		if raft {
+			opts = append(opts, WithRaftNode(&mockRaftNode{syncProposeFn: func(context.Context, uint64, []byte) error {
+				proposals++
+				return nil
+			}}))
+		}
+		svc, err := NewVectorService(vector.NewMemoryVectorStorage(), newVecTestLogger(), opts...)
+		require.NoError(t, err)
+		vs := svc.(*vectorService)
+		vs.SetTenantHomeResolver(homes)
+		return vs, &proposals
+	}
+
+	t.Run("raft_isolated_home_refused", func(t *testing.T) {
+		vs, proposals := newSvc(t, true, &routedHomes{inHome: true, store: kvstoretest.NewGuardedMemoryStore()})
+		_, err := vs.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: "docs", Dimension: 2})
+		var refused *RaftVectorIsolatedHomeError
+		require.ErrorAs(t, err, &refused)
+		require.Equal(t, "acme", refused.TenantID)
+		_, err = vs.DeleteNamespace(ctx, &DeleteNamespaceRequest{Namespace: "docs"})
+		require.ErrorAs(t, err, &refused)
+		require.Zero(t, *proposals, "an isolated tenant's write was proposed to the shared vector shard")
+	})
+
+	for _, raft := range []bool{false, true} {
+		name := "standalone"
+		if raft {
+			name = "raft"
+		}
+		t.Run(name+"_home_lookup_failure_refuses_create", func(t *testing.T) {
+			vs, proposals := newSvc(t, raft, &routedHomes{inHomeErr: errHomeFault})
+			_, err := vs.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: "docs", Dimension: 2})
+			var home *TenantVectorHomeError
+			require.ErrorAs(t, err, &home)
+			require.ErrorIs(t, err, errHomeFault)
+			require.Zero(t, *proposals)
+			_, err = vs.storage.GetNamespaceInfo(ctx, scopedFromContext(ctx, "docs"))
+			require.ErrorIs(t, err, vector.ErrNamespaceNotFound, "the create reached the shared store")
+		})
+	}
+
+	t.Run("raft_prefix_tenant_proposes", func(t *testing.T) {
+		vs, proposals := newSvc(t, true, &routedHomes{inHome: false})
+		_, err := vs.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: "docs", Dimension: 2})
+		var refused *RaftVectorIsolatedHomeError
+		require.False(t, errors.As(err, &refused), "a prefix tenant's raft create was refused: %v", err)
+		require.Equal(t, 1, *proposals)
+	})
+}

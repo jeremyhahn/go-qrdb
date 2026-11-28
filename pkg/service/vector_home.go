@@ -120,6 +120,27 @@ func (v *vectorService) storageForNamespace(ctx context.Context, scoped string) 
 	return v.storageFor(ctx, tenantID)
 }
 
+// refuseRaftIsolatedHome refuses (*RaftVectorIsolatedHomeError) a write a
+// service built WithRaftNode would propose to its fixed vector shard when
+// scoped's tenant has an isolated home: the shard's log is the shared,
+// node-keyed WAL. A home lookup that fails refuses the write with its
+// error. A service without a raft node writes through the home and is not
+// refused.
+func (v *vectorService) refuseRaftIsolatedHome(ctx context.Context, scoped string) error {
+	if v.raftNode == nil {
+		return nil
+	}
+	st, err := v.storageForNamespace(ctx, scoped)
+	if err != nil {
+		return err
+	}
+	if st != v.storage {
+		tenantID, _ := unscopedNamespace(scoped)
+		return &RaftVectorIsolatedHomeError{TenantID: tenantID}
+	}
+	return nil
+}
+
 // generationStorage is a vector store that counts each namespace's writes,
 // so a node can tell its cached index from one a write elsewhere outdated.
 type generationStorage interface {

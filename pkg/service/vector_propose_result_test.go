@@ -49,7 +49,7 @@ func newRaftVectorServiceForResult(t *testing.T, result interface{}) VectorServi
 		return []vector.NamespaceInfo{}, nil
 	}
 	store.getNamespaceInfoFn = func(_ context.Context, _ string) (*vector.NamespaceInfo, error) {
-		return nil, &KeyNotFoundError{Key: "namespace"}
+		return nil, vector.ErrNamespaceNotFound
 	}
 	store.createNamespaceFn = func(_ context.Context, _ *vector.NamespaceInfo) error { return nil }
 

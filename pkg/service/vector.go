@@ -1130,12 +1130,24 @@ func (v *vectorService) CreateNamespace(ctx context.Context, req *CreateNamespac
 	}
 
 	// Check if namespace already exists under this tenant's scoped key.
+	// Only "not found" lets the create go on: a home that cannot be reached
+	// (TenantVectorHomeError) or a failing read refuses it, so it is never
+	// created on a store the existence check did not look at.
 	existingInfo, err := v.routed.GetNamespaceInfo(ctx, scoped)
 	if err == nil && existingInfo != nil {
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("create_namespace", "already_exists").Inc()
 		}
 		return nil, &NamespaceExistsError{Namespace: req.Namespace}
+	}
+	if err != nil && !errors.Is(err, vector.ErrNamespaceNotFound) {
+		if v.metrics != nil {
+			v.metrics.operationErrors.With("create_namespace", "storage_error").Inc()
+		}
+		if _, ok := errors.AsType[*TenantVectorHomeError](err); ok {
+			return nil, err
+		}
+		return nil, vectorStorageError("create namespace", req.Namespace, 0, err)
 	}
 
 	v.logger.WithFields(map[string]interface{}{
@@ -1147,6 +1159,9 @@ func (v *vectorService) CreateNamespace(ctx context.Context, req *CreateNamespac
 
 	// Propose to Raft if enabled
 	if v.raftNode != nil {
+		if err := v.refuseRaftIsolatedHome(ctx, scoped); err != nil {
+			return nil, err
+		}
 		distMetric := req.DistanceMetric
 		if distMetric == "" {
 			distMetric = "L2"
@@ -1329,6 +1344,9 @@ func (v *vectorService) UpdateNamespace(ctx context.Context, req *UpdateNamespac
 	}).Debug("updating namespace")
 
 	if v.raftNode != nil {
+		if err := v.refuseRaftIsolatedHome(ctx, scoped); err != nil {
+			return nil, err
+		}
 		cmd := statemachine.NewUpdateNamespaceCommand(scoped, req.IndexConfig, req.Metadata, v.nodeID)
 		cmd.Dimension = req.Dimension
 		if _, err := v.proposeToRaft(ctx, cmd); err != nil {
@@ -1391,6 +1409,9 @@ func (v *vectorService) DeleteNamespace(ctx context.Context, req *DeleteNamespac
 	}
 
 	if v.raftNode != nil {
+		if err := v.refuseRaftIsolatedHome(ctx, scoped); err != nil {
+			return nil, err
+		}
 		cmd := statemachine.NewDeleteNamespaceCommand(scoped, v.nodeID)
 		if _, err := v.proposeToRaft(ctx, cmd); err != nil {
 			if v.metrics != nil {
@@ -1643,6 +1664,9 @@ func (v *vectorService) upsertVectorLocked(ctx context.Context, scoped string, r
 	now := time.Now().UnixNano()
 
 	if v.raftNode != nil {
+		if err := v.refuseRaftIsolatedHome(ctx, scoped); err != nil {
+			return nil, err
+		}
 		cmd := statemachine.NewUpsertCommand(scoped, req.ID, req.Vector, req.Metadata, v.nodeID)
 		var result sm.Result
 		// applied is 1 when the committed entry stored a new id and 0 on a
@@ -1845,6 +1869,9 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 	}
 
 	if v.raftNode != nil {
+		if err := v.refuseRaftIsolatedHome(ctx, scoped); err != nil {
+			return nil, err
+		}
 		cmd := statemachine.NewDeleteCommand(scoped, req.ID, v.nodeID)
 		// applied is 1 when the committed entry removed a stored id and 0
 		// when the id was missing, as the state machine counted it. The
@@ -2003,6 +2030,9 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 	}
 
 	if v.raftNode != nil {
+		if err := v.refuseRaftIsolatedHome(ctx, scoped); err != nil {
+			return nil, err
+		}
 		batchIDs := make([]uint64, len(req.Vectors))
 		batchVectors := make([][]float32, len(req.Vectors))
 		for i, vec := range req.Vectors {
@@ -3342,6 +3372,9 @@ func (v *vectorService) BatchDeleteVectors(ctx context.Context, req *BatchDelete
 	// failed proposal deletes nothing and is the caller's answer; it never
 	// falls back to a node-local write.
 	if v.raftNode != nil {
+		if err := v.refuseRaftIsolatedHome(ctx, scoped); err != nil {
+			return nil, err
+		}
 		err := v.admit(func() error {
 			// The proposal and its index removal are one step under writeMu.
 			v.writeMu.Lock()
