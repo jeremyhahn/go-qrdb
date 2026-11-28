@@ -66,6 +66,10 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **A retried release of a failed create's claim on existing data removes only the owner marker, and every failed claim give-back is recorded.** A create onto a namespace that already held data no database owned, whose claim could not be given back, records a claim-only release (`claim_only`) that later deletes just the owner marker it wrote (`ReleaseOwnerMarker`), keeping the records, journal and format marker; a namespace claimed new is still released whole. A failed create whose give-back fails after a successful open now records that release too, and a release retry keeps the entry while the failed create's own catalog record is still live, leaving its release to that record's drop (#1566).
+- **An object-storage namespace's owner names the database incarnation, and a failed open gives back the claim it wrote.** The owner marker is the tenant, name and incarnation, so a dropped database's release, run or retried after a database of the same name took the namespace, reclaims nothing of the successor and is forgotten; a re-create on the same namespace waits for the dropped incarnation's release. An `objstore.New` that wrote its owner marker and then failed recovering the commit journal gives the claim back; when that fails too it returns `objstore.ClaimUndoError` and the create records a ledger entry that the release retry clears (#1566).
+- **An object-storage namespace stays its database's until the drop's catalog delete, and a failed create gives up the namespace it claimed.** Reclaim keeps the owner marker; a drop releases the namespace only after the catalog record is gone, so a drop whose catalog delete fails is retried by the same owner and no other database claims the namespace meanwhile. A create that fails after its open claimed an empty namespace reclaims what it wrote and releases the owner marker; a namespace that already held data is left alone (#1566).
+- **A failed object-storage namespace release is retried, a failed create gives back the owner marker it wrote onto existing data, and `OpenStore` closes the store it replaces.** A drop records each namespace release in a durable per-node ledger (`<data dir>/releasing`, holding the provider, settings and credential file paths, never credentials) before its catalog delete and removes the entry once the release succeeds; a release that fails, or never runs because the node stops, is retried at boot (`OpenAll`) and before every object-storage create, so the namespace no longer stays reserved for good. A create that fails after its open wrote the owner marker onto a namespace that already held unowned data now deletes that marker and leaves the data. `objstore.OpenStore` closes the store it opened when it hands back the canonical one on the symlink-resolved root, and on a failed resolve. The ledger keeps one entry per dropped database incarnation, so a name dropped, re-created and dropped again keeps every namespace it still owes, and a retry releases a dropped database's namespace when its name was re-created on a different namespace, forgets the entry when the re-created database holds the same one, and keeps it when the two cannot be compared (#1566).
 - **A tenant move no longer counts a replica whose tenant reopens sealed as settled (#925).** A self-managed tenant's barrier stays sealed until its administrator unseals it; the move step's settle now keeps that replica's step settling (no attempt counted, "tenant sealed" in the journal's error) until the unseal and the replica's catch-up, instead of releasing it and granting the next replica's step, which could cost a serving tenant its quorum.
 - **A tenant move no longer aborts while a replica node is sealed (#925).** A copy step on a node that is sealed, or whose destination pool is unavailable, counted a failed attempt each tick and aborted the move after three; the step now waits for the unseal without counting an attempt, `get-move` shows the reason ("move copy step waiting: node sealed"), a cancel still aborts, and the same step runs once the node is unsealed.
 - **A tenant move whose reopen fails recovers without a restart (#925).** A failed reopen or settle of a moving tenant's stores (a catch-up timeout, a cancelled context) left them closed until the next boot; the move worker now retries the reopen on every tick until the tenant serves again (a self-managed tenant comes back sealed, as before).
@@ -159,6 +163,20 @@ are not reconstructed here — their history is in the git log.
 - **Pending users with a TTL (#1583).** A pending create may carry a time-to-live: REST `pending_ttl`, gRPC and Unix `CreateUserRequest.pending_ttl_seconds`, QUIC `pendingTTL`, MCP `qrdb_user_create` `pending_ttl`, sdk/go `CreateUserRequest.PendingTTL`, and `qrdb users create --pending --pending-ttl`. User reads carry the expiry (`pending_expires_at`, `pending_expires_at_unix`, `pendingExpiresAt`, `User.PendingExpiresAt`). Activation (`EnableUser`) clears it. A leader-only reaper deletes pending users past their TTL, with their role assignments and factors, and audits `pending_reaped`; it never touches an active user. `auth.pending_user_sweep_interval` sets the sweep period (default `1m`; `off` disables). On a cluster, TTLs need the `pending-user-ttl` cluster feature: until every member advertises it a TTL-bearing create is refused as not active and the reaper does not sweep.
 - **`qrdb ca delegate policy put|list|delete` (#1187).** The CLI writes, lists and deletes the tenant's standing delegation policies over every transport (REST, gRPC, QUIC, MCP, Unix); deleting a policy refuses the next mint for its principal. See [docs/certificate-authority/cli.md](docs/certificate-authority/cli.md#qrdb-ca-delegate-policy).
 - **qrdb.proto declares the credential rotation policy and tenant delegation policy RPCs (#1201, #1187).** `CredentialSetRotationPolicy`, `CredentialRotationPolicy`, `CredentialMigrationConflicts`, `CredentialResolveMigrationConflict`, `PutDelegationPolicy`, `ListDelegationPolicies` and `DeleteDelegationPolicy` carry their permissions, and the server answers all seven.
+- **The object-storage credential crosses only as a protected-memory handle**
+  (#1143, SPEC row `object-storage-credential-handle`). The `objstore`
+  backend reads `storage.objstore.credentials.key_file` / `secret_file` into
+  go-enclave handles and passes them to go-objstore's
+  `Storage.Configure(settings, common.Credentials)`; settings never carry a
+  credential, the adapter holds no plaintext copy, and both handles are
+  destroyed when the open returns, on success and on every error path.
+  qrdbd never echoes either value or writes it under its data directory.
+- **`objstore` `Engine.Close` waits for calls in flight and releases its
+  providers once** (#1566). Every engine call holds a lifetime lock from its
+  closed check to its return and rechecks closed under it; `Close` waits for
+  those calls, then closes the data and journal providers once (the local
+  provider's `os.Root` and lifecycle goroutine), and a failed `objstore.New`
+  releases every provider it created.
 - **The Signatures job has behaviour tests.** `TestCISignatures` runs the job's real script on signed and unsigned fixture repositories with throwaway keys and a fake GitHub API, and proves every reject path fails closed.
 - **CI verifies commit signatures.** A Signatures job from ci-template
   v1.35.1 checks each pull-request commit against `.github/allowed_signers`,
@@ -427,6 +445,10 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- **go-objstore v0.9.1-alpha → v0.9.1-alpha.0.20261111054905-aed613658de5**
+  (go-objstore #231, #1404): an S3 GET of a missing object returns
+  `ErrKeyNotFound` and a missing bucket `ErrBucketNotFound`, so the
+  objstore backend's journal recovery sees an absent object as absent.
 - **The SO is optional in both postures (SPEC row 124).** First boot, the `qrdb init` ceremony and tenant create no longer refuse a strict request that names no SO; a strict node or tenant without one refuses only the SO-exclusive operations, and every check on an SO that is given still applies. `firstboot.SystemSORequiredError`, `bootstrap.TenantSORequiredError`, `firstboot.Dependencies.SOEnrolled`, `bootstrap.SystemConfig.SOEnrolled` and `firstboot.RecognizeEnrolledSystemSO` are removed (go-qrdb#1129).
 - **The SO input errors moved from `pkg/bootstrap` to `pkg/firstboot`**
   (#1128), shared by tenant create and the system SO:

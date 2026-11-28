@@ -155,6 +155,19 @@ backend at an empty bucket or directory, or start empty. Give the engine a
 bucket or prefix of its own: any object it did not write causes the same
 refusal.
 
+**A database refused to open with "namespace is owned by" or "namespace is
+in use by owner".** Each object-storage database owns its bucket or
+directory: the first database opened there records itself in the
+`qrdb-objstore-owner` marker, and any other database pointed at the same
+place — including through a symlink to the directory, another spelling of the
+same endpoint, or the node's own `storage.backend` bucket — is refused, as is
+a `local` path nested inside another open database's directory. Give each
+database a bucket, container or directory of its own. A dropped database's
+location is reusable once the drop has released it; if that release failed
+(the node logs "database dropped; object-storage namespace not released"),
+the node retries it at its next start and before the next object-storage
+database is created, so the place frees up without operator action.
+
 **You want an S3 or GCS backend.** Those come from go-objstore and are
 build-tag gated — rebuild with `WITH_AWS_S3=1`, `WITH_GCP_STORAGE=1` and so on.
 They are a snapshot and archive tier, not a hot path.
@@ -199,9 +212,10 @@ in the object-storage bucket under the prefix `lsm`:
   bucket and data directory and write the data back with `qrdb kv put` (SQL
   data with SQL). See [../key-value/user.md](../key-value/user.md).
 
-Not built yet: a database created with `backend: objstore` is still refused
-when it opens (see [../databases/user.md](../databases/user.md)); lifting that
-is an open question. If it ships:
+A database created with `backend: objstore` already opens, on the earlier
+one-object-per-key engine from its own provider settings and credential files
+(see [../databases/user.md](../databases/user.md)). Not built yet: moving a
+database's `objstore` backend to the segment layout. If it ships:
 
 - You would pick `objstore` for a database when you want its durable data in
   S3, GCS, Azure or a local object-store directory, with capacity that is not

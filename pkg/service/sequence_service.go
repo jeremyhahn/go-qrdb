@@ -132,6 +132,10 @@ type sequenceKVService interface {
 type SequenceService struct {
 	kv  sequenceKVService
 	txn TransactionServicer
+
+	// values, when set (NewValueSequenceService), replaces kv and txn: the
+	// state is read and advanced by value compare-and-swap.
+	values sequenceValueStore
 }
 
 // Compile-time interface check.
@@ -221,20 +225,20 @@ func (s *SequenceService) Delete(ctx context.Context, database, name string) err
 
 	key := tableSequenceKey(database, name)
 	err := doWithCatalogRetry(ctx, func(ctx context.Context) error {
-		_, modRevision, err := s.readState(ctx, key)
+		_, observed, err := s.readState(ctx, key)
 		if err != nil {
 			return err
 		}
 
-		// modRevision == 0 is the "absent" encoding readState returns for
-		// a key that was never written (see sequenceKVService). Absence is
-		// already the replicated state, so there is nothing to propose and
-		// -- per the interface contract -- nothing to report.
-		if modRevision == 0 {
+		// An absent key (ModRevision 0, the "absent" encoding readState
+		// returns for a key that was never written; see sequenceKVService)
+		// is already the replicated state, so there is nothing to propose
+		// and -- per the interface contract -- nothing to report.
+		if !observed.found {
 			return nil
 		}
 
-		return s.proposeCAS(ctx, key, modRevision, Op{Type: OpDelete, Key: []byte(key)})
+		return s.proposeCAS(ctx, key, observed, Op{Type: OpDelete, Key: []byte(key)})
 	})
 	if err != nil {
 		if isTransactionConflict(err) {
@@ -250,12 +254,15 @@ func (s *SequenceService) Delete(ctx context.Context, database, name string) err
 // writer committed first. It is the single write path shared by every
 // mutating method on SequenceService, so an allocation, a reset and a
 // delete all carry the identical guard and all commit through Raft.
-func (s *SequenceService) proposeCAS(ctx context.Context, key string, modRevision int64, op Op) error {
+func (s *SequenceService) proposeCAS(ctx context.Context, key string, observed sequenceObserved, op Op) error {
+	if s.values != nil {
+		return s.proposeValueCAS(ctx, key, observed, op)
+	}
 	compares := []Compare{{
 		Key:         []byte(key),
 		Target:      CompareModRevision,
 		Result:      CompareEqual,
-		ModRevision: modRevision,
+		ModRevision: observed.modRevision,
 	}}
 
 	resp, err := s.txn.Execute(ctx, compares, []Op{op}, nil)
@@ -282,7 +289,7 @@ func (s *SequenceService) casLoop(ctx context.Context, database, name string, co
 
 	var result sequenceState
 	err := doWithCatalogRetry(ctx, func(ctx context.Context) error {
-		current, modRevision, err := s.readState(ctx, key)
+		current, observed, err := s.readState(ctx, key)
 		if err != nil {
 			return err
 		}
@@ -293,7 +300,7 @@ func (s *SequenceService) casLoop(ctx context.Context, database, name string, co
 			return nil
 		}
 
-		if err := s.proposeCAS(ctx, key, modRevision, Op{
+		if err := s.proposeCAS(ctx, key, observed, Op{
 			Type:  OpPut,
 			Key:   []byte(key),
 			Value: next.encode(),
@@ -317,15 +324,83 @@ func (s *SequenceService) casLoop(ctx context.Context, database, name string, co
 // readState reads the sequence state at key, returning the zero state and
 // ModRevision 0 when the key has never been written -- the "absent" encoding
 // described on sequenceKVService.
-func (s *SequenceService) readState(ctx context.Context, key string) (sequenceState, int64, error) {
+func (s *SequenceService) readState(ctx context.Context, key string) (sequenceState, sequenceObserved, error) {
+	if s.values != nil {
+		raw, err := s.values.Get(ctx, key)
+		if err == nil {
+			return decodeSequenceState(raw), sequenceObserved{raw: raw, found: true}, nil
+		}
+		if isKeyNotFound(err) {
+			return sequenceState{}, sequenceObserved{}, nil
+		}
+		return sequenceState{}, sequenceObserved{}, err
+	}
 	kv, err := s.kv.GetRevision(ctx, key)
 	if err == nil {
-		return decodeSequenceState(kv.Value), kv.ModRevision, nil
+		return decodeSequenceState(kv.Value), sequenceObserved{modRevision: kv.ModRevision, raw: kv.Value, found: kv.ModRevision != 0}, nil
 	}
 	if isKeyNotFound(err) {
-		return sequenceState{}, 0, nil
+		return sequenceState{}, sequenceObserved{}, nil
 	}
-	return sequenceState{}, 0, err
+	return sequenceState{}, sequenceObserved{}, err
+}
+
+// sequenceObserved is what readState saw at a sequence key: the guard the
+// following compare-and-swap is conditioned on. The Raft path compares the
+// ModRevision; the value path (NewValueSequenceService) compares the stored
+// bytes, or creates the key only while it is still absent.
+type sequenceObserved struct {
+	modRevision int64
+	raw         []byte
+	found       bool
+}
+
+// sequenceValueStore is a store whose guarded writes compare a key's stored
+// value rather than an MVCC revision: a dedicated single-node store
+// (BackendKVService over a database.AtomicBackend) offers these and no
+// transaction layer. Get reports an absent key with KeyNotFoundError.
+type sequenceValueStore interface {
+	Get(ctx context.Context, key string) ([]byte, error)
+	PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error)
+	CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error)
+	CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error)
+}
+
+// NewValueSequenceService creates a SequenceServicer over a store without a
+// transaction layer, advancing each sequence by compare-and-swap on its
+// stored (counter, epoch) value. The state is persisted in the store, so a
+// sequence continues across a close and reopen of the store.
+//
+// Comparing values instead of revisions admits an A-B-A interleaving (a
+// Delete and re-creation back to the observed state), which is harmless
+// here: the next state is a pure function of the current one, so a swap
+// from an equal state is the swap the current state would make.
+func NewValueSequenceService(store sequenceValueStore) *SequenceService {
+	return &SequenceService{values: store}
+}
+
+// proposeValueCAS applies op to key guarded by the observed value: created
+// only while still absent, swapped or deleted only while unchanged.
+func (s *SequenceService) proposeValueCAS(ctx context.Context, key string, observed sequenceObserved, op Op) error {
+	var (
+		ok  bool
+		err error
+	)
+	switch {
+	case op.Type == OpDelete:
+		ok, err = s.values.CompareAndDelete(ctx, key, observed.raw)
+	case !observed.found:
+		ok, err = s.values.PutIfAbsent(ctx, key, op.Value)
+	default:
+		ok, err = s.values.CompareAndSwap(ctx, key, observed.raw, op.Value)
+	}
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return &TransactionConflictError{Key: key}
+	}
+	return nil
 }
 
 // validateSequenceRef validates the database and sequence name are non-empty.

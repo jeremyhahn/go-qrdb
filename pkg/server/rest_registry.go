@@ -297,8 +297,19 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 	// it. This is checked here, ahead of the isolation branches, because most
 	// of those stores are shared and nothing on the store itself refuses a
 	// request for one sealed database among many.
-	if err := r.refuseSealedDatabase(tenantID, db); err != nil {
+	// The check reads managed.db, the record above: a second lookup that
+	// failed would skip the refusal.
+	if err := r.refuseSealedRecord(managed.db, tenantID, db); err != nil {
 		return nil, err
+	}
+
+	// A `backend: objstore` database is served from its own store whatever
+	// the tenant's isolation (servesFromNodeLocalStore): its data is the
+	// provider's. Resolving it first keeps the volume branch below from
+	// serving it from the tenant's shard, where its writes would land in the
+	// tenant's Host while the database reports objstore.
+	if svcs, ok := r.resolveObjstoreDatabase(managed.db, tenantID, info); ok {
+		return svcs, nil
 	}
 
 	// IsolationVolume tenants are backed by a dedicated per-tenant Raft Host on
@@ -402,9 +413,13 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 	// engine, and a sealed database barrier must fail closed rather than
 	// falling through to dbReg.Default() below (which would silently serve a
 	// different, unencrypted keyspace under the same database name).
-	if svcs, err := r.resolveDedicatedDatabaseBarrier(tenantID, db, info); !errors.Is(err, errNotDedicatedDatabaseBarrier) {
+	if svcs, err := r.resolveDedicatedDatabaseBarrier(managed.db, tenantID, info); !errors.Is(err, errNotDedicatedDatabaseBarrier) {
 		if svcs != nil {
-			svcs.Placement = service.StorePlacementNode
+			// svcs can be the cached dedicated-store bundle itself (see
+			// resolveObjstoreDatabase): copy before setting the placement.
+			placed := *svcs
+			placed.Placement = service.StorePlacementNode
+			svcs = &placed
 		}
 		return svcs, err
 	}
@@ -476,9 +491,12 @@ func (r *restServiceRegistry) resolveShared(tenantID, db string, info *tenant.Te
 // here, directly over the database's own encrypting Backend()
 // (buildDedicatedStoreServices); it fails closed when the database's barrier
 // is sealed rather than falling back to the shared (unencrypted) store.
-func (r *restServiceRegistry) resolveDedicatedDatabaseBarrier(tenantID, db string, info *tenant.TenantInfo) (*DatabaseServices, error) {
-	dbase, ok := r.ownedDatabase(tenantID, db)
-	if !ok {
+//
+// dbase is resolve's one catalog lookup (managedDatabase), not a second read,
+// so a second read that failed or met a drop fence set in between can never
+// route the database onto the shared store. A nil record is not dedicated.
+func (r *restServiceRegistry) resolveDedicatedDatabaseBarrier(dbase *database.Database, tenantID string, info *tenant.TenantInfo) (*DatabaseServices, error) {
+	if dbase == nil {
 		return nil, errNotDedicatedDatabaseBarrier
 	}
 
@@ -495,6 +513,27 @@ func (r *restServiceRegistry) resolveDedicatedDatabaseBarrier(tenantID, db strin
 	return r.applyQuota(r.dedicatedStore.getOrBuild(dbase), tenantID, info), nil
 }
 
+// resolveObjstoreDatabase serves a tenant's own `backend: objstore` database
+// from its own store, and reports false for every other database. It runs
+// ahead of the isolation branches in resolve, so no isolation mode routes an
+// objstore database onto a shared or per-tenant store.
+//
+// dbase is resolve's one catalog lookup (managedDatabase), not a second read:
+// a second read that failed, or met a drop fence set in between, would report
+// "no such database" and route an objstore database onto the shared store
+// with no write guard. A nil record is not an objstore database.
+func (r *restServiceRegistry) resolveObjstoreDatabase(dbase *database.Database, tenantID string, info *tenant.TenantInfo) (*DatabaseServices, bool) {
+	if dbase == nil || dbase.Config().Backend != database.BackendObjstore {
+		return nil, false
+	}
+	// applyQuota can hand back the cached bundle unchanged (system or
+	// unlimited tenant, no accountant), and that bundle is shared by every
+	// request: set the placement on a copy, never through the cached pointer.
+	out := *r.applyQuota(r.dedicatedStore.getOrBuild(dbase), tenantID, info)
+	out.Placement = service.StorePlacementNode
+	return &out, true
+}
+
 // servesFromNodeLocalStore reports whether a catalogued database is served
 // from its own encrypting store on this node (resolveDedicatedDatabaseBarrier)
 // rather than from the shared replicated store: a barrier-enabled database
@@ -502,7 +541,16 @@ func (r *restServiceRegistry) resolveDedicatedDatabaseBarrier(tenantID, db strin
 // never served that way: it comes exclusively from an IsolationRaft tenant's
 // dedicated shard, never from a per-database barrier layered onto a
 // shared/prefix tenant's database.
+//
+// A `backend: objstore` database is always served from its own store, the
+// object-storage engine over its provider: its data is the provider's,
+// never the shared engine's, with or without a barrier. Serving it from the
+// shared store would report objstore while its writes landed in the node's
+// default engine.
 func servesFromNodeLocalStore(cfg *database.DatabaseConfig) bool {
+	if cfg.Backend == database.BackendObjstore {
+		return true
+	}
 	return cfg.Barrier != nil && cfg.Barrier.Enabled && cfg.BarrierOnDataPath()
 }
 
@@ -562,9 +610,24 @@ func (r *restServiceRegistry) StreamRefusal(tenantID, db string) error {
 // tenant's host and a raft group. A database opened from disk with a barrier
 // starts sealed, so the refusal also holds across a restart until the owner
 // unseals it.
+//
+// It looks the record up itself (ownedDatabase), for callers that hold none
+// (StreamRefusal); resolve checks the record it already holds through
+// refuseSealedRecord.
 func (r *restServiceRegistry) refuseSealedDatabase(tenantID, db string) error {
 	dbase, ok := r.ownedDatabase(tenantID, db)
 	if !ok {
+		return nil
+	}
+	return r.refuseSealedRecord(dbase, tenantID, db)
+}
+
+// refuseSealedRecord is refuseSealedDatabase over a record the caller already
+// holds: resolve passes the one record managedDatabase looked up, so a second
+// catalog read that fails, or meets a drop fence set in between, can never
+// skip the refusal. A nil record (no manager, no such database) is not sealed.
+func (r *restServiceRegistry) refuseSealedRecord(dbase *database.Database, tenantID, db string) error {
+	if dbase == nil {
 		return nil
 	}
 	if dbase.Status() == database.StatusSealed ||

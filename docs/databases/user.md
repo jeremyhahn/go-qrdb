@@ -62,8 +62,10 @@ is down, the database is unavailable. This holds for `pebble`, `memory`,
 **Know what the backend does today.** For most databases the backend you choose
 is recorded but is not where the data goes: the tenant's isolation mode and the
 server's own settings decide that. Vector data from every database on a node
-goes to one node-local store. `objstore` is accepted and then fails when the
-database is opened. The design below fixes all three.
+goes to one node-local store. The design below fixes both. An `objstore`
+database stores its data in the provider named by its `objstore` config block
+([../storage-engines/cli.md](../storage-engines/cli.md)); one created without
+that block fails when it is opened.
 
 ### Coming change: every database is multi-model
 

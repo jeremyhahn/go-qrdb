@@ -104,6 +104,30 @@ qrdb database create secure --backend raft --data-dir /var/lib/qrdb/secure
 qrdb database info app --output json      # reports backend, dataDir
 ```
 
+A database `qrdbd` provisions at boot from its `databases:` list declares a
+`backend: objstore` provider in its own `objstore` block, with the same
+`provider`, `settings` and `credentials` keys as `storage.objstore`:
+
+```yaml
+databases:
+  - name: blobs
+    backend: objstore
+    objstore:
+      provider: s3
+      settings:
+        bucket: "blobs-bucket"
+      credentials:
+        key_file: "<install-dir>/secrets/objstore-access-key"
+        secret_file: "<install-dir>/secrets/objstore-secret-key"
+```
+
+The block is required for `backend: objstore` and refused on any other
+backend. A credential under `settings` fails the load naming
+`databases[<i>].objstore.settings`, never the value; the database create also
+refuses it before anything is written to the catalog. Two databases whose
+`local` paths name the same directory through a symlink or a different
+spelling share one namespace, and only one of them opens it.
+
 See [../databases/cli.md](../databases/cli.md).
 
 ## Volume pools

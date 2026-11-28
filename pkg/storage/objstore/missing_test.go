@@ -100,6 +100,69 @@ func TestEngine_MissingWithoutSentinel(t *testing.T) {
 	require.False(t, notFound(err), "the wrapper must hide the sentinel")
 }
 
+// nativeDeleteStore answers a Delete of an absent object with a native error,
+// as the GCS and Azure providers do; its Get maps not-found to the sentinel.
+type nativeDeleteStore struct {
+	objcommon.Storage
+}
+
+func (s nativeDeleteStore) Delete(key string) error {
+	ok, err := s.Storage.Exists(context.Background(), key)
+	if err == nil && !ok {
+		return errPlainMissing
+	}
+	return s.Storage.Delete(key)
+}
+
+const nativeDeleteProvider = "missing-test-native-delete"
+
+var registerNativeDelete sync.Once
+
+// TestEngine_ReclaimWithNativeMissingDeletes: a provider whose Delete of an
+// absent object answers with its own error (GCS, Azure), not
+// common.ErrKeyNotFound, still reclaims a settled engine (no journal), and
+// releases a fresh owner claim, on every idempotent reclamation path.
+func TestEngine_ReclaimWithNativeMissingDeletes(t *testing.T) {
+	registerNativeDelete.Do(func() {
+		require.NoError(t, RegisterProvider(nativeDeleteProvider, ProviderCredentials{},
+			func(settings map[string]string, creds objcommon.Credentials) (objcommon.Storage, error) {
+				store := objmemory.New()
+				if err := store.Configure(settings, creds); err != nil {
+					return nil, err
+				}
+				return nativeDeleteStore{Storage: store}, nil
+			}))
+	})
+	tests := []struct {
+		name    string
+		opts    []Option
+		release func(*Engine) error
+	}{
+		{name: "reclaim", release: (*Engine).Reclaim},
+		{name: "release owner", opts: []Option{WithOwner("owner-a")}, release: (*Engine).ReleaseOwner},
+		{name: "fresh-claim rollback", opts: []Option{WithOwner("owner-a")}, release: (*Engine).ReleaseClaim},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e, err := New(nativeDeleteProvider, map[string]string{}, tc.opts...)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = e.Close() })
+			if len(tc.opts) > 0 {
+				require.True(t, e.FreshlyClaimed(), "the open claims the empty namespace")
+			}
+			require.NoError(t, e.Set([]byte("k"), []byte("v")))
+			err = e.journal.Delete(journalName)
+			require.Error(t, err)
+			require.False(t, notFound(err), "the double must answer a missing journal natively")
+
+			require.NoError(t, tc.release(e), "a native not-found answer counts as reclaimed")
+			names, err := e.store.List("")
+			require.NoError(t, err)
+			require.Empty(t, names, "reclamation leaves no object behind")
+		})
+	}
+}
+
 func TestMissingIn(t *testing.T) {
 	cases := []struct {
 		label       string

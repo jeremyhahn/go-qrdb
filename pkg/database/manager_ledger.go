@@ -16,10 +16,15 @@ package database
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 )
@@ -150,11 +155,283 @@ func (m *Manager) dropEntry(tenantID, name string) string {
 	return tenantScopedPath(filepath.Join(m.dataDir, droppedDir), tenantID, name)
 }
 
+// releasingDir holds one file per object-storage database this node dropped
+// whose provider namespace it has not yet released: a directory at the
+// database's (tenant, name) path (tenantScopedPath) holding one file per
+// dropped incarnation (releaseEntryFile). A drop records the entry before
+// its catalog delete and forgets it once the namespace is released (drop,
+// steps 4 and 6), so a release that failed, or never ran because the node
+// stopped between the two, is retried (retryNamespaceReleases).
+const releasingDir = "releasing"
+
+// releaseEntry is a releasingDir file: what reopening a dropped database's
+// namespace as its owner needs. Objstore carries the credential file paths,
+// never their contents (DatabaseObjstoreConfig).
+type releaseEntry struct {
+	Backend  BackendType             `json:"backend"`
+	TenantID string                  `json:"tenant_id,omitempty"`
+	Name     string                  `json:"name"`
+	Objstore *DatabaseObjstoreConfig `json:"objstore,omitempty"`
+	// Incarnation is the dropped database's incarnation (Database.Incarnation):
+	// the ledger keeps one entry per incarnation, so a name dropped,
+	// re-created and dropped again keeps every namespace it must release.
+	Incarnation string `json:"incarnation,omitempty"`
+	// ClaimOnly is set for the claim of a failed create onto a namespace that
+	// already held data no database owned: its release removes only the
+	// owner marker (backendReleaser.ReleaseOwnerMarker), since the records,
+	// journal and format marker are not the failed create's. Unset, the
+	// release reclaims the namespace whole (ReleaseOwner).
+	ClaimOnly bool `json:"claim_only,omitempty"`
+
+	// file is the entry's file name in its name's directory
+	// (releaseEntryFile), set when the entry is read back.
+	file string
+}
+
+// config is the DatabaseConfig the entry's namespace reopens under: as the
+// dropped incarnation, so a namespace a successor owns is refused, not
+// reclaimed (releaseDatabaseNamespace).
+func (e releaseEntry) config() DatabaseConfig {
+	return DatabaseConfig{TenantID: e.TenantID, Name: e.Name, Backend: e.Backend, Objstore: e.Objstore, Incarnation: e.Incarnation}
+}
+
+// recordRelease durably records that cfg's namespace awaits its release;
+// claimOnly records the release of a claim on existing data, which removes
+// only the owner marker (releaseEntry.ClaimOnly).
+func (m *Manager) recordRelease(key dbKey, cfg DatabaseConfig, incarnation string, claimOnly bool) (string, error) {
+	file, err := releaseEntryFile(incarnation)
+	if err != nil {
+		return "", err
+	}
+	// The configuration's own tenant and name, not the key's: the namespace
+	// owner is spelled from the configuration (objstoredb).
+	data, err := json.Marshal(releaseEntry{Backend: cfg.Backend, TenantID: cfg.TenantID, Name: cfg.Name, Objstore: cfg.Objstore, Incarnation: incarnation, ClaimOnly: claimOnly})
+	if err != nil {
+		return "", err
+	}
+	path := m.releaseEntryPath(key.tenant, key.name, file)
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return "", &MetaWriteError{Path: dir, Err: err}
+	}
+	if err := writeFileAtomic(dir, file, data); err != nil {
+		return "", err
+	}
+	return file, nil
+}
+
+// forgetRelease removes the release entry of tenantID's database name; an
+// absent entry is not an error.
+func (m *Manager) forgetRelease(tenantID, name, file string) error {
+	if file == "" {
+		// No entry was recorded (a database that is not object storage).
+		return nil
+	}
+	path := m.releaseEntryPath(tenantID, name, file)
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return &MetaWriteError{Path: path, Err: err}
+	}
+	// The name's directory goes with its last entry; another incarnation's
+	// entry keeps it (ENOTEMPTY), which is not an error.
+	_ = os.Remove(filepath.Dir(path))
+	return nil
+}
+
+// releaseEntries returns every release entry this node holds. A file that
+// does not parse is skipped and logged, never fatal.
+func (m *Manager) releaseEntries() ([]releaseEntry, error) {
+	root := filepath.Join(m.dataDir, releasingDir)
+	if _, err := os.Stat(root); errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	fsys := os.DirFS(root)
+	var entries []releaseEntry
+	err := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return &MetaReadError{Path: filepath.Join(root, path), Err: err}
+		}
+		// writeFileAtomic's temporary files start with a dot.
+		if d.IsDir() || strings.HasPrefix(d.Name(), ".") {
+			return nil
+		}
+		data, err := fs.ReadFile(fsys, path)
+		if err != nil {
+			return &MetaReadError{Path: filepath.Join(root, path), Err: err}
+		}
+		var entry releaseEntry
+		if err := json.Unmarshal(data, &entry); err != nil || entry.Name == "" {
+			m.logger.Warn("skipping an unreadable object-storage namespace release entry", slog.String("path", filepath.Join(root, path)))
+			return nil
+		}
+		entry.file = d.Name()
+		entries = append(entries, entry)
+		return nil
+	})
+	return entries, err
+}
+
+// releaseEntryPath is where tenantID's database name has its release entry.
+func (m *Manager) releaseEntryPath(tenantID, name, file string) string {
+	return filepath.Join(tenantScopedPath(filepath.Join(m.dataDir, releasingDir), tenantID, name), file)
+}
+
+// releaseEntryFile names a drop's release entry inside its name's directory,
+// so the ledger keeps one entry per dropped database incarnation and a name
+// dropped, re-created and dropped again keeps every namespace it must
+// release. An incarnation is NewIncarnation's lowercase hex, a single safe
+// path element, and names its entry (a retried drop of the same incarnation
+// rewrites it); any other value is named by its hex SHA-256. A database
+// without one -- a provisioned database -- shares the empty incarnation with every re-creation of its name,
+// so each of its drops gets a fresh token instead, prefixed "-" so it can
+// never equal an incarnation's name.
+func releaseEntryFile(incarnation string) (string, error) {
+	if incarnation == "" {
+		token, err := NewIncarnation()
+		if err != nil {
+			return "", err
+		}
+		return "-" + token, nil
+	}
+	for _, c := range incarnation {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			sum := sha256.Sum256([]byte(incarnation))
+			return "sha256-" + hex.EncodeToString(sum[:]), nil
+		}
+	}
+	return incarnation, nil
+}
+
+// retryNamespaceReleases releases the namespace of every release entry this
+// node holds whose database is gone from the catalog, and forgets each one
+// released. It never fails: a release that fails again keeps its entry for
+// the next retry and is logged. An entry whose name a drop is still working
+// on here, or whose catalog record still carries the drop's fence, is left
+// to that drop. An entry whose name has a live record again was re-created:
+// when that database holds the entry's namespace the entry is forgotten (a
+// release would be refused anyway: the owner names the incarnation); when it provably holds another one
+// (ObjectStorageNamespacer) the old namespace is released; when that cannot
+// be told the entry is kept and logged. Each entry is handled under its name's claim,
+// so no create or open of the name runs meanwhile.
+func (m *Manager) retryNamespaceReleases(ctx context.Context) {
+	cat, err := m.catalog("retry object-storage namespace releases")
+	if err != nil {
+		return
+	}
+	entries, err := m.releaseEntries()
+	if err != nil {
+		m.logger.Warn("failed to read the object-storage namespace release entries", slog.String("error", err.Error()))
+		return
+	}
+	for _, entry := range entries {
+		m.retryNamespaceRelease(ctx, cat, entry)
+	}
+}
+
+// retryNamespaceRelease handles one release entry (retryNamespaceReleases).
+func (m *Manager) retryNamespaceRelease(ctx context.Context, cat Catalog, entry releaseEntry) {
+	key := keyFor(entry.TenantID, entry.Name)
+	if _, dropping := m.dropping.Load(key); dropping {
+		return
+	}
+	unclaim, claimed := m.tryClaim(key)
+	if !claimed {
+		return
+	}
+	defer unclaim()
+	warn := func(msg string, err error) {
+		m.logger.Warn(msg, slog.String("tenant", entry.TenantID), slog.String("name", entry.Name), slog.String("error", err.Error()))
+	}
+	meta, err := cat.Get(ctx, entry.TenantID, entry.Name)
+	if err == nil {
+		if meta.Incarnation == entry.Incarnation {
+			// The record is the entry's own incarnation: either the drop
+			// that recorded the entry is still under way, or a failed
+			// create recorded it and could not remove its own record
+			// (CatalogOrphanError). Neither is a re-created name; the entry
+			// is kept, and the record's drop releases the namespace and
+			// forgets it.
+			if !meta.Dropping {
+				m.logger.Info("object-storage namespace release kept while its own record is live",
+					slog.String("tenant", entry.TenantID), slog.String("name", entry.Name))
+			}
+			return
+		}
+		// The name was re-created. When the live database holds the entry's
+		// namespace, the entry is forgotten only once the dropped
+		// incarnation's owner marker is gone: the live record may be a
+		// provisional successor whose open has not yet run, and that open is
+		// refused while the old marker names the dropped incarnation.
+		// releaseObjectStorageMarker deletes the marker only while it names
+		// the entry's incarnation and never reclaims records the successor
+		// shares. When the live database provably holds another namespace,
+		// the entry is released; on any doubt the entry is kept, since
+		// ReleaseOwner reclaims records the live database may share.
+		live := DatabaseConfig{TenantID: entry.TenantID, Name: entry.Name, Backend: meta.Backend, Objstore: meta.Objstore}
+		same, err := m.sameObjectStorageNamespace(entry.config(), live)
+		if err != nil {
+			warn("object-storage namespace release of a re-created name kept: namespace unknown", err)
+			return
+		}
+		if same {
+			if err := releaseObjectStorageMarker(m.factory, entry.config()); err != nil {
+				warn("object-storage namespace release of a re-created name kept: owner marker not released", err)
+				return
+			}
+			if err := m.forgetRelease(key.tenant, key.name, entry.file); err != nil {
+				warn("failed to forget the namespace release entry of a re-created database", err)
+			}
+			return
+		}
+	} else {
+		var notFound *NotFoundError
+		if !errors.As(err, &notFound) {
+			warn("object-storage namespace release not retried", err)
+			return
+		}
+	}
+	if err := m.releaseDatabaseNamespace(key, entry.config(), entry.ClaimOnly); err != nil {
+		warn("object-storage namespace release retry failed", err)
+		return
+	}
+	if err := m.forgetRelease(key.tenant, key.name, entry.file); err != nil {
+		warn("failed to forget a released object-storage namespace", err)
+		return
+	}
+	m.logger.Info("object-storage namespace of a dropped database released",
+		slog.String("tenant", entry.TenantID), slog.String("name", entry.Name))
+}
+
+// sameObjectStorageNamespace reports whether the live configuration holds
+// the dropped one's provider namespace. A live database that is not object
+// storage holds no namespace, so it is another one. An error -- no
+// namespacer wired, a root that no longer resolves -- means it cannot be
+// told.
+func (m *Manager) sameObjectStorageNamespace(dropped, live DatabaseConfig) (bool, error) {
+	droppedKey, err := objectStorageNamespace(m.factory, dropped)
+	if err != nil {
+		return false, err
+	}
+	if live.Backend != BackendObjstore || live.Objstore == nil {
+		return false, nil
+	}
+	liveKey, err := objectStorageNamespace(m.factory, live)
+	if err != nil {
+		return false, err
+	}
+	return droppedKey == liveKey, nil
+}
+
 // createUndo removes what a failed Create made, and nothing it did not.
 type createUndo struct {
 	m        *Manager
+	key      dbKey
 	tenantID string
 	name     string
+
+	// cfg is the configuration the data backend opened under, as the new
+	// incarnation: a claim give-back that fails records its release for
+	// it (recordRelease).
+	cfg DatabaseConfig
 
 	// dirs are the directories this Create asked for and made itself, in the
 	// order it made them (see mkdirAll).
@@ -208,8 +485,33 @@ func (u *createUndo) mkdirAll(path string) error {
 // directories are kept for the drop that removes the record, as
 // settleCatalog keeps them, and run returns *CatalogOrphanError wrapping
 // cause.
+// recordClaimRelease records the release a failed claim give-back (undoErr)
+// could not make, for the incarnation this create opened as; claimOnly when
+// the namespace held data before the claim (releaseEntry.ClaimOnly). A
+// release that cannot be recorded is logged.
+func (u *createUndo) recordClaimRelease(claimOnly bool, undoErr error) {
+	if _, err := u.m.recordRelease(u.key, u.cfg, u.cfg.Incarnation, claimOnly); err != nil {
+		u.m.logger.Warn("failed to record the namespace release of a failed create",
+			slog.String("name", u.name), slog.Any("undo_error", undoErr), slog.Any("error", err))
+	}
+}
+
 func (u *createUndo) run(ctx context.Context, cause error) error {
 	for i := len(u.backends) - 1; i >= 0; i-- {
+		// A backend whose open claimed its provider namespace (an
+		// object-storage database) gives the claim back, so the failed
+		// create reserves nothing: a namespace claimed new is reclaimed
+		// and released; on a namespace that held data before, only the
+		// owner marker this open wrote is removed and the data stays. A
+		// namespace that was already this owner's is left as it was. A
+		// give-back that fails leaves the namespace reserved by an
+		// incarnation with no record, so its release is recorded for
+		// retryNamespaceReleases, claim-only unless the claim was fresh.
+		if r, ok := u.backends[i].(backendReleaser); ok {
+			if err := r.ReleaseClaim(); err != nil {
+				u.recordClaimRelease(!r.FreshlyClaimed(), err)
+			}
+		}
 		_ = u.backends[i].Close()
 	}
 	if u.barrier && u.m.barrierMgr != nil {

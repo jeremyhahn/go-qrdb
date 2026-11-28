@@ -50,29 +50,67 @@ const journalTreeSuffix = ".journal"
 // symlinked root, and every spelling of the root -- a symlink, its target, a
 // path through a symlinked parent -- must list one tree and reach the one
 // journal recovery has to find. Every store opens through create, the creator
-// New resolved for provider.
-func openStores(provider string, create objfactory.StorageCreator, settings map[string]string, store objcommon.Storage, creds objcommon.Credentials) (data, journal objcommon.Storage, err error) {
+// New resolved for provider. It reports which stores it created
+// (keptStores), so New tracks each provider by slot.
+func openStores(provider string, create objfactory.StorageCreator, settings map[string]string, store objcommon.Storage, creds objcommon.Credentials) (keptStores, error) {
 	rootSetting, walked := walkedRoots[provider]
 	if !walked {
-		return store, store, nil
+		return keptStores{data: store, journal: store}, nil
 	}
-	store, physical, err := canonicalStore(provider, create, settings, store, creds)
+	data, physical, err := canonicalStore(provider, create, settings, store, creds)
 	if err != nil {
-		return nil, nil, err
+		return keptStores{}, err
 	}
-	if err := refuseInTreeJournal(provider, store); err != nil {
-		return nil, nil, err
+	kept := keptStores{data: data, dataCreated: physical != settings[rootSetting]}
+	if err := refuseInTreeJournal(provider, kept.data); err != nil {
+		return keptStores{}, err
 	}
 	root, err := journalRoot(physical)
 	if err != nil {
-		return nil, nil, err
+		return keptStores{}, err
 	}
 	journalSettings := maps.Clone(settings)
 	journalSettings[rootSetting] = root
-	if journal, err = create(journalSettings, creds); err != nil {
-		return nil, nil, err
+	if kept.journal, err = create(journalSettings, creds); err != nil {
+		return keptStores{}, err
 	}
-	return store, journal, nil
+	kept.journalCreated = true
+	return kept, nil
+}
+
+// keptStores is what openStores keeps: the data store and the journal
+// store, and whether openStores created each one (in that order) or kept
+// the store it was passed. New tracks the providers by these slots, never
+// by comparing provider values (see sameStorage).
+type keptStores struct {
+	data, journal               objcommon.Storage
+	dataCreated, journalCreated bool
+}
+
+// canonicalNamespace returns the settings that name the provider's
+// namespace canonically, so every spelling of one namespace yields one
+// namespaceKey and so one owner lock. A walked provider's root is replaced
+// by its absolute, symlink-resolved path: a directory, a symlink to it and an
+// unclean spelling of either are one namespace. Any other provider's
+// namespace is its settings as given (bucket, prefix, endpoint), which the
+// provider addresses verbatim. Call it after the provider has created its
+// root, so the root resolves.
+func canonicalNamespace(provider string, settings map[string]string) (map[string]string, error) {
+	rootSetting, walked := walkedRoots[provider]
+	if !walked {
+		return settings, nil
+	}
+	abs, err := filepath.Abs(settings[rootSetting])
+	if err != nil {
+		return nil, err
+	}
+	physical, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return nil, err
+	}
+	canonical := maps.Clone(settings)
+	canonical[rootSetting] = physical
+	return canonical, nil
 }
 
 // canonicalStore returns store reopened on its physical root, the root setting
@@ -331,6 +369,10 @@ func (e *Engine) settlePendingJournal() error {
 func (e *Engine) enterWrite() error {
 	for {
 		e.writeMu.RLock()
+		if e.reclaimed {
+			e.writeMu.RUnlock()
+			return &storage.ClosedError{}
+		}
 		if !e.journalPending.Load() {
 			return nil
 		}

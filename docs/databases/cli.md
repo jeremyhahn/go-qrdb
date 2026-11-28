@@ -53,7 +53,10 @@ wrap. Both refusals are `422` / `FAILED_PRECONDITION`.
 state and are refused for every database.
 
 `--backend` is recorded and, for most databases, not where the data
-lives, and `--backend objstore` fails when the store is opened. See
+lives. A `--backend objstore` database opens its object store from the
+`objstore` block of its node-config entry (`databases[].objstore`, see
+[../storage-engines/cli.md](../storage-engines/cli.md)); without that block
+it fails when the store is opened. See
 [architecture.md](architecture.md) "Current state".
 
 ### Target: `qrdb database create <name>` (remaining, unshipped)

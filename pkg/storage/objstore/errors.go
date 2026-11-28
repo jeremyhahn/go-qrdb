@@ -83,6 +83,77 @@ func (e *InvalidEncryptedRemoteError) Error() string {
 // object name — and opening it in this layout would silently hide or
 // overwrite them rather than refuse an upgrade this project does not support
 // in place. An EMPTY store is not refused: New writes the marker and proceeds.
+// NamespaceOwnedError is returned by New when the provider namespace it opens
+// is already recorded as another owner's (see WithOwner).
+type NamespaceOwnedError struct {
+	Provider string
+	Owner    string
+	Want     string
+}
+
+func (e *NamespaceOwnedError) Error() string {
+	return "objstore: " + strconv.Quote(e.Provider) + " namespace is owned by " + strconv.Quote(e.Owner) +
+		", not " + strconv.Quote(e.Want)
+}
+
+// NamespaceOwnedByAnother marks the refusal for a caller that cannot import
+// this package: the namespace is held by another owner, so an open as the
+// wanted owner reaches none of its objects.
+func (e *NamespaceOwnedError) NamespaceOwnedByAnother() bool { return true }
+
+// NamespaceRetainedError is returned by Engine.ReleaseOwner when the
+// namespace still holds objects this engine did not write: they stay, and
+// so does the owner marker that reserves the namespace for them. The
+// release is not done; a later ReleaseOwner, once those objects are gone,
+// deletes the marker. It names no object.
+type NamespaceRetainedError struct {
+	// Provider is the namespace's provider.
+	Provider string
+	// Remaining is the number of objects, other than the owner marker,
+	// left in the namespace.
+	Remaining int
+}
+
+func (e *NamespaceRetainedError) Error() string {
+	return "objstore: " + e.Provider + " namespace keeps its owner marker: " +
+		strconv.Itoa(e.Remaining) + " object(s) not written by this owner remain"
+}
+
+// ClaimUndoError is returned by New when an open that wrote its owner marker
+// failed afterwards (Err) and giving that claim back failed too (Undo): the
+// namespace may stay reserved for an owner whose open never completed, so
+// the caller records it for a later release, as that owner: ReleaseOwner for
+// a namespace the open claimed new (Fresh), ReleaseOwnerMarker for one that
+// held data before, whose records and format marker are not the open's.
+type ClaimUndoError struct {
+	// Provider is the provider of the failed open.
+	Provider string
+	// Err is the failure of the open.
+	Err error
+	// Undo is the failure of giving the claim back.
+	Undo error
+	// Fresh reports that the namespace held no object before the open
+	// claimed it (Engine.FreshlyClaimed): only then may the later release
+	// reclaim the whole namespace.
+	Fresh bool
+}
+
+func (e *ClaimUndoError) Error() string {
+	return "objstore: " + strconv.Quote(e.Provider) + " open failed (" + e.Err.Error() +
+		") and its namespace claim was not given back: " + e.Undo.Error()
+}
+
+// Unwrap returns the open's failure and the undo's.
+func (e *ClaimUndoError) Unwrap() []error { return []error{e.Err, e.Undo} }
+
+// NamespaceClaimUndoFailed marks the error for a caller that cannot import
+// this package: the namespace claim of a failed open is still in place.
+func (e *ClaimUndoError) NamespaceClaimUndoFailed() bool { return true }
+
+// NamespaceClaimFresh reports, for a caller that cannot import this package,
+// whether the failed open claimed the namespace new (Fresh).
+func (e *ClaimUndoError) NamespaceClaimFresh() bool { return e.Fresh }
+
 type FormatMarkerMissingError struct {
 	// Provider is the go-objstore provider whose store was refused.
 	Provider string

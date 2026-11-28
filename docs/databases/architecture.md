@@ -78,8 +78,18 @@ Supporting facts:
   so: the data plane for a dedicated-raft database is the tenant's Raft shard,
   reached through the request resolver, not through the store the manager
   opened.
-- `backend: objstore` is accepted by validation and **refused by
-  `openStorage`** with `database.InvalidBackendError`.
+- `backend: objstore` opens the **objstore engine** from the database's
+  `objstore` settings (provider, settings, key and secret files) through
+  the credential handle (`objstore.WithCredentialFiles`), via the factory's
+  `database.WithObjectStorage` opener (`objstoredb.Open`); its data root is
+  not used. A failed open is `database.StorageCreateError`; a factory with
+  no opener refuses it (`database.ObjectStorageNotWiredError`); a sealed
+  node's manager refuses it at create (`database.SealedNodeBackendError`).
+  The database owns its provider namespace (`objstore.WithOwner`) until its
+  drop completes: no other database opens the same bucket or path, the drop
+  releases it after the catalog record is gone (retried from the
+  `<data-dir>/releasing/` ledger if that fails), and a failed create gives
+  its claim back ([engineering.md](engineering.md)).
 - `backend: raft` on a **prefix or barrier** tenant is metered as a Raft group
   and gets a replicated placement record, yet `resolve` routes on the tenant's
   isolation mode, so the database's data is served from the shared system shard.

@@ -136,13 +136,13 @@ func TestOpenStores_CreatorAndRootFailures(t *testing.T) {
 				}
 				return inner, nil
 			}
-			data, journal, err := openStores("local", create, map[string]string{"path": tc.root}, inner, objcommon.Credentials{})
+			kept, err := openStores("local", create, map[string]string{"path": tc.root}, inner, objcommon.Credentials{})
 			require.Error(t, err)
 			if tc.failAt != 0 {
 				require.ErrorIs(t, err, errCreate)
 			}
-			require.Nil(t, data)
-			require.Nil(t, journal)
+			require.Nil(t, kept.data)
+			require.Nil(t, kept.journal)
 			require.Equal(t, tc.calls, calls)
 		})
 	}

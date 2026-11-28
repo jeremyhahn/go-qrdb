@@ -525,6 +525,35 @@ type DatabaseConfig struct {
 	Barrier      *DatabaseBarrierConfig    `yaml:"barrier"                 json:"barrier,omitempty"`
 	Connection   *DatabaseConnectionConfig `yaml:"connection"              json:"connection,omitempty"`
 	SQL          *SQLConfig                `yaml:"sql"                     json:"sql,omitempty"`
+	// Objstore configures a database whose backend is objstore: the
+	// go-objstore provider, its settings and the credential handle. It is
+	// ignored for every other backend.
+	Objstore *DatabaseObjstoreConfig `yaml:"objstore,omitempty" json:"objstore,omitempty"`
+
+	// Incarnation is the database incarnation (Database.Incarnation) an
+	// object-storage backend opens its provider namespace as: the owner
+	// marker names it, so a release by a dropped incarnation never reclaims
+	// a successor of the same tenant and name. The Manager sets it before
+	// every open from the catalog record, the new incarnation or the release
+	// ledger entry; it is never configured or persisted.
+	Incarnation string `yaml:"-" json:"-"`
+}
+
+// DatabaseObjstoreConfig is a per-database objstore backend. Settings carry
+// no inline credential (objstore.New refuses one); the key and secret are
+// named by file and opened through the credential handle
+// (objstore.WithCredentialFiles), so the engine never holds a plaintext copy.
+type DatabaseObjstoreConfig struct {
+	// Provider is the go-objstore provider: "local", "memory", "s3", "gcs"
+	// or "azure", or one registered with objstore.RegisterProvider.
+	Provider string `yaml:"provider" json:"provider"`
+	// Settings are the provider's non-secret settings (bucket, region,
+	// endpoint, path, ...).
+	Settings map[string]string `yaml:"settings,omitempty" json:"settings,omitempty"`
+	// KeyFile and SecretFile name the access key and secret the provider
+	// authenticates with; both empty means the provider's own default chain.
+	KeyFile    string `yaml:"key_file,omitempty"    json:"key_file,omitempty"`
+	SecretFile string `yaml:"secret_file,omitempty" json:"secret_file,omitempty"`
 }
 
 // Directory names a volume-isolated tenant's own Raft host keeps under
@@ -735,6 +764,12 @@ type DatabaseMeta struct {
 	// node holds for itself, and for a database created where no node
 	// identity is set (a standalone node); such a record opens on any node.
 	OwnerNode string `json:"owner_node,omitempty"`
+
+	// Objstore is a `backend: objstore` database's provider, settings and
+	// credential file paths (DatabaseConfig.Objstore), so a reopen -- after a
+	// restart, on the owner node -- opens the same provider. It carries the
+	// paths of the credential files, never their contents.
+	Objstore *DatabaseObjstoreConfig `json:"objstore,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

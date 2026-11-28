@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -98,6 +99,9 @@ type Manager struct {
 	// defaults are the node's database_defaults, filled into a new
 	// database's record at create (WithDefaults).
 	defaults Defaults
+	// sealedNode is set by WithSealedNode: create refuses a database whose
+	// store lies outside the seal barrier (objstore).
+	sealedNode bool
 
 	// dropping holds the name of every database with a Drop in flight, so
 	// two concurrent drops of one database cannot both report success. Drop
@@ -154,6 +158,17 @@ func NewManager(logger *slog.Logger, dataDir string, opts ...ManagerOption) *Man
 
 // ManagerOption configures optional Manager behavior.
 type ManagerOption func(*Manager)
+
+// WithSealedNode marks the node as running under the seal barrier. Such a
+// node's manager refuses to create a database whose store lies outside the
+// barrier -- an objstore database, whose objects the barrier's encrypting
+// file system never reaches -- with *SealedNodeBackendError, so no
+// runtime-created database adds an unencrypted-at-rest gap.
+func WithSealedNode(sealed bool) ManagerOption {
+	return func(m *Manager) {
+		m.sealedNode = sealed
+	}
+}
 
 // WithBackendFactory sets a custom BackendFactory for the Manager.
 func WithBackendFactory(f BackendFactory) ManagerOption {
@@ -276,6 +291,13 @@ func (m *Manager) CreateWithCredentials(ctx context.Context, cfg DatabaseConfig,
 // dropped tombstone to absent, which is live for the empty incarnation; a
 // marker holding a live incarnation -- the name created through the API on
 // some node -- refuses the provisioning with *AlreadyExistsError.
+//
+// An object-storage database is the exception: it is one lifetime's. It gets
+// a fresh incarnation like a created one, recorded in this node's catalog,
+// so a restart's Provision reaches Open and keeps the same namespace owner,
+// and a successor of the same tenant and name never shares a dropped one's
+// owner (releaseDatabaseNamespace). Another node that provisions the same
+// namespace is refused with the namespace owner error.
 func (m *Manager) Provision(ctx context.Context, cfg DatabaseConfig) (*Database, error) {
 	// A provisioned database is created on every node independently, so a
 	// raft one would need a shard ID every node agrees on without a claim,
@@ -305,7 +327,8 @@ func (m *Manager) Provision(ctx context.Context, cfg DatabaseConfig) (*Database,
 }
 
 // create is CreateWithCredentials and Provision. shared selects the empty,
-// node-shared incarnation (see Provision).
+// node-shared incarnation (see Provision), except for an object-storage
+// database, which always gets its own.
 func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Credentials, shared bool) (*Database, error) {
 	// The node's defaults are filled in once, here, and recorded with the
 	// rest of the config; opening the database never consults them again.
@@ -314,9 +337,20 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+	// Whatever the backend, an Objstore block is recorded in the catalog,
+	// so its settings pass the factory's validator (an inline credential is
+	// refused) before any catalog write.
+	if err := validateObjectStorage(m.factory, cfg); err != nil {
+		return nil, err
+	}
 	cat, err := m.catalog("create database")
 	if err != nil {
 		return nil, err
+	}
+	if cfg.Backend == BackendObjstore {
+		// A namespace a dropped database still holds may be the one this
+		// create names: give back every one whose release is due first.
+		m.retryNamespaceReleases(ctx)
 	}
 	if err := m.validateDataDir(cfg.TenantID, cfg.Name, cfg.DataDir); err != nil {
 		return nil, err
@@ -325,6 +359,12 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 		if err := barrierDataPathError(cfg); err != nil {
 			return nil, err
 		}
+	}
+	if m.sealedNode && cfg.Backend == BackendObjstore {
+		return nil, &SealedNodeBackendError{Name: cfg.Name, Backend: cfg.Backend}
+	}
+	if err := m.singleWriterRefusal(cfg.Name, cfg.Backend, m.ownerFor(cfg, shared)); err != nil {
+		return nil, err
 	}
 	// Shard IDs are issued by the cluster. A caller naming one could put a
 	// database on another database's Raft group, or on a reserved shard such
@@ -380,9 +420,13 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	// The new database's incarnation: the value its writes will be guarded
 	// by. With no reclaimer there is no store to mark it in, and the
 	// database is live while its marker is absent (an empty incarnation);
-	// a provisioned database shares the empty incarnation on purpose.
+	// a provisioned database shares the empty incarnation on purpose. An
+	// object-storage database always gets one, reclaimer or not, provisioned
+	// or created: its namespace's owner marker names it, so a dropped
+	// incarnation's release can never reclaim a successor of the same name
+	// (releaseDatabaseNamespace).
 	incarnation := ""
-	if m.reclaimer != nil && !shared {
+	if (m.reclaimer != nil && !shared) || cfg.Backend == BackendObjstore {
 		var err error
 		if incarnation, err = NewIncarnation(); err != nil {
 			return nil, err
@@ -399,7 +443,7 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	// barrier manager, so a failure at any later step removes exactly that
 	// and nothing else: a directory that existed before the call belongs to
 	// someone else.
-	undo := &createUndo{m: m, tenantID: cfg.TenantID, name: cfg.Name}
+	undo := &createUndo{m: m, key: key, tenantID: cfg.TenantID, name: cfg.Name}
 	if err := undo.mkdirAll(dbDir); err != nil {
 		return nil, &OpenError{Name: cfg.Name, Err: err}
 	}
@@ -442,12 +486,25 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	}
 	undo.catalog, undo.incarnation = cat, incarnation
 
-	// Open storage backend via factory.
+	// Open storage backend via factory, as the new incarnation.
+	cfg.Incarnation = incarnation
 	backend, err := m.factory.Create(cfg, dataDir)
 	if err != nil {
+		// An open that wrote its owner marker and failed after it gives
+		// the claim back itself; when that undo failed too the namespace
+		// stays reserved for this incarnation, which no backend survives
+		// to release, so the release is recorded for retryNamespaceReleases.
+		var unreleased claimUndoFailed
+		if errors.As(err, &unreleased) && unreleased.NamespaceClaimUndoFailed() {
+			if _, lerr := m.recordRelease(key, cfg, incarnation, !unreleased.NamespaceClaimFresh()); lerr != nil {
+				m.logger.Warn("failed to record the namespace release of a failed create",
+					slog.String("name", cfg.Name), slog.Any("error", lerr))
+			}
+		}
 		return nil, undo.run(ctx, err)
 	}
 	undo.backends = append(undo.backends, backend)
+	undo.cfg = cfg
 
 	// Register a dedicated per-database barrier when enabled, and wrap the
 	// data-plane backend so every value it stores is encrypted under the
@@ -614,6 +671,8 @@ func (m *Manager) openMeta(key dbKey, meta DatabaseMeta) (*Database, error) {
 		Barrier:      meta.Barrier,
 		Connection:   meta.Connection,
 		SQL:          meta.SQL,
+		Objstore:     meta.Objstore,
+		Incarnation:  meta.Incarnation,
 	}
 	if meta.Barrier != nil && meta.Barrier.Enabled && !cfg.HasDedicatedStore() {
 		return nil, &SharedStoreBarrierUnsupportedError{Name: name, Backend: cfg.Backend}
@@ -633,6 +692,16 @@ func (m *Manager) openMeta(key dbKey, meta DatabaseMeta) (*Database, error) {
 		m.logger.Warn(BarrierOffDataPathWarning,
 			slog.String("name", name),
 			slog.String("backend", string(cfg.Backend)))
+	}
+	// A sealed node refuses a store outside the seal barrier when it reopens
+	// a record as when it creates one (create): a record written before the
+	// node was sealed, or by another node, must not open an unencrypted-at-
+	// rest store here. OpenAll logs the refusal and opens the rest.
+	if m.sealedNode && cfg.Backend == BackendObjstore {
+		return nil, &SealedNodeBackendError{Name: name, Backend: cfg.Backend}
+	}
+	if err := m.singleWriterRefusal(name, cfg.Backend, meta.OwnerNode); err != nil {
+		return nil, err
 	}
 	if err := m.validateDataDir(key.tenant, name, meta.DataDir); err != nil {
 		return nil, err
@@ -880,6 +949,92 @@ func (m *Manager) Drop(ctx context.Context, name string) error {
 }
 
 // drop drops the open database db, held under key. See Drop.
+// reclaimDatabaseObjects deletes the data a dropped database keeps outside
+// the node's data directory (Manager.drop, step 2), whatever its status. The
+// database's own raw backend is used; it may be the per-database barrier
+// wrapper, which forwards the reclaim to the engine it wraps, so the engine
+// the database writes through is the one reclaimed. A backend that is closed or
+// failed cannot reclaim: an object-storage database's store is then opened
+// again from its configuration, reclaimed and closed, so its objects do not
+// outlive it.
+func (m *Manager) reclaimDatabaseObjects(key dbKey, db *Database) error {
+	if r, ok := db.rawDataBackend().(backendReclaimer); ok {
+		err := r.Reclaim()
+		var closed *storage.ClosedError
+		if !errors.As(err, &closed) {
+			return err
+		}
+	}
+	cfg := db.Config()
+	if cfg.Backend != BackendObjstore {
+		return nil
+	}
+	backend, err := m.factory.Create(cfg, m.dbDir(key.tenant, cfg.Name))
+	if err != nil {
+		return err
+	}
+	var reclaimErr error
+	if r, ok := backend.(backendReclaimer); ok {
+		reclaimErr = r.Reclaim()
+	}
+	return errors.Join(reclaimErr, backend.Close())
+}
+
+// releaseDatabaseNamespace gives up the provider namespace an
+// object-storage database owned, once its catalog record is gone (drop,
+// step 6). The database's backend is closed by then (step 2), so the
+// namespace is opened again from the configuration, as its owner, and
+// released (backendReleaser.ReleaseOwner): the owner marker goes only when
+// it names this database and nothing foreign remains. Reclaim keeps the
+// marker so a drop that fails before its catalog delete is retried by the
+// same owner, and no other database claims the namespace meanwhile.
+// claimOnly releases the claim of a failed create onto a namespace that held
+// data before it (releaseEntry.ClaimOnly): only the owner marker goes, while
+// it names this incarnation, and every record stays. It never opens the engine
+// (ObjectStorageMarkerReleaser): the failed create's open may have failed on
+// a corrupt journal, which every open would fail on again.
+func (m *Manager) releaseDatabaseNamespace(key dbKey, cfg DatabaseConfig, claimOnly bool) error {
+	if cfg.Backend != BackendObjstore {
+		return nil
+	}
+	if claimOnly {
+		// A marker of another owner, or none, is a release that is done.
+		return releaseObjectStorageMarker(m.factory, cfg)
+	}
+	backend, err := m.factory.Create(cfg, m.dbDir(key.tenant, cfg.Name))
+	if err != nil {
+		// The namespace is owned by another incarnation -- a successor of
+		// the same tenant and name, created once this incarnation's owner
+		// marker was gone. Nothing in it is this incarnation's: the release
+		// is done and reclaims nothing.
+		var owned namespaceOwnedByAnother
+		if errors.As(err, &owned) && owned.NamespaceOwnedByAnother() {
+			return nil
+		}
+		return err
+	}
+	var releaseErr error
+	if r, ok := backend.(backendReleaser); ok {
+		releaseErr = r.ReleaseOwner()
+	}
+	return errors.Join(releaseErr, backend.Close())
+}
+
+// namespaceOwnedByAnother is an open refused because the provider namespace
+// is owned by another owner (objstore.NamespaceOwnedError).
+type namespaceOwnedByAnother interface {
+	NamespaceOwnedByAnother() bool
+}
+
+// claimUndoFailed is an open that wrote its owner marker, failed, and could
+// not give the claim back (objstore.ClaimUndoError).
+// NamespaceClaimFresh reports that the open claimed the namespace new, so its
+// release may reclaim it whole; otherwise only the owner marker is its.
+type claimUndoFailed interface {
+	NamespaceClaimUndoFailed() bool
+	NamespaceClaimFresh() bool
+}
+
 func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 	name := key.name
 	cat, err := m.catalog("drop database")
@@ -985,6 +1140,16 @@ func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 	//    so a database that was already closed (a retry of a drop that got
 	//    this far before failing or crashing) is correctly left alone rather
 	//    than closed twice.
+	//    A store whose data lives outside the node's data directory -- an
+	//    object-storage database's objects, with its provider -- is reclaimed
+	//    first, while it is still open: removing the directory in step 4
+	//    would leave every object behind. A failed reclaim keeps the record
+	//    fenced, so a retry reclaims what is left. The reclaim does not
+	//    depend on the status: a database whose backend is closed or failed
+	//    still owns its objects (reclaimDatabaseObjects).
+	if err := m.reclaimDatabaseObjects(key, db); err != nil {
+		return &DropError{Name: name, Err: err}
+	}
 	if db.Status() == StatusOpen || db.Status() == StatusSealed {
 		if err := db.Close(); err != nil {
 			return &DropError{Name: name, Err: err}
@@ -1004,7 +1169,17 @@ func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 	//    incarnation is a successor created since the check in step 1b:
 	//    what this drop removed above was still its own, because the
 	//    successor cannot open here while the drop holds the name's claim,
-	//    and its entry goes with it.
+	//    and its entry goes with it. An object-storage database's namespace
+	//    release is recorded first (releasingDir), so a release that fails
+	//    in step 6, or never runs because the node stops after the delete,
+	//    is retried (retryNamespaceReleases).
+	releaseFile := ""
+	if db.Config().Backend == BackendObjstore {
+		var err error
+		if releaseFile, err = m.recordRelease(key, db.Config(), db.Incarnation(), false); err != nil {
+			return &DropError{Name: name, Err: err}
+		}
+	}
 	if err := os.RemoveAll(m.dbDir(key.tenant, name)); err != nil {
 		return &DropError{Name: name, Err: err}
 	}
@@ -1021,6 +1196,21 @@ func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 	//    adjacent to it, so the window in which the two disagree is as narrow
 	//    as it can be made without a persisted marker (go-qrdb#425).
 	m.databases.CompareAndDelete(key, db)
+
+	// 6. The provider namespace an object-storage database owned. Only now,
+	//    with the record gone, does the owner marker go: until the record
+	//    is deleted a retry of this drop reopens the namespace as its owner,
+	//    and no other database may claim it. The drop is complete whatever
+	//    the release returns; a release that fails keeps its entry from
+	//    step 4, is logged, and is retried at the next boot or object-storage
+	//    create (retryNamespaceReleases).
+	if err := m.releaseDatabaseNamespace(key, db.Config(), false); err != nil {
+		m.logger.Warn("database dropped; object-storage namespace not released",
+			slog.String("name", name), slog.String("error", err.Error()))
+	} else if err := m.forgetRelease(key.tenant, key.name, releaseFile); err != nil {
+		m.logger.Warn("database dropped; failed to forget its namespace release entry",
+			slog.String("name", name), slog.String("error", err.Error()))
+	}
 
 	m.logger.Info("database dropped", slog.String("name", name))
 	return nil
@@ -1448,6 +1638,7 @@ func metaFromConfig(cfg DatabaseConfig, dropping bool, incarnation string) Datab
 		Barrier:      cfg.Barrier,
 		Connection:   cfg.Connection,
 		SQL:          cfg.SQL,
+		Objstore:     cfg.Objstore,
 		Dropping:     dropping,
 		Incarnation:  incarnation,
 	}
@@ -1682,6 +1873,9 @@ func (m *Manager) OpenAll(ctx context.Context) error {
 			continue
 		}
 	}
+	// Namespaces of databases dropped here whose release failed, or never
+	// ran because the node stopped mid-drop.
+	m.retryNamespaceReleases(ctx)
 	return nil
 }
 

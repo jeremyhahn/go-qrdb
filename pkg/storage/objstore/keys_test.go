@@ -322,7 +322,10 @@ func TestList_PrefixNarrowsAcrossBothNameForms(t *testing.T) {
 func TestList_SkipsNamesThatAreNotRecords(t *testing.T) {
 	e := newMemEngine(t)
 	require.NoError(t, e.Set([]byte("real"), []byte("v")))
-	for _, name := range []string{"k/.tmp-123", "k/6B31_", "h/.tmp-123", "h/abc", "other/object"} {
+	// go-objstore refuses a Put of a ".tmp-" segment (reserved for a
+	// provider's temporary file), so those names are covered by the
+	// decodeDirectName and isHashedName cases above, not planted here.
+	for _, name := range []string{"k/6B31_", "h/abc", "other/object"} {
 		require.NoError(t, e.store.Put(name, strings.NewReader("x")))
 	}
 	got, err := e.List(nil)

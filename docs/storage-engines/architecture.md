@@ -314,6 +314,28 @@ the data by reading it out through the binary that wrote it and writing it
 in through this one, or start the store empty. The store must be dedicated to the engine:
 any object the engine did not write makes an unmarked store non-empty.
 
+**One owner per namespace.** A store opened with `WithOwner` also carries an
+owner marker object (`qrdb-objstore-owner`) beside the format marker, written
+on the first owned open and holding the owner's name. Each object-storage
+database opens its namespace as its own owner and the standalone node's store
+as `NodeStoreOwner`, so a second database configured onto the same bucket or
+path is refused at open (`NamespaceOwnedError`) instead of reading,
+overwriting or reclaiming the first one's objects, and no database opens the
+node's store (`NamespaceInUseError`). In one process a namespace is open by
+one owner at a time (`NamespaceInUseError`), and a `local` root nested in, or
+holding, another open engine's root is refused (`OverlappingRootError`). A
+namespace is identified by its provider and location settings in canonical
+form (`NamespaceKey`): a symlinked root and its target are one namespace, an
+S3 or Azure endpoint is compared in canonical form, and a GCS namespace is its
+bucket, not its project. The marker outlives `Reclaim`, so the namespace stays
+its owner's through a drop until the database's catalog record is gone; the
+drop then gives it up with `ReleaseOwner`, which deletes the marker only when
+it names that owner and nothing else remains, and a failed create gives its
+claim back with `ReleaseClaim` (a fresh namespace whole; on pre-existing data
+only the marker it wrote, through `ReleaseOwnerMarker`). A give-back that
+fails is retried later with the same rule: a claim on pre-existing data is
+released claim-only, removing the marker and keeping every record.
+
 ### Alternatives rejected
 
 - **One engine.** Rejected: memory is required for tests to be fast and
@@ -451,11 +473,13 @@ the model itself:
   a hashed name (a key longer than about 500 bytes) cannot narrow a listing,
   so every hashed record is read for its key.
 - **It is outside the barrier.** The barrier's encrypting file system does
-  not reach a provider's objects, so the flat engine's objects are plaintext.
-- **It is refused where a database needs it.** A per-database `objstore`
-  backend is refused when the database opens
-  (`database.InvalidBackendError`), and `objstore` is refused as a Raft hot
-  apply path.
+  not reach a provider's objects, so the flat engine's objects are plaintext;
+  a sealed node refuses a database's `backend: objstore`
+  (`database.SealedNodeBackendError`).
+- **It is refused as a Raft hot apply path.** A database's
+  `backend: objstore` opens the flat engine from its own provider, settings
+  and credential files (`openStorage` through the `objstoredb.Open` opener),
+  but `objstore` is refused as a Raft state machine.
 
 ### Direction this design proposes
 
@@ -809,8 +833,10 @@ encoded-name layout is refused at open (OS-5).
   neither a qrdb key type nor anything key-shaped — only object names.
 
 **Phase 2 — wire a database's `backend: objstore` as a non-replicated binding.**
-Remove the `database.InvalidBackendError` refusal at `openStorage` for
-`backend: objstore`; route it through `remotelsm.WithRemote` like any other
+The `database.InvalidBackendError` refusal at `openStorage` is gone (owner
+ruling 633(b)): `openStorage` opens the objstore engine directly with the
+credential handle, through the factory's `database.WithObjectStorage` opener
+(`objstoredb.Open`), so a lean embedder links no go-objstore. Phase 2 would instead route it through `remotelsm.WithRemote` like any other
 non-replicated binding. The surrounding binding resolution is the databases
 feature's ([../databases/architecture.md](../databases/architecture.md));
 this phase owns only the storage side.

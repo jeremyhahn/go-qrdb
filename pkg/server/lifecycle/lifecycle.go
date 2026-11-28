@@ -54,6 +54,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/objstoredb"
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
 	"github.com/jeremyhahn/go-qrdb/pkg/group"
 	"github.com/jeremyhahn/go-qrdb/pkg/invite"
@@ -1016,7 +1017,8 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		if dbDefaults.RunMode == "" {
 			dbDefaults.RunMode = database.RunModeForBackend(infra.Backend)
 		}
-		dbManager = database.NewManager(log, infra.DataDir, database.WithDefaults(dbDefaults))
+		dbManager = database.NewManager(log, infra.DataDir, database.WithDefaults(dbDefaults),
+			database.WithSealedNode(infra.SealBarrier != nil), database.WithBackendFactory(objstoredb.NewBackendFactory()))
 		n.addCloser(func() error { return dbManager.Close() })
 	}
 

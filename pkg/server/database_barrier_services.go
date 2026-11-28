@@ -58,18 +58,16 @@ import (
 // operation); NewNamedBackendKVService translates that into a
 // service.BarrierSealedError so transports map it to their standard
 // sealed-barrier status instead of a generic internal error.
-// Collection here is NOT wired with a SequenceServicer
-// (service.CollectionService.WithSequenceService): SequenceService requires
-// an MVCC read (for a key's ModRevision) and a TransactionServicer (for the
-// compare-and-swap that advances it), and this path's plain
-// database.Backend has neither -- it is not a Raft state machine. A
-// collection on this path using IDStrategyIncrement therefore still uses
-// the legacy process-local generator (see
-// CollectionService.getOrCreateIDGen) and inherits its known duplicate-ID
-// risk across a process restart. Closing that gap requires either an MVCC
-// layer over database.Backend or a different sequence-allocation primitive
-// for non-Raft backends; that is an architecture decision outside the scope
-// of this change.
+// Collection here is wired with a SequenceServicer
+// (service.CollectionService.WithSequenceService) built over the same KV
+// handle by value compare-and-swap (service.NewValueSequenceService): this
+// path's plain database.Backend has no MVCC revision or transaction layer
+// for service.NewSequenceService, but its database.AtomicBackend guarded
+// writes advance a sequence as safely on one node. The sequence state lives
+// in the database's own store, so an IDStrategyIncrement collection
+// continues its IDs across a close and reopen instead of restarting a
+// process-local counter. A backend without the atomic writes refuses the
+// allocation (kvstore.ErrAtomicWriteUnsupported) rather than degrading.
 func buildDedicatedStoreServices(db *database.Database) *DatabaseServices {
 	// dropCheck is run by every mutating BackendKVService method before it
 	// delegates to db.Backend(), so a handle resolved before a
@@ -87,7 +85,7 @@ func buildDedicatedStoreServices(db *database.Database) *DatabaseServices {
 	return &DatabaseServices{
 		Name:       db.Name(),
 		KV:         kv,
-		Collection: service.NewCollectionService(kv),
+		Collection: service.NewCollectionService(kv).WithSequenceService(service.NewValueSequenceService(kv)),
 	}
 }
 

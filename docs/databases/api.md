@@ -175,8 +175,12 @@ QUIC or MCP is refused as an unknown field, and on gRPC the field numbered 2
 in `DatabaseCreateRequest` and `DatabaseInfoResponse` is
 `reserved 2; reserved "engine";` so there is no field to set (OD-13).
 `backend` is `memory`, `file`, `pebble`, `raft` or `objstore`. The backend
-does not decide where most databases' data lives, and
-`objstore` is refused when the store is opened — see
+does not decide where most databases' data lives. `objstore` opens the
+database's own object store from the `objstore` block of its node-config
+entry (`databases[].objstore`, see
+[../storage-engines/cli.md](../storage-engines/cli.md)); a create request
+carries no such block, so an `objstore` database created through the API
+fails when its store is opened (`database.StorageCreateError`) — see
 [architecture.md](architecture.md) "Current state".
 
 ### Target: create and info (remaining, unshipped)

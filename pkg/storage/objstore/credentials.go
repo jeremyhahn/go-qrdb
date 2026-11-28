@@ -84,6 +84,7 @@ type Option func(*options)
 
 type options struct {
 	credentials CredentialFiles
+	owner       string
 	ownerOnly   bool
 }
 
@@ -96,6 +97,22 @@ type options struct {
 func WithCredentialFiles(files CredentialFiles) Option {
 	return func(o *options) { o.credentials = files }
 }
+
+// WithOwner names the owner of the provider namespace the engine opens. The
+// first open records owner in the namespace, outside every key, and every
+// later open with a different owner is refused with *NamespaceOwnedError, so
+// two databases configured onto one bucket or path cannot read, overwrite or
+// reclaim each other's objects. Reclaim keeps the record; ReleaseOwner (or
+// ReleaseClaim, for an open whose create failed) removes it. An empty
+// owner records and checks nothing.
+func WithOwner(owner string) Option {
+	return func(o *options) { o.owner = owner }
+}
+
+// readFileHandle reads a credential file into a protected-memory handle. It
+// is a variable so a test can observe each handle openCredentials opens,
+// including one a later failure must destroy.
+var readFileHandle = secure.ReadFileHandle
 
 // WithOwnerOnlyTree has New keep a filesystem provider's tree, the data root
 // and its journal sibling, owner-only: each root is created 0700 and refused
@@ -119,14 +136,14 @@ func openCredentials(files CredentialFiles) (objcommon.Credentials, func(), erro
 		return objcommon.Credentials{}, release, err
 	}
 	if files.KeyFile != "" {
-		h, err := secure.ReadFileHandle(files.KeyFile)
+		h, err := readFileHandle(files.KeyFile)
 		if err != nil {
 			return objcommon.Credentials{}, release, &CredentialFileError{Credential: CredentialKey, File: files.KeyFile, Err: err}
 		}
 		creds.Key = h
 	}
 	if files.SecretFile != "" {
-		h, err := secure.ReadFileHandle(files.SecretFile)
+		h, err := readFileHandle(files.SecretFile)
 		if err != nil {
 			return objcommon.Credentials{}, release, &CredentialFileError{Credential: CredentialSecret, File: files.SecretFile, Err: err}
 		}

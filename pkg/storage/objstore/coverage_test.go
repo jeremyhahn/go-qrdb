@@ -394,12 +394,14 @@ func TestSnapshot_GetErrors(t *testing.T) {
 }
 
 func TestSnapshot_LoadEntriesError(t *testing.T) {
-	// Call newSnapshot directly on a closed engine that has a key. loadEntries
-	// will fail when calling e.Get on the entry after successfully listing it.
+	// A closed engine that has a key refuses the snapshot at admission
+	// (enter): its scan reads values through the admitted get, which never
+	// re-checks closed, so the refusal is made once, before any read.
 	e := newMemEngine(t)
 	require.NoError(t, e.Set([]byte("k"), []byte("v")))
 	require.NoError(t, e.Close())
 
-	_, err := newSnapshot(e)
-	require.Error(t, err)
+	_, err := e.Snapshot()
+	var closedErr *storage.ClosedError
+	require.ErrorAs(t, err, &closedErr)
 }

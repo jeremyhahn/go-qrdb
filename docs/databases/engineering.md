@@ -652,6 +652,82 @@ Invariants:
     has attached the reclaimer and the system shard has a known leader —
     marking the name live is a Raft write. An invalid configured database
     is still rejected before the node starts.
+  - **A dropped object-storage database's namespace is released after its
+    record, from a ledger.** The database owns its provider namespace
+    (the `qrdb-objstore-owner` marker,
+    [../storage-engines/engineering.md](../storage-engines/engineering.md#invariants))
+    until its drop completes. Before step 4 deletes the catalog record,
+    `Manager.drop` records the release in the node-local ledger under
+    `<data-dir>/releasing/`, beside `dropped/`: one directory per (tenant,
+    name) holding one file per dropped incarnation, so a name dropped,
+    re-created and dropped again keeps every namespace it must release. An
+    entry holds the backend, the provider, its settings and the credential
+    FILE PATHS, never their contents. Step 6, after the delete, releases the
+    namespace (`ReleaseOwner`: reclaim, then delete the owner marker when it
+    names this database and nothing else remains) and forgets the entry;
+    until the record is gone a retried drop reopens the namespace as its
+    owner and no other database can claim it. A release that fails is
+    logged ("database dropped; object-storage namespace not released"), the
+    drop still succeeds, and the entry stays. `retryNamespaceReleases`
+    retries every entry at the end of `Manager.OpenAll` and before an
+    object-storage create, each under its name's claim: an entry whose drop
+    is still under way (the name is dropping here, or its record still
+    carries the same incarnation's drop fence) is left to that drop; an entry
+    whose name has no record is released and forgotten. An entry whose name
+    was re-created is forgotten when the live database holds the same
+    namespace, released when it provably holds another one, and kept, with
+    a WARN, when that cannot be told (no namespacer wired, a root that no
+    longer resolves): the manager compares the two namespaces through the
+    `database.WithObjectStorageNamespace` namespacer (`objstoredb.Namespace`,
+    which returns `objstore.NamespaceKey`), since `ReleaseOwner` would reclaim
+    records the live database shares.
+  - **A failed create gives its namespace claim back.** `createUndo` calls
+    `ReleaseClaim` on every backend it opened before closing it: a
+    namespace the open claimed fresh is reclaimed and released, on a
+    namespace that held data before only the owner marker the open wrote is
+    deleted (the data stays), and one already this database's is left as
+    it was, so a failed create reserves no bucket or path. An open that
+    wrote its owner marker and failed after it gives the claim back itself;
+    when that undo fails as well (`objstore.ClaimUndoError`) no backend is
+    left to release it, so `Manager.create` records a ledger entry for the
+    new incarnation and `retryNamespaceReleases` releases the namespace.
+    An entry for a claim-only open (the namespace held data before) is
+    released without opening the engine: the
+    `database.WithObjectStorageMarkerRelease` releaser
+    (`objstoredb.ReleaseOwnerMarker`, `objstore.ReleaseOwnerMarkerOf`)
+    deletes only the owner marker when it names this database, so a
+    namespace whose journal fails every open is still given back with its
+    records untouched. `Engine.ReleaseOwner` returns
+    `objstore.NamespaceRetainedError` when objects outside this database's
+    records keep the marker, and the entry stays until a retry releases it.
+    A `ReleaseClaim` that fails in `createUndo` (the open succeeded, a later
+    create step failed) records the same entry (`createUndo.recordClaimRelease`;
+    a failure to record it is logged).
+  - **A claim on existing data is released claim-only.** The entry of a
+    claim that was not fresh (`ClaimUndoError.Fresh` unset, or the
+    backend's `FreshlyClaimed` false) carries `claim_only`
+    (`releaseEntry.ClaimOnly`): its retry reopens the namespace as that
+    incarnation and calls `ReleaseOwnerMarker`, which removes only the owner
+    marker while it names that incarnation; the records, journal and format
+    marker that no database owned stay. Every other entry reclaims the
+    namespace whole (`ReleaseOwner`).
+  - **A live record of the entry's own incarnation keeps the entry.** A
+    failed create whose own catalog delete failed too
+    (`CatalogOrphanError`) leaves a live record of the entry's incarnation;
+    the retry treats it like a drop still under way, not a re-created name,
+    and keeps the entry. The record's drop releases the namespace and
+    forgets the entry.
+  - **The namespace owner names the incarnation.** Every object-storage
+    database gets an incarnation, with or without a keyspace reclaimer, and
+    the manager opens its namespace as that incarnation
+    (`DatabaseConfig.Incarnation`: from the new incarnation at create, the
+    catalog record at open, the ledger entry at a retried release). A
+    release by a dropped incarnation is refused a namespace another
+    incarnation owns (`NamespaceOwnedError`, or `NamespaceInUseError` while
+    the successor is open in this process); the release counts as done,
+    reclaims nothing and forgets its entry. A re-create of the name on the
+    same namespace is refused until the dropped incarnation's release
+    completes.
   - **A failed drop is rolled back completely or not at all.** The rollback
     always restores the marker to the database's incarnation — a fence
     write that reported failure may have committed — under
@@ -1065,6 +1141,8 @@ How a claim works:
 | The data directory holds a database record written before the catalog (a `meta.json` in a database's directory) | `database.UnmigratedDatabasesError` from `OpenAll`, naming every such file; the node does not start | **yes** — never started with those databases unlisted |
 | The placement table cannot be read while resolving a dedicated-raft fence | the read error surfaces; it is never reported as an unknown database | **yes** |
 | A key, index or vector namespace cannot be reclaimed | `database.KeyspaceReclaimError` wrapping the cause; the drop fails and both fences clear (Status was never touched) | **yes** |
+| An object-storage database is created onto a bucket or path another database (or the node's own store) owns | `database.StorageCreateError` wrapping `objstore.NamespaceOwnedError` or `objstore.NamespaceInUseError`; the create is rolled back and the other owner's objects and marker are untouched | **yes** |
+| An object-storage database's drop cannot release its provider namespace (step 6) | the drop succeeds; one WARN; the `<data-dir>/releasing/` entry stays and is retried at the end of `OpenAll` and before the next object-storage create; a re-created name whose namespace cannot be compared keeps the entry, never guesses | no — the namespace stays the dropped database's until the retry |
 | A drop names the default database | `database.DefaultDatabaseDropError` (REST 400 / gRPC and QUIC InvalidArgument), before anything is touched | **yes** |
 | A drop is already in flight for the database | `database.DropInProgressError` | **yes** |
 | Any operation resolves a database whose drop is in flight | `database.DroppingError` (REST 409 / gRPC and QUIC Aborted) | **yes** |

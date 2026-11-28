@@ -11,10 +11,45 @@ an engine; none of them expose the engine itself.
 
 What is observable over the wire is a database's configured backend, through
 [../databases/api.md](../databases/api.md): `DatabaseInfo.Backend`
-(`pebble | memory | file | raft`) and `DatabaseInfo.DataDir`. A per-database
-`objstore` backend passes config validation but is refused when the database
-opens (`database.InvalidBackendError`); `objstore` serves only as the
-standalone node's `storage.backend`.
+(`pebble | memory | file | raft`) and `DatabaseInfo.DataDir`. A database's
+`backend: objstore` opens the objstore engine from the database's own
+`objstore` settings (`provider`, `settings`, `key_file`, `secret_file`):
+`openStorage` calls the backend factory's object-storage opener,
+`objstoredb.Open` (`pkg/database/objstoredb`), which calls `objstore.New`
+with `objstore.WithCredentialFiles`, so the engine opens the credential
+handle and never holds a plaintext copy; an open that fails returns
+`database.StorageCreateError` wrapping the objstore error
+(`objstore.CredentialFileError`, `objstore.UnsupportedProviderError`).
+`pkg/database` does not link the engine: the opener and the settings
+validator are wired with
+`database.NewEmbeddedBackendFactory(database.WithObjectStorage(objstoredb.Open), database.WithObjectStorageValidator(objstoredb.ValidateSettings), database.WithObjectStorageNamespace(objstoredb.Namespace), database.WithObjectStorageMarkerRelease(objstoredb.ReleaseOwnerMarker))`
+(`objstoredb.NewBackendFactory`), which `qrdbd` and the server lifecycle do.
+The marker releaser, `objstoredb.ReleaseOwnerMarker`
+(`objstore.ReleaseOwnerMarkerOf`), deletes a database's owner marker without
+opening the engine, so a failed create's claim on a namespace that held data
+before is given back even when that namespace's journal fails every open; a
+Go SDK node wires it with
+`node.WithObjectStorageMarkerRelease(objstoredb.ReleaseOwnerMarker)`.
+`objstoredb.Open` opens each database as the owner of its provider namespace
+(`objstore.WithOwner`), so a second database on the same bucket or path fails
+with `database.StorageCreateError` wrapping `objstore.NamespaceOwnedError`.
+The namespacer, `objstoredb.Namespace`, returns `objstore.NamespaceKey` of a
+database's provider and settings; the manager uses it to tell whether a name
+dropped and re-created holds the dropped incarnation's namespace, and without
+it (a lean embedder, or a Go SDK node without
+`node.WithObjectStorageNamespace(objstoredb.Namespace)`) such a release stays
+pending rather than guessed.
+`Manager.Create` runs the validator on a database's `objstore` block, whatever
+its backend, before the catalog write, so an inline credential
+(`database.ObjstoreCredentialSettingError`) never reaches the replicated
+catalog record. A lean embedder — `pkg/database` or the Go SDK node without
+the seam — refuses such a database, and any `objstore` block, with
+`database.ObjectStorageNotWiredError`; a Go SDK standalone node serves it
+when built with `node.WithObjectStorage(objstoredb.Open)` and
+`node.WithObjectStorageValidator(objstoredb.ValidateSettings)`. A node running under the seal
+refuses such a database at create (`database.SealedNodeBackendError`),
+opener or not: the barrier never reaches a provider's objects. `objstore`
+also serves as the standalone node's `storage.backend`.
 
 ### Optional `GuardedStorage`
 
@@ -172,11 +207,12 @@ The wire surface does not change shape:
 
 Shipped: the capability report's `unencryptedAtRest` list no longer names a
 standalone `objstore` store under the seal, because every remote object is
-encrypted through the barrier (OS-4). Two things a caller observes today
-would change:
+encrypted through the barrier (OS-4). A database's `backend: objstore` already
+opens, on the one-object-per-key objstore engine from its own provider,
+settings and credential files (a sealed node refuses it,
+`database.SealedNodeBackendError`). One refusal a caller observes today
+stays:
 
-- **A database's `backend: objstore`** stops being refused when the database
-  opens (`database.InvalidBackendError`), in phase 2 of the design.
 - **`raft.sm_storage`/`state_storage: objstore`** stays refused (see
   [engineering.md](engineering.md)'s error table). Lifting the Raft
   hot-apply-path refusal is OS-7, deferred to a gated phase 3, and is called

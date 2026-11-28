@@ -58,6 +58,11 @@ records which pool and slot the tenant got, and each node maps that to its own
 disk. No flag pins a path: a path names one node's disk, so a dedicated disk
 is configured as a volume pool on every node instead.
 
+A database created with `backend: objstore` keeps its data in its own
+object-storage provider under every isolation type, `volume` and `raft`
+included: it is served from its own store, never from the tenant's volume or
+shard, and no other tenant can reach it.
+
 For a `prefix` tenant the CSR is signed by the tenant's own CA. For a
 `barrier`, `volume` or `raft` tenant it is signed by the cluster CA, because
 the tenant's own CA sits behind a barrier that stays sealed until the admin

@@ -58,12 +58,22 @@ func OpenStore(provider string, settings map[string]string, opts ...Option) (obj
 		return nil, err
 	}
 	// As New does, but with no journal: a store on a symlinked root is
-	// reopened on its physical root, else its walk lists nothing.
-	store, _, err = canonicalStore(provider, create, settings, store, creds)
+	// reopened on its physical root, else its walk lists nothing. The
+	// store a reopen replaces is released at once, and the opened store is
+	// released if the reopen fails: the caller only ever holds the store
+	// returned.
+	canonical, physical, err := canonicalStore(provider, create, settings, store, creds)
 	if err != nil {
+		_ = closeStores(store)
 		return nil, err
 	}
-	return store, nil
+	if _, walked := walkedRoots[provider]; walked && physical != settings[walkedRoots[provider]] {
+		if err := closeStores(store); err != nil {
+			_ = closeStores(canonical)
+			return nil, err
+		}
+	}
+	return canonical, nil
 }
 
 // openStore is the store resolution New and OpenStore share: it refuses an

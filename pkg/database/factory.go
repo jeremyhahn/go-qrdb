@@ -16,6 +16,7 @@ package database
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
@@ -38,16 +39,188 @@ type BackendFactory interface {
 
 // EmbeddedBackendFactory creates standalone backends backed by local storage
 // engines (memory, file, pebble).
-type EmbeddedBackendFactory struct{}
+type EmbeddedBackendFactory struct {
+	objectStorage          ObjectStorageOpener
+	objectStorageValidate  ObjectStorageSettingsValidator
+	objectStorageNamespace ObjectStorageNamespacer
+	objectStorageRelease   ObjectStorageMarkerReleaser
+}
+
+// ObjectStorageSettingsValidator checks a database's Objstore provider
+// settings before the database is written to the catalog, which replicates
+// them to every node: it refuses an inline credential, returning
+// *ObjstoreCredentialSettingError. pkg/database does not link go-objstore,
+// which owns the set of credential setting names, so the node composer
+// supplies it (pkg/database/objstoredb.ValidateSettings).
+type ObjectStorageSettingsValidator func(settings map[string]string) error
+
+// ObjectStorageOpener opens the storage of a `backend: objstore` database
+// from its DatabaseConfig. pkg/database does not link an object-storage
+// engine itself, so a lean embedder stays free of go-objstore; the node
+// composer supplies the opener (pkg/database/objstoredb.Open).
+type ObjectStorageOpener func(cfg DatabaseConfig) (storage.Storage, error)
+
+// EmbeddedBackendFactoryOption configures an EmbeddedBackendFactory.
+type EmbeddedBackendFactoryOption func(*EmbeddedBackendFactory)
+
+// WithObjectStorage supplies the opener for `backend: objstore` databases.
+// Without it the factory refuses such a database with
+// *ObjectStorageNotWiredError.
+func WithObjectStorage(open ObjectStorageOpener) EmbeddedBackendFactoryOption {
+	return func(f *EmbeddedBackendFactory) {
+		f.objectStorage = open
+	}
+}
+
+// WithObjectStorageValidator supplies the settings validator for a
+// database's Objstore block, whatever its backend. Without it the factory
+// refuses any Objstore block with *ObjectStorageNotWiredError.
+func WithObjectStorageValidator(validate ObjectStorageSettingsValidator) EmbeddedBackendFactoryOption {
+	return func(f *EmbeddedBackendFactory) {
+		f.objectStorageValidate = validate
+	}
+}
+
+// ValidateObjectStorage checks cfg's Objstore block through the
+// WithObjectStorageValidator validator. A config without one is valid; one
+// with a block and no validator wired is refused with
+// *ObjectStorageNotWiredError. The Manager calls it before the catalog write.
+func (f *EmbeddedBackendFactory) ValidateObjectStorage(cfg DatabaseConfig) error {
+	if cfg.Objstore == nil {
+		return nil
+	}
+	if f.objectStorageValidate == nil {
+		return &ObjectStorageNotWiredError{Name: cfg.Name}
+	}
+	return f.objectStorageValidate(cfg.Objstore.Settings)
+}
+
+// objectStorageValidating is a BackendFactory that validates a database's
+// Objstore block (EmbeddedBackendFactory.ValidateObjectStorage).
+type objectStorageValidating interface {
+	ValidateObjectStorage(cfg DatabaseConfig) error
+}
+
+// validateObjectStorage checks cfg's Objstore block through factory. A
+// factory that cannot validate one refuses it with *ObjectStorageNotWiredError,
+// so an unchecked setting never reaches the catalog.
+func validateObjectStorage(factory BackendFactory, cfg DatabaseConfig) error {
+	if cfg.Objstore == nil {
+		return nil
+	}
+	v, ok := factory.(objectStorageValidating)
+	if !ok {
+		return &ObjectStorageNotWiredError{Name: cfg.Name}
+	}
+	return v.ValidateObjectStorage(cfg)
+}
+
+// ObjectStorageNamespacer names the provider namespace an object-storage
+// database's configuration resolves to: two configurations with one key
+// address one namespace (a symlinked local root and its target, two
+// spellings of one endpoint). A seam, as ObjectStorageSettingsValidator is,
+// so this package does not import the object-storage engine.
+type ObjectStorageNamespacer func(cfg DatabaseConfig) (string, error)
+
+// ErrObjectStorageNamespaceUnknown is returned by ObjectStorageNamespace
+// when no ObjectStorageNamespacer is wired: the namespace of a configuration
+// cannot be told, so nothing may be released on the strength of it.
+var ErrObjectStorageNamespaceUnknown = errors.New("database: object-storage namespace unknown: no namespacer is wired")
+
+// WithObjectStorageNamespace wires the namespacer the manager uses to tell
+// whether a dropped database's namespace is the one a re-created database of
+// its name holds (the namespace release retry).
+func WithObjectStorageNamespace(ns ObjectStorageNamespacer) EmbeddedBackendFactoryOption {
+	return func(f *EmbeddedBackendFactory) {
+		f.objectStorageNamespace = ns
+	}
+}
+
+// ObjectStorageNamespace returns the namespace key of cfg's object storage
+// (ObjectStorageNamespacer), or ErrObjectStorageNamespaceUnknown when no
+// namespacer is wired.
+func (f *EmbeddedBackendFactory) ObjectStorageNamespace(cfg DatabaseConfig) (string, error) {
+	if f.objectStorageNamespace == nil {
+		return "", ErrObjectStorageNamespaceUnknown
+	}
+	return f.objectStorageNamespace(cfg)
+}
+
+// objectStorageNamespacing is the namespacer side of a BackendFactory.
+type objectStorageNamespacing interface {
+	ObjectStorageNamespace(cfg DatabaseConfig) (string, error)
+}
+
+// objectStorageNamespace returns the namespace key of cfg's object storage
+// through factory, or ErrObjectStorageNamespaceUnknown when factory has no
+// namespacer.
+func objectStorageNamespace(factory BackendFactory, cfg DatabaseConfig) (string, error) {
+	n, ok := factory.(objectStorageNamespacing)
+	if !ok {
+		return "", ErrObjectStorageNamespaceUnknown
+	}
+	return n.ObjectStorageNamespace(cfg)
+}
+
+// ObjectStorageMarkerReleaser deletes the owner marker of an object-storage
+// database's namespace while it names cfg's incarnation, without opening the
+// engine: no claim and no journal recovery, so a namespace whose journal is
+// corrupt is still released (a claim-only release, releaseEntry.ClaimOnly).
+// A marker naming another owner, or none, is a completed release. A seam, as
+// ObjectStorageNamespacer is.
+type ObjectStorageMarkerReleaser func(cfg DatabaseConfig) error
+
+// ErrObjectStorageMarkerReleaseUnknown is returned by ReleaseObjectStorageMarker
+// when no ObjectStorageMarkerReleaser is wired: the claim cannot be given
+// back, so its release entry stays.
+var ErrObjectStorageMarkerReleaseUnknown = errors.New("database: object-storage owner marker release unknown: no releaser is wired")
+
+// WithObjectStorageMarkerRelease wires the releaser the manager uses to give
+// back a failed create's claim on a namespace that held data before it.
+func WithObjectStorageMarkerRelease(r ObjectStorageMarkerReleaser) EmbeddedBackendFactoryOption {
+	return func(f *EmbeddedBackendFactory) {
+		f.objectStorageRelease = r
+	}
+}
+
+// ReleaseObjectStorageMarker releases cfg's owner marker
+// (ObjectStorageMarkerReleaser), or returns
+// ErrObjectStorageMarkerReleaseUnknown when no releaser is wired.
+func (f *EmbeddedBackendFactory) ReleaseObjectStorageMarker(cfg DatabaseConfig) error {
+	if f.objectStorageRelease == nil {
+		return ErrObjectStorageMarkerReleaseUnknown
+	}
+	return f.objectStorageRelease(cfg)
+}
+
+// objectStorageMarkerReleasing is the marker-releaser side of a
+// BackendFactory.
+type objectStorageMarkerReleasing interface {
+	ReleaseObjectStorageMarker(cfg DatabaseConfig) error
+}
+
+// releaseObjectStorageMarker releases cfg's owner marker through factory, or
+// returns ErrObjectStorageMarkerReleaseUnknown when factory has no releaser.
+func releaseObjectStorageMarker(factory BackendFactory, cfg DatabaseConfig) error {
+	r, ok := factory.(objectStorageMarkerReleasing)
+	if !ok {
+		return ErrObjectStorageMarkerReleaseUnknown
+	}
+	return r.ReleaseObjectStorageMarker(cfg)
+}
 
 // NewEmbeddedBackendFactory creates a new EmbeddedBackendFactory.
-func NewEmbeddedBackendFactory() *EmbeddedBackendFactory {
-	return &EmbeddedBackendFactory{}
+func NewEmbeddedBackendFactory(opts ...EmbeddedBackendFactoryOption) *EmbeddedBackendFactory {
+	f := &EmbeddedBackendFactory{}
+	for _, opt := range opts {
+		opt(f)
+	}
+	return f
 }
 
 // Create creates a StandaloneBackend for the given configuration.
 func (f *EmbeddedBackendFactory) Create(cfg DatabaseConfig, dataDir string) (Backend, error) {
-	store, err := openStorage(cfg.Name, cfg.Backend, dataDir)
+	store, err := openStorage(cfg, dataDir, f.objectStorage)
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +297,8 @@ func (b *RemoteBackend) Close() error {
 }
 
 // openStorage creates a storage.Storage for the given backend type.
-func openStorage(name string, backend BackendType, dataDir string) (storage.Storage, error) {
+func openStorage(cfg DatabaseConfig, dataDir string, objectStorage ObjectStorageOpener) (storage.Storage, error) {
+	name, backend := cfg.Name, cfg.Backend
 	switch backend {
 	case BackendMemory:
 		return memory.NewStorage(), nil
@@ -137,6 +311,18 @@ func openStorage(name string, backend BackendType, dataDir string) (storage.Stor
 	case BackendPebble:
 		cfg := pebble.DefaultConfig(dataDir)
 		store, err := pebble.New(cfg, pebble.WithSyncObserver(storageSyncs(syncwatch.BackendPebble, name, dataDir)))
+		if err != nil {
+			return nil, &StorageCreateError{Name: name, Backend: string(backend), Err: err}
+		}
+		return store, nil
+	case BackendObjstore:
+		// The objstore engine keeps its data in the provider, not under the
+		// database's data root. The opener comes from the node composer, so
+		// a lean embedder without one refuses the database.
+		if objectStorage == nil {
+			return nil, &ObjectStorageNotWiredError{Name: name}
+		}
+		store, err := objectStorage(cfg)
 		if err != nil {
 			return nil, &StorageCreateError{Name: name, Backend: string(backend), Err: err}
 		}

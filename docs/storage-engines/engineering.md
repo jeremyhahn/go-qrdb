@@ -202,6 +202,49 @@ The volume pool surface is in
   system cannot unwrap a file's key, so the engine returns `seal.ErrSealed`.
   `Exists` and `Delete` fail the same way, because an encrypted store names
   its records under a record-name key that is read through the barrier.
+- **A database's object-storage namespace has one owner.** `objstore.New`
+  with `objstore.WithOwner` records the owner in the owner marker object
+  (`qrdb-objstore-owner`, beside the format marker, outside every key) on the
+  first open, and refuses every later open by a different owner with
+  `objstore.NamespaceOwnedError`, so two databases configured onto one bucket
+  or path cannot read, overwrite or reclaim each other's objects;
+  `objstoredb.Open` opens each database as its own owner, and the standalone
+  node's store opens as `objstore.NodeStoreOwner`, which no database may
+  open. Within one process a namespace is open by one owner at a time: an
+  open by another owner, or unowned, while it is held, or of a namespace
+  recorded as the node's, is refused with `objstore.NamespaceInUseError`; a
+  `local` root nested in, or holding, another open engine's root is refused
+  with `objstore.OverlappingRootError`, since each listing would walk into
+  the other's objects. The namespace identity (`objstore.NamespaceKey`) is the
+  provider and its location settings in canonical form: a `local` root is
+  its absolute, symlink-resolved path (a symlink and its target are one
+  namespace), an `s3` namespace is its bucket and its canonical endpoint, an
+  `azure` one its account, container and canonical endpoint, and a `gcs` one
+  its bucket alone, not its project; a setting that only tunes the provider
+  does not split a namespace. `Reclaim` deletes only the canonical record
+  names (`k/`, `h/`), the commit journal and the format marker, and keeps the
+  owner marker, so a drop that stops after reclamation reopens the namespace
+  as the same owner and no other database claims it meanwhile.
+  `ReleaseOwner` reclaims, then deletes the marker only when it names this
+  owner and nothing else remains (a namespace still holding foreign objects
+  keeps it). `ReleaseClaim` gives back a failed create's claim: a namespace
+  the open claimed fresh is released whole, and on pre-existing data only the
+  owner marker the open wrote goes, while it still names this owner
+  (`ReleaseOwnerMarker`, which deletes only the marker, and only while it
+  names this owner; every record, the journal and the format marker stay).
+  `FreshlyClaimed` reports whether the open claimed the namespace new. A
+  database's owner (`objstoredb.Open`) names its tenant, its name and its
+  incarnation (`DatabaseConfig.Incarnation`, set by the manager before every
+  open, never persisted), so a database of the same tenant and name created
+  after a drop is refused the namespace while the dropped incarnation still
+  holds it, and the dropped incarnation's release, retried later, is refused
+  a namespace its successor owns and reclaims nothing of it. An `objstore.New`
+  that wrote its owner marker and then fails (commit journal recovery) gives
+  the claim back with `ReleaseClaim`'s rules before releasing its providers;
+  when that undo fails too it returns `objstore.ClaimUndoError` carrying both
+  causes and whether the claim was fresh (`Fresh`, `NamespaceClaimFresh`):
+  the later release of a claim that was not fresh is `ReleaseOwnerMarker`,
+  never `ReleaseOwner`, so data the failed open never wrote is not reclaimed.
 
 ## Configuration
 
@@ -328,6 +371,10 @@ Cloud object-storage backends come from go-objstore and are build-tag gated:
 | Objstore credential file missing, not a regular file (a FIFO is refused without blocking), not owner-only, empty or too large | refused at open (`objstore.CredentialFileError` wrapping `secure.FileHandleError` / `FileModeError` / `FileOwnerError`) naming the file, never the value | **yes** |
 | Objstore credential handle unreadable inside go-objstore | refused at open (`objstore.CredentialUnavailableError`) naming the files | **yes** |
 | Objstore opened on a non-empty store without its format marker, or with another version | refused at open (`objstore.FormatMarkerMissingError`, `objstore.FormatVersionMismatchError`) | **yes** |
+| Objstore opened onto a namespace whose owner marker names another owner (a second database on one bucket or path) | refused at open (`objstore.NamespaceOwnedError`), naming the recorded and the requesting owner; nothing read or written | **yes** |
+| Objstore opened in a process where another owner, or an unowned engine, holds the namespace open, or onto the node store's namespace (`objstore.NodeStoreOwner`) | refused at open (`objstore.NamespaceInUseError`) | **yes** |
+| Objstore `local` root nested in, or holding, the root of another open engine | refused at open (`objstore.OverlappingRootError`), naming both roots | **yes** |
+| An object-storage database's drop whose namespace release fails | the drop succeeds; one WARN; the `<data-dir>/releasing/` entry is retried at the end of `Manager.OpenAll` and before the next objstore create ([../databases/engineering.md](../databases/engineering.md)) | no |
 | Objstore `local` store holding a commit journal inside its data tree (the journal belongs in the sibling `<path>.journal` tree, derived from the physical root: absolute, cleaned and with every symlink resolved, so a symlink and its target open one data tree and one journal) | refused at open (`objstore.InTreeJournalError`); not recovered, restore from a backup | **yes** |
 | Objstore hashed record truncated, malformed, or holding a key other than its name's | refused on read and listing (`objstore.RecordCorruptError`, `objstore.KeyMismatchError`) | **yes** |
 | Non-pebble `sm_storage` with a state machine that carries its own storage (anything but `disk`, `fast`) | rejected (`SMStorageNotApplicableError`) | **yes** |
@@ -406,7 +453,10 @@ Cloud object-storage backends come from go-objstore and are build-tag gated:
   bytes), whatever its bytes, round-trips on every provider. `New` refuses a
   non-empty store lacking the `qrdb-objstore-format` marker for version `2`
   (`FormatMarkerMissingError`, `FormatVersionMismatchError`), so a store
-  written in any other layout is refused, not misread.
+  written in any other layout is refused, not misread. An owned open
+  (`WithOwner`) also writes the `qrdb-objstore-owner` marker, whose body is
+  the owner's name; it is outside every key, `Reclaim` keeps it and only
+  `ReleaseOwner` or `ReleaseClaim` deletes it (Invariants).
   There is no migration. See
   [architecture.md](architecture.md#the-objstore-engine-encoded-object-names).
   A batch commits through a single journal object (publish, apply, clear;
@@ -596,11 +646,33 @@ panic.
   is a documented performance limitation of
   phase 1, not a silent one: the adapter's doc comment says so, and the real
   fix is the ranged read requested from go-objstore.
-- **The provider credential crosses as go-objstore takes it.** `NewRemote`
-  passes the provider and its settings to go-objstore as `New` does today;
-  when the SPEC row `object-storage-credential-handle` lands, `NewRemote`
-  takes the same protected-memory credential handle and never holds a
-  plaintext copy.
+- **The provider credential crosses as a protected-memory handle.** The
+  adapter reads `storage.objstore.credentials.key_file` and `secret_file`
+  into go-enclave handles (`openCredentials`) and passes them to
+  go-objstore's `Storage.Configure(settings, common.Credentials{Key,
+  Secret})`; the backend copies the bytes out only for the call that builds
+  its SDK credential. Settings never carry a credential: an inline one is
+  refused by name, never by value (`RejectCredentialSettings`, at `qrdbd
+  start` and at every open). The adapter holds no plaintext copy and the
+  `Engine` no handle: `New` destroys both handles before it returns, on
+  success and on every error path, including a key handle already read when
+  the secret read fails (SPEC row `object-storage-credential-handle`).
+  `TestObjstoreCredentials_S3ReceivesBothCredentialsAndNeverEchoesThem`
+  proves the consumption end to end: a qrdbd built with `awss3` talks to an
+  in-test S3 endpoint that admits a request only when its SigV4 signature
+  recomputes with the key and secret generated for the run, and neither
+  value then appears in the node's output, its data or configuration
+  directory, or the bucket. The engine formats the empty bucket at open, so
+  the signed PUT of its format marker is the proof; the test then stops the
+  node. A database's own `backend: objstore` opens through the same handle
+  (`openStorage` → `objstoredb.Open`, `objstore.WithCredentialFiles`).
+- **The provider is released once, after the last call.** Every engine call
+  holds the engine's lifetime lock shared from its closed check to its
+  return, and checks closed again once it holds it. `Close` marks the engine
+  closed, waits for the calls already running, then closes each provider it
+  opened exactly once (a provider with a `Close` method); later calls are
+  refused with `storage.ClosedError` and a second `Close` releases nothing.
+  `New` releases every provider it created when the open fails.
 
 ### Configuration (target)
 

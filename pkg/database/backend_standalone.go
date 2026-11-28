@@ -312,3 +312,71 @@ func (b *StandaloneBackend) Batch(_ context.Context, ops []BatchOp) error {
 func (b *StandaloneBackend) Close() error {
 	return b.store.Close()
 }
+
+// backendReclaimer is a Backend whose store may hold data outside the node's
+// data directory; a drop reclaims it (Manager.drop, step 2).
+type backendReclaimer interface {
+	Reclaim() error
+}
+
+// Reclaim deletes the data the store holds outside the node's data directory
+// when it keeps any there (storage.Reclaimer: the object-storage engine). A
+// store held wholly inside that directory has nothing to reclaim: the drop
+// that removes the directory removes its data.
+func (b *StandaloneBackend) Reclaim() error {
+	r, ok := b.store.(storage.Reclaimer)
+	if !ok {
+		return nil
+	}
+	b.writeMu.Lock()
+	defer b.writeMu.Unlock()
+	return r.Reclaim()
+}
+
+// backendReleaser is a store or Backend that owns a provider namespace
+// outside the node's data directory (the object-storage engine, and the
+// backends that forward to it): ReleaseOwner gives the namespace up, and
+// ReleaseClaim gives back what an open claimed. A drop releases the
+// namespace after the catalog delete (Manager.drop), and a failed create
+// gives back its open's claim (createUndo.run): a namespace claimed new is
+// released, an owner marker written onto existing data is removed. The
+// retried release of a claim on existing data (releaseEntry.ClaimOnly)
+// opens no backend: ObjectStorageMarkerReleaser.
+type backendReleaser interface {
+	ReleaseOwner() error
+	ReleaseClaim() error
+	// FreshlyClaimed reports that the open claimed a namespace that held no
+	// object: a failed give-back's recorded release may reclaim it whole.
+	FreshlyClaimed() bool
+}
+
+// FreshlyClaimed forwards backendReleaser.FreshlyClaimed; a store with no
+// namespace of its own claimed none.
+func (b *StandaloneBackend) FreshlyClaimed() bool {
+	r, ok := b.store.(backendReleaser)
+	return ok && r.FreshlyClaimed()
+}
+
+// ReleaseOwner forwards backendReleaser.ReleaseOwner; a store with no
+// namespace of its own has nothing to release.
+func (b *StandaloneBackend) ReleaseOwner() error {
+	r, ok := b.store.(backendReleaser)
+	if !ok {
+		return nil
+	}
+	b.writeMu.Lock()
+	defer b.writeMu.Unlock()
+	return r.ReleaseOwner()
+}
+
+// ReleaseClaim forwards backendReleaser.ReleaseClaim; a store with no
+// namespace of its own has no claim to give back.
+func (b *StandaloneBackend) ReleaseClaim() error {
+	r, ok := b.store.(backendReleaser)
+	if !ok {
+		return nil
+	}
+	b.writeMu.Lock()
+	defer b.writeMu.Unlock()
+	return r.ReleaseClaim()
+}
