@@ -93,6 +93,63 @@ func TestOwnerResolver_TenantScope(t *testing.T) {
 	}
 }
 
+// unavailableNames is a placement.NameResolver whose catalog cannot be
+// read (sealed, home not open): it resolves no name.
+type unavailableNames struct{}
+
+func (unavailableNames) DatabaseNames(context.Context, string) map[string]string { return nil }
+
+// TestOwnerResolver_TenantScope_UnresolvedNameFailsClosed: on a node whose
+// name cache is cold and whose catalog cannot resolve names, a persisted
+// multi-replica placement reads with an empty name, so GetByName misses it.
+// Owners must not read that miss as "no placement" and migrate this node
+// alone: it fails closed. Once the name resolves the replicas are owners,
+// and a tenant whose every placement name resolves still gets local-only
+// for a database it has no placement for.
+func TestOwnerResolver_TenantScope_UnresolvedNameFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	kv := newMemKV()
+	writer, err := placement.NewStore(kv)
+	if err != nil {
+		t.Fatalf("placement.NewStore: %v", err)
+	}
+	if perr := writer.Put(ctx, &placement.Placement{
+		TenantID: "acme", DatabaseID: "db-01", Database: "appdata", ShardID: 42,
+		Replicas: []placement.Replica{
+			{ReplicaID: 1, NodeID: "n1"}, {ReplicaID: 2, NodeID: "n2"}, {ReplicaID: 3, NodeID: "n3"},
+		},
+	}); perr != nil {
+		t.Fatalf("placement.Put: %v", perr)
+	}
+
+	cold, err := placement.NewStore(kv)
+	if err != nil {
+		t.Fatalf("placement.NewStore: %v", err)
+	}
+	cold.SetNameResolver(unavailableNames{})
+	r := newClusterOwnerResolver(cold, nil, ownerSystemShard, "n1")
+	_, owners, err := r.Owners(ctx, "acme", "appdata")
+	if !errors.Is(err, ErrPlacementNameUnresolved) || owners != nil {
+		t.Fatalf("Owners(unresolved name) = (%v, %v), want ErrPlacementNameUnresolved and no owners", owners, err)
+	}
+	var oerr *OwnerResolveError
+	if !errors.As(err, &oerr) || oerr.TenantID != "acme" || oerr.Database != "appdata" {
+		t.Fatalf("Owners(unresolved name) err = %#v, want *OwnerResolveError for acme/appdata", err)
+	}
+
+	// The writer's cache resolved the name: the replicas are the owners,
+	// and a database with no placement is genuinely local-only.
+	r = newClusterOwnerResolver(writer, nil, ownerSystemShard, "n1")
+	shard, owners, err := r.Owners(ctx, "acme", "appdata")
+	if err != nil || shard != 42 || len(owners) != 3 {
+		t.Fatalf("Owners(resolved) = (%d, %v, %v), want shard 42 and 3 owners", shard, owners, err)
+	}
+	_, owners, err = r.Owners(ctx, "acme", "other")
+	if err != nil || len(owners) != 1 || owners[0] != "n1" {
+		t.Fatalf("Owners(absent placement) = (%v, %v), want local-only [n1]", owners, err)
+	}
+}
+
 // TestOwnerResolver_WholeTenantScope unions replicas across all the tenant's
 // databases (empty database = tenant-barrier migration covers every db).
 func TestOwnerResolver_WholeTenantScope(t *testing.T) {
