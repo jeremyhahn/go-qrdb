@@ -218,6 +218,15 @@ func (m *AuthMiddleware) decideOperatorIdentityAccess(ctx context.Context, ident
 	if err := m.decide(tenant.WithTenantID(ctx, tenantid.System), identity, perm); err != nil {
 		return err
 	}
+	// The tenant-qualified permission is a second admission decision, made
+	// here rather than in authorize, so the peer-attestation gate that
+	// authorize applies to every permission it admits runs here too: a policy
+	// that gates users:write:tenant or roles:write:tenant must not be passed
+	// by naming another tenant. A refusal is audited as its own event, as
+	// authorize records it.
+	if err := m.checkPeerAttestation(ctx, identity, perm); err != nil {
+		return err
+	}
 	if m.isolationPolicy == nil {
 		return &OperatorAccessUnresolvedError{TenantID: target}
 	}
